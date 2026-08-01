@@ -1,0 +1,12 @@
+[workspace]
+members = ["fallibles-macros"]
+resolver = "2"
+
+[package]
+name = "fallibles"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+fallibles-macros = { path = "fallibles-macros" }
+no-panic = "0.1"
