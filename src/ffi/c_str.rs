@@ -31,28 +31,28 @@ mod tests {
 
     #[test]
     fn try_to_owned_empty() {
-        let c = CStr::from_bytes_with_nul(b"\0").unwrap();
+        let c = c"";
         let owned: CString = c.try_to_owned().unwrap();
         assert_eq!(owned.to_str().unwrap(), "");
     }
 
     #[test]
     fn try_to_owned_ascii() {
-        let c = CStr::from_bytes_with_nul(b"hello\0").unwrap();
+        let c = c"hello";
         let owned: CString = c.try_to_owned().unwrap();
         assert_eq!(owned.to_str().unwrap(), "hello");
     }
 
     #[test]
     fn try_to_owned_unicode_utf8() {
-        let c = CStr::from_bytes_with_nul("日本語\0".as_bytes()).unwrap();
+        let c = c"日本語";
         let owned: CString = c.try_to_owned().unwrap();
         assert_eq!(owned.to_str().unwrap(), "日本語");
     }
 
     #[test]
     fn try_to_owned_matches_std() {
-        let c = CStr::from_bytes_with_nul(b"rust test\0").unwrap();
+        let c = c"rust test";
         let expected = <CStr as std::borrow::ToOwned>::to_owned(c);
         let actual: CString = c.try_to_owned().unwrap();
         assert_eq!(actual, expected);
@@ -60,7 +60,7 @@ mod tests {
 
     #[test]
     fn try_to_owned_implies_to_owned_bound() {
-        let c = CStr::from_bytes_with_nul(b"test\0").unwrap();
+        let c = c"test";
         let owned: CString = <CStr as std::borrow::ToOwned>::to_owned(c);
         assert_eq!(owned.to_str().unwrap(), "test");
     }

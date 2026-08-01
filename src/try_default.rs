@@ -169,7 +169,9 @@ impl<T: TryDefault, const N: usize> TryDefault for [T; N] {
         }
 
         guard.forget();
-        // SAFETY: we verified that all N slots were written successfully.
+        // SAFETY: we verified that all N slots were written successfully above.
+        // Using transmute_copy instead of MaybeUninit::array_assume_init because
+        // the latter is still unstable as of Rust 1.97 (tracking issue #96097).
         Ok(unsafe { core::mem::transmute_copy(&out) })
     }
 }
