@@ -48,7 +48,6 @@ pub trait TrySlice<T> {
 }
 
 impl<T> TrySlice<T> for [T] {
-    
     fn try_to_vec(&self) -> Result<Vec<T>, TryVecError>
     where
         T: TryClone,
@@ -63,7 +62,6 @@ impl<T> TrySlice<T> for [T] {
         Ok(out)
     }
 
-    
     fn try_repeat_clone(&self, n: usize) -> Result<Vec<T>, TryVecError>
     where
         T: TryClone,
@@ -94,7 +92,6 @@ impl<T> TryToOwned for [T]
 where
     T: TryClone,
 {
-    
     fn try_to_owned(&self) -> Result<Vec<T>, TryToOwnedError> {
         let mut out = Vec::<T>::new();
         if !self.is_empty() {

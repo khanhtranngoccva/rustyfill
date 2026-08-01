@@ -70,7 +70,6 @@ pub trait TryStr {
 }
 
 impl TryStr for str {
-    
     fn try_to_string(&self) -> Result<String, TryStrError> {
         let mut out = String::new();
         if !self.is_empty() {
@@ -80,7 +79,6 @@ impl TryStr for str {
         Ok(out)
     }
 
-    
     fn try_repeat(&self, n: usize) -> Result<String, TryStrError> {
         let len = self.len();
         if len == 0 || n == 0 {
@@ -103,7 +101,6 @@ impl TryStr for str {
 use crate::try_to_owned::{TryToOwned, TryToOwnedError};
 
 impl TryToOwned for str {
-    
     fn try_to_owned(&self) -> Result<String, TryToOwnedError> {
         let mut out = String::new();
         if !self.is_empty() {

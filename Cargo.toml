@@ -1,5 +1,5 @@
 [workspace]
-members = ["fallibles-macros"]
+members = ["fallibles-macros", "xtask"]
 resolver = "2"
 
 [package]
@@ -9,4 +9,6 @@ edition = "2024"
 
 [dependencies]
 fallibles-macros = { path = "fallibles-macros" }
-no-panic = "0.1"
+
+[profile.dev]
+opt-level = 2

@@ -46,7 +46,10 @@ impl fmt::Display for TryVecError {
             Self::Alloc(_) => write!(f, "vector operation failed: heap allocation error"),
             Self::Reserve(e) => write!(f, "vector operation failed: {}", e),
             Self::Clone(e) => write!(f, "vector operation failed: {}", e),
-            Self::Overflow => write!(f, "vector operation failed: capacity calculation overflowed"),
+            Self::Overflow => write!(
+                f,
+                "vector operation failed: capacity calculation overflowed"
+            ),
             Self::Other(msg) => write!(f, "vector operation failed: {}", msg),
         }
     }
@@ -77,12 +80,6 @@ impl From<TryCloneError> for TryVecError {
 /// [`TryReserveError`] on failure.
 pub trait TryVec<T>: Sized {
     // ── Construction ────────────────────────────────────────────────────────
-
-    /// Fallibly construct a new empty `Vec<T>`.
-    ///
-    /// This never fails — an empty `Vec` has no heap allocation. Equivalent to
-    /// `Vec::new()`.
-    fn try_new() -> Result<Vec<T>, TryReserveError>;
 
     /// Fallibly construct a `Vec<T>` containing `value` cloned `capacity` times.
     ///
@@ -199,12 +196,6 @@ pub trait TryVec<T>: Sized {
 }
 
 impl<T> TryVec<T> for Vec<T> {
-    
-    fn try_new() -> Result<Vec<T>, TryReserveError> {
-        Ok(Vec::new())
-    }
-
-    
     fn try_from_elem(value: &T, capacity: usize) -> Result<Vec<T>, TryVecError>
     where
         T: TryClone,
@@ -217,7 +208,6 @@ impl<T> TryVec<T> for Vec<T> {
         Ok(vec)
     }
 
-    
     fn try_from_elem_give_back(value: T, capacity: usize) -> Result<Vec<T>, (T, TryVecError)>
     where
         T: TryClone,
@@ -228,14 +218,12 @@ impl<T> TryVec<T> for Vec<T> {
         }
     }
 
-    
     fn try_push(&mut self, value: T) -> Result<(), TryReserveError> {
         self.try_reserve(1)?;
         self.push(value);
         Ok(())
     }
 
-    
     fn try_push_give_back(&mut self, value: T) -> Result<(), (T, TryReserveError)> {
         match self.try_reserve(1) {
             Ok(()) => {
@@ -246,14 +234,12 @@ impl<T> TryVec<T> for Vec<T> {
         }
     }
 
-    
     fn try_insert(&mut self, index: usize, value: T) -> Result<(), TryReserveError> {
         self.try_reserve(1)?;
         self.insert(index, value);
         Ok(())
     }
 
-    
     fn try_insert_give_back(&mut self, index: usize, value: T) -> Result<(), (T, TryReserveError)> {
         match self.try_reserve(1) {
             Ok(()) => {
@@ -276,7 +262,6 @@ impl<T> TryVec<T> for Vec<T> {
         Ok(())
     }
 
-    
     fn try_extend_from_slice(&mut self, other: &[T]) -> Result<(), TryVecError>
     where
         T: TryClone,
@@ -299,7 +284,6 @@ impl<T> TryVec<T> for Vec<T> {
         Ok(())
     }
 
-    
     fn try_append(&mut self, other: &mut Vec<T>) -> Result<(), TryReserveError> {
         let extra = other.len();
         if extra == 0 {
@@ -338,12 +322,9 @@ impl<T> TryVec<T> for Vec<T> {
 
         // Validate bounds before any mutation.
         if end > self.len() || start > self.len() {
-            panic!(
-                "range start ({}) and end ({}) must be within len ({})",
-                start,
-                end,
-                self.len()
-            );
+            return Err(TryVecError::Other(
+                "extend_from_within: range out of bounds",
+            ));
         }
 
         let count = end - start;
@@ -362,7 +343,6 @@ impl<T> TryVec<T> for Vec<T> {
         Ok(())
     }
 
-    
     fn try_resize(&mut self, value: &T, new_len: usize) -> Result<(), TryVecError>
     where
         T: TryClone,
@@ -389,7 +369,6 @@ impl<T> TryVec<T> for Vec<T> {
         Ok(())
     }
 
-    
     fn try_resize_with<F>(&mut self, new_len: usize, mut f: F) -> Result<(), TryReserveError>
     where
         F: FnMut() -> T,
@@ -408,7 +387,6 @@ impl<T> TryVec<T> for Vec<T> {
         Ok(())
     }
 
-    
     fn try_collect<I: IntoIterator<Item = T>>(iter: I) -> Result<Vec<T>, TryReserveError> {
         let iter = iter.into_iter();
         let (lower, upper) = iter.size_hint();
@@ -425,7 +403,6 @@ impl<T> TryVec<T> for Vec<T> {
         Ok(vec)
     }
 
-    
     fn try_from_slice(slice: &[T]) -> Result<Vec<T>, TryVecError>
     where
         T: TryClone,
@@ -442,11 +419,11 @@ impl<T> TryVec<T> for Vec<T> {
 // ── TryClone for Vec<T> ──────────────────────────────────────────────────────
 
 impl<T: TryClone> TryClone for Vec<T> {
-    
     fn try_clone(&self) -> Result<Self, TryCloneError> {
         let mut out = Vec::<T>::new();
         if !self.is_empty() {
-            out.try_reserve(self.len()).map_err(TryCloneError::Reserve)?;
+            out.try_reserve(self.len())
+                .map_err(TryCloneError::Reserve)?;
         }
         for elem in self.iter() {
             match elem.try_clone() {
@@ -454,10 +431,7 @@ impl<T: TryClone> TryClone for Vec<T> {
                     out.push(cloned);
                 }
                 Err(e) => {
-                    // Drop any successfully cloned elements by truncating.
-                    // SAFETY: len() reflects exactly how many valid elements
-                    // were pushed above.
-                    unsafe { out.set_len(0) };
+                    drop(out);
                     return Err(e);
                 }
             }
@@ -469,7 +443,6 @@ impl<T: TryClone> TryClone for Vec<T> {
 // ── TryDefault for Vec<T> ────────────────────────────────────────────────────
 
 impl<T: TryDefault> TryDefault for Vec<T> {
-    
     fn try_default() -> Result<Self, TryDefaultError> {
         // An empty Vec requires no allocation.
         Ok(Vec::new())
@@ -481,13 +454,6 @@ mod tests {
     use super::*;
 
     // ── Construction ─────────────────────────────────────────────────────────
-
-    #[test]
-    fn try_new_returns_empty_vec() {
-        let v: Vec<i32> = Vec::<i32>::try_new().unwrap();
-        assert!(v.is_empty());
-        assert_eq!(v.capacity(), 0);
-    }
 
     #[test]
     fn try_from_elem_single() {
@@ -512,7 +478,7 @@ mod tests {
 
     #[test]
     fn try_push_appends_element() {
-        let mut v: Vec<i32> = Vec::try_new().unwrap();
+        let mut v: Vec<i32> = Vec::new();
         v.try_push(1).unwrap();
         v.try_push(2).unwrap();
         assert_eq!(v, [1, 2]);
@@ -520,7 +486,7 @@ mod tests {
 
     #[test]
     fn try_insert_at_start() {
-        let mut v: Vec<i32> = Vec::try_new().unwrap();
+        let mut v: Vec<i32> = Vec::new();
         v.try_push(2).unwrap();
         v.try_insert(0, 1).unwrap();
         assert_eq!(v, [1, 2]);
@@ -528,7 +494,7 @@ mod tests {
 
     #[test]
     fn try_insert_at_end() {
-        let mut v: Vec<i32> = Vec::try_new().unwrap();
+        let mut v: Vec<i32> = Vec::new();
         v.try_push(1).unwrap();
         v.try_insert(1, 2).unwrap();
         assert_eq!(v, [1, 2]);
@@ -536,7 +502,7 @@ mod tests {
 
     #[test]
     fn try_insert_middle() {
-        let mut v: Vec<i32> = Vec::try_new().unwrap();
+        let mut v: Vec<i32> = Vec::new();
         v.try_push(1).unwrap();
         v.try_push(3).unwrap();
         v.try_insert(1, 2).unwrap();
@@ -545,21 +511,21 @@ mod tests {
 
     #[test]
     fn try_extend_from_iterator() {
-        let mut v: Vec<i32> = Vec::try_new().unwrap();
+        let mut v: Vec<i32> = Vec::new();
         v.try_extend(0..5).unwrap();
         assert_eq!(v, [0, 1, 2, 3, 4]);
     }
 
     #[test]
     fn try_extend_empty() {
-        let mut v: Vec<i32> = Vec::try_new().unwrap();
+        let mut v: Vec<i32> = Vec::new();
         v.try_extend(std::iter::empty::<i32>()).unwrap();
         assert!(v.is_empty());
     }
 
     #[test]
     fn try_extend_existing() {
-        let mut v: Vec<i32> = Vec::try_new().unwrap();
+        let mut v: Vec<i32> = Vec::new();
         v.try_push(1).unwrap();
         v.try_extend([2, 3]).unwrap();
         assert_eq!(v, [1, 2, 3]);
@@ -567,7 +533,7 @@ mod tests {
 
     #[test]
     fn try_extend_from_slice_clones_elements() {
-        let mut v: Vec<Vec<u8>> = Vec::try_new().unwrap();
+        let mut v: Vec<Vec<u8>> = Vec::new();
         v.try_push(vec![1]).unwrap();
         let slice: &[Vec<u8>] = &[vec![2], vec![3]];
         v.try_extend_from_slice(slice).unwrap();
@@ -576,16 +542,16 @@ mod tests {
 
     #[test]
     fn try_extend_from_slice_empty() {
-        let mut v: Vec<i32> = Vec::try_new().unwrap();
+        let mut v: Vec<i32> = Vec::new();
         v.try_extend_from_slice(&[]).unwrap();
         assert!(v.is_empty());
     }
 
     #[test]
     fn try_append_moves_elements() {
-        let mut v: Vec<i32> = Vec::try_new().unwrap();
+        let mut v: Vec<i32> = Vec::new();
         v.try_push(1).unwrap();
-        let mut other: Vec<i32> = Vec::try_new().unwrap();
+        let mut other: Vec<i32> = Vec::new();
         other.try_push(2).unwrap();
         other.try_push(3).unwrap();
         v.try_append(&mut other).unwrap();
@@ -595,8 +561,8 @@ mod tests {
 
     #[test]
     fn try_append_into_empty() {
-        let mut v: Vec<i32> = Vec::try_new().unwrap();
-        let mut other: Vec<i32> = Vec::try_new().unwrap();
+        let mut v: Vec<i32> = Vec::new();
+        let mut other: Vec<i32> = Vec::new();
         other.try_push(42).unwrap();
         v.try_append(&mut other).unwrap();
         assert_eq!(v, [42]);
@@ -605,7 +571,7 @@ mod tests {
 
     #[test]
     fn try_append_both_empty() {
-        let mut v: Vec<i32> = Vec::try_new().unwrap();
+        let mut v: Vec<i32> = Vec::new();
         let mut other: Vec<i32> = Vec::new();
         v.try_append(&mut other).unwrap();
         assert!(v.is_empty());
@@ -684,14 +650,14 @@ mod tests {
 
     #[test]
     fn try_push_give_back_success_returns_unit() {
-        let mut v: Vec<i32> = Vec::try_new().unwrap();
+        let mut v: Vec<i32> = Vec::new();
         v.try_push_give_back(42).unwrap();
         assert_eq!(v, [42]);
     }
 
     #[test]
     fn try_insert_give_back_success() {
-        let mut v: Vec<i32> = Vec::try_new().unwrap();
+        let mut v: Vec<i32> = Vec::new();
         v.try_push(2).unwrap();
         v.try_insert_give_back(0, 1).unwrap();
         assert_eq!(v, [1, 2]);
@@ -715,9 +681,9 @@ mod tests {
 
     #[test]
     fn try_append_give_back_success() {
-        let mut v: Vec<i32> = Vec::try_new().unwrap();
+        let mut v: Vec<i32> = Vec::new();
         v.try_push(1).unwrap();
-        let mut other: Vec<i32> = Vec::try_new().unwrap();
+        let mut other: Vec<i32> = Vec::new();
         other.try_push(2).unwrap();
         v.try_append(&mut other).unwrap();
         assert_eq!(v, [1, 2]);
@@ -725,7 +691,7 @@ mod tests {
 
     #[test]
     fn try_append_error_type_shape() {
-        let mut v: Vec<i32> = Vec::try_new().unwrap();
+        let mut v: Vec<i32> = Vec::new();
         let mut other: Vec<i32> = vec![99];
         let result: Result<(), TryReserveError> = v.try_append(&mut other);
         assert!(result.is_ok());

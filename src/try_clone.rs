@@ -114,42 +114,88 @@ fallibles_macros::try_clone_tuples!(12);
 
 // ── Arrays [T; N] ──────────────────────────────────────────────────────────────
 
+/// Panic-safe guard that drops any initialized elements in a `MaybeUninit` array
+/// if dropped before `forget()` is called (e.g. on panic or early return).
+struct ArrayInitGuard<'a, T, const N: usize> {
+    slots: &'a mut [core::mem::MaybeUninit<T>; N],
+    count: usize,
+}
+
+impl<'a, T, const N: usize> ArrayInitGuard<'a, T, N> {
+    fn new(slots: &'a mut [core::mem::MaybeUninit<T>; N]) -> Self {
+        Self { slots, count: 0 }
+    }
+
+    /// Disable the guard's Drop so that it no longer cleans up on scope exit.
+    /// Call this only after all slots have been successfully initialized.
+    fn forget(mut self) {
+        self.count = 0;
+        core::mem::forget(self);
+    }
+}
+
+impl<'a, T, const N: usize> Drop for ArrayInitGuard<'a, T, N> {
+    fn drop(&mut self) {
+        unsafe {
+            for slot in self.slots.iter_mut().take(self.count) {
+                core::ptr::drop_in_place(slot.as_mut_ptr());
+            }
+        }
+    }
+}
+
 impl<T: TryClone, const N: usize> TryClone for [T; N] {
-    
     fn try_clone(&self) -> Result<Self, TryCloneError> {
         let mut out: [core::mem::MaybeUninit<T>; N] =
             core::array::from_fn(|_| core::mem::MaybeUninit::uninit());
-        let mut initialized = 0usize;
+        let mut guard = ArrayInitGuard::new(&mut out);
 
         for (i, elem) in self.iter().enumerate() {
             match elem.try_clone() {
                 Ok(cloned) => {
                     unsafe {
-                        core::ptr::write(out[i].as_mut_ptr(), cloned);
+                        core::ptr::write(guard.slots[i].as_mut_ptr(), cloned);
                     }
-                    initialized += 1;
+                    guard.count += 1;
                 }
                 Err(e) => {
-                    // Drop every item we already wrote to avoid leaking.
-                    unsafe {
-                        for slot in out.iter_mut().take(initialized) {
-                            core::ptr::drop_in_place(slot.as_mut_ptr());
-                        }
-                    }
+                    // Guard's Drop cleans up whatever was written so far.
                     return Err(e);
                 }
             }
         }
 
+        guard.forget();
         // SAFETY: we verified that all N slots were written successfully.
         Ok(unsafe { core::mem::transmute_copy(&out) })
+    }
+}
+
+// ── Slice references ───────────────────────────────────────────────────────────
+// Immutable references to slices are just pointer copies — no allocation needed,
+// so these are infallible. The Clone supertrait is satisfied because &[T] and
+// &str both implement Clone (via Copy) in std.
+//
+// Note: &mut [T] and &mut str do NOT implement Clone in std, so they cannot
+// satisfy the Clone supertrait bound on TryClone. They are intentionally omitted.
+
+impl<T> TryClone for &[T] {
+    #[inline]
+    fn try_clone(&self) -> Result<Self, TryCloneError> {
+        Ok(*self)
+    }
+}
+
+impl TryClone for &str {
+    #[inline]
+    fn try_clone(&self) -> Result<Self, TryCloneError> {
+        Ok(*self)
     }
 }
 
 // ── Option ─────────────────────────────────────────────────────────────────────
 
 impl<T: TryClone> TryClone for Option<T> {
-    
     fn try_clone(&self) -> Result<Self, TryCloneError> {
         match self {
             Some(v) => Ok(Some(v.try_clone()?)),
@@ -161,7 +207,6 @@ impl<T: TryClone> TryClone for Option<T> {
 // ── Result ─────────────────────────────────────────────────────────────────────
 
 impl<T: TryClone, E: TryClone> TryClone for Result<T, E> {
-    
     fn try_clone(&self) -> Result<Self, TryCloneError> {
         match self {
             Ok(v) => Ok(Ok(v.try_clone()?)),
@@ -608,5 +653,44 @@ mod tests {
             let m: Maybe<i16> = Maybe::Nothing;
             assert_eq!(m.try_clone().unwrap(), Maybe::Nothing);
         }
+    }
+
+    // ── Slice references ───────────────────────────────────────────────────────
+
+    #[test]
+    fn slice_ref_try_clone() {
+        let data = [1u32, 2, 3];
+        let slice: &[u32] = &data;
+        let cloned: &[u32] = slice.try_clone().unwrap();
+        assert_eq!(cloned, &[1, 2, 3]);
+    }
+
+    #[test]
+    fn slice_ref_empty_try_clone() {
+        let data: [u8; 0] = [];
+        let slice: &[u8] = &data;
+        let cloned: &[u8] = slice.try_clone().unwrap();
+        assert!(cloned.is_empty());
+    }
+
+    #[test]
+    fn str_ref_try_clone() {
+        let s = "hello world";
+        let cloned: &str = s.try_clone().unwrap();
+        assert_eq!(cloned, "hello world");
+    }
+
+    #[test]
+    fn str_ref_empty_try_clone() {
+        let s = "";
+        let cloned: &str = s.try_clone().unwrap();
+        assert_eq!(cloned, "");
+    }
+
+    #[test]
+    fn str_ref_unicode_try_clone() {
+        let s = "🦀 Rust 🚀";
+        let cloned: &str = s.try_clone().unwrap();
+        assert_eq!(cloned, "🦀 Rust 🚀");
     }
 }

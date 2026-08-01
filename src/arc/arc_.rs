@@ -4,12 +4,11 @@ use crate::boxed::TryBox;
 use crate::try_clone::{TryClone, TryCloneError};
 use crate::try_default::{TryDefault, TryDefaultError};
 
-use core::mem::{MaybeUninit, ManuallyDrop, offset_of};
+use core::mem::{ManuallyDrop, MaybeUninit, offset_of};
 use core::pin::Pin;
 use core::ptr;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Weak};
-
 /// Internal representation of an Arc allocation.
 ///
 /// Layout matches `std::sync::Arc`: two atomic counters followed by the data.
@@ -118,7 +117,6 @@ pub trait TryArc<T>: Sized {
 impl<T> TryArc<T> for Arc<T> {
     type Uninit = Arc<MaybeUninit<T>>;
 
-    
     fn try_new(value: T) -> Result<Self, AllocError> {
         let mut slot =
             ManuallyDrop::new(<Box<ArcInner<T>> as TryBox<ArcInner<T>>>::try_new_uninit()?);
@@ -132,7 +130,6 @@ impl<T> TryArc<T> for Arc<T> {
         Ok(unsafe { Arc::from_raw(data_ptr) })
     }
 
-    
     fn try_new_uninit() -> Result<Self::Uninit, AllocError> {
         let mut slot =
             ManuallyDrop::new(<Box<ArcInner<T>> as TryBox<ArcInner<T>>>::try_new_uninit()?);
@@ -146,7 +143,6 @@ impl<T> TryArc<T> for Arc<T> {
         Ok(unsafe { Arc::from_raw(data_ptr) })
     }
 
-    
     fn try_new_zeroed() -> Result<Self::Uninit, AllocError> {
         let mut slot =
             ManuallyDrop::new(<Box<ArcInner<T>> as TryBox<ArcInner<T>>>::try_new_zeroed()?);
@@ -161,7 +157,6 @@ impl<T> TryArc<T> for Arc<T> {
         Ok(unsafe { Arc::from_raw(data_ptr) })
     }
 
-    
     fn try_new_give_back(value: T) -> Result<Self, (T, AllocError)> {
         match <Box<ArcInner<T>> as TryBox<ArcInner<T>>>::try_new_uninit() {
             Ok(raw_slot) => {
@@ -179,10 +174,9 @@ impl<T> TryArc<T> for Arc<T> {
         }
     }
 
-    
     fn unwrap_or_try_clone(self) -> Result<T, (Self, TryCloneError)>
     where
-        T: Clone + crate::try_clone::TryClone,
+        T: crate::try_clone::TryClone,
     {
         match Arc::try_unwrap(self) {
             Ok(val) => Ok(val),
@@ -193,7 +187,6 @@ impl<T> TryArc<T> for Arc<T> {
         }
     }
 
-    
     fn try_pin(value: T) -> Result<Pin<Self>, AllocError> {
         let arc = Self::try_new(value)?;
         Ok(unsafe { Pin::new_unchecked(arc) })
@@ -213,7 +206,6 @@ const HEADER_SIZE: usize = offset_of!(ArcInner<u8>, data);
 const WEAK_OFFSET: usize = offset_of!(ArcInner<u8>, weak);
 
 impl<T: ?Sized> TryClone for Arc<T> {
-    
     fn try_clone(&self) -> Result<Self, TryCloneError> {
         let data_ptr: *const T = self.as_ref();
         let strong_ptr = unsafe { data_ptr.byte_sub(HEADER_SIZE) }.cast::<AtomicUsize>();
@@ -236,7 +228,6 @@ impl<T: ?Sized> TryClone for Arc<T> {
 }
 
 impl<T: ?Sized> TryClone for Weak<T> {
-    
     fn try_clone(&self) -> Result<Self, TryCloneError> {
         // Check for the dangling sentinel used by Weak::new() — no allocation exists,
         // so cloning is just a pointer copy that can never fail.
@@ -269,7 +260,6 @@ impl<T: ?Sized> TryClone for Weak<T> {
 }
 
 impl<T: TryDefault> TryDefault for Arc<T> {
-    
     fn try_default() -> Result<Self, TryDefaultError> {
         // Allocate first so that if allocation fails we never touch T::try_default().
         let mut uninit = <Arc<T> as TryArc<T>>::try_new_uninit().map_err(TryDefaultError::Alloc)?;
@@ -277,9 +267,7 @@ impl<T: TryDefault> TryDefault for Arc<T> {
             Ok(val) => {
                 // We have sole ownership (freshly allocated, strong count == 1).
                 Arc::get_mut(&mut uninit).unwrap().write(val);
-                let owned = Arc::into_inner(uninit).unwrap();
-                // SAFETY: we just wrote a valid T into the MaybeUninit above.
-                Ok(Arc::new(unsafe { owned.assume_init() }))
+                Ok(unsafe { uninit.assume_init() })
             }
             Err(e) => Err(e),
         }
@@ -287,7 +275,6 @@ impl<T: TryDefault> TryDefault for Arc<T> {
 }
 
 impl<T> TryDefault for Weak<T> {
-    
     fn try_default() -> Result<Self, TryDefaultError> {
         // Weak::new() creates a dangling weak pointer — no allocation needed.
         Ok(Weak::new())

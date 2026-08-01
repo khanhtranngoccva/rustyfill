@@ -18,7 +18,6 @@ use crate::alloc::AllocError;
 use crate::try_clone::{TryClone, TryCloneError};
 use crate::try_default::{TryDefault, TryDefaultError};
 use core::fmt;
-use no_panic::no_panic;
 use std::collections::TryReserveError;
 
 /// Error returned by [`TryString`] operations.
@@ -72,23 +71,17 @@ impl From<TryReserveError> for TryStringError {
 pub trait TryString: Sized {
     // ── Construction ────────────────────────────────────────────────────────
 
-    /// Fallibly construct a new empty `String`.
-    ///
-    /// This never fails — an empty `String` has no heap allocation. Equivalent to
-    /// `String::new()`.
-    fn try_new() -> Result<String, TryReserveError>;
-
     /// Fallibly construct a new `String` with at least enough capacity for `capacity` bytes.
     ///
     /// Returns [`TryReserveError`] if the initial allocation fails.
     /// Equivalent to `String::with_capacity(capacity)` but fallible.
     fn try_with_capacity(capacity: usize) -> Result<String, TryReserveError>;
 
-    /// Fallibly construct a `String` from a string slice.
+    /// Fallibly construct a `String` from any value that references a `str`.
     ///
-    /// Returns [`TryReserveError`] if the allocation fails.
-    /// Equivalent to `String::from(str)` but fallible.
-    fn try_from_str(s: &str) -> Result<String, TryReserveError>;
+    /// Accepts `&str`, `String`, `&String`, or anything else implementing
+    /// [`AsRef<str>`]. Returns [`TryReserveError`] if the allocation fails.
+    fn try_from_str<S: AsRef<str>>(s: S) -> Result<String, TryReserveError>;
 
     // ── Mutation ────────────────────────────────────────────────────────────
 
@@ -156,12 +149,6 @@ pub trait TryString: Sized {
 }
 
 impl TryString for String {
-    
-    fn try_new() -> Result<String, TryReserveError> {
-        Ok(String::new())
-    }
-
-    
     fn try_with_capacity(capacity: usize) -> Result<String, TryReserveError> {
         let mut s = String::new();
         if capacity > 0 {
@@ -170,8 +157,8 @@ impl TryString for String {
         Ok(s)
     }
 
-    
-    fn try_from_str(s: &str) -> Result<String, TryReserveError> {
+    fn try_from_str<S: AsRef<str>>(s: S) -> Result<String, TryReserveError> {
+        let s = s.as_ref();
         let mut out = String::new();
         if !s.is_empty() {
             out.try_reserve(s.len())?;
@@ -180,7 +167,6 @@ impl TryString for String {
         Ok(out)
     }
 
-    
     fn try_push(&mut self, c: char) -> Result<(), TryReserveError> {
         let encoded_len = c.len_utf8();
         self.try_reserve(encoded_len)?;
@@ -188,7 +174,6 @@ impl TryString for String {
         Ok(())
     }
 
-    
     fn try_push_str(&mut self, s: &str) -> Result<(), TryReserveError> {
         if s.is_empty() {
             return Ok(());
@@ -198,10 +183,11 @@ impl TryString for String {
         Ok(())
     }
 
-    
     fn try_insert(&mut self, idx: usize, c: char) -> Result<(), TryStringError> {
         if !self.is_char_boundary(idx) {
-            return Err(TryStringError::Other("insert index is out of bounds or not on a char boundary"));
+            return Err(TryStringError::Other(
+                "insert index is out of bounds or not on a char boundary",
+            ));
         }
         let encoded_len = c.len_utf8();
         <String as TryString>::try_reserve(self, encoded_len).map_err(TryStringError::from)?;
@@ -209,20 +195,20 @@ impl TryString for String {
         Ok(())
     }
 
-    
     fn try_insert_str(&mut self, idx: usize, s: &str) -> Result<(), TryStringError> {
         if s.is_empty() {
             return Ok(());
         }
         if !self.is_char_boundary(idx) {
-            return Err(TryStringError::Other("insert index is out of bounds or not on a char boundary"));
+            return Err(TryStringError::Other(
+                "insert index is out of bounds or not on a char boundary",
+            ));
         }
         <String as TryString>::try_reserve(self, s.len()).map_err(TryStringError::from)?;
         self.insert_str(idx, s);
         Ok(())
     }
 
-    
     fn try_extend<I>(&mut self, iter: I) -> Result<(), TryReserveError>
     where
         I: IntoIterator,
@@ -240,17 +226,14 @@ impl TryString for String {
         Ok(())
     }
 
-    
     fn try_reserve(&mut self, additional: usize) -> Result<(), TryReserveError> {
         self.try_reserve(additional)
     }
 
-    
     fn try_shrink_to_fit(&mut self) -> Result<(), TryReserveError> {
         self.try_shrink_to(self.len())
     }
 
-    
     fn try_shrink_to(&mut self, min_capacity: usize) -> Result<(), TryReserveError> {
         let target = core::cmp::max(self.len(), min_capacity);
         if self.capacity() <= target {
@@ -276,11 +259,11 @@ impl TryString for String {
 // ── TryClone for String ──────────────────────────────────────────────────────
 
 impl TryClone for String {
-    
     fn try_clone(&self) -> Result<Self, TryCloneError> {
         let mut out = String::new();
         if !self.is_empty() {
-            out.try_reserve(self.len()).map_err(TryCloneError::Reserve)?;
+            out.try_reserve(self.len())
+                .map_err(TryCloneError::Reserve)?;
         }
         out.push_str(self);
         Ok(out)
@@ -290,7 +273,6 @@ impl TryClone for String {
 // ── TryDefault for String ────────────────────────────────────────────────────
 
 impl TryDefault for String {
-    
     fn try_default() -> Result<Self, TryDefaultError> {
         // An empty String requires no allocation.
         Ok(String::new())
@@ -303,13 +285,6 @@ mod tests {
     use super::*;
 
     // ── Construction ─────────────────────────────────────────────────────────
-
-    #[test]
-    fn try_new_returns_empty_string() {
-        let s = String::try_new().unwrap();
-        assert!(s.is_empty());
-        assert_eq!(s.capacity(), 0);
-    }
 
     #[test]
     fn try_with_capacity_zero() {
@@ -353,14 +328,14 @@ mod tests {
 
     #[test]
     fn try_push_single_char() {
-        let mut s = String::try_new().unwrap();
+        let mut s = String::new();
         s.try_push('h').unwrap();
         assert_eq!(s, "h");
     }
 
     #[test]
     fn try_push_multiple_chars() {
-        let mut s = String::try_new().unwrap();
+        let mut s = String::new();
         s.try_push('h').unwrap();
         s.try_push('e').unwrap();
         s.try_push('l').unwrap();
@@ -371,7 +346,7 @@ mod tests {
 
     #[test]
     fn try_push_unicode_char() {
-        let mut s = String::try_new().unwrap();
+        let mut s = String::new();
         s.try_push('🦀').unwrap();
         assert_eq!(s, "🦀");
         assert_eq!(s.len(), 4);
@@ -379,35 +354,35 @@ mod tests {
 
     #[test]
     fn try_push_surrogate_pair_char() {
-        let mut s = String::try_new().unwrap();
+        let mut s = String::new();
         s.try_push('💪').unwrap();
         assert_eq!(s, "💪");
     }
 
     #[test]
     fn try_push_str_empty() {
-        let mut s = String::try_new().unwrap();
+        let mut s = String::new();
         s.try_push_str("").unwrap();
         assert!(s.is_empty());
     }
 
     #[test]
     fn try_push_str_ascii() {
-        let mut s = String::try_new().unwrap();
+        let mut s = String::new();
         s.try_push_str("world").unwrap();
         assert_eq!(s, "world");
     }
 
     #[test]
     fn try_push_str_unicode() {
-        let mut s = String::try_new().unwrap();
+        let mut s = String::new();
         s.try_push_str("你好世界").unwrap();
         assert_eq!(s, "你好世界");
     }
 
     #[test]
     fn try_push_str_then_push_char() {
-        let mut s = String::try_new().unwrap();
+        let mut s = String::new();
         s.try_push_str("hel").unwrap();
         s.try_push('l').unwrap();
         s.try_push_str("o").unwrap();
@@ -423,7 +398,7 @@ mod tests {
 
     #[test]
     fn try_push_str_multiple_times() {
-        let mut s = String::try_new().unwrap();
+        let mut s = String::new();
         s.try_push_str("a").unwrap();
         s.try_push_str("b").unwrap();
         s.try_push_str("c").unwrap();
@@ -432,7 +407,7 @@ mod tests {
 
     #[test]
     fn try_push_preserves_unicode_correctly() {
-        let mut s = String::try_new().unwrap();
+        let mut s = String::new();
         s.try_push('α').unwrap();
         s.try_push('β').unwrap();
         s.try_push('γ').unwrap();
@@ -563,14 +538,14 @@ mod tests {
 
     #[test]
     fn try_extend_chars() {
-        let mut s = String::try_new().unwrap();
+        let mut s = String::new();
         s.try_extend(['h', 'e', 'l', 'l', 'o']).unwrap();
         assert_eq!(s, "hello");
     }
 
     #[test]
     fn try_extend_strings() {
-        let mut s = String::try_new().unwrap();
+        let mut s = String::new();
         s.try_extend(["foo", "bar"].iter().map(|s| s.to_string()))
             .unwrap();
         assert_eq!(s, "foobar");
@@ -585,14 +560,14 @@ mod tests {
 
     #[test]
     fn try_extend_unicode_chars() {
-        let mut s = String::try_new().unwrap();
+        let mut s = String::new();
         s.try_extend(['α', 'β', 'γ']).unwrap();
         assert_eq!(s, "αβγ");
     }
 
     #[test]
     fn try_extend_str_slices_as_strings() {
-        let mut s = String::try_new().unwrap();
+        let mut s = String::new();
         let parts = vec!["Hello,", " ", "world"];
         s.try_extend(parts.into_iter().map(String::from)).unwrap();
         assert_eq!(s, "Hello, world");
@@ -602,14 +577,14 @@ mod tests {
 
     #[test]
     fn try_reserve_zero() {
-        let mut s = String::try_new().unwrap();
+        let mut s = String::new();
         s.try_reserve(0).unwrap();
         assert!(s.is_empty());
     }
 
     #[test]
     fn try_reserve_increases_capacity() {
-        let mut s = String::try_new().unwrap();
+        let mut s = String::new();
         s.try_reserve(128).unwrap();
         assert!(s.capacity() >= 128);
     }
@@ -700,7 +675,7 @@ mod tests {
 
     #[test]
     fn try_clone_empty_string() {
-        let s = String::try_new().unwrap();
+        let s = String::new();
         let c = s.try_clone().unwrap();
         assert!(c.is_empty());
     }
@@ -751,7 +726,7 @@ mod tests {
 
     #[test]
     fn extend_insert_roundtrip() {
-        let mut s = String::try_new().unwrap();
+        let mut s = String::new();
         s.try_extend(['x', 'y', 'z']).unwrap();
         s.try_insert(1, '.').unwrap();
         // inserts '.' at byte index 1 → between 'x' and 'y'.

@@ -10,7 +10,6 @@ use crate::try_default::{TryDefault, TryDefaultError};
 use core::alloc::Layout;
 use core::mem::{self, MaybeUninit};
 use core::pin::Pin;
-
 /// A trait for fallibly allocating a value on the heap.
 ///
 /// Implemented for `Box<T>`.
@@ -120,7 +119,6 @@ mod alloc_inner {
 impl<T> TryBox<T> for Box<T> {
     type Uninit = Box<MaybeUninit<T>>;
 
-    
     fn try_new(value: T) -> Result<Self, AllocError> {
         let mut slot = alloc_inner::alloc_box_uninit::<T>()?;
         slot.as_mut().write(value);
@@ -128,17 +126,14 @@ impl<T> TryBox<T> for Box<T> {
         Ok(unsafe { slot.assume_init() })
     }
 
-    
     fn try_new_uninit() -> Result<Box<MaybeUninit<T>>, AllocError> {
         alloc_inner::alloc_box_uninit::<T>()
     }
 
-    
     fn try_new_zeroed() -> Result<Box<MaybeUninit<T>>, AllocError> {
         alloc_inner::alloc_box_zeroed::<T>()
     }
 
-    
     fn try_new_give_back(value: T) -> Result<Self, (T, AllocError)> {
         let mut slot = match alloc_inner::alloc_box_uninit::<T>() {
             Ok(s) => s,
@@ -149,7 +144,6 @@ impl<T> TryBox<T> for Box<T> {
         Ok(unsafe { slot.assume_init() })
     }
 
-    
     fn try_pin(value: T) -> Result<Pin<Self>, AllocError> {
         let boxed = Self::try_new(value)?;
         Ok(unsafe { Pin::new_unchecked(boxed) })
@@ -157,7 +151,6 @@ impl<T> TryBox<T> for Box<T> {
 }
 
 impl<T: TryClone> TryClone for Box<T> {
-    
     fn try_clone(&self) -> Result<Self, TryCloneError> {
         // Allocate first so that if allocation fails we never touch T::try_clone().
         let mut slot = <Box<T> as TryBox<T>>::try_new_uninit().map_err(TryCloneError::Alloc)?;
@@ -173,7 +166,6 @@ impl<T: TryClone> TryClone for Box<T> {
 }
 
 impl<T: TryDefault> TryDefault for Box<T> {
-    
     fn try_default() -> Result<Self, TryDefaultError> {
         // Allocate first so that if allocation fails we never touch T::try_default().
         let mut slot = <Box<T> as TryBox<T>>::try_new_uninit().map_err(TryDefaultError::Alloc)?;
@@ -185,6 +177,54 @@ impl<T: TryDefault> TryDefault for Box<T> {
             }
             Err(e) => Err(e),
         }
+    }
+}
+
+// ── Boxed slice TryClone ───────────────────────────────────────────────────────
+// Box<[T]> owns a dynamically-sized slice on the heap. Cloning requires
+// allocating a new slice and cloning each element via T::try_clone().
+
+impl<T: TryClone> TryClone for Box<[T]> {
+    fn try_clone(&self) -> Result<Self, TryCloneError> {
+        use crate::vec::TrySlice;
+        let vec = self.as_ref().try_to_vec()
+            .map_err(|e| match e {
+                crate::vec::TryVecError::Reserve(r) => TryCloneError::Reserve(r),
+                crate::vec::TryVecError::Clone(c) => c,
+                crate::vec::TryVecError::Overflow => TryCloneError::Overflow,
+                crate::vec::TryVecError::Alloc(_) => TryCloneError::Alloc(AllocError),
+                crate::vec::TryVecError::Other(m) => TryCloneError::Other(m),
+            })?;
+        Ok(vec.into_boxed_slice())
+    }
+}
+
+// ── Boxed str TryClone ─────────────────────────────────────────────────────────
+
+impl TryClone for Box<str> {
+    fn try_clone(&self) -> Result<Self, TryCloneError> {
+        // Delegate to String's fallible construction then convert back to Box<str>.
+        let s = <String as crate::string::TryString>::try_from_str(self)
+            .map_err(TryCloneError::Reserve)?;
+        Ok(s.into_boxed_str())
+    }
+}
+
+// ── Boxed slice TryDefault ─────────────────────────────────────────────────────
+// An empty boxed slice is the natural default — no allocation needed beyond
+// a thin/dangling pointer for ZST-like empty slices.
+
+impl<T> TryDefault for Box<[T]> {
+    fn try_default() -> Result<Self, TryDefaultError> {
+        Ok(Box::new([]))
+    }
+}
+
+// ── Boxed str TryDefault ───────────────────────────────────────────────────────
+
+impl TryDefault for Box<str> {
+    fn try_default() -> Result<Self, TryDefaultError> {
+        Ok(<String as Default>::default().into_boxed_str())
     }
 }
 

@@ -117,33 +117,58 @@ fallibles_macros::try_default_tuples!(12);
 
 // ── Arrays [T; N] ──────────────────────────────────────────────────────────────
 
+/// Panic-safe guard that drops any initialized elements in a `MaybeUninit` array
+/// if dropped before `forget()` is called (e.g. on panic or early return).
+struct ArrayInitGuard<'a, T, const N: usize> {
+    slots: &'a mut [core::mem::MaybeUninit<T>; N],
+    count: usize,
+}
+
+impl<'a, T, const N: usize> ArrayInitGuard<'a, T, N> {
+    fn new(slots: &'a mut [core::mem::MaybeUninit<T>; N]) -> Self {
+        Self { slots, count: 0 }
+    }
+
+    /// Disable the guard's Drop so that it no longer cleans up on scope exit.
+    /// Call this only after all slots have been successfully initialized.
+    fn forget(mut self) {
+        self.count = 0;
+        core::mem::forget(self);
+    }
+}
+
+impl<'a, T, const N: usize> Drop for ArrayInitGuard<'a, T, N> {
+    fn drop(&mut self) {
+        unsafe {
+            for slot in self.slots.iter_mut().take(self.count) {
+                core::ptr::drop_in_place(slot.as_mut_ptr());
+            }
+        }
+    }
+}
+
 impl<T: TryDefault, const N: usize> TryDefault for [T; N] {
-    
     fn try_default() -> Result<Self, TryDefaultError> {
         let mut out: [core::mem::MaybeUninit<T>; N] =
             core::array::from_fn(|_| core::mem::MaybeUninit::uninit());
-        let mut initialized = 0usize;
+        let mut guard = ArrayInitGuard::new(&mut out);
 
-        for slot in out.iter_mut() {
+        for slot in guard.slots.iter_mut() {
             match T::try_default() {
                 Ok(val) => {
                     unsafe {
                         core::ptr::write(slot.as_mut_ptr(), val);
                     }
-                    initialized += 1;
+                    guard.count += 1;
                 }
                 Err(e) => {
-                    // Drop every item we already wrote to avoid leaking.
-                    unsafe {
-                        for done in out.iter_mut().take(initialized) {
-                            core::ptr::drop_in_place(done.as_mut_ptr());
-                        }
-                    }
+                    // Guard's Drop cleans up whatever was written so far.
                     return Err(e);
                 }
             }
         }
 
+        guard.forget();
         // SAFETY: we verified that all N slots were written successfully.
         Ok(unsafe { core::mem::transmute_copy(&out) })
     }
@@ -152,18 +177,8 @@ impl<T: TryDefault, const N: usize> TryDefault for [T; N] {
 // ── Option ─────────────────────────────────────────────────────────────────────
 
 impl<T: TryDefault> TryDefault for Option<T> {
-    
     fn try_default() -> Result<Self, TryDefaultError> {
         Ok(None)
-    }
-}
-
-// ── Result ─────────────────────────────────────────────────────────────────────
-
-impl<T: TryDefault, E: TryDefault> TryDefault for Result<T, E> {
-    
-    fn try_default() -> Result<Self, TryDefaultError> {
-        Ok(Ok(T::try_default()?))
     }
 }
 
@@ -329,43 +344,19 @@ mod tests {
         assert_eq!(Option::<Option<bool>>::try_default().unwrap(), None);
     }
 
-    // ── Result ─────────────────────────────────────────────────────────────────
-
-    #[test]
-    fn result_ok_try_default() {
-        let expected: Result<u8, i32> = Ok(0);
-        let actual: Result<u8, i32> = TryDefault::try_default().unwrap();
-        assert_eq!(actual, expected);
-    }
-
-    #[test]
-    fn result_err_try_default() {
-        // Result's default is Ok(T::default()), even when E has a default.
-        let expected: Result<i32, u8> = Ok(0);
-        let actual: Result<i32, u8> = TryDefault::try_default().unwrap();
-        assert_eq!(actual, expected);
-    }
-
-    #[test]
-    fn result_nested_try_default() {
-        let expected: Result<Result<bool, u8>, i32> = Ok(Ok(false));
-        let actual: Result<Result<bool, u8>, i32> = TryDefault::try_default().unwrap();
-        assert_eq!(actual, expected);
-    }
-
     // ── Compound nesting ───────────────────────────────────────────────────────
 
     #[test]
-    fn option_result_array_try_default() {
-        let expected: Option<Result<[u8; 3], bool>> = None;
-        let actual: Option<Result<[u8; 3], bool>> = TryDefault::try_default().unwrap();
+    fn option_tuple_try_default() {
+        let expected: Option<([u8; 3], bool)> = None;
+        let actual: Option<([u8; 3], bool)> = TryDefault::try_default().unwrap();
         assert_eq!(actual, expected);
     }
 
     #[test]
-    fn tuple_option_result_try_default() {
-        let expected: (Option<u8>, Result<bool, i16>) = (None, Ok(false));
-        let actual: (Option<u8>, Result<bool, i16>) = <_>::try_default().unwrap();
+    fn tuple_option_and_tuple_try_default() {
+        let expected: (Option<u8>, (bool, i16)) = (None, (false, 0));
+        let actual: (Option<u8>, (bool, i16)) = <_>::try_default().unwrap();
         assert_eq!(actual, expected);
     }
 }

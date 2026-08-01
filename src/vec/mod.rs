@@ -7,4 +7,4 @@ mod slice_;
 mod vec_;
 
 pub use slice_::TrySlice;
-pub use vec_::TryVec;
+pub use vec_::{TryVec, TryVecError};
