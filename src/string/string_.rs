@@ -113,25 +113,6 @@ pub trait TryString: Sized {
     /// No mutation occurs on error.
     fn try_insert_str(&mut self, idx: usize, s: &str) -> Result<(), TryStringError>;
 
-    /// Fallibly extend the string from an iterator of characters or strings.
-    ///
-    /// Accepts any iterator whose items can be pushed onto a `String` (i.e.
-    /// `IntoIterator<Item = impl Into<String>>` is not required — callers pass
-    /// iterators of `char`, `&str`, etc.). Reserves capacity using the
-    /// iterator's lower-bound hint when available.
-    ///
-    /// Returns [`TryReserveError`] if growing the internal buffer fails.
-    fn try_extend<I>(&mut self, iter: I) -> Result<(), TryReserveError>
-    where
-        I: IntoIterator,
-        String: Extend<I::Item>;
-
-    /// Fallibly reserve at least `additional` bytes of extra capacity.
-    ///
-    /// Returns [`TryReserveError`] if the allocation fails.
-    /// Equivalent to `String::reserve(additional)` but fallible.
-    fn try_reserve(&mut self, additional: usize) -> Result<(), TryReserveError>;
-
     /// Fallibly shrink the capacity of this `String` to match its length.
     ///
     /// May reallocate if the current allocation is larger than needed.
@@ -190,7 +171,7 @@ impl TryString for String {
             ));
         }
         let encoded_len = c.len_utf8();
-        <String as TryString>::try_reserve(self, encoded_len).map_err(TryStringError::from)?;
+        self.try_reserve(encoded_len).map_err(TryStringError::from)?;
         self.insert(idx, c);
         Ok(())
     }
@@ -204,30 +185,9 @@ impl TryString for String {
                 "insert index is out of bounds or not on a char boundary",
             ));
         }
-        <String as TryString>::try_reserve(self, s.len()).map_err(TryStringError::from)?;
+        self.try_reserve(s.len()).map_err(TryStringError::from)?;
         self.insert_str(idx, s);
         Ok(())
-    }
-
-    fn try_extend<I>(&mut self, iter: I) -> Result<(), TryReserveError>
-    where
-        I: IntoIterator,
-        String: Extend<I::Item>,
-    {
-        let iter = iter.into_iter();
-        let (lower, _) = iter.size_hint();
-        if lower > 0 {
-            // Heuristic: reserve enough for at least `lower` chars (worst case 4 bytes each).
-            // The actual sizes will be handled by per-item growth below if needed.
-            let hint = lower.saturating_mul(4);
-            <String as TryString>::try_reserve(self, hint)?;
-        }
-        self.extend(iter);
-        Ok(())
-    }
-
-    fn try_reserve(&mut self, additional: usize) -> Result<(), TryReserveError> {
-        self.try_reserve(additional)
     }
 
     fn try_shrink_to_fit(&mut self) -> Result<(), TryReserveError> {
@@ -243,14 +203,14 @@ impl TryString for String {
         // We build a fresh String by reserving the desired size and copying
         // content in. The allocator may round up, which is fine — the contract
         // is simply that we attempt to reduce excess capacity.
+        // Important: we must not use mem::take() before the allocation succeeds,
+        // because a failed reservation would silently destroy the original data.
         let len = self.len();
-        let snapshot = core::mem::take(self);
-        let data = snapshot.into_bytes();
         let mut out = String::new();
         if len > 0 {
-            <String as TryString>::try_reserve(&mut out, target)?;
+            out.try_reserve(target)?;
+            out.push_str(self);
         }
-        out.push_str(core::str::from_utf8(&data[..len]).unwrap());
         *self = out;
         Ok(())
     }
@@ -534,68 +494,6 @@ mod tests {
         assert_eq!(s, "hi!");
     }
 
-    // ── Extend ────────────────────────────────────────────────────────────────
-
-    #[test]
-    fn try_extend_chars() {
-        let mut s = String::new();
-        s.try_extend(['h', 'e', 'l', 'l', 'o']).unwrap();
-        assert_eq!(s, "hello");
-    }
-
-    #[test]
-    fn try_extend_strings() {
-        let mut s = String::new();
-        s.try_extend(["foo", "bar"].iter().map(|s| s.to_string()))
-            .unwrap();
-        assert_eq!(s, "foobar");
-    }
-
-    #[test]
-    fn try_extend_empty_iter() {
-        let mut s = String::try_from_str("x").unwrap();
-        s.try_extend(std::iter::empty::<char>()).unwrap();
-        assert_eq!(s, "x");
-    }
-
-    #[test]
-    fn try_extend_unicode_chars() {
-        let mut s = String::new();
-        s.try_extend(['α', 'β', 'γ']).unwrap();
-        assert_eq!(s, "αβγ");
-    }
-
-    #[test]
-    fn try_extend_str_slices_as_strings() {
-        let mut s = String::new();
-        let parts = vec!["Hello,", " ", "world"];
-        s.try_extend(parts.into_iter().map(String::from)).unwrap();
-        assert_eq!(s, "Hello, world");
-    }
-
-    // ── Reserve ───────────────────────────────────────────────────────────────
-
-    #[test]
-    fn try_reserve_zero() {
-        let mut s = String::new();
-        s.try_reserve(0).unwrap();
-        assert!(s.is_empty());
-    }
-
-    #[test]
-    fn try_reserve_increases_capacity() {
-        let mut s = String::new();
-        s.try_reserve(128).unwrap();
-        assert!(s.capacity() >= 128);
-    }
-
-    #[test]
-    fn try_reserve_on_existing_string() {
-        let mut s = String::try_from_str("short").unwrap();
-        s.try_reserve(256).unwrap();
-        assert!(s.capacity() >= 256 + s.len());
-    }
-
     // ── Shrink ────────────────────────────────────────────────────────────────
 
     #[test]
@@ -725,9 +623,11 @@ mod tests {
     }
 
     #[test]
-    fn extend_insert_roundtrip() {
+    fn push_insert_roundtrip() {
         let mut s = String::new();
-        s.try_extend(['x', 'y', 'z']).unwrap();
+        s.try_push('x').unwrap();
+        s.try_push('y').unwrap();
+        s.try_push('z').unwrap();
         s.try_insert(1, '.').unwrap();
         // inserts '.' at byte index 1 → between 'x' and 'y'.
         assert_eq!(s, "x.yz");

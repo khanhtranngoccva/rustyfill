@@ -108,12 +108,12 @@ pub trait TryVec<T>: Sized {
 
     /// Fallibly insert an element at position `index`.
     ///
-    /// Returns [`TryReserveError`] if growing the internal buffer fails.
-    /// Panics if `index > len`.
-    fn try_insert(&mut self, index: usize, value: T) -> Result<(), TryReserveError>;
+    /// Returns [`TryVecError::Reserve`] if growing the internal buffer fails, or
+    /// [`TryVecError::Other`] if `index > len`.
+    fn try_insert(&mut self, index: usize, value: T) -> Result<(), TryVecError>;
 
     /// Like [`Self::try_insert`] but returns ownership of `value` back on failure.
-    fn try_insert_give_back(&mut self, index: usize, value: T) -> Result<(), (T, TryReserveError)>;
+    fn try_insert_give_back(&mut self, index: usize, value: T) -> Result<(), (T, TryVecError)>;
 
     /// Fallibly extend the vector with all elements from an iterator.
     ///
@@ -152,7 +152,7 @@ pub trait TryVec<T>: Sized {
     /// return [`TryVecError::Clone`] and the vector is rolled back to its
     /// pre-call state.
     ///
-    /// Panics if the range is out of bounds (`start > end`, `end > len`).
+    /// Returns [`TryVecError::Other`] if the range is out of bounds.
     fn try_extend_from_within<R: std::ops::RangeBounds<usize>>(
         &mut self,
         range: R,
@@ -234,19 +234,25 @@ impl<T> TryVec<T> for Vec<T> {
         }
     }
 
-    fn try_insert(&mut self, index: usize, value: T) -> Result<(), TryReserveError> {
-        self.try_reserve(1)?;
+    fn try_insert(&mut self, index: usize, value: T) -> Result<(), TryVecError> {
+        if index > self.len() {
+            return Err(TryVecError::Other("insert index out of bounds"));
+        }
+        self.try_reserve(1).map_err(TryVecError::Reserve)?;
         self.insert(index, value);
         Ok(())
     }
 
-    fn try_insert_give_back(&mut self, index: usize, value: T) -> Result<(), (T, TryReserveError)> {
+    fn try_insert_give_back(&mut self, index: usize, value: T) -> Result<(), (T, TryVecError)> {
+        if index > self.len() {
+            return Err((value, TryVecError::Other("insert index out of bounds")));
+        }
         match self.try_reserve(1) {
             Ok(()) => {
                 self.insert(index, value);
                 Ok(())
             }
-            Err(e) => Err((value, e)),
+            Err(e) => Err((value, TryVecError::Reserve(e))),
         }
     }
 
@@ -257,6 +263,9 @@ impl<T> TryVec<T> for Vec<T> {
             self.try_reserve(lower)?;
         }
         for item in iter {
+            if self.len() == self.capacity() {
+                self.try_reserve(1)?;
+            }
             self.push(item);
         }
         Ok(())
@@ -307,11 +316,11 @@ impl<T> TryVec<T> for Vec<T> {
 
         let start = match range.start_bound() {
             Bound::Included(&i) => i,
-            Bound::Excluded(&i) => i + 1,
+            Bound::Excluded(&i) => i.checked_add(1).ok_or(TryVecError::Overflow)?,
             Bound::Unbounded => 0,
         };
         let end = match range.end_bound() {
-            Bound::Included(&i) => i + 1,
+            Bound::Included(&i) => i.checked_add(1).ok_or(TryVecError::Overflow)?,
             Bound::Excluded(&i) => i,
             Bound::Unbounded => self.len(),
         };
@@ -391,10 +400,12 @@ impl<T> TryVec<T> for Vec<T> {
         let iter = iter.into_iter();
         let (lower, upper) = iter.size_hint();
         let capacity = upper.unwrap_or(lower);
-        let mut vec = Vec::with_capacity(capacity);
+        let mut vec = Vec::<T>::new();
+        if capacity > 0 {
+            vec.try_reserve(capacity)?;
+        }
         for item in iter {
-            // After reserving capacity, push is safe unless the iterator yields
-            // more elements than its hint promised. Fall back to try_reserve.
+            // Iterator may yield more elements than its hint promised.
             if vec.len() == vec.capacity() {
                 vec.try_reserve(1)?;
             }

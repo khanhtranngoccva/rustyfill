@@ -4,11 +4,12 @@ use crate::boxed::TryBox;
 use crate::try_clone::{TryClone, TryCloneError};
 use crate::try_default::{TryDefault, TryDefaultError};
 
-use core::mem::{ManuallyDrop, MaybeUninit, offset_of};
+use core::mem::{ManuallyDrop, MaybeUninit};
 use core::pin::Pin;
 use core::ptr;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Weak};
+
 /// Internal representation of an Arc allocation.
 ///
 /// Layout matches `std::sync::Arc`: two atomic counters followed by the data.
@@ -18,7 +19,7 @@ use std::sync::{Arc, Weak};
 /// (`usize::MAX`) can never be a valid payload address, since all real allocations
 /// are aligned to at least 2.
 #[repr(C, align(2))]
-struct ArcInner<T> {
+struct ArcInner<T: ?Sized> {
     strong: AtomicUsize,
     weak: AtomicUsize,
     data: T,
@@ -86,6 +87,10 @@ pub trait TryArc<T>: Sized {
     /// of [`Arc::pin`].
     fn try_pin(value: T) -> Result<Pin<Self>, AllocError>;
 
+    /// Like [`Self::try_pin`] but returns ownership of `value` back on failure
+    /// so it can be reused or dropped cleanly.
+    fn try_pin_give_back(value: T) -> Result<Pin<Self>, (T, AllocError)>;
+
     // ── Aliases with `fallible_` prefix to avoid name collisions ────────────
 
     /// Alias for [`Self::try_new`].
@@ -112,6 +117,11 @@ pub trait TryArc<T>: Sized {
     fn fallible_pin(value: T) -> Result<Pin<Self>, AllocError> {
         Self::try_pin(value)
     }
+
+    /// Alias for [`Self::try_pin_give_back`].
+    fn fallible_pin_give_back(value: T) -> Result<Pin<Self>, (T, AllocError)> {
+        Self::try_pin_give_back(value)
+    }
 }
 
 impl<T> TryArc<T> for Arc<T> {
@@ -121,6 +131,7 @@ impl<T> TryArc<T> for Arc<T> {
         let mut slot =
             ManuallyDrop::new(<Box<ArcInner<T>> as TryBox<ArcInner<T>>>::try_new_uninit()?);
         let inner = slot.as_mut_ptr();
+        // The pointer is always valid, cannot panic.
         unsafe {
             ptr::write(&mut (*inner).strong, AtomicUsize::new(1));
             ptr::write(&mut (*inner).weak, AtomicUsize::new(1));
@@ -134,6 +145,7 @@ impl<T> TryArc<T> for Arc<T> {
         let mut slot =
             ManuallyDrop::new(<Box<ArcInner<T>> as TryBox<ArcInner<T>>>::try_new_uninit()?);
         let inner = slot.as_mut_ptr();
+        // The pointer is always valid, cannot panic.
         unsafe {
             ptr::write(&mut (*inner).strong, AtomicUsize::new(1));
             ptr::write(&mut (*inner).weak, AtomicUsize::new(1));
@@ -149,6 +161,7 @@ impl<T> TryArc<T> for Arc<T> {
         let inner = slot.as_mut_ptr();
         // The entire allocation is zeroed — including the data region.
         // Fix up the refcount headers; leave data as zeroes.
+        // The pointer is always valid, cannot panic.
         unsafe {
             ptr::write(&mut (*inner).strong, AtomicUsize::new(1));
             ptr::write(&mut (*inner).weak, AtomicUsize::new(1));
@@ -162,6 +175,7 @@ impl<T> TryArc<T> for Arc<T> {
             Ok(raw_slot) => {
                 let mut slot = ManuallyDrop::new(raw_slot);
                 let inner = slot.as_mut_ptr();
+                // The pointer is always valid, cannot panic.
                 unsafe {
                     ptr::write(&mut (*inner).strong, AtomicUsize::new(1));
                     ptr::write(&mut (*inner).weak, AtomicUsize::new(1));
@@ -191,34 +205,74 @@ impl<T> TryArc<T> for Arc<T> {
         let arc = Self::try_new(value)?;
         Ok(unsafe { Pin::new_unchecked(arc) })
     }
+
+    fn try_pin_give_back(value: T) -> Result<Pin<Self>, (T, AllocError)> {
+        match Self::try_new_give_back(value) {
+            Ok(arc) => Ok(unsafe { Pin::new_unchecked(arc) }),
+            Err((v, e)) => Err((v, e)),
+        }
+    }
 }
 
 /// Maximum reference count, matching std's `Arc::MAX_REFCOUNT`.
 /// Beyond this threshold, clones are rejected to avoid counter overflow.
 const MAX_REFCOUNT: usize = (isize::MAX) as usize;
 
-/// Byte offset from the data pointer back to the start of ArcInner.
-/// Computed with a concrete inner type (u8) — the header size is identical for
-/// every T since [strong][weak] always precedes [data].
-const HEADER_SIZE: usize = offset_of!(ArcInner<u8>, data);
+/// Helper: obtain a reference to the `ArcInner<T>` stored inside an `Arc<T>`.
+///
+/// `Arc<T>`'s first field is `ptr: NonNull<ArcInner<T>>`. By casting `&Arc<T>`
+/// to a raw pointer and reinterpreting it as `*const NonNull<ArcInner<T>>`, we
+/// read out the inner pointer and dereference it into a `&ArcInner<T>`. This
+/// avoids any byte-offset arithmetic and works correctly for all types including
+/// DSTs with custom alignment (e.g. `#[repr(align(512))]`).
+fn arc_inner<T: ?Sized>(arc: &Arc<T>) -> &ArcInner<T> {
+    // SAFETY: Arc's first field is `ptr: NonNull<ArcInner<T>>`. Casting `&Arc<T>`
+    // to `*const NonNull<ArcInner<T>>` is valid because NonNull has the same
+    // layout as a raw pointer and the first field of a struct is at offset 0.
+    // The NonNull points into a live heap allocation owned by the Arc, so
+    // dereferencing yields a valid &ArcInner<T>.
+    unsafe {
+        let ptr_field: *const core::ptr::NonNull<ArcInner<T>> = core::ptr::from_ref(arc).cast();
+        let non_null: core::ptr::NonNull<ArcInner<T>> = *ptr_field;
+        non_null.as_ref()
+    }
+}
 
-/// Byte offset from the start of ArcInner to the `weak` atomic.
-const WEAK_OFFSET: usize = offset_of!(ArcInner<u8>, weak);
+/// Helper: obtain a reference to the `ArcInner<T>` stored inside a `Weak<T>`.
+///
+/// Same approach as [`arc_inner`] but for `Weak`. `Weak<T>` also stores
+/// `ptr: NonNull<ArcInner<T>>` as its first field. For the dangling sentinel
+/// (`Weak::new()`), the pointer address is `usize::MAX` and must be checked
+/// by the caller before invoking this function.
+fn weak_inner<T: ?Sized>(weak: &Weak<T>) -> &ArcInner<T> {
+    // SAFETY: Identical reasoning to arc_inner. Weak's first field is
+    // `ptr: NonNull<ArcInner<T>>`. Caller must ensure this isn't a dangling
+    // Weak (address != usize::MAX) before calling.
+    unsafe {
+        let ptr_field: *const core::ptr::NonNull<ArcInner<T>> = core::ptr::from_ref(weak).cast();
+        let non_null: core::ptr::NonNull<ArcInner<T>> = *ptr_field;
+        non_null.as_ref()
+    }
+}
+
+/// Returns true if this `Weak` is a dangling sentinel (created via `Weak::new()`).
+fn weak_is_dangling<T: ?Sized>(weak: &Weak<T>) -> bool {
+    weak.as_ptr().addr() == usize::MAX
+}
 
 impl<T: ?Sized> TryClone for Arc<T> {
     fn try_clone(&self) -> Result<Self, TryCloneError> {
-        let data_ptr: *const T = self.as_ref();
-        let strong_ptr = unsafe { data_ptr.byte_sub(HEADER_SIZE) }.cast::<AtomicUsize>();
+        let inner = arc_inner(self);
 
-        let ok = unsafe {
-            (*strong_ptr).fetch_update(Ordering::Acquire, Ordering::Relaxed, |cur| {
+        let ok = inner
+            .strong
+            .try_update(Ordering::Relaxed, Ordering::Relaxed, |cur| {
                 if cur >= MAX_REFCOUNT {
                     None
                 } else {
                     Some(cur + 1)
                 }
-            })
-        };
+            });
 
         match ok {
             Ok(_) => Ok(unsafe { core::ptr::read(self) }),
@@ -231,30 +285,99 @@ impl<T: ?Sized> TryClone for Weak<T> {
     fn try_clone(&self) -> Result<Self, TryCloneError> {
         // Check for the dangling sentinel used by Weak::new() — no allocation exists,
         // so cloning is just a pointer copy that can never fail.
-        let data_ptr = self.as_ptr();
-        if data_ptr.addr() == usize::MAX {
+        if weak_is_dangling(self) {
             return Ok(unsafe { core::ptr::read(self) });
         }
 
-        // Walk from the data pointer back to the `weak` atomic inside ArcInner.
-        // Layout: [strong][weak][data]. The distance from data back to weak is
-        // HEADER_SIZE - WEAK_OFFSET, which is just sizeof(AtomicUsize).
-        let weak_ptr =
-            unsafe { data_ptr.byte_sub(HEADER_SIZE - WEAK_OFFSET) }.cast::<AtomicUsize>();
+        let inner = weak_inner(self);
 
-        let ok = unsafe {
-            (*weak_ptr).fetch_update(Ordering::Acquire, Ordering::Relaxed, |cur| {
+        let ok = inner
+            .weak
+            .try_update(Ordering::Relaxed, Ordering::Relaxed, |cur| {
                 if cur >= MAX_REFCOUNT {
                     None
                 } else {
                     Some(cur + 1)
                 }
-            })
-        };
+            });
 
         match ok {
             Ok(_) => Ok(unsafe { core::ptr::read(self) }),
             Err(_) => Err(TryCloneError::Other("Arc weak refcount exceeded")),
+        }
+    }
+}
+
+/// Returned when a fallible upgrade of [`Weak`] to [`Arc`] fails due to refcount overflow.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TryUpgradeError;
+
+impl core::fmt::Display for TryUpgradeError {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        write!(f, "upgrade failed: strong refcount exceeded")
+    }
+}
+
+/// Fallible operations on [`Weak`] pointers.
+///
+/// Implemented for `Weak<T>`. Provides [`try_upgrade`](Self::try_upgrade), which
+/// upgrades a weak reference back into a strong [`Arc`] without panicking on
+/// refcount overflow (std's [`Weak::upgrade`] asserts in that scenario).
+pub trait TryWeak<T: ?Sized> {
+    /// Attempts to upgrade this `Weak` pointer to an [`Arc`].
+    ///
+    /// Returns:
+    /// - `Some(Ok(arc))` on successful upgrade.
+    /// - `None` if the strong count is zero (data dropped) or this `Weak` is dangling — matching [`Weak::upgrade`].
+    /// - `Some(Err(TryUpgradeError))` if the strong refcount is at or above the maximum.
+    ///
+    /// Uses `(Acquire, Relaxed)` ordering to synchronise with [`Arc::new_cyclic`] initialisation.
+    fn try_upgrade(&self) -> Option<Result<Arc<T>, TryUpgradeError>>;
+}
+
+impl<T: ?Sized> TryWeak<T> for Weak<T> {
+    fn try_upgrade(&self) -> Option<Result<Arc<T>, TryUpgradeError>> {
+        // Dangling sentinel — no allocation exists. Matches Weak::upgrade returning None.
+        if weak_is_dangling(self) {
+            return None;
+        }
+
+        let inner = weak_inner(self);
+
+        // Acquire on success synchronises with Arc::new_cyclic's Release store
+        // so we observe the fully initialised value. Relaxed on failure since
+        // we have no expectations about the new state.
+        let ok = inner
+            .strong
+            .try_update(Ordering::Acquire, Ordering::Relaxed, |cur| {
+                if cur == 0 {
+                    // Data has been dropped; don't increment.
+                    return None;
+                } else if cur >= MAX_REFCOUNT {
+                    // Would overflow on next increment.
+                    return None;
+                }
+                Some(cur + 1)
+            });
+
+        match ok {
+            Ok(_) => {
+                // Strong count was successfully incremented from a non-zero
+                // value below MAX_REFCOUNT. Allocation is still alive.
+                // SAFETY: pointer is valid, strong count > 0 after increment.
+                Some(Ok(unsafe {
+                    core::ptr::read(&*(self as *const Weak<T> as *const Arc<T>))
+                }))
+            }
+            Err(prev) => {
+                if prev == 0 {
+                    // Data dropped — matches Weak::upgrade returning None.
+                    None
+                } else {
+                    // At max refcount — our exclusive failure mode.
+                    Some(Err(TryUpgradeError))
+                }
+            }
         }
     }
 }
@@ -577,25 +700,21 @@ mod tests {
         use crate::try_clone::TryClone;
         // Manually set the strong count to MAX_REFCOUNT so the closure rejects.
         let arc = Arc::<i32>::try_new(0).unwrap();
-        let data_ptr: *const i32 = arc.as_ref();
-        let header_size = offset_of!(ArcInner<i32>, data);
-        let strong_ptr = unsafe { data_ptr.byte_sub(header_size) }.cast::<AtomicUsize>();
-        unsafe { (*strong_ptr).store(MAX_REFCOUNT, Ordering::Relaxed) };
+        let inner = arc_inner(&arc);
+        inner.strong.store(MAX_REFCOUNT, Ordering::Relaxed);
         assert!(arc.try_clone().is_err());
         // Restore so the Arc drops cleanly.
-        unsafe { (*strong_ptr).store(1, Ordering::Relaxed) };
+        inner.strong.store(1, Ordering::Relaxed);
     }
 
     #[test]
     fn try_clone_rejects_above_max_refcount() {
         use crate::try_clone::TryClone;
         let arc = Arc::<i32>::try_new(0).unwrap();
-        let data_ptr: *const i32 = arc.as_ref();
-        let header_size = offset_of!(ArcInner<i32>, data);
-        let strong_ptr = unsafe { data_ptr.byte_sub(header_size) }.cast::<AtomicUsize>();
-        unsafe { (*strong_ptr).store(MAX_REFCOUNT + 1, Ordering::Relaxed) };
+        let inner = arc_inner(&arc);
+        inner.strong.store(MAX_REFCOUNT + 1, Ordering::Relaxed);
         assert!(arc.try_clone().is_err());
-        unsafe { (*strong_ptr).store(1, Ordering::Relaxed) };
+        inner.strong.store(1, Ordering::Relaxed);
     }
 
     // ── Weak TryClone tests ───────────────────────────────────────────────────
@@ -640,16 +759,12 @@ mod tests {
         use crate::try_clone::TryClone;
         let arc = Arc::<i32>::try_new(0).unwrap();
         let weak = Arc::downgrade(&arc);
-        let data_ptr: *const i32 = arc.as_ref();
-        let header_size = offset_of!(ArcInner<i32>, data);
-        let weak_offset = offset_of!(ArcInner<i32>, weak);
-        let weak_ptr =
-            unsafe { data_ptr.byte_sub(header_size - weak_offset) }.cast::<AtomicUsize>();
+        let inner = weak_inner(&weak);
         // Overwrite after downgrade so we don't trigger std's own overflow check.
-        unsafe { (*weak_ptr).store(MAX_REFCOUNT, Ordering::Relaxed) };
+        inner.weak.store(MAX_REFCOUNT, Ordering::Relaxed);
         assert!(weak.try_clone().is_err());
         // Restore so everything drops cleanly.
-        unsafe { (*weak_ptr).store(1, Ordering::Relaxed) };
+        inner.weak.store(1, Ordering::Relaxed);
         drop(arc);
     }
 
@@ -658,16 +773,86 @@ mod tests {
         use crate::try_clone::TryClone;
         let arc = Arc::<i32>::try_new(0).unwrap();
         let weak = Arc::downgrade(&arc);
-        let data_ptr: *const i32 = arc.as_ref();
-        let header_size = offset_of!(ArcInner<i32>, data);
-        let weak_offset = offset_of!(ArcInner<i32>, weak);
-        let weak_ptr =
-            unsafe { data_ptr.byte_sub(header_size - weak_offset) }.cast::<AtomicUsize>();
+        let inner = weak_inner(&weak);
         // Overwrite after downgrade so we don't trigger std's own overflow check.
-        unsafe { (*weak_ptr).store(MAX_REFCOUNT + 1, Ordering::Relaxed) };
+        inner.weak.store(MAX_REFCOUNT + 1, Ordering::Relaxed);
         assert!(weak.try_clone().is_err());
-        unsafe { (*weak_ptr).store(1, Ordering::Relaxed) };
+        inner.weak.store(1, Ordering::Relaxed);
         drop(arc);
+    }
+
+    // ── try_upgrade tests ───────────────────────────────────────────────────────
+
+    #[test]
+    fn weak_try_upgrade_success() {
+        use crate::arc::TryWeak;
+        let arc = Arc::<i32>::try_new(42).unwrap();
+        let weak = Arc::downgrade(&arc);
+        assert_eq!(Arc::strong_count(&arc), 1);
+        let arc2 = weak.try_upgrade().unwrap().unwrap();
+        assert_eq!(*arc2, 42);
+        assert_eq!(Arc::strong_count(&arc), 2);
+        assert!(Arc::ptr_eq(&arc, &arc2));
+    }
+
+    #[test]
+    fn weak_try_upgrade_dangling_returns_none() {
+        use crate::arc::TryWeak;
+        let weak: Weak<i32> = Weak::new();
+        assert!(weak.try_upgrade().is_none());
+    }
+
+    #[test]
+    fn weak_try_upgrade_after_drop_returns_none() {
+        use crate::arc::TryWeak;
+        let weak = {
+            let arc = Arc::<i32>::try_new(99).unwrap();
+            Arc::downgrade(&arc)
+        };
+        // arc has been dropped; strong count is zero.
+        assert!(weak.try_upgrade().is_none());
+    }
+
+    #[test]
+    fn weak_try_upgrade_overflow_rejects() {
+        use crate::arc::TryWeak;
+        let arc = Arc::<i32>::try_new(0).unwrap();
+        let weak = Arc::downgrade(&arc);
+        let inner = weak_inner(&weak);
+        inner.strong.store(MAX_REFCOUNT, Ordering::Relaxed);
+        let result = weak.try_upgrade();
+        assert!(matches!(result, Some(Err(TryUpgradeError))));
+        // Restore so arc drops cleanly.
+        inner.strong.store(1, Ordering::Relaxed);
+    }
+
+    #[test]
+    fn weak_try_upgrade_multiple_roundtrip() {
+        use crate::arc::TryWeak;
+        let arc = Arc::<String>::try_new("hello".into()).unwrap();
+        let weak = Arc::downgrade(&arc);
+        for _ in 0..50 {
+            let upgraded = weak.try_upgrade().unwrap().unwrap();
+            assert_eq!(upgraded.as_str(), "hello");
+            assert_eq!(Arc::strong_count(&arc), 2);
+            drop(upgraded);
+            assert_eq!(Arc::strong_count(&arc), 1);
+        }
+    }
+
+    #[test]
+    fn weak_try_upgrade_dyn_trait() {
+        use crate::arc::TryWeak;
+        let arc: Arc<dyn std::fmt::Debug> = Arc::new(42i32);
+        let weak = Arc::downgrade(&arc);
+        let upgraded = weak.try_upgrade().unwrap().unwrap();
+        assert_eq!(Arc::strong_count(&arc), 2);
+        assert!(Arc::ptr_eq(&arc, &upgraded));
+    }
+
+    #[test]
+    fn weak_try_upgrade_error_display() {
+        assert!(format!("{}", TryUpgradeError).contains("exceeded"));
     }
 
     // ── Unsized Arc TryClone tests ──────────────────────────────────────────────
@@ -775,5 +960,111 @@ mod tests {
     #[test]
     fn fallible_pin_works() {
         let _pinned: Pin<Arc<i32>> = Arc::<i32>::fallible_pin(42).unwrap();
+    }
+
+    // ── try_pin_give_back tests ─────────────────────────────────────────────
+
+    #[test]
+    fn arc_try_pin_give_back_success() {
+        let pinned: Pin<Arc<String>> =
+            <Arc<String> as TryArc<String>>::try_pin_give_back("hello".to_string()).unwrap();
+        assert_eq!(pinned.as_str(), "hello");
+    }
+
+    #[test]
+    fn arc_try_pin_give_back_signature() {
+        let val = vec![1, 2, 3];
+        let result: Result<Pin<Arc<Vec<i32>>>, (Vec<i32>, AllocError)> =
+            <Arc<Vec<i32>> as TryArc<Vec<i32>>>::try_pin_give_back(val);
+        let _pinned = result.unwrap();
+    }
+
+    #[test]
+    fn arc_try_pin_give_back_zst() {
+        let _pinned: Pin<Arc<()>> = Arc::<()>::try_pin_give_back(()).unwrap();
+    }
+
+    #[test]
+    fn fallible_pin_give_back_works() {
+        let _pinned: Pin<Arc<i32>> = Arc::<i32>::fallible_pin_give_back(42).unwrap();
+    }
+
+    // ── DST with custom alignment tests ────────────────────────────────────────
+
+    #[test]
+    fn arc_try_clone_align_512() {
+        use crate::try_clone::TryClone;
+        struct AlignedData([u8; 64]);
+        unsafe impl Send for AlignedData {}
+        unsafe impl Sync for AlignedData {}
+
+        trait Process: Send + Sync {
+            fn process(&self) -> usize;
+        }
+
+        impl Process for AlignedData {
+            fn process(&self) -> usize {
+                self.0.len()
+            }
+        }
+
+        // Create an Arc<dyn Process> backed by a type that needs high alignment.
+        // The old offset-based approach would miscalculate header offsets because
+        // padding between [strong][weak] and data differs when align(T) > 2.
+        let inner: AlignedData = AlignedData([42u8; 64]);
+        let arc: Arc<dyn Process> = Arc::new(inner);
+        assert_eq!(arc.process(), 64);
+
+        let arc2 = arc.try_clone().unwrap();
+        assert_eq!(Arc::strong_count(&arc), 2);
+        assert!(Arc::ptr_eq(&arc, &arc2));
+        assert_eq!(arc2.process(), 64);
+    }
+
+    #[test]
+    fn weak_try_clone_align_512() {
+        use crate::try_clone::TryClone;
+        struct AlignedData([u8; 64]);
+        unsafe impl Send for AlignedData {}
+        unsafe impl Sync for AlignedData {}
+
+        trait Process: Send + Sync {
+            fn process(&self) -> usize;
+        }
+
+        impl Process for AlignedData {
+            fn process(&self) -> usize {
+                self.0.len()
+            }
+        }
+
+        let inner: AlignedData = AlignedData([99u8; 64]);
+        let arc: Arc<dyn Process> = Arc::new(inner);
+        let weak = Arc::downgrade(&arc);
+        assert_eq!(Arc::weak_count(&arc), 1);
+
+        let weak2 = weak.try_clone().unwrap();
+        assert_eq!(Arc::weak_count(&arc), 2);
+
+        // Verify we can still upgrade.
+        let upgraded = weak2.upgrade().unwrap();
+        assert_eq!(upgraded.process(), 64);
+    }
+
+    #[test]
+    fn arc_slice_try_clone_large_alignment() {
+        use crate::try_clone::TryClone;
+        // Slices don't have custom alignment but exercise the unsized path.
+        let data: [u64; 8] = [1, 2, 3, 4, 5, 6, 7, 8];
+        let arc: Arc<[u64]> = Arc::from(&data[..]);
+        let arc2 = arc.try_clone().unwrap();
+        assert_eq!(arc2.as_ref(), &[1, 2, 3, 4, 5, 6, 7, 8]);
+        assert_eq!(Arc::strong_count(&arc), 2);
+
+        let weak = Arc::downgrade(&arc);
+        let weak2 = weak.try_clone().unwrap();
+        assert_eq!(Arc::weak_count(&arc), 2);
+        drop(weak2);
+        assert_eq!(Arc::weak_count(&arc), 1);
     }
 }

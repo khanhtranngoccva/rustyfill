@@ -14,4 +14,4 @@
 
 mod arc_;
 
-pub use arc_::TryArc;
+pub use arc_::{TryArc, TryUpgradeError, TryWeak};

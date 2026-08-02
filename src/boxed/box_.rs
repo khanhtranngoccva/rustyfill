@@ -48,6 +48,10 @@ pub trait TryBox<T>: Sized {
     /// of [`Box::pin`].
     fn try_pin(value: T) -> Result<Pin<Self>, AllocError>;
 
+    /// Like [`Self::try_pin`] but returns ownership of `value` back on failure
+    /// so it can be reused or dropped cleanly.
+    fn try_pin_give_back(value: T) -> Result<Pin<Self>, (T, AllocError)>;
+
     // ── Aliases with `fallible_` prefix to avoid name collisions ────────────
 
     /// Alias for [`Self::try_new`].
@@ -73,6 +77,11 @@ pub trait TryBox<T>: Sized {
     /// Alias for [`Self::try_pin`].
     fn fallible_pin(value: T) -> Result<Pin<Self>, AllocError> {
         Self::try_pin(value)
+    }
+
+    /// Alias for [`Self::try_pin_give_back`].
+    fn fallible_pin_give_back(value: T) -> Result<Pin<Self>, (T, AllocError)> {
+        Self::try_pin_give_back(value)
     }
 }
 
@@ -147,6 +156,13 @@ impl<T> TryBox<T> for Box<T> {
     fn try_pin(value: T) -> Result<Pin<Self>, AllocError> {
         let boxed = Self::try_new(value)?;
         Ok(unsafe { Pin::new_unchecked(boxed) })
+    }
+
+    fn try_pin_give_back(value: T) -> Result<Pin<Self>, (T, AllocError)> {
+        match Self::try_new_give_back(value) {
+            Ok(boxed) => Ok(unsafe { Pin::new_unchecked(boxed) }),
+            Err((v, e)) => Err((v, e)),
+        }
     }
 }
 
@@ -359,5 +375,32 @@ mod tests {
     #[test]
     fn fallible_pin_works() {
         let _pinned: Pin<Box<i32>> = Box::<i32>::fallible_pin(42).unwrap();
+    }
+
+    // ── try_pin_give_back tests ─────────────────────────────────────────────
+
+    #[test]
+    fn box_try_pin_give_back_success() {
+        let pinned: Pin<Box<String>> =
+            <Box<String> as TryBox<String>>::try_pin_give_back("hello".to_string()).unwrap();
+        assert_eq!(pinned.as_str(), "hello");
+    }
+
+    #[test]
+    fn box_try_pin_give_back_signature() {
+        let val = vec![1, 2, 3];
+        let result: Result<Pin<Box<Vec<i32>>>, (Vec<i32>, AllocError)> =
+            <Box<Vec<i32>> as TryBox<Vec<i32>>>::try_pin_give_back(val);
+        let _pinned = result.unwrap();
+    }
+
+    #[test]
+    fn box_try_pin_give_back_zst() {
+        let _pinned: Pin<Box<()>> = Box::<()>::try_pin_give_back(()).unwrap();
+    }
+
+    #[test]
+    fn fallible_pin_give_back_works() {
+        let _pinned: Pin<Box<i32>> = Box::<i32>::fallible_pin_give_back(42).unwrap();
     }
 }

@@ -186,12 +186,13 @@ impl TryOsString for OsString {
             return Ok(());
         }
 
+        // Important: we must not use mem::take() before the allocation succeeds,
+        // because a failed reservation would silently destroy the original data.
         let len = self.len();
-        let snapshot = core::mem::take(self);
         let mut out = OsString::new();
         if len > 0 {
             out.try_reserve(target)?;
-            out.push(snapshot.as_os_str());
+            out.push(self.as_os_str());
         }
         *self = out;
         Ok(())

@@ -17,6 +17,7 @@
 use crate::alloc::AllocError;
 use crate::try_clone::{TryClone, TryCloneError};
 use crate::try_default::{TryDefault, TryDefaultError};
+use crate::vec::{TrySlice, TryVecError};
 use core::fmt;
 use std::collections::TryReserveError;
 use std::ffi::CString;
@@ -130,17 +131,23 @@ impl TryCString for CString {
 
 impl TryClone for CString {
     fn try_clone(&self) -> Result<Self, TryCloneError> {
-        let mut buf = self.as_bytes_with_nul().to_vec();
-        // Remove the trailing nul so we can re-validate and re-append.
-        buf.pop();
-        // Re-build via try_new which validates and appends the nul byte.
-        Self::try_new(buf).map_err(|e| match e {
-            TryCStringError::Alloc(_) => TryCloneError::Alloc(AllocError),
-            TryCStringError::Reserve(r) => TryCloneError::Reserve(r),
-            TryCStringError::Overflow => TryCloneError::Overflow,
-            // Unreachable: we cloned from a valid CString's bytes.
-            TryCStringError::Nul(_) => TryCloneError::Other("cloned CString contained interior nul"),
-        })
+        // Clone the bytes including the trailing nul fallibly, then hand the
+        // vec directly to from_vec_with_nul_unchecked — no pop, no re-validate.
+        let bytes = self.as_bytes_with_nul();
+        // as_bytes_with_nul always returns at least one byte (the nul), so it's
+        // never empty. An empty CString is b"\0".
+        let buf = bytes.try_to_vec()
+            .map_err(|e| match e {
+                TryVecError::Reserve(r) => TryCloneError::Reserve(r),
+                TryVecError::Clone(c) => c,
+                TryVecError::Overflow => TryCloneError::Overflow,
+                TryVecError::Alloc(_) => TryCloneError::Alloc(AllocError),
+                TryVecError::Other(m) => TryCloneError::Other(m),
+            })?;
+
+        // SAFETY: buf was cloned from a valid CString's as_bytes_with_nul(),
+        // so it has no interior nul bytes and ends with exactly one nul.
+        Ok(unsafe { CString::from_vec_with_nul_unchecked(buf) })
     }
 }
 

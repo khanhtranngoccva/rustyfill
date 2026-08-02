@@ -4,23 +4,29 @@
 //! conversion of a `&CStr` into an owned [`CString`].
 
 use crate::try_to_owned::{TryToOwned, TryToOwnedError};
+use crate::vec::{TrySlice, TryVecError};
 use std::ffi::{CStr, CString};
 
 impl TryToOwned for CStr {
     fn try_to_owned(&self) -> Result<CString, TryToOwnedError> {
-        // Clone the bytes (excluding the trailing nul), then append the nul
-        // terminator and construct via CString::from_vec_with_nul_unchecked.
-        let mut buf = self.to_bytes().to_vec();
-        if buf.try_reserve(1).is_err() {
-            return Err(TryToOwnedError::Reserve({
-                let mut v = Vec::<u8>::new();
-                v.try_reserve(usize::MAX).unwrap_err()
-            }));
-        }
-        buf.push(0);
+        // Clone the bytes including the trailing nul fallibly, then hand the
+        // vec directly to from_vec_with_nul_unchecked — no extra reserve or push.
+        let bytes = self.to_bytes_with_nul();
+        // to_bytes_with_nul always returns at least one byte (the nul), so it's
+        // never empty. An empty CStr is b"\0".
+        let buf = bytes.try_to_vec()
+            .map_err(|e| match e {
+                TryVecError::Reserve(r) => TryToOwnedError::Reserve(r),
+                TryVecError::Clone(c) => c.into(),
+                TryVecError::Overflow => TryToOwnedError::Overflow,
+                TryVecError::Alloc(_) => TryToOwnedError::Alloc(
+                    crate::alloc::AllocError,
+                ),
+                TryVecError::Other(m) => TryToOwnedError::Other(m),
+            })?;
 
         // SAFETY: The bytes came from a valid CStr so there are no interior
-        // nul bytes, and we just appended the trailing nul.
+        // nul bytes, and the slice already ends with exactly one nul.
         Ok(unsafe { CString::from_vec_with_nul_unchecked(buf) })
     }
 }
