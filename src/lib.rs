@@ -8,6 +8,7 @@ pub mod alloc;
 pub mod arc;
 pub mod boxed;
 pub mod ffi;
+pub mod path;
 pub mod string;
 pub mod try_clone;
 pub mod try_default;
