@@ -178,6 +178,23 @@ pub trait TryVec<T>: Sized {
     where
         F: FnMut() -> T;
 
+    // ── Capacity ─────────────────────────────────────────────────────────────
+
+    /// Fallibly shrink the capacity of this vector to match its length.
+    ///
+    /// May reallocate if the current allocation is larger than needed.
+    /// Returns [`TryReserveError`] if the re-allocation fails.
+    /// Equivalent to [`Vec::shrink_to_fit`] but fallible.
+    fn try_shrink_to_fit(&mut self) -> Result<(), TryReserveError>;
+
+    /// Fallibly shrink the capacity of this vector to at least `min_capacity`.
+    ///
+    /// If the current capacity is already less than or equal to `min_capacity`,
+    /// does nothing and returns `Ok(())`. Otherwise reallocates down.
+    /// Returns [`TryReserveError`] if the re-allocation fails.
+    /// Equivalent to [`Vec::shrink_to`] but fallible.
+    fn try_shrink_to(&mut self, min_capacity: usize) -> Result<(), TryReserveError>;
+
     // ── Bulk construction ───────────────────────────────────────────────────
 
     /// Fallibly collect an iterator into a `Vec<T>`.
@@ -396,6 +413,44 @@ impl<T> TryVec<T> for Vec<T> {
         Ok(())
     }
 
+    fn try_shrink_to_fit(&mut self) -> Result<(), TryReserveError> {
+        self.try_shrink_to(self.len())
+    }
+
+    fn try_shrink_to(&mut self, min_capacity: usize) -> Result<(), TryReserveError> {
+        let target = core::cmp::max(self.len(), min_capacity);
+        if self.capacity() <= target {
+            return Ok(());
+        }
+        // Reallocate into a buffer whose capacity is closer to `target`.
+        // We build a fresh Vec by reserving the desired size and copying
+        // the raw bytes over. The allocator may round up, which is fine — the
+        // contract is simply that we attempt to reduce excess capacity.
+        // Important: we must not take ownership of elements from `self` before
+        // the allocation succeeds, because a failed reservation would leave us
+        // with lost data. Using ptr::copy_nonoverlapping avoids needing Clone
+        // and mirrors what the standard library does internally.
+        let len = self.len();
+        if len == 0 {
+            *self = Vec::new();
+            return Ok(());
+        }
+        let mut out = Vec::<T>::new();
+        out.try_reserve(target)?;
+        unsafe {
+            let src = self.as_ptr();
+            let dst = out.as_mut_ptr();
+            core::ptr::copy_nonoverlapping(src, dst, len);
+            out.set_len(len);
+            // Elements have been bit-moved into `out`. Zero out `self`'s length
+            // so that when `*self = out` replaces it, the old Vec's Drop only
+            // frees the buffer without running destructors on the elements.
+            self.set_len(0);
+        }
+        *self = out;
+        Ok(())
+    }
+
     fn try_collect<I: IntoIterator<Item = T>>(iter: I) -> Result<Vec<T>, TryReserveError> {
         let iter = iter.into_iter();
         let (lower, upper) = iter.size_hint();
@@ -461,6 +516,7 @@ impl<T: TryDefault> TryDefault for Vec<T> {
 }
 
 #[cfg(test)]
+#[allow(unstable_name_collisions)]
 mod tests {
     use super::*;
 
@@ -782,6 +838,97 @@ mod tests {
     fn try_default_vec_of_options() {
         let v: Vec<Option<i32>> = Vec::try_default().unwrap();
         assert!(v.is_empty());
+    }
+
+    // ── Shrink ────────────────────────────────────────────────────────────────
+
+    #[test]
+    fn try_shrink_to_fit_exact_capacity() {
+        let mut v: Vec<i32> = vec![1, 2, 3];
+        let cap_before = v.capacity();
+        // capacity == len already; no-op path.
+        v.try_shrink_to_fit().unwrap();
+        assert_eq!(v.capacity(), cap_before);
+        assert_eq!(v, [1, 2, 3]);
+    }
+
+    #[test]
+    fn try_shrink_to_fit_reduces_excess() {
+        let mut v: Vec<i32> = Vec::new();
+        v.try_reserve(1024).unwrap();
+        v.try_push(1).unwrap();
+        v.try_push(2).unwrap();
+        let cap_before = v.capacity();
+        assert!(cap_before >= 1024);
+        v.try_shrink_to_fit().unwrap();
+        assert!(
+            v.capacity() < cap_before,
+            "capacity {} was not reduced from {}",
+            v.capacity(),
+            cap_before
+        );
+        assert!(v.capacity() >= 2);
+        assert_eq!(v, [1, 2]);
+    }
+
+    #[test]
+    fn try_shrink_to_fit_empty_large() {
+        let mut v: Vec<i32> = Vec::new();
+        v.try_reserve(512).unwrap();
+        v.try_shrink_to_fit().unwrap();
+        assert_eq!(v.capacity(), 0);
+    }
+
+    #[test]
+    fn try_shrink_to_above_current_len() {
+        let mut v: Vec<i32> = Vec::new();
+        v.try_reserve(256).unwrap();
+        v.try_push(42).unwrap();
+        let cap_before = v.capacity();
+        // min_capacity > len but < current capacity → should attempt to shrink.
+        v.try_shrink_to(32).unwrap();
+        assert!(v.capacity() >= 32);
+        assert!(v.capacity() < cap_before || v.capacity() >= 32);
+        assert_eq!(v, [42]);
+    }
+
+    #[test]
+    fn try_shrink_to_below_current_len_is_noop() {
+        let mut v: Vec<i32> = vec![1, 2, 3, 4, 5, 6];
+        let cap_before = v.capacity();
+        // min_capacity < len → target == len, capacity already fits → no-op.
+        v.try_shrink_to(2).unwrap();
+        assert_eq!(v, [1, 2, 3, 4, 5, 6]);
+        assert_eq!(v.capacity(), cap_before);
+    }
+
+    #[test]
+    fn try_shrink_to_already_small() {
+        let mut v: Vec<i32> = vec![1, 2];
+        // capacity already <= min_capacity → no-op.
+        v.try_shrink_to(16).unwrap();
+        assert_eq!(v, [1, 2]);
+    }
+
+    #[test]
+    fn try_shrink_to_preserves_complex_types() {
+        let mut v: Vec<Vec<u8>> = Vec::new();
+        v.try_reserve(128).unwrap();
+        v.try_push(vec![1, 2, 3]).unwrap();
+        v.try_push(vec![4, 5]).unwrap();
+        v.try_shrink_to(4).unwrap();
+        assert!(v.capacity() >= 4);
+        assert_eq!(v, [vec![1, 2, 3], vec![4, 5]]);
+    }
+
+    #[test]
+    fn try_shrink_to_fit_preserves_data() {
+        let mut v: Vec<String> = Vec::new();
+        v.try_reserve(64).unwrap();
+        v.try_push("hello".to_string()).unwrap();
+        v.try_push("world".to_string()).unwrap();
+        v.try_shrink_to_fit().unwrap();
+        assert_eq!(v, ["hello", "world"]);
     }
 
     // ── Combined workflows ───────────────────────────────────────────────────

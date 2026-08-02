@@ -203,14 +203,13 @@ impl<T: TryDefault> TryDefault for Box<T> {
 impl<T: TryClone> TryClone for Box<[T]> {
     fn try_clone(&self) -> Result<Self, TryCloneError> {
         use crate::vec::TrySlice;
-        let vec = self.as_ref().try_to_vec()
-            .map_err(|e| match e {
-                crate::vec::TryVecError::Reserve(r) => TryCloneError::Reserve(r),
-                crate::vec::TryVecError::Clone(c) => c,
-                crate::vec::TryVecError::Overflow => TryCloneError::Overflow,
-                crate::vec::TryVecError::Alloc(_) => TryCloneError::Alloc(AllocError),
-                crate::vec::TryVecError::Other(m) => TryCloneError::Other(m),
-            })?;
+        let vec = self.as_ref().try_to_vec().map_err(|e| match e {
+            crate::vec::TryVecError::Reserve(r) => TryCloneError::Reserve(r),
+            crate::vec::TryVecError::Clone(c) => c,
+            crate::vec::TryVecError::Overflow => TryCloneError::Overflow,
+            crate::vec::TryVecError::Alloc(_) => TryCloneError::Alloc(AllocError),
+            crate::vec::TryVecError::Other(m) => TryCloneError::Other(m),
+        })?;
         Ok(vec.into_boxed_slice())
     }
 }
@@ -262,9 +261,10 @@ mod tests {
 
     #[test]
     fn try_new_uninit_then_write_and_assume_init() {
-        let uninit: Box<MaybeUninit<i32>> = <Box<i32> as TryBox<i32>>::try_new_uninit().unwrap();
+        let mut uninit: Box<MaybeUninit<i32>> =
+            <Box<i32> as TryBox<i32>>::try_new_uninit().unwrap();
         let init = unsafe {
-            (*(&*uninit as *const MaybeUninit<i32> as *mut MaybeUninit<i32>)).write(99);
+            uninit.as_mut_ptr().write(99);
             uninit.assume_init()
         };
         assert_eq!(*init, 99);
@@ -310,9 +310,9 @@ mod tests {
 
     #[test]
     fn fallible_new_uninit_then_write_and_assume_init() {
-        let uninit: Box<MaybeUninit<i32>> = Box::<i32>::fallible_new_uninit().unwrap();
+        let mut uninit: Box<MaybeUninit<i32>> = Box::<i32>::fallible_new_uninit().unwrap();
         let init = unsafe {
-            (*(&*uninit as *const MaybeUninit<i32> as *mut MaybeUninit<i32>)).write(99);
+            uninit.as_mut_ptr().write(99);
             uninit.assume_init()
         };
         assert_eq!(*init, 99);

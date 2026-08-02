@@ -763,8 +763,9 @@ mod tests {
         // Overwrite after downgrade so we don't trigger std's own overflow check.
         inner.weak.store(MAX_REFCOUNT, Ordering::Relaxed);
         assert!(weak.try_clone().is_err());
-        // Restore so everything drops cleanly.
-        inner.weak.store(1, Ordering::Relaxed);
+        // The original refcount includes 1 for all strong refcounts and 1 for one weak refcount.
+        inner.weak.store(2, Ordering::Relaxed);
+        drop(weak);
         drop(arc);
     }
 
@@ -777,7 +778,9 @@ mod tests {
         // Overwrite after downgrade so we don't trigger std's own overflow check.
         inner.weak.store(MAX_REFCOUNT + 1, Ordering::Relaxed);
         assert!(weak.try_clone().is_err());
-        inner.weak.store(1, Ordering::Relaxed);
+        // The original refcount includes 1 for all strong refcounts and 1 for one weak refcount.
+        inner.weak.store(2, Ordering::Relaxed);
+        drop(weak);
         drop(arc);
     }
 
