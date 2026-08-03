@@ -14,13 +14,6 @@
 //! The trait also implements [`TryClone`](crate::try_clone::TryClone) and
 //! [`TryDefault`](crate::try_default::TryDefault) for `HashMap<K, V, S>` when
 //! `K` and `V` satisfy the respective bounds.
-//!
-//! # Note on `HashMap::try_insert`
-//!
-//! The inherent [`HashMap::try_insert`](std::collections::HashMap::try_insert) on
-//! stable Rust may *panic* on allocation failure (it only returns `Err` when the
-//! key already exists). Our [`Self::try_insert`] always returns a [`Result`] and
-//! never panics on OOM — it reserves capacity first, then inserts.
 
 use crate::alloc::AllocError;
 use crate::try_clone::{TryClone, TryCloneError};
@@ -93,14 +86,13 @@ impl From<TryCloneError> for TryHashMapError {
 /// methods that can fail due to allocation pressure, returning [`Result`] values
 /// that propagate [`TryReserveError`] or [`TryHashMapError`] on failure.
 ///
-/// # Note on `try_insert` vs `fallible_insert`
+/// # Note on `try_insert`
 ///
 /// The inherent [`HashMap::try_insert`](std::collections::HashMap::try_insert) on
 /// stable Rust returns `Err(old_value)` when a key already exists, but may *panic*
 /// on allocation failure. Our [`Self::try_insert`] reserves capacity first so it
-/// never panics on OOM — it returns [`TryHashMapError::Reserve`] instead. It also
-/// does not return the old value on key collision; use [`Self::try_entry_insert`]
-/// for entry-API semantics.
+/// never panics on OOM — it returns [`TryHashMapError::Reserve`] instead, but it
+/// does not return the old value on key collision.
 pub trait TryHashMap<K, V, S>: Sized {
     // ── Construction ────────────────────────────────────────────────────────
 
@@ -247,6 +239,15 @@ pub trait TryHashMap<K, V, S>: Sized {
     /// Requires [`BuildHasher::clone`] so the hasher can be reused for the new
     /// table. Returns [`TryHashMapError::Reserve`] if the allocation for the
     /// rebuilt table fails. Equivalent to [`HashMap::shrink_to_fit`] but fallible.
+    ///
+    /// # Panics
+    ///
+    /// Cloning the hasher factory may panic if it relies on heap allocation.
+    /// This is not the case for any standard-library hasher (`RandomState`,
+    /// `SipHasher13`, etc.) or popular third-party hashers (`ahash`, `FxHash`,
+    /// FNV, DJB2, and so on), which store only small stack integers. However,
+    /// a custom hasher that internally allocates (e.g., caches compiled lookup
+    /// tables) could panic during the clone step.
     fn try_shrink_to_fit(&mut self) -> Result<(), TryHashMapError>
     where
         S: Clone;
@@ -259,6 +260,15 @@ pub trait TryHashMap<K, V, S>: Sized {
     /// target capacity. Requires [`BuildHasher::clone`] so the hasher can be
     /// reused. Returns [`TryHashMapError::Reserve`] if the allocation fails.
     /// Equivalent to [`HashMap::shrink_to`] but fallible.
+    ///
+    /// # Panics
+    ///
+    /// Cloning the hasher factory may panic if it relies on heap allocation.
+    /// This is not the case for any standard-library hasher (`RandomState`,
+    /// `SipHasher13`, etc.) or popular third-party hashers (`ahash`, `FxHash`,
+    /// FNV, DJB2, and so on), which store only small stack integers. However,
+    /// a custom hasher that internally allocates (e.g., caches compiled lookup
+    /// tables) could panic during the clone step.
     fn try_shrink_to(&mut self, min_capacity: usize) -> Result<(), TryHashMapError>
     where
         S: Clone;
@@ -478,6 +488,17 @@ impl<K: Eq + Hash, V, S: BuildHasher> TryHashMap<K, V, S> for HashMap<K, V, S> {
 
 // ── TryClone for HashMap<K, V, S> ──────────────────────────────────────────────
 
+/// Implements [`TryClone`] for `HashMap<K, V, S>` when keys and values are
+/// cloneable and the hasher factory can be cloned.
+///
+/// # Panics
+///
+/// Cloning the hasher factory may panic if it relies on heap allocation.
+/// This is not the case for any standard-library hasher (`RandomState`,
+/// `SipHasher13`, etc.) or popular third-party hashers (`ahash`, `FxHash`,
+/// FNV, DJB2, and so on), which store only small stack integers. However,
+/// a custom hasher that internally allocates (e.g., caches compiled lookup
+/// tables) could panic during the clone step.
 impl<K, V, S> TryClone for HashMap<K, V, S>
 where
     K: Eq + Hash + TryClone,
