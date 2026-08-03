@@ -47,13 +47,13 @@ impl From<TryReserveError> for TryStrError {
 
 /// A trait for fallibly converting a string slice into an owned [`String`].
 ///
-/// Implemented for `str`. Methods reserve capacity upfront so that allocation
+/// Implemented for [`str`]. Methods reserve capacity upfront so that allocation
 /// failures are returned as errors rather than panicking.
 pub trait TryStr {
     /// Fallibly copy this string slice into a new [`String`].
     ///
-    /// This is the fallible analogue of [`<str>::to_string`] and
-    /// [`<str>::to_owned`]. Reserves capacity for the full byte length before
+    /// This is the fallible analogue of [`ToString::to_string`] and
+    /// [`str::to_owned`]. Reserves capacity for the full byte length before
     /// copying, so that allocation failures are caught cleanly.
     ///
     /// Returns [`TryStrError::Reserve`] on allocation failure.
@@ -61,12 +61,24 @@ pub trait TryStr {
 
     /// Fallibly repeat this string slice `n` times into a new [`String`].
     ///
-    /// Mirrors [`<str>::repeat`] but reserves capacity upfront so that
+    /// Mirrors [`str::repeat`] but reserves capacity upfront so that
     /// allocation failures return [`TryStrError::Reserve`] instead of panicking.
     ///
     /// Returns an empty `String` when `n == 0` or the slice is empty.
     /// Returns [`TryStrError::Overflow`] if `self.len() * n` overflows.
     fn try_repeat(&self, n: usize) -> Result<String, TryStrError>;
+
+    // ── Aliases with `fallible_` prefix ─────────────────────────────────────
+
+    /// Alias for [`Self::try_to_string`].
+    fn fallible_to_string(&self) -> Result<String, TryStrError> {
+        Self::try_to_string(self)
+    }
+
+    /// Alias for [`Self::try_repeat`].
+    fn fallible_repeat(&self, n: usize) -> Result<String, TryStrError> {
+        Self::try_repeat(self, n)
+    }
 }
 
 impl TryStr for str {

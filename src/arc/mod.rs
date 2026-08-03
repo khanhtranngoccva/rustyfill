@@ -8,9 +8,9 @@
 //! # Construction strategy
 //!
 //! Allocation is delegated to [`TryBox`](crate::boxed::TryBox) via a boxed
-//! [`MaybeUninit<ArcInner<T>>`]. After initialising the strong/weak counters
+//! `MaybeUninit<ArcInner<T>>`. After initialising the strong/weak counters
 //! and the data in place, ownership transfers to std's `Arc` through
-//! [`Arc::from_raw`] — no second allocation is performed.
+//! [`Arc::from_raw`](std::sync::Arc::from_raw) — no second allocation is performed.
 
 mod arc_;
 

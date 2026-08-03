@@ -6,7 +6,7 @@ use proc_macro::TokenStream;
 use quote::quote;
 use syn::{Data, DeriveInput, Fields, parse_macro_input};
 
-/// Derives [`TryClone`](fallibles::try_clone::TryClone) for a struct or enum.
+/// Derives `TryClone` for a struct or enum.
 ///
 /// All fields in every variant must themselves implement `TryClone`. The generated
 /// implementation clones each field fallibly and propagates the first error encountered.
@@ -186,7 +186,7 @@ pub fn try_clone_tuples(input: TokenStream) -> TokenStream {
     TokenStream::from(quote!(#(#output)*))
 }
 
-/// Derives [`TryDefault`](fallibles::try_default::TryDefault) for a struct or enum.
+/// Derives `TryDefault` for a struct or enum.
 ///
 /// All fields in every variant must themselves implement `TryDefault`. The generated
 /// implementation constructs each field fallibly and propagates the first error encountered.

@@ -81,7 +81,7 @@ pub trait TryCString {
     /// reserve one extra byte of capacity before calling this method so that
     /// appending the terminating nul byte does not require reallocation.
     ///
-    /// Returns [`Ok(CString)`] if the buffer is valid and the nul terminator was
+    /// Returns [`Ok(CString)`][CString] if the buffer is valid and the nul terminator was
     /// appended. Returns [`Err`] with a [`TryCStringError`] describing the
     /// failure; the buffer is consumed and not recoverable.
     fn try_new(buf: Vec<u8>) -> Result<CString, TryCStringError>;
@@ -91,6 +91,18 @@ pub trait TryCString {
     /// The returned `Vec<u8>` has at most one extra byte of capacity beyond its
     /// length (from the attempted `try_reserve(1)`).
     fn try_new_give_back(buf: Vec<u8>) -> Result<CString, (Vec<u8>, TryCStringError)>;
+
+    // ── Aliases with `fallible_` prefix ─────────────────────────────────────
+
+    /// Alias for [`Self::try_new`].
+    fn fallible_new(buf: Vec<u8>) -> Result<CString, TryCStringError> {
+        Self::try_new(buf)
+    }
+
+    /// Alias for [`Self::try_new_give_back`].
+    fn fallible_new_give_back(buf: Vec<u8>) -> Result<CString, (Vec<u8>, TryCStringError)> {
+        Self::try_new_give_back(buf)
+    }
 }
 
 impl TryCString for CString {

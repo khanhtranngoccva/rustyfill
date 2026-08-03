@@ -45,6 +45,24 @@ pub trait TrySlice<T> {
     fn try_repeat_clone(&self, n: usize) -> Result<Vec<T>, TryVecError>
     where
         T: TryClone;
+
+    // ── Aliases with `fallible_` prefix ─────────────────────────────────────
+
+    /// Alias for [`Self::try_to_vec`].
+    fn fallible_to_vec(&self) -> Result<Vec<T>, TryVecError>
+    where
+        T: TryClone,
+    {
+        Self::try_to_vec(self)
+    }
+
+    /// Alias for [`Self::try_repeat_clone`].
+    fn fallible_repeat_clone(&self, n: usize) -> Result<Vec<T>, TryVecError>
+    where
+        T: TryClone,
+    {
+        Self::try_repeat_clone(self, n)
+    }
 }
 
 impl<T> TrySlice<T> for [T] {

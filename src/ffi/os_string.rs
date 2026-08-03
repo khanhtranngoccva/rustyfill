@@ -131,6 +131,48 @@ pub trait TryOsString: Sized {
     ///
     /// Equivalent to `OsString::into_string()`.
     fn try_into_string(self) -> Result<String, OsString>;
+
+    // ── Aliases with `fallible_` prefix ────────────────────────────────────
+
+    /// Alias for [`Self::try_with_capacity`].
+    fn fallible_with_capacity(capacity: usize) -> Result<OsString, TryReserveError> {
+        Self::try_with_capacity(capacity)
+    }
+
+    /// Alias for [`Self::try_from_os_str`].
+    fn fallible_from_os_str<S: AsRef<OsStr>>(s: S) -> Result<OsString, TryReserveError> {
+        Self::try_from_os_str(s)
+    }
+
+    /// Alias for [`Self::try_from_str`].
+    fn fallible_from_str<S: AsRef<str>>(s: S) -> Result<OsString, TryReserveError> {
+        Self::try_from_str(s)
+    }
+
+    /// Alias for [`Self::try_push`].
+    fn fallible_push(&mut self, s: &OsStr) -> Result<(), TryReserveError> {
+        Self::try_push(self, s)
+    }
+
+    /// Alias for [`Self::try_push_str`].
+    fn fallible_push_str(&mut self, s: &str) -> Result<(), TryReserveError> {
+        Self::try_push_str(self, s)
+    }
+
+    /// Alias for [`Self::try_shrink_to_fit`].
+    fn fallible_shrink_to_fit(&mut self) -> Result<(), TryOsStringError> {
+        Self::try_shrink_to_fit(self)
+    }
+
+    /// Alias for [`Self::try_shrink_to`].
+    fn fallible_shrink_to(&mut self, min_capacity: usize) -> Result<(), TryOsStringError> {
+        Self::try_shrink_to(self, min_capacity)
+    }
+
+    /// Alias for [`Self::try_into_string`].
+    fn fallible_into_string(self) -> Result<String, OsString> {
+        Self::try_into_string(self)
+    }
 }
 
 impl TryOsString for OsString {
@@ -187,7 +229,7 @@ impl TryOsString for OsString {
         // back. Only the spare capacity portion is reallocated — the OS string
         // data bytes are never copied or revalidated.
         let mut v = std::mem::replace(self, OsString::new()).into_encoded_bytes();
-        let result = <Vec<u8> as crate::vec::TryVec<u8>>::try_shrink_to(&mut v, min_capacity);
+        let result = <Vec<u8> as crate::vec::TryVec<u8>>::fallible_shrink_to(&mut v, min_capacity);
         // SAFETY: the bytes originated from a valid OsString via into_encoded_bytes.
         *self = unsafe { OsString::from_encoded_bytes_unchecked(v) };
         result.map_err(|e| match e {

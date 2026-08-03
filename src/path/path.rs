@@ -98,6 +98,23 @@ pub trait TryPath {
     /// Returns [`TryPathError::Reserve`] on allocation failure.
     /// Returns [`TryPathError::Other`] if `ext` contains path separators.
     fn try_with_added_extension<E: AsRef<OsStr>>(&self, ext: E) -> Result<PathBuf, TryPathError>;
+
+    // ── Aliases with `fallible_` prefix ────────────────────────────────────
+
+    /// Alias for [`Self::try_to_path_buf`].
+    fn fallible_to_path_buf(&self) -> Result<PathBuf, TryPathError> {
+        Self::try_to_path_buf(self)
+    }
+
+    /// Alias for [`Self::try_join`].
+    fn fallible_join<P: AsRef<Path>>(&self, child: P) -> Result<PathBuf, TryPathError> {
+        Self::try_join(self, child)
+    }
+
+    /// Alias for [`Self::try_with_added_extension`].
+    fn fallible_with_added_extension<E: AsRef<OsStr>>(&self, ext: E) -> Result<PathBuf, TryPathError> {
+        Self::try_with_added_extension(self, ext)
+    }
 }
 
 // ---------------------------------------------------------------------------

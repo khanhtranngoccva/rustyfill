@@ -1,12 +1,12 @@
 //! Fallible owned-value construction for types that implement [`ToOwned`].
 //!
 //! Provides the [`TryToOwned`] trait, a drop-in analogue of
-//! [`std::borrow::ToOwned`] that can fail when producing the owned form requires
+//! [`ToOwned`] that can fail when producing the owned form requires
 //! allocating memory (e.g. turning `&[T]` into `Vec<T>` or `&str` into `String`).
 //!
 //! # Design
 //!
-//! `TryToOwned` requires [`ToOwned`](std::borrow::ToOwned) as a supertrait so that
+//! [`TryToOwned`] requires [`ToOwned`] as a supertrait so that
 //! any type accepting `TryToOwned` can still be used wherever `ToOwned` is expected.
 //! Implementors must ensure `try_to_owned` never panics — allocation failures are
 //! returned as errors instead.

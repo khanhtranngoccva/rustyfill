@@ -120,6 +120,33 @@ pub trait TryPathBuf: Sized {
     /// Returns [`TryPathBufError::Reserve`] if growing the internal buffer fails.
     /// Returns [`TryPathBufError::Other`] if `ext` contains path separators.
     fn try_add_extension<E: AsRef<OsStr>>(&mut self, ext: E) -> Result<bool, TryPathBufError>;
+
+    // ── Aliases with `fallible_` prefix ────────────────────────────────────
+
+    /// Alias for [`Self::try_new`].
+    fn fallible_new() -> Result<PathBuf, TryPathBufError> {
+        Self::try_new()
+    }
+
+    /// Alias for [`Self::try_from_path`].
+    fn fallible_from_path<P: AsRef<Path>>(p: P) -> Result<PathBuf, TryPathBufError> {
+        Self::try_from_path(p)
+    }
+
+    /// Alias for [`Self::try_push`].
+    fn fallible_push<P: AsRef<Path>>(&mut self, path: P) -> Result<(), TryPathBufError> {
+        Self::try_push(self, path)
+    }
+
+    /// Alias for [`Self::try_set_extension`].
+    fn fallible_set_extension<E: AsRef<OsStr>>(&mut self, ext: E) -> Result<(), TryPathBufError> {
+        Self::try_set_extension(self, ext)
+    }
+
+    /// Alias for [`Self::try_add_extension`].
+    fn fallible_add_extension<E: AsRef<OsStr>>(&mut self, ext: E) -> Result<bool, TryPathBufError> {
+        Self::try_add_extension(self, ext)
+    }
 }
 
 // ---------------------------------------------------------------------------

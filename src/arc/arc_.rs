@@ -1,4 +1,3 @@
-#![allow(unstable_name_collisions)]
 use crate::alloc::AllocError;
 use crate::boxed::TryBox;
 use crate::try_clone::{TryClone, TryCloneError};
@@ -43,27 +42,30 @@ pub trait TryArc<T>: Sized {
 
     /// Fallibly allocate a new `Arc<T>`.
     ///
-    /// Returns [`AllocError`] if the heap allocation fails. Unlike
-    /// [`Arc::new`], this never panics on out-of-memory.
+    /// **Deprecated:** This method name conflicts with the unstable inherent
+    /// [`Arc::try_new`]. Use [`Self::fallible_new`] instead.
+    #[deprecated(since = "0.1.0", note = "conflicts with unstable Arc::try_new; use fallible_new")]
     fn try_new(value: T) -> Result<Self, AllocError>;
 
     /// Fallibly allocate an uninitialised `Arc<MaybeUninit<T>>`.
     ///
-    /// Returns an `Arc` wrapping `MaybeUninit<T>` that can be initialised
-    /// in place via [`MaybeUninit::write`] and converted to an `Arc<T>` using
-    /// [`Arc::into_inner`] + [`MaybeUninit::assume_init`].
+    /// **Deprecated:** This method name conflicts with the unstable inherent
+    /// [`Arc::try_new_uninit`]. Use [`Self::fallible_new_uninit`] instead.
+    #[deprecated(since = "0.1.0", note = "conflicts with unstable Arc::try_new_uninit; use fallible_new_uninit")]
     fn try_new_uninit() -> Result<Self::Uninit, AllocError>;
 
     /// Fallibly allocate zero-initialised memory as an `Arc<MaybeUninit<T>>`.
     ///
-    /// Returns an `Arc` wrapping `MaybeUninit<T>` whose underlying bytes are
-    /// all set to zero. Safe to call [`MaybeUninit::assume_init`] on types
-    /// whose all-zeros bitpattern is valid (e.g. numeric primitives, `bool`,
-    /// `[T; N]` where `T` is also zeroable).
+    /// **Deprecated:** This method name conflicts with the unstable inherent
+    /// [`Arc::try_new_zeroed`]. Use [`Self::fallible_new_zeroed`] instead.
+    #[deprecated(since = "0.1.0", note = "conflicts with unstable Arc::try_new_zeroed; use fallible_new_zeroed")]
     fn try_new_zeroed() -> Result<Self::Uninit, AllocError>;
 
-    /// Like [`Self::try_new`] but returns ownership of `value` back on failure
-    /// so it can be reused or dropped cleanly.
+    /// Like [`Self::try_new`] but returns ownership of `value` back on failure.
+    ///
+    /// On success, returns the newly allocated `Arc<T>`. On allocation failure,
+    /// returns the original `value` alongside the [`AllocError`] so the caller
+    /// can reuse or drop it cleanly rather than losing it to an OOM panic.
     fn try_new_give_back(value: T) -> Result<Self, (T, AllocError)>;
 
     /// Unwraps the value if this is the only strong reference, otherwise fallibly
@@ -82,28 +84,60 @@ pub trait TryArc<T>: Sized {
 
     /// Fallibly allocate `value` on the heap and pin it in place.
     ///
-    /// Returns a [`Pin<Arc<T>>`] so that if `T` does not implement [`Unpin`],
-    /// the value is immovable after allocation. This is the fallible analogue
-    /// of [`Arc::pin`].
+    /// **Deprecated:** This method name conflicts with the unstable inherent
+    /// [`Arc::try_pin`]. Use [`Self::fallible_pin`] instead.
+    #[deprecated(since = "0.1.0", note = "conflicts with unstable Arc::try_pin; use fallible_pin")]
     fn try_pin(value: T) -> Result<Pin<Self>, AllocError>;
 
-    /// Like [`Self::try_pin`] but returns ownership of `value` back on failure
-    /// so it can be reused or dropped cleanly.
+    /// Like [`Self::try_pin`] but returns ownership of `value` back on failure.
+    ///
+    /// On success, returns the pinned `Arc<T>`. On allocation failure, returns
+    /// the original `value` alongside the [`AllocError`] so the caller retains
+    /// access to the shared data.
     fn try_pin_give_back(value: T) -> Result<Pin<Self>, (T, AllocError)>;
 
     // ── Aliases with `fallible_` prefix to avoid name collisions ────────────
 
-    /// Alias for [`Self::try_new`].
+    /// Fallibly allocate a new `Arc<T>`.
+    ///
+    /// Returns [`AllocError`] if the heap allocation fails. Unlike
+    /// [`Arc::new`], this never panics on out-of-memory.
+    ///
+    /// Allocation is performed by first allocating a boxed
+    /// `MaybeUninit<ArcInner<T>>` via [`TryBox::fallible_new_uninit`], then
+    /// transferring ownership to std's `Arc` through [`Arc::from_raw`] — no
+    /// second allocation is performed.
+    ///
+    /// This method replaces the deprecated [`Self::try_new`] which shares its
+    /// name with the unstable inherent [`Arc::try_new`].
+    #[allow(deprecated)]
     fn fallible_new(value: T) -> Result<Self, AllocError> {
         Self::try_new(value)
     }
 
-    /// Alias for [`Self::try_new_uninit`].
+    /// Fallibly allocate an uninitialised `Arc<MaybeUninit<T>>`.
+    ///
+    /// Returns an `Arc` wrapping `MaybeUninit<T>` that can be initialised
+    /// in place via [`MaybeUninit::write`] and converted to an `Arc<T>` using
+    /// [`Arc::into_inner`] + [`MaybeUninit::assume_init`].
+    ///
+    /// This method replaces the deprecated [`Self::try_new_uninit`] which shares
+    /// its name with the unstable inherent [`Arc::try_new_uninit`].
+    #[allow(deprecated)]
     fn fallible_new_uninit() -> Result<Self::Uninit, AllocError> {
         Self::try_new_uninit()
     }
 
-    /// Alias for [`Self::try_new_zeroed`].
+    /// Fallibly allocate zero-initialised memory as an `Arc<MaybeUninit<T>>`.
+    ///
+    /// Returns an `Arc` wrapping `MaybeUninit<T>` whose underlying bytes are
+    /// all set to zero. Safe to call [`MaybeUninit::assume_init`] on types
+    /// whose all-zeros bitpattern is valid (e.g. numeric primitives, `bool`,
+    /// `[T; N]` where `T` is also zeroable).
+    ///
+    /// This method replaces the deprecated [`Self::try_new_zeroed`] which shares
+    /// its name with the unstable inherent [`Arc::try_new_zeroed`].
+    #[allow(deprecated)]
     fn fallible_new_zeroed() -> Result<Self::Uninit, AllocError> {
         Self::try_new_zeroed()
     }
@@ -113,7 +147,31 @@ pub trait TryArc<T>: Sized {
         Self::try_new_give_back(value)
     }
 
-    /// Alias for [`Self::try_pin`].
+    /// Unwraps the value if this is the only strong reference, otherwise fallibly
+    /// clones the inner data.
+    ///
+    /// This is a panic-free analogue of [`Arc::unwrap_or_clone`] using
+    /// [`TryClone`] instead of [`Clone`]. On failure, returns the original `Arc`
+    /// alongside the clone error so the caller retains access to the shared data.
+    ///
+    /// This method replaces [`Self::unwrap_or_try_clone`] under a name that
+    /// won't collide with future std additions.
+    fn unwrap_or_fallible_clone(self) -> Result<T, (Self, TryCloneError)>
+    where
+        T: Clone + crate::try_clone::TryClone,
+    {
+        Self::unwrap_or_try_clone(self)
+    }
+
+    /// Fallibly allocate `value` on the heap and pin it in place.
+    ///
+    /// Returns a [`Pin<Arc<T>>`] so that if `T` does not implement [`Unpin`],
+    /// the value is immovable after allocation. This is the fallible analogue
+    /// of [`Arc::pin`].
+    ///
+    /// This method replaces the deprecated [`Self::try_pin`] which shares its
+    /// name with the unstable inherent [`Arc::try_pin`].
+    #[allow(deprecated)]
     fn fallible_pin(value: T) -> Result<Pin<Self>, AllocError> {
         Self::try_pin(value)
     }
@@ -124,6 +182,7 @@ pub trait TryArc<T>: Sized {
     }
 }
 
+#[allow(deprecated)]
 impl<T> TryArc<T> for Arc<T> {
     type Uninit = Arc<MaybeUninit<T>>;
 
@@ -202,7 +261,7 @@ impl<T> TryArc<T> for Arc<T> {
     }
 
     fn try_pin(value: T) -> Result<Pin<Self>, AllocError> {
-        let arc = Self::try_new(value)?;
+        let arc = <Self as TryArc<T>>::try_new(value)?;
         Ok(unsafe { Pin::new_unchecked(arc) })
     }
 
@@ -333,6 +392,13 @@ pub trait TryWeak<T: ?Sized> {
     ///
     /// Uses `(Acquire, Relaxed)` ordering to synchronise with [`Arc::new_cyclic`] initialisation.
     fn try_upgrade(&self) -> Option<Result<Arc<T>, TryUpgradeError>>;
+
+    // ── Aliases with `fallible_` prefix ─────────────────────────────────────
+
+    /// Alias for [`Self::try_upgrade`].
+    fn fallible_upgrade(&self) -> Option<Result<Arc<T>, TryUpgradeError>> {
+        Self::try_upgrade(self)
+    }
 }
 
 impl<T: ?Sized> TryWeak<T> for Weak<T> {
@@ -382,6 +448,7 @@ impl<T: ?Sized> TryWeak<T> for Weak<T> {
     }
 }
 
+#[allow(deprecated)]
 impl<T: TryDefault> TryDefault for Arc<T> {
     fn try_default() -> Result<Self, TryDefaultError> {
         // Allocate first so that if allocation fails we never touch T::try_default().
@@ -405,24 +472,25 @@ impl<T> TryDefault for Weak<T> {
 }
 
 #[cfg(test)]
+#[allow(deprecated)]
 mod tests {
     use super::*;
 
     #[test]
     fn try_new_basic() {
-        let arc = Arc::<i32>::try_new(42).unwrap();
+        let arc = <Arc<i32> as TryArc<i32>>::try_new(42).unwrap();
         assert_eq!(*arc, 42);
     }
 
     #[test]
     fn try_new_zst() {
-        let arc = Arc::<()>::try_new(()).unwrap();
+        let arc = <Arc<()> as TryArc<()>>::try_new(()).unwrap();
         assert_eq!(*arc, ());
     }
 
     #[test]
     fn clone_increments_strong() {
-        let arc = Arc::<String>::try_new("hello".to_string()).unwrap();
+        let arc = <Arc<String> as TryArc<String>>::try_new("hello".to_string()).unwrap();
         assert_eq!(Arc::strong_count(&arc), 1);
         let arc2 = arc.clone();
         assert_eq!(Arc::strong_count(&arc), 2);
@@ -433,7 +501,7 @@ mod tests {
 
     #[test]
     fn strong_and_weak_counts() {
-        let arc = Arc::<i32>::try_new(99).unwrap();
+        let arc = <Arc<i32> as TryArc<i32>>::try_new(99).unwrap();
         assert_eq!(Arc::strong_count(&arc), 1);
         assert_eq!(Arc::weak_count(&arc), 0);
 
@@ -449,7 +517,7 @@ mod tests {
 
     #[test]
     fn downgrade_upgrade() {
-        let arc = Arc::<i32>::try_new(42).unwrap();
+        let arc = <Arc<i32> as TryArc<i32>>::try_new(42).unwrap();
         let weak = Arc::downgrade(&arc);
 
         // Upgrade while arc exists
@@ -465,20 +533,20 @@ mod tests {
 
     #[test]
     fn try_unwrap_unique() {
-        let arc = Arc::<i32>::try_new(42).unwrap();
+        let arc = <Arc<i32> as TryArc<i32>>::try_new(42).unwrap();
         assert_eq!(Arc::try_unwrap(arc), Ok(42));
     }
 
     #[test]
     fn try_unwrap_not_unique() {
-        let arc = Arc::<i32>::try_new(42).unwrap();
+        let arc = <Arc<i32> as TryArc<i32>>::try_new(42).unwrap();
         let _arc2 = arc.clone();
         assert_eq!(*Arc::try_unwrap(arc).unwrap_err(), 42);
     }
 
     #[test]
     fn into_inner_race_simulation() {
-        let arc = Arc::<i32>::try_new(42).unwrap();
+        let arc = <Arc<i32> as TryArc<i32>>::try_new(42).unwrap();
         let arc2 = arc.clone();
         let r1 = Arc::into_inner(arc);
         let r2 = Arc::into_inner(arc2);
@@ -488,16 +556,16 @@ mod tests {
 
     #[test]
     fn ptr_eq_same_allocation() {
-        let arc = Arc::<i32>::try_new(42).unwrap();
+        let arc = <Arc<i32> as TryArc<i32>>::try_new(42).unwrap();
         let arc2 = arc.clone();
         assert!(Arc::ptr_eq(&arc, &arc2));
-        let arc3 = Arc::<i32>::try_new(42).unwrap();
+        let arc3 = <Arc<i32> as TryArc<i32>>::try_new(42).unwrap();
         assert!(!Arc::ptr_eq(&arc, &arc3));
     }
 
     #[test]
     fn into_raw_from_raw() {
-        let arc = Arc::<i32>::try_new(42).unwrap();
+        let arc = <Arc<i32> as TryArc<i32>>::try_new(42).unwrap();
         let ptr = Arc::into_raw(arc);
         assert_eq!(unsafe { *ptr }, 42);
         let arc = unsafe { Arc::from_raw(ptr) };
@@ -506,7 +574,7 @@ mod tests {
 
     #[test]
     fn get_mut_unique() {
-        let mut arc = Arc::<i32>::try_new(42).unwrap();
+        let mut arc = <Arc<i32> as TryArc<i32>>::try_new(42).unwrap();
         let val = Arc::get_mut(&mut arc);
         assert!(val.is_some());
         *val.unwrap() = 99;
@@ -515,30 +583,30 @@ mod tests {
 
     #[test]
     fn get_mut_not_unique() {
-        let mut arc = Arc::<i32>::try_new(42).unwrap();
+        let mut arc = <Arc<i32> as TryArc<i32>>::try_new(42).unwrap();
         let _arc2 = arc.clone();
         assert!(Arc::get_mut(&mut arc).is_none());
     }
 
     #[test]
     fn debug_output() {
-        let arc = Arc::<i32>::try_new(42).unwrap();
+        let arc = <Arc<i32> as TryArc<i32>>::try_new(42).unwrap();
         let s = format!("{:?}", arc);
         assert_eq!(s, "42");
     }
 
     #[test]
     fn display_output() {
-        let arc = Arc::<i32>::try_new(42).unwrap();
+        let arc = <Arc<i32> as TryArc<i32>>::try_new(42).unwrap();
         let s = format!("{}", arc);
         assert_eq!(s, "42");
     }
 
     #[test]
     fn partial_eq() {
-        let a = Arc::<i32>::try_new(42).unwrap();
-        let b = Arc::<i32>::try_new(42).unwrap();
-        let c = Arc::<i32>::try_new(43).unwrap();
+        let a = <Arc<i32> as TryArc<i32>>::try_new(42).unwrap();
+        let b = <Arc<i32> as TryArc<i32>>::try_new(42).unwrap();
+        let c = <Arc<i32> as TryArc<i32>>::try_new(43).unwrap();
         assert!(a == b);
         assert!(a != c);
     }
@@ -547,7 +615,8 @@ mod tests {
 
     #[test]
     fn try_new_uninit_then_write() {
-        let mut uninit: Arc<MaybeUninit<i32>> = Arc::<i32>::try_new_uninit().unwrap();
+        let mut uninit: Arc<MaybeUninit<i32>> =
+            <Arc<i32> as TryArc<i32>>::try_new_uninit().unwrap();
         // Write value in place — we have sole ownership so get_mut succeeds.
         Arc::get_mut(&mut uninit).unwrap().write(77);
         // Extract the MaybeUninit, assume init, and wrap in a fresh Arc.
@@ -558,14 +627,14 @@ mod tests {
 
     #[test]
     fn try_new_uninit_zst() {
-        let _uninit: Arc<MaybeUninit<()>> = Arc::<()>::try_new_uninit().unwrap();
+        let _uninit: Arc<MaybeUninit<()>> = <Arc<()> as TryArc<()>>::try_new_uninit().unwrap();
     }
 
     // ── try_new_zeroed tests ────────────────────────────────────────────────
 
     #[test]
     fn try_new_zeroed_returns_zeros() {
-        let uninit: Arc<MaybeUninit<i32>> = Arc::<i32>::try_new_zeroed().unwrap();
+        let uninit: Arc<MaybeUninit<i32>> = <Arc<i32> as TryArc<i32>>::try_new_zeroed().unwrap();
         let owned = Arc::try_unwrap(uninit).unwrap();
         let val = unsafe { owned.assume_init() };
         assert_eq!(val, 0);
@@ -573,7 +642,7 @@ mod tests {
 
     #[test]
     fn try_new_zeroed_f64_is_positive_zero() {
-        let uninit: Arc<MaybeUninit<f64>> = Arc::<f64>::try_new_zeroed().unwrap();
+        let uninit: Arc<MaybeUninit<f64>> = <Arc<f64> as TryArc<f64>>::try_new_zeroed().unwrap();
         let owned = Arc::try_unwrap(uninit).unwrap();
         let val = unsafe { owned.assume_init() };
         assert_eq!(val.to_bits(), 0);
@@ -581,7 +650,8 @@ mod tests {
 
     #[test]
     fn try_new_zeroed_array() {
-        let uninit: Arc<MaybeUninit<[u8; 4]>> = Arc::<[u8; 4]>::try_new_zeroed().unwrap();
+        let uninit: Arc<MaybeUninit<[u8; 4]>> =
+            <Arc<[u8; 4]> as TryArc<[u8; 4]>>::try_new_zeroed().unwrap();
         let owned = Arc::try_unwrap(uninit).unwrap();
         let arr = unsafe { owned.assume_init() };
         assert_eq!(arr, [0, 0, 0, 0]);
@@ -589,7 +659,7 @@ mod tests {
 
     #[test]
     fn try_new_zeroed_zst() {
-        let _uninit: Arc<MaybeUninit<()>> = Arc::<()>::try_new_zeroed().unwrap();
+        let _uninit: Arc<MaybeUninit<()>> = <Arc<()> as TryArc<()>>::try_new_zeroed().unwrap();
     }
 
     // ── try_new_give_back tests ─────────────────────────────────────────────
@@ -639,14 +709,14 @@ mod tests {
 
     #[test]
     fn unwrap_or_try_clone_unique_returns_inner() {
-        let arc = Arc::<[u8; 4]>::try_new(*b"hi!!").unwrap();
+        let arc = <Arc<[u8; 4]> as TryArc<[u8; 4]>>::try_new(*b"hi!!").unwrap();
         let val = Arc::<[u8; 4]>::unwrap_or_try_clone(arc).unwrap();
         assert_eq!(val, *b"hi!!");
     }
 
     #[test]
     fn unwrap_or_try_clone_shared_clones() {
-        let arc = Arc::<i32>::try_new(42).unwrap();
+        let arc = <Arc<i32> as TryArc<i32>>::try_new(42).unwrap();
         let _arc2 = arc.clone();
         let val = Arc::<i32>::unwrap_or_try_clone(arc).unwrap();
         assert_eq!(val, 42);
@@ -654,7 +724,7 @@ mod tests {
 
     #[test]
     fn unwrap_or_try_clone_with_option() {
-        let arc = Arc::<Option<i32>>::try_new(Some(99)).unwrap();
+        let arc = <Arc<Option<i32>> as TryArc<Option<i32>>>::try_new(Some(99)).unwrap();
         let _arc2 = arc.clone();
         let val = Arc::<Option<i32>>::unwrap_or_try_clone(arc).unwrap();
         assert_eq!(val, Some(99));
@@ -665,7 +735,7 @@ mod tests {
     #[test]
     fn try_clone_increments_strong() {
         use crate::try_clone::TryClone;
-        let arc = Arc::<i32>::try_new(42).unwrap();
+        let arc = <Arc<i32> as TryArc<i32>>::try_new(42).unwrap();
         assert_eq!(Arc::strong_count(&arc), 1);
         let arc2 = arc.try_clone().unwrap();
         assert_eq!(Arc::strong_count(&arc), 2);
@@ -676,7 +746,7 @@ mod tests {
     #[test]
     fn try_clone_preserves_value() {
         use crate::try_clone::TryClone;
-        let arc = Arc::<String>::try_new("hello".to_string()).unwrap();
+        let arc = <Arc<String> as TryArc<String>>::try_new("hello".to_string()).unwrap();
         let arc2 = arc.try_clone().unwrap();
         assert_eq!(arc2.as_str(), "hello");
     }
@@ -684,7 +754,7 @@ mod tests {
     #[test]
     fn try_clone_multiple() {
         use crate::try_clone::TryClone;
-        let arc = Arc::<u64>::try_new(999).unwrap();
+        let arc = <Arc<u64> as TryArc<u64>>::try_new(999).unwrap();
         let mut clones = Vec::new();
         for i in 0..100 {
             clones.push(arc.try_clone().unwrap());
@@ -699,7 +769,7 @@ mod tests {
     fn try_clone_rejects_at_max_refcount() {
         use crate::try_clone::TryClone;
         // Manually set the strong count to MAX_REFCOUNT so the closure rejects.
-        let arc = Arc::<i32>::try_new(0).unwrap();
+        let arc = <Arc<i32> as TryArc<i32>>::try_new(0).unwrap();
         let inner = arc_inner(&arc);
         inner.strong.store(MAX_REFCOUNT, Ordering::Relaxed);
         assert!(arc.try_clone().is_err());
@@ -710,7 +780,7 @@ mod tests {
     #[test]
     fn try_clone_rejects_above_max_refcount() {
         use crate::try_clone::TryClone;
-        let arc = Arc::<i32>::try_new(0).unwrap();
+        let arc = <Arc<i32> as TryArc<i32>>::try_new(0).unwrap();
         let inner = arc_inner(&arc);
         inner.strong.store(MAX_REFCOUNT + 1, Ordering::Relaxed);
         assert!(arc.try_clone().is_err());
@@ -722,7 +792,7 @@ mod tests {
     #[test]
     fn weak_try_clone_increments_weak_count() {
         use crate::try_clone::TryClone;
-        let arc = Arc::<i32>::try_new(42).unwrap();
+        let arc = <Arc<i32> as TryArc<i32>>::try_new(42).unwrap();
         let weak = Arc::downgrade(&arc);
         assert_eq!(Arc::weak_count(&arc), 1);
         let weak2 = weak.try_clone().unwrap();
@@ -743,7 +813,7 @@ mod tests {
     #[test]
     fn weak_try_clone_multiple() {
         use crate::try_clone::TryClone;
-        let arc = Arc::<u64>::try_new(0).unwrap();
+        let arc = <Arc<u64> as TryArc<u64>>::try_new(0).unwrap();
         let weak = Arc::downgrade(&arc);
         let mut clones = Vec::new();
         for i in 0..100 {
@@ -757,7 +827,7 @@ mod tests {
     #[test]
     fn weak_try_clone_rejects_at_max_refcount() {
         use crate::try_clone::TryClone;
-        let arc = Arc::<i32>::try_new(0).unwrap();
+        let arc = <Arc<i32> as TryArc<i32>>::try_new(0).unwrap();
         let weak = Arc::downgrade(&arc);
         let inner = weak_inner(&weak);
         // Overwrite after downgrade so we don't trigger std's own overflow check.
@@ -772,7 +842,7 @@ mod tests {
     #[test]
     fn weak_try_clone_rejects_above_max_refcount() {
         use crate::try_clone::TryClone;
-        let arc = Arc::<i32>::try_new(0).unwrap();
+        let arc = <Arc<i32> as TryArc<i32>>::try_new(0).unwrap();
         let weak = Arc::downgrade(&arc);
         let inner = weak_inner(&weak);
         // Overwrite after downgrade so we don't trigger std's own overflow check.
@@ -789,7 +859,7 @@ mod tests {
     #[test]
     fn weak_try_upgrade_success() {
         use crate::arc::TryWeak;
-        let arc = Arc::<i32>::try_new(42).unwrap();
+        let arc = <Arc<i32> as TryArc<i32>>::try_new(42).unwrap();
         let weak = Arc::downgrade(&arc);
         assert_eq!(Arc::strong_count(&arc), 1);
         let arc2 = weak.try_upgrade().unwrap().unwrap();
@@ -809,7 +879,7 @@ mod tests {
     fn weak_try_upgrade_after_drop_returns_none() {
         use crate::arc::TryWeak;
         let weak = {
-            let arc = Arc::<i32>::try_new(99).unwrap();
+            let arc = <Arc<i32> as TryArc<i32>>::try_new(99).unwrap();
             Arc::downgrade(&arc)
         };
         // arc has been dropped; strong count is zero.
@@ -819,7 +889,7 @@ mod tests {
     #[test]
     fn weak_try_upgrade_overflow_rejects() {
         use crate::arc::TryWeak;
-        let arc = Arc::<i32>::try_new(0).unwrap();
+        let arc = <Arc<i32> as TryArc<i32>>::try_new(0).unwrap();
         let weak = Arc::downgrade(&arc);
         let inner = weak_inner(&weak);
         inner.strong.store(MAX_REFCOUNT, Ordering::Relaxed);
@@ -832,7 +902,7 @@ mod tests {
     #[test]
     fn weak_try_upgrade_multiple_roundtrip() {
         use crate::arc::TryWeak;
-        let arc = Arc::<String>::try_new("hello".into()).unwrap();
+        let arc = <Arc<String> as TryArc<String>>::try_new("hello".into()).unwrap();
         let weak = Arc::downgrade(&arc);
         for _ in 0..50 {
             let upgraded = weak.try_upgrade().unwrap().unwrap();
@@ -943,19 +1013,19 @@ mod tests {
 
     #[test]
     fn arc_try_pin_returns_pinned() {
-        let _pinned: Pin<Arc<i32>> = Arc::<i32>::try_pin(42).unwrap();
+        let _pinned: Pin<Arc<i32>> = <Arc<i32> as TryArc<i32>>::try_pin(42).unwrap();
     }
 
     #[test]
     fn arc_try_pin_value_accessible() {
-        let pinned: Pin<Arc<u64>> = Arc::<u64>::try_pin(999).unwrap();
+        let pinned: Pin<Arc<u64>> = <Arc<u64> as TryArc<u64>>::try_pin(999).unwrap();
         let val: &u64 = &pinned;
         assert_eq!(*val, 999);
     }
 
     #[test]
     fn arc_try_pin_zst() {
-        let _pinned: Pin<Arc<()>> = Arc::<()>::try_pin(()).unwrap();
+        let _pinned: Pin<Arc<()>> = <Arc<()> as TryArc<()>>::try_pin(()).unwrap();
     }
 
     // ── fallible_ alias tests for pin ─────────────────────────────────────────

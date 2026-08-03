@@ -73,8 +73,9 @@ pub trait TryString: Sized {
 
     /// Fallibly construct a new `String` with at least enough capacity for `capacity` bytes.
     ///
-    /// Returns [`TryReserveError`] if the initial allocation fails.
-    /// Equivalent to `String::with_capacity(capacity)` but fallible.
+    /// **Deprecated:** This method name conflicts with the unstable inherent
+    /// [`String::try_with_capacity`]. Use [`Self::fallible_with_capacity`] instead.
+    #[deprecated(since = "0.1.0", note = "conflicts with unstable String::try_with_capacity; use fallible_with_capacity")]
     fn try_with_capacity(capacity: usize) -> Result<String, TryReserveError>;
 
     /// Fallibly construct a `String` from any value that references a `str`.
@@ -127,8 +128,59 @@ pub trait TryString: Sized {
     /// Returns [`TryStringError::Alloc`] if the re-allocation fails.
     /// Equivalent to `String::shrink_to(min_capacity)` but fallible.
     fn try_shrink_to(&mut self, min_capacity: usize) -> Result<(), TryStringError>;
+
+    // ── Aliases with `fallible_` prefix ────────────────────────────────────
+
+    /// Fallibly construct a new `String` with at least enough capacity for `capacity` bytes.
+    ///
+    /// The string may allocate more space than requested to accommodate future growth.
+    /// Returns [`TryReserveError`] if the allocation fails.
+    /// Equivalent to [`String::with_capacity`] but fallible.
+    ///
+    /// This method replaces the deprecated [`Self::try_with_capacity`] which
+    /// shares its name with the unstable inherent [`String::try_with_capacity`].
+    #[allow(deprecated)]
+    fn fallible_with_capacity(capacity: usize) -> Result<String, TryReserveError> {
+        Self::try_with_capacity(capacity)
+    }
+
+    /// Alias for [`Self::try_from_str`].
+    fn fallible_from_str<S: AsRef<str>>(s: S) -> Result<String, TryReserveError> {
+        Self::try_from_str(s)
+    }
+
+    /// Alias for [`Self::try_push`].
+    fn fallible_push(&mut self, c: char) -> Result<(), TryReserveError> {
+        Self::try_push(self, c)
+    }
+
+    /// Alias for [`Self::try_push_str`].
+    fn fallible_push_str(&mut self, s: &str) -> Result<(), TryReserveError> {
+        Self::try_push_str(self, s)
+    }
+
+    /// Alias for [`Self::try_insert`].
+    fn fallible_insert(&mut self, idx: usize, c: char) -> Result<(), TryStringError> {
+        Self::try_insert(self, idx, c)
+    }
+
+    /// Alias for [`Self::try_insert_str`].
+    fn fallible_insert_str(&mut self, idx: usize, s: &str) -> Result<(), TryStringError> {
+        Self::try_insert_str(self, idx, s)
+    }
+
+    /// Alias for [`Self::try_shrink_to_fit`].
+    fn fallible_shrink_to_fit(&mut self) -> Result<(), TryStringError> {
+        Self::try_shrink_to_fit(self)
+    }
+
+    /// Alias for [`Self::try_shrink_to`].
+    fn fallible_shrink_to(&mut self, min_capacity: usize) -> Result<(), TryStringError> {
+        Self::try_shrink_to(self, min_capacity)
+    }
 }
 
+#[allow(deprecated)]
 impl TryString for String {
     fn try_with_capacity(capacity: usize) -> Result<String, TryReserveError> {
         let mut s = String::new();
@@ -237,7 +289,6 @@ impl TryDefault for String {
 }
 
 #[cfg(test)]
-#[allow(unstable_name_collisions)]
 mod tests {
     use super::*;
 
@@ -245,13 +296,13 @@ mod tests {
 
     #[test]
     fn try_with_capacity_zero() {
-        let s = String::try_with_capacity(0).unwrap();
+        let s = String::fallible_with_capacity(0).unwrap();
         assert!(s.is_empty());
     }
 
     #[test]
     fn try_with_capacity_nonzero() {
-        let s = String::try_with_capacity(64).unwrap();
+        let s = String::fallible_with_capacity(64).unwrap();
         assert!(s.is_empty());
         assert!(s.capacity() >= 64);
     }
@@ -507,7 +558,7 @@ mod tests {
 
     #[test]
     fn try_shrink_to_fit_reduces_excess() {
-        let mut s = String::try_with_capacity(1024).unwrap();
+        let mut s = String::fallible_with_capacity(1024).unwrap();
         s.try_push_str("small").unwrap();
         let cap_before = s.capacity();
         assert!(cap_before >= 1024);
@@ -524,14 +575,14 @@ mod tests {
 
     #[test]
     fn try_shrink_to_fit_empty_large() {
-        let mut s = String::try_with_capacity(512).unwrap();
+        let mut s = String::fallible_with_capacity(512).unwrap();
         s.try_shrink_to_fit().unwrap();
         assert_eq!(s.capacity(), 0);
     }
 
     #[test]
     fn try_shrink_to_above_current_len() {
-        let mut s = String::try_with_capacity(256).unwrap();
+        let mut s = String::fallible_with_capacity(256).unwrap();
         s.try_push_str("tiny").unwrap();
         let cap_before = s.capacity();
         // min_capacity > len but < current capacity → should attempt to shrink.
@@ -565,7 +616,7 @@ mod tests {
 
     #[test]
     fn build_string_from_parts() {
-        let mut s = String::try_with_capacity(20).unwrap();
+        let mut s = String::fallible_with_capacity(20).unwrap();
         s.try_push_str("Hello, ").unwrap();
         s.try_push('w').unwrap();
         s.try_push_str("orld!").unwrap();
@@ -612,7 +663,7 @@ mod tests {
 
     #[test]
     fn insert_then_shrink() {
-        let mut s = String::try_with_capacity(256).unwrap();
+        let mut s = String::fallible_with_capacity(256).unwrap();
         s.try_push_str("a").unwrap();
         s.try_insert_str(1, "middle").unwrap();
         s.try_push_str("z").unwrap();

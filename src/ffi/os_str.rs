@@ -77,6 +77,23 @@ pub trait TryOsStr {
     /// that allocation failures return [`TryOsStrError::Reserve`] instead of
     /// panicking.
     fn try_to_ascii_lowercase(&self) -> Result<OsString, TryOsStrError>;
+
+    // ── Aliases with `fallible_` prefix ─────────────────────────────────────
+
+    /// Alias for [`Self::try_to_os_string`].
+    fn fallible_to_os_string(&self) -> Result<OsString, TryOsStrError> {
+        Self::try_to_os_string(self)
+    }
+
+    /// Alias for [`Self::try_to_ascii_uppercase`].
+    fn fallible_to_ascii_uppercase(&self) -> Result<OsString, TryOsStrError> {
+        Self::try_to_ascii_uppercase(self)
+    }
+
+    /// Alias for [`Self::try_to_ascii_lowercase`].
+    fn fallible_to_ascii_lowercase(&self) -> Result<OsString, TryOsStrError> {
+        Self::try_to_ascii_lowercase(self)
+    }
 }
 
 impl TryOsStr for OsStr {

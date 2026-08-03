@@ -1,4 +1,3 @@
-#![allow(unstable_name_collisions)]
 //! Fallible vector operations.
 //!
 //! Provides the [`TryVec`] trait with methods that mirror common `Vec` constructors
@@ -185,18 +184,140 @@ pub trait TryVec<T>: Sized {
 
     /// Fallibly shrink the capacity of this vector to match its length.
     ///
-    /// May reallocate if the current allocation is larger than needed.
-    /// Returns [`TryVecError`] if the re-allocation fails.
-    /// Equivalent to [`Vec::shrink_to_fit`] but fallible.
+    /// **Deprecated:** This method name conflicts with the unstable inherent
+    /// [`Vec::try_shrink_to_fit`]. Use [`Self::fallible_shrink_to_fit`] instead.
+    #[deprecated(since = "0.1.0", note = "conflicts with unstable Vec::try_shrink_to_fit; use fallible_shrink_to_fit")]
     fn try_shrink_to_fit(&mut self) -> Result<(), TryVecError>;
+
+    /// Fallibly shrink the capacity of this vector to at least `min_capacity`.
+    ///
+    /// **Deprecated:** This method name conflicts with the unstable inherent
+    /// [`Vec::try_shrink_to`]. Use [`Self::fallible_shrink_to`] instead.
+    #[deprecated(since = "0.1.0", note = "conflicts with unstable Vec::try_shrink_to; use fallible_shrink_to")]
+    fn try_shrink_to(&mut self, min_capacity: usize) -> Result<(), TryVecError>;
+
+    // ── Aliases with `fallible_` prefix ─────────────────────────────────────
+
+    /// Alias for [`Self::try_from_elem`].
+    fn fallible_from_elem(value: &T, capacity: usize) -> Result<Vec<T>, TryVecError>
+    where
+        T: TryClone,
+    {
+        Self::try_from_elem(value, capacity)
+    }
+
+    /// Alias for [`Self::try_from_elem_give_back`].
+    fn fallible_from_elem_give_back(value: T, capacity: usize) -> Result<Vec<T>, (T, TryVecError)>
+    where
+        T: TryClone,
+    {
+        Self::try_from_elem_give_back(value, capacity)
+    }
+
+    /// Alias for [`Self::try_push`].
+    fn fallible_push(&mut self, value: T) -> Result<(), TryReserveError> {
+        Self::try_push(self, value)
+    }
+
+    /// Alias for [`Self::try_push_give_back`].
+    fn fallible_push_give_back(&mut self, value: T) -> Result<(), (T, TryReserveError)> {
+        Self::try_push_give_back(self, value)
+    }
+
+    /// Alias for [`Self::try_insert`].
+    fn fallible_insert(&mut self, index: usize, value: T) -> Result<(), TryVecError> {
+        Self::try_insert(self, index, value)
+    }
+
+    /// Alias for [`Self::try_insert_give_back`].
+    fn fallible_insert_give_back(&mut self, index: usize, value: T) -> Result<(), (T, TryVecError)> {
+        Self::try_insert_give_back(self, index, value)
+    }
+
+    /// Alias for [`Self::try_extend`].
+    fn fallible_extend<I: IntoIterator<Item = T>>(&mut self, iter: I) -> Result<(), TryReserveError> {
+        Self::try_extend(self, iter)
+    }
+
+    /// Alias for [`Self::try_extend_from_slice`].
+    fn fallible_extend_from_slice(&mut self, other: &[T]) -> Result<(), TryVecError>
+    where
+        T: TryClone,
+    {
+        Self::try_extend_from_slice(self, other)
+    }
+
+    /// Alias for [`Self::try_append`].
+    fn fallible_append(&mut self, other: &mut Vec<T>) -> Result<(), TryReserveError> {
+        Self::try_append(self, other)
+    }
+
+    /// Alias for [`Self::try_extend_from_within`].
+    fn fallible_extend_from_within<R: std::ops::RangeBounds<usize>>(
+        &mut self,
+        range: R,
+    ) -> Result<(), TryVecError>
+    where
+        T: TryClone,
+    {
+        Self::try_extend_from_within(self, range)
+    }
+
+    /// Alias for [`Self::try_resize`].
+    fn fallible_resize(&mut self, value: &T, new_len: usize) -> Result<(), TryVecError>
+    where
+        T: TryClone,
+    {
+        Self::try_resize(self, value, new_len)
+    }
+
+    /// Alias for [`Self::try_resize_with`].
+    fn fallible_resize_with<F>(&mut self, new_len: usize, f: F) -> Result<(), TryReserveError>
+    where
+        F: FnMut() -> T,
+    {
+        Self::try_resize_with(self, new_len, f)
+    }
+
+    /// Fallibly shrink the capacity of this vector to match its length.
+    ///
+    /// May reallocate if the current allocation is larger than needed.
+    /// Returns [`TryVecError::Alloc`] if the re-allocation fails.
+    /// Equivalent to [`Vec::shrink_to_fit`] but fallible.
+    ///
+    /// This method replaces the deprecated [`Self::try_shrink_to_fit`] which
+    /// shares its name with the unstable inherent [`Vec::try_shrink_to_fit`].
+    #[allow(deprecated)]
+    fn fallible_shrink_to_fit(&mut self) -> Result<(), TryVecError> {
+        Self::try_shrink_to_fit(self)
+    }
 
     /// Fallibly shrink the capacity of this vector to at least `min_capacity`.
     ///
     /// If the current capacity is already less than or equal to `min_capacity`,
     /// does nothing and returns `Ok(())`. Otherwise reallocates down.
-    /// Returns [`TryVecError`] if the re-allocation fails.
+    /// Returns [`TryVecError::Alloc`] if the re-allocation fails.
     /// Equivalent to [`Vec::shrink_to`] but fallible.
-    fn try_shrink_to(&mut self, min_capacity: usize) -> Result<(), TryVecError>;
+    ///
+    /// This method replaces the deprecated [`Self::try_shrink_to`] which shares
+    /// its name with the unstable inherent [`Vec::try_shrink_to`].
+    #[allow(deprecated)]
+    fn fallible_shrink_to(&mut self, min_capacity: usize) -> Result<(), TryVecError> {
+        Self::try_shrink_to(self, min_capacity)
+    }
+
+    /// Alias for [`Self::try_collect`].
+    fn fallible_collect<I: IntoIterator<Item = T>>(iter: I) -> Result<Vec<T>, TryReserveError> {
+        Self::try_collect(iter)
+    }
+
+    /// Alias for [`Self::try_from_slice`].
+    fn fallible_from_slice(slice: &[T]) -> Result<Vec<T>, TryVecError>
+    where
+        T: TryClone,
+    {
+        Self::try_from_slice(slice)
+    }
 
     // ── Bulk construction ───────────────────────────────────────────────────
 
@@ -215,6 +336,7 @@ pub trait TryVec<T>: Sized {
         T: TryClone;
 }
 
+#[allow(deprecated)]
 impl<T> TryVec<T> for Vec<T> {
     fn try_from_elem(value: &T, capacity: usize) -> Result<Vec<T>, TryVecError>
     where
@@ -514,7 +636,6 @@ impl<T: TryDefault> TryDefault for Vec<T> {
 }
 
 #[cfg(test)]
-#[allow(unstable_name_collisions)]
 mod tests {
     use super::*;
 
@@ -845,7 +966,7 @@ mod tests {
         let mut v: Vec<i32> = vec![1, 2, 3];
         let cap_before = v.capacity();
         // capacity == len already; no-op path.
-        v.try_shrink_to_fit().unwrap();
+        v.fallible_shrink_to_fit().unwrap();
         assert_eq!(v.capacity(), cap_before);
         assert_eq!(v, [1, 2, 3]);
     }
@@ -858,7 +979,7 @@ mod tests {
         v.try_push(2).unwrap();
         let cap_before = v.capacity();
         assert!(cap_before >= 1024);
-        v.try_shrink_to_fit().unwrap();
+        v.fallible_shrink_to_fit().unwrap();
         assert!(
             v.capacity() < cap_before,
             "capacity {} was not reduced from {}",
@@ -873,7 +994,7 @@ mod tests {
     fn try_shrink_to_fit_empty_large() {
         let mut v: Vec<i32> = Vec::new();
         v.try_reserve(512).unwrap();
-        v.try_shrink_to_fit().unwrap();
+        v.fallible_shrink_to_fit().unwrap();
         assert_eq!(v.capacity(), 0);
     }
 
@@ -884,7 +1005,7 @@ mod tests {
         v.try_push(42).unwrap();
         let cap_before = v.capacity();
         // min_capacity > len but < current capacity → should attempt to shrink.
-        v.try_shrink_to(32).unwrap();
+        v.fallible_shrink_to(32).unwrap();
         assert!(v.capacity() >= 32);
         assert!(v.capacity() < cap_before || v.capacity() >= 32);
         assert_eq!(v, [42]);
@@ -895,7 +1016,7 @@ mod tests {
         let mut v: Vec<i32> = vec![1, 2, 3, 4, 5, 6];
         let cap_before = v.capacity();
         // min_capacity < len → target == len, capacity already fits → no-op.
-        v.try_shrink_to(2).unwrap();
+        v.fallible_shrink_to(2).unwrap();
         assert_eq!(v, [1, 2, 3, 4, 5, 6]);
         assert_eq!(v.capacity(), cap_before);
     }
@@ -904,7 +1025,7 @@ mod tests {
     fn try_shrink_to_already_small() {
         let mut v: Vec<i32> = vec![1, 2];
         // capacity already <= min_capacity → no-op.
-        v.try_shrink_to(16).unwrap();
+        v.fallible_shrink_to(16).unwrap();
         assert_eq!(v, [1, 2]);
     }
 
@@ -914,7 +1035,7 @@ mod tests {
         v.try_reserve(128).unwrap();
         v.try_push(vec![1, 2, 3]).unwrap();
         v.try_push(vec![4, 5]).unwrap();
-        v.try_shrink_to(4).unwrap();
+        v.fallible_shrink_to(4).unwrap();
         assert!(v.capacity() >= 4);
         assert_eq!(v, [vec![1, 2, 3], vec![4, 5]]);
     }
@@ -925,7 +1046,7 @@ mod tests {
         v.try_reserve(64).unwrap();
         v.try_push("hello".to_string()).unwrap();
         v.try_push("world".to_string()).unwrap();
-        v.try_shrink_to_fit().unwrap();
+        v.fallible_shrink_to_fit().unwrap();
         assert_eq!(v, ["hello", "world"]);
     }
 

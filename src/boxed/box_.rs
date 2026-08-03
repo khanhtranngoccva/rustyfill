@@ -1,4 +1,3 @@
-#![allow(unstable_name_collisions)]
 //! Fallible heap allocation for boxed values.
 //!
 //! Provides the [`TryBox`] trait with methods that mirror `Box` constructors
@@ -19,26 +18,30 @@ pub trait TryBox<T>: Sized {
 
     /// Fallibly allocate `value` on the heap.
     ///
-    /// For zero-sized types this never fails and returns immediately.
+    /// **Deprecated:** This method name conflicts with the unstable inherent
+    /// [`Box::try_new`]. Use [`Self::fallible_new`] instead.
+    #[deprecated(since = "0.1.0", note = "conflicts with unstable Box::try_new; use fallible_new")]
     fn try_new(value: T) -> Result<Self, AllocError>;
 
     /// Fallibly allocate uninitialized memory on the heap.
     ///
-    /// Returns a [`Box<MaybeUninit<T>>`][MaybeUninit] that can be initialized
-    /// in place via [`MaybeUninit::write`] and converted to a `Box<T>` using
-    /// the inherent [`Box<MaybeUninit<T>>::assume_init`].
+    /// **Deprecated:** This method name conflicts with the unstable inherent
+    /// [`Box::try_new_uninit`]. Use [`Self::fallible_new_uninit`] instead.
+    #[deprecated(since = "0.1.0", note = "conflicts with unstable Box::try_new_uninit; use fallible_new_uninit")]
     fn try_new_uninit() -> Result<Self::Uninit, AllocError>;
 
     /// Fallibly allocate zero-initialised memory on the heap.
     ///
-    /// Returns a [`Box<MaybeUninit<T>>`][MaybeUninit] whose underlying bytes
-    /// are all set to zero. Safe to call [`MaybeUninit::assume_init`] on types
-    /// whose all-zeros bitpattern is valid (e.g. numeric primitives, `bool`,
-    /// `[T; N]` where `T` is also zeroable).
+    /// **Deprecated:** This method name conflicts with the unstable inherent
+    /// [`Box::try_new_zeroed`]. Use [`Self::fallible_new_zeroed`] instead.
+    #[deprecated(since = "0.1.0", note = "conflicts with unstable Box::try_new_zeroed; use fallible_new_zeroed")]
     fn try_new_zeroed() -> Result<Self::Uninit, AllocError>;
 
-    /// Like [`Self::try_new`] but returns ownership of `value` back on failure
-    /// so it can be reused or dropped cleanly.
+    /// Like [`Self::try_new`] but returns ownership of `value` back on failure.
+    ///
+    /// On success, returns the newly allocated `Box<T>`. On allocation failure,
+    /// returns the original `value` alongside the [`AllocError`] so the caller
+    /// can reuse or drop it cleanly rather than losing it to an OOM panic.
     fn try_new_give_back(value: T) -> Result<Self, (T, AllocError)>;
 
     /// Fallibly allocate `value` on the heap and pin it in place.
@@ -48,23 +51,52 @@ pub trait TryBox<T>: Sized {
     /// of [`Box::pin`].
     fn try_pin(value: T) -> Result<Pin<Self>, AllocError>;
 
-    /// Like [`Self::try_pin`] but returns ownership of `value` back on failure
-    /// so it can be reused or dropped cleanly.
+    /// Like [`Self::try_pin`] but returns ownership of `value` back on failure.
+    ///
+    /// On success, returns the pinned `Box<T>`. On allocation failure, returns
+    /// the original `value` alongside the [`AllocError`] so the caller retains
+    /// access to the data.
     fn try_pin_give_back(value: T) -> Result<Pin<Self>, (T, AllocError)>;
 
     // ── Aliases with `fallible_` prefix to avoid name collisions ────────────
 
-    /// Alias for [`Self::try_new`].
+    /// Fallibly allocate `value` on the heap.
+    ///
+    /// Returns [`AllocError`] if the heap allocation fails. Unlike [`Box::new`],
+    /// this never panics on out-of-memory conditions.
+    ///
+    /// For zero-sized types this never fails and returns immediately.
+    ///
+    /// This method replaces the deprecated [`Self::try_new`] which shares its
+    /// name with the unstable inherent [`Box::try_new`].
+    #[allow(deprecated)]
     fn fallible_new(value: T) -> Result<Self, AllocError> {
         Self::try_new(value)
     }
 
-    /// Alias for [`Self::try_new_uninit`].
+    /// Fallibly allocate uninitialized memory on the heap.
+    ///
+    /// Returns a [`Box<MaybeUninit<T>>`][MaybeUninit] that can be initialized
+    /// in place via [`MaybeUninit::write`] and converted to a `Box<T>` using
+    /// the inherent [`Box<MaybeUninit<T>>::assume_init`].
+    ///
+    /// This method replaces the deprecated [`Self::try_new_uninit`] which shares
+    /// its name with the unstable inherent [`Box::try_new_uninit`].
+    #[allow(deprecated)]
     fn fallible_new_uninit() -> Result<Self::Uninit, AllocError> {
         Self::try_new_uninit()
     }
 
-    /// Alias for [`Self::try_new_zeroed`].
+    /// Fallibly allocate zero-initialised memory on the heap.
+    ///
+    /// Returns a [`Box<MaybeUninit<T>>`][MaybeUninit] whose underlying bytes
+    /// are all set to zero. Safe to call [`MaybeUninit::assume_init`] on types
+    /// whose all-zeros bitpattern is valid (e.g. numeric primitives, `bool`,
+    /// `[T; N]` where `T` is also zeroable).
+    ///
+    /// This method replaces the deprecated [`Self::try_new_zeroed`] which shares
+    /// its name with the unstable inherent [`Box::try_new_zeroed`].
+    #[allow(deprecated)]
     fn fallible_new_zeroed() -> Result<Self::Uninit, AllocError> {
         Self::try_new_zeroed()
     }
@@ -74,7 +106,14 @@ pub trait TryBox<T>: Sized {
         Self::try_new_give_back(value)
     }
 
-    /// Alias for [`Self::try_pin`].
+    /// Fallibly allocate `value` on the heap and pin it in place.
+    ///
+    /// Returns a [`Pin<Box<T>>`] so that if `T` does not implement [`Unpin`],
+    /// the value is immovable after allocation. This is the fallible analogue
+    /// of [`Box::pin`].
+    ///
+    /// This method replaces the deprecated [`Self::try_pin`].
+    #[allow(deprecated)]
     fn fallible_pin(value: T) -> Result<Pin<Self>, AllocError> {
         Self::try_pin(value)
     }
@@ -125,6 +164,7 @@ mod alloc_inner {
     }
 }
 
+#[allow(deprecated)]
 impl<T> TryBox<T> for Box<T> {
     type Uninit = Box<MaybeUninit<T>>;
 
@@ -154,7 +194,7 @@ impl<T> TryBox<T> for Box<T> {
     }
 
     fn try_pin(value: T) -> Result<Pin<Self>, AllocError> {
-        let boxed = Self::try_new(value)?;
+        let boxed = <Self as TryBox<T>>::try_new(value)?;
         Ok(unsafe { Pin::new_unchecked(boxed) })
     }
 
@@ -166,6 +206,7 @@ impl<T> TryBox<T> for Box<T> {
     }
 }
 
+#[allow(deprecated)]
 impl<T: TryClone> TryClone for Box<T> {
     fn try_clone(&self) -> Result<Self, TryCloneError> {
         // Allocate first so that if allocation fails we never touch T::try_clone().
@@ -181,6 +222,7 @@ impl<T: TryClone> TryClone for Box<T> {
     }
 }
 
+#[allow(deprecated)]
 impl<T: TryDefault> TryDefault for Box<T> {
     fn try_default() -> Result<Self, TryDefaultError> {
         // Allocate first so that if allocation fails we never touch T::try_default().
@@ -245,6 +287,7 @@ impl TryDefault for Box<str> {
 }
 
 #[cfg(test)]
+#[allow(deprecated)]
 mod tests {
     use super::*;
 
