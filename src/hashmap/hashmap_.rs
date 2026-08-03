@@ -386,18 +386,22 @@ impl<K: Eq + Hash, V, S: BuildHasher> TryHashMap<K, V, S> for HashMap<K, V, S> {
     // ── Construction ────────────────────────────────────────────────────────
 
     fn try_with_capacity(capacity: usize) -> Result<HashMap<K, V, RandomState>, TryReserveError> {
-        // HashMap::with_capacity on stable never fails — it allocates eagerly
-        // or returns an empty map for capacity == 0. We wrap in Ok for API
-        // symmetry with the fallible trait contract.
-        Ok(HashMap::with_capacity(capacity))
+        let mut map = HashMap::new();
+        if capacity > 0 {
+            map.try_reserve(capacity)?;
+        }
+        Ok(map)
     }
 
     fn try_with_capacity_and_hasher(
         capacity: usize,
         hasher: S,
     ) -> Result<HashMap<K, V, S>, TryReserveError> {
-        // Same as above: with_capacity_and_hasher on stable never fails.
-        Ok(HashMap::with_capacity_and_hasher(capacity, hasher))
+        let mut map = HashMap::with_hasher(hasher);
+        if capacity > 0 {
+            map.try_reserve(capacity)?;
+        }
+        Ok(map)
     }
 
     // ── Insertion ───────────────────────────────────────────────────────────

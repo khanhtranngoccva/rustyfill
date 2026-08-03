@@ -7,9 +7,12 @@
 pub mod alloc;
 pub mod arc;
 pub mod boxed;
+pub mod btrees;
 pub mod ffi;
 pub mod hashmap;
+pub mod hashset;
 pub mod path;
+pub mod vecdeque;
 pub mod prelude;
 pub mod string;
 pub mod try_clone;

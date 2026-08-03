@@ -30,9 +30,18 @@ pub use crate::boxed::TryBox;
 
 pub use crate::vec::{TrySlice, TryVec};
 
-// ── HashMap ───────────────────────────────────────────────────────────────────
+// ── HashMap & HashSet ────────────────────────────────────────────────────────
 
 pub use crate::hashmap::TryHashMap;
+pub use crate::hashset::TryHashSet;
+
+// ── VecDeque ─────────────────────────────────────────────────────────────────
+
+pub use crate::vecdeque::TryVecDeque;
+
+// ── BTreeMap & BTreeSet ──────────────────────────────────────────────────────
+
+pub use crate::btrees::{TryBTreeMap, TryBTreeSet};
 
 // ── String & str ─────────────────────────────────────────────────────────────
 
