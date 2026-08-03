@@ -146,6 +146,21 @@ pub trait TryHashMap<K, V, S>: Sized {
     where
         K: Eq + Hash;
 
+    /// Fallibly obtain an [`Entry`] for a key, reserving capacity first.
+    ///
+    /// Reserves space for exactly one additional element so that subsequent
+    /// operations on the returned [`Entry`] (such as [`Entry::or_insert`] or
+    /// [`Entry::and_modify`]) cannot panic on out-of-memory. Returns
+    /// [`TryHashMapError::Reserve`] if the capacity reservation fails.
+    ///
+    /// Unlike the inherent [`HashMap::entry`], this method guarantees that
+    /// inserting through the entry will not allocate again.
+    ///
+    /// [`Entry`]: std::collections::hash_map::Entry
+    fn try_entry<'a>(&'a mut self, key: K) -> Result<std::collections::hash_map::Entry<'a, K, V>, TryHashMapError>
+    where
+        K: Eq + Hash;
+
     // ── Aliases with `fallible_` prefix ────────────────────────────────────
 
     /// Alias for [`Self::try_with_capacity`].
@@ -192,6 +207,14 @@ pub trait TryHashMap<K, V, S>: Sized {
         K: Eq + Hash,
     {
         Self::try_insert_give_back(self, key, value)
+    }
+
+    /// Alias for [`Self::try_entry`].
+    fn fallible_entry<'a>(&'a mut self, key: K) -> Result<std::collections::hash_map::Entry<'a, K, V>, TryHashMapError>
+    where
+        K: Eq + Hash,
+    {
+        Self::try_entry(self, key)
     }
 
     // ── Extension ───────────────────────────────────────────────────────────
@@ -246,8 +269,7 @@ pub trait TryHashMap<K, V, S>: Sized {
     /// This is not the case for any standard-library hasher (`RandomState`,
     /// `SipHasher13`, etc.) or popular third-party hashers (`ahash`, `FxHash`,
     /// FNV, DJB2, and so on), which store only small stack integers. However,
-    /// a custom hasher that internally allocates (e.g., caches compiled lookup
-    /// tables) could panic during the clone step.
+    /// a custom hasher that internally allocates could panic during the clone step.
     fn try_shrink_to_fit(&mut self) -> Result<(), TryHashMapError>
     where
         S: Clone;
@@ -267,8 +289,7 @@ pub trait TryHashMap<K, V, S>: Sized {
     /// This is not the case for any standard-library hasher (`RandomState`,
     /// `SipHasher13`, etc.) or popular third-party hashers (`ahash`, `FxHash`,
     /// FNV, DJB2, and so on), which store only small stack integers. However,
-    /// a custom hasher that internally allocates (e.g., caches compiled lookup
-    /// tables) could panic during the clone step.
+    /// a custom hasher that internally allocates could panic during the clone step.
     fn try_shrink_to(&mut self, min_capacity: usize) -> Result<(), TryHashMapError>
     where
         S: Clone;
@@ -363,6 +384,14 @@ impl<K: Eq + Hash, V, S: BuildHasher> TryHashMap<K, V, S> for HashMap<K, V, S> {
             }
             Err(e) => Err((key, value, TryHashMapError::Reserve(e))),
         }
+    }
+
+    fn try_entry<'a>(&'a mut self, key: K) -> Result<std::collections::hash_map::Entry<'a, K, V>, TryHashMapError>
+    where
+        K: Eq + Hash,
+    {
+        self.try_reserve(1).map_err(TryHashMapError::Reserve)?;
+        Ok(self.entry(key))
     }
 
     // ── Extension ───────────────────────────────────────────────────────────
@@ -497,8 +526,7 @@ impl<K: Eq + Hash, V, S: BuildHasher> TryHashMap<K, V, S> for HashMap<K, V, S> {
 /// This is not the case for any standard-library hasher (`RandomState`,
 /// `SipHasher13`, etc.) or popular third-party hashers (`ahash`, `FxHash`,
 /// FNV, DJB2, and so on), which store only small stack integers. However,
-/// a custom hasher that internally allocates (e.g., caches compiled lookup
-/// tables) could panic during the clone step.
+/// a custom hasher that internally allocates could panic during the clone step.
 impl<K, V, S> TryClone for HashMap<K, V, S>
 where
     K: Eq + Hash + TryClone,
@@ -753,6 +781,66 @@ mod tests {
         let mut map: HashMap<i32, i32> = HashMap::new();
         let result: Result<(), (i32, i32, TryHashMapError)> = map.fallible_insert_give_back(1, 2);
         assert!(result.is_ok());
+    }
+
+    // ── Entry API ────────────────────────────────────────────────────────────
+
+    #[test]
+    fn try_entry_or_insert_new_key() {
+        let mut map: HashMap<String, i32> = HashMap::new();
+        map.try_entry("hello".to_string())
+            .unwrap()
+            .or_insert(42);
+        assert_eq!(map["hello"], 42);
+    }
+
+    #[test]
+    fn try_entry_or_insert_existing_key() {
+        let mut map: HashMap<String, i32> = HashMap::new();
+        map.fallible_insert("key".to_string(), 1).unwrap();
+        map.try_entry("key".to_string())
+            .unwrap()
+            .or_insert(99);
+        assert_eq!(map["key"], 1);
+        assert_eq!(map.len(), 1);
+    }
+
+    #[test]
+    fn try_entry_and_modify() {
+        let mut map: HashMap<String, i32> = HashMap::new();
+        map.fallible_insert("count".to_string(), 5).unwrap();
+        map.try_entry("count".to_string())
+            .unwrap()
+            .and_modify(|v| *v += 1);
+        assert_eq!(map["count"], 6);
+    }
+
+    #[test]
+    fn try_entry_or_insert_with_fn() {
+        let mut map: HashMap<String, Vec<u8>> = HashMap::new();
+        map.try_entry("data".to_string())
+            .unwrap()
+            .or_insert_with(|| vec![1, 2, 3]);
+        assert_eq!(map["data"], vec![1, 2, 3]);
+    }
+
+    #[test]
+    fn try_entry_vacant_inserts() {
+        let mut map: HashMap<i32, String> = HashMap::new();
+        map.fallible_insert(1, "one".to_string()).unwrap();
+        map.try_entry(99)
+            .unwrap()
+            .or_insert_with(String::new);
+        assert_eq!(map.len(), 2);
+    }
+
+    #[test]
+    fn fallible_entry_matches_try_entry() {
+        let mut map: HashMap<String, i32> = HashMap::new();
+        map.fallible_entry("x".to_string())
+            .unwrap()
+            .or_insert(10);
+        assert_eq!(map["x"], 10);
     }
 
     // ── TryClone ─────────────────────────────────────────────────────────────
