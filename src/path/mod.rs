@@ -7,6 +7,7 @@
 //! and [`TryDefault`](crate::try_default::TryDefault) for `PathBuf`.
 //! All return [`Result`] on allocation failure instead of panicking.
 
+#[allow(clippy::module_inception)]
 mod path;
 mod path_buf;
 

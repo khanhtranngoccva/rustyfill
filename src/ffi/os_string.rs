@@ -109,15 +109,17 @@ pub trait TryOsString: Sized {
     /// Fallibly shrink the capacity of this `OsString` to match its length.
     ///
     /// May reallocate if the current allocation is larger than needed.
-    /// Returns [`TryReserveError`] if the re-allocation fails.
-    fn try_shrink_to_fit(&mut self) -> Result<(), TryReserveError>;
+    /// Returns [`TryOsStringError::Alloc`] if the re-allocation fails.
+    /// Equivalent to `OsString::shrink_to_fit()` but fallible.
+    fn try_shrink_to_fit(&mut self) -> Result<(), TryOsStringError>;
 
     /// Fallibly shrink the capacity of this `OsString` to at least `min_capacity`.
     ///
-    /// If the current capacity is already less than `min_capacity`, does nothing.
-    /// Otherwise reallocates down. Returns [`TryReserveError`] if the
-    /// re-allocation fails.
-    fn try_shrink_to(&mut self, min_capacity: usize) -> Result<(), TryReserveError>;
+    /// If the current capacity is already less than or equal to `min_capacity`,
+    /// does nothing and returns `Ok(())`. Otherwise reallocates down.
+    /// Returns [`TryOsStringError::Alloc`] if the re-allocation fails.
+    /// Equivalent to `OsString::shrink_to(min_capacity)` but fallible.
+    fn try_shrink_to(&mut self, min_capacity: usize) -> Result<(), TryOsStringError>;
 
     // ── Conversion ──────────────────────────────────────────────────────────
 
@@ -176,26 +178,25 @@ impl TryOsString for OsString {
         Ok(())
     }
 
-    fn try_shrink_to_fit(&mut self) -> Result<(), TryReserveError> {
+    fn try_shrink_to_fit(&mut self) -> Result<(), TryOsStringError> {
         self.try_shrink_to(self.len())
     }
 
-    fn try_shrink_to(&mut self, min_capacity: usize) -> Result<(), TryReserveError> {
-        let target = core::cmp::max(self.len(), min_capacity);
-        if self.capacity() <= target {
-            return Ok(());
-        }
-
-        // Important: we must not use mem::take() before the allocation succeeds,
-        // because a failed reservation would silently destroy the original data.
-        let len = self.len();
-        let mut out = OsString::new();
-        if len > 0 {
-            out.try_reserve(target)?;
-            out.push(self.as_os_str());
-        }
-        *self = out;
-        Ok(())
+    fn try_shrink_to(&mut self, min_capacity: usize) -> Result<(), TryOsStringError> {
+        // Convert to encoded bytes (Vec<u8>), shrink via TryVec, then convert
+        // back. Only the spare capacity portion is reallocated — the OS string
+        // data bytes are never copied or revalidated.
+        let mut v = std::mem::replace(self, OsString::new()).into_encoded_bytes();
+        let result = <Vec<u8> as crate::vec::TryVec<u8>>::try_shrink_to(&mut v, min_capacity);
+        // SAFETY: the bytes originated from a valid OsString via into_encoded_bytes.
+        *self = unsafe { OsString::from_encoded_bytes_unchecked(v) };
+        result.map_err(|e| match e {
+            crate::vec::TryVecError::Alloc(e) => TryOsStringError::Alloc(e),
+            crate::vec::TryVecError::Reserve(e) => TryOsStringError::Reserve(e),
+            crate::vec::TryVecError::Clone(_) => unreachable!("shrink does not clone"),
+            crate::vec::TryVecError::Overflow => TryOsStringError::Overflow,
+            crate::vec::TryVecError::Other(msg) => TryOsStringError::Other(msg),
+        })
     }
 
     fn try_into_string(self) -> Result<String, OsString> {
@@ -339,12 +340,15 @@ mod tests {
     }
 
     #[test]
-    fn try_shrink_to_below_len_is_noop() {
+    fn try_shrink_to_below_len_reduces_padding() {
         let mut s = OsString::try_from_str("abcdef").unwrap();
+        // min_capacity < len → target == len. Allocator may have rounded up
+        // the original capacity above len, so shrink can still reduce padding.
         let cap_before = s.capacity();
         s.try_shrink_to(2).unwrap();
         assert_eq!(s, OsString::from("abcdef"));
-        assert_eq!(s.capacity(), cap_before);
+        assert!(s.capacity() >= s.len());
+        assert!(s.capacity() < cap_before || s.capacity() == s.len());
     }
 
     // ── Conversion ───────────────────────────────────────────────────────────

@@ -279,15 +279,14 @@ mod tests {
     #[test]
     fn try_clone_ref_returns_same_path() {
         let p = Path::new("/tmp/test");
-        let r: &Path = &p;
+        let r: &Path = p;
         let c: &Path = r.try_clone().unwrap();
         assert_eq!(c, p);
     }
 
     #[test]
     fn try_clone_ref_empty() {
-        let p = Path::new("");
-        let r: &Path = &p;
+        let r: &Path = Path::new("");
         let c: &Path = r.try_clone().unwrap();
         assert!(c.as_os_str().is_empty());
     }

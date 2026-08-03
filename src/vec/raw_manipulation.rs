@@ -97,7 +97,7 @@ impl RawVecInnerView {
     }
 
     #[cfg_attr(test, no_panic::no_panic)]
-    pub(crate) unsafe fn to_vec<T>(self, len: usize) -> Vec<T> {
+    pub(crate) unsafe fn into_vec<T>(self, len: usize) -> Vec<T> {
         unsafe { Vec::from_raw_parts(self.ptr.as_ptr().cast(), len, self.cap) }
     }
 }

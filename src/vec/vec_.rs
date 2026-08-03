@@ -434,7 +434,7 @@ impl<T> TryVec<T> for Vec<T> {
             Ok(()) => {
                 // SAFETY: shrink succeeded; current_raw holds the new (or same)
                 // allocation with updated capacity. Length is unchanged.
-                *self = unsafe { current_raw.to_vec(current_len) };
+                *self = unsafe { current_raw.into_vec(current_len) };
                 Ok(())
             }
             Err(e) => {
@@ -443,7 +443,7 @@ impl<T> TryVec<T> for Vec<T> {
                 // current_raw still holds the original (unshrunk) allocation.
                 // SAFETY: pointer, length, and capacity are all still valid from
                 // the original Vec.
-                *self = unsafe { current_raw.to_vec(current_len) };
+                *self = unsafe { current_raw.into_vec(current_len) };
                 Err(TryVecError::Alloc(e))
             }
         }
