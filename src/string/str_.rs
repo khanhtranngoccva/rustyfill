@@ -34,8 +34,8 @@ impl fmt::Display for TryStrError {
 }
 
 impl From<AllocError> for TryStrError {
-    fn from(_: AllocError) -> Self {
-        Self::Alloc(AllocError)
+    fn from(e: AllocError) -> Self {
+        Self::Alloc(e)
     }
 }
 

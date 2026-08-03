@@ -1,3 +1,4 @@
+#![allow(unstable_name_collisions)]
 //! Fallible vector operations.
 //!
 //! Provides the [`TryVec`] trait with methods that mirror common `Vec` constructors
@@ -17,7 +18,9 @@
 use crate::alloc::AllocError;
 use crate::try_clone::{TryClone, TryCloneError};
 use crate::try_default::{TryDefault, TryDefaultError};
+use crate::vec::raw_manipulation::RawVecInnerView;
 use core::fmt;
+use std::alloc::Layout;
 use std::collections::TryReserveError;
 
 /// Error returned by [`TryVec`] operations.
@@ -56,8 +59,8 @@ impl fmt::Display for TryVecError {
 }
 
 impl From<AllocError> for TryVecError {
-    fn from(_: AllocError) -> Self {
-        Self::Alloc(AllocError)
+    fn from(e: AllocError) -> Self {
+        Self::Alloc(e)
     }
 }
 
@@ -183,17 +186,17 @@ pub trait TryVec<T>: Sized {
     /// Fallibly shrink the capacity of this vector to match its length.
     ///
     /// May reallocate if the current allocation is larger than needed.
-    /// Returns [`TryReserveError`] if the re-allocation fails.
+    /// Returns [`TryVecError`] if the re-allocation fails.
     /// Equivalent to [`Vec::shrink_to_fit`] but fallible.
-    fn try_shrink_to_fit(&mut self) -> Result<(), TryReserveError>;
+    fn try_shrink_to_fit(&mut self) -> Result<(), TryVecError>;
 
     /// Fallibly shrink the capacity of this vector to at least `min_capacity`.
     ///
     /// If the current capacity is already less than or equal to `min_capacity`,
     /// does nothing and returns `Ok(())`. Otherwise reallocates down.
-    /// Returns [`TryReserveError`] if the re-allocation fails.
+    /// Returns [`TryVecError`] if the re-allocation fails.
     /// Equivalent to [`Vec::shrink_to`] but fallible.
-    fn try_shrink_to(&mut self, min_capacity: usize) -> Result<(), TryReserveError>;
+    fn try_shrink_to(&mut self, min_capacity: usize) -> Result<(), TryVecError>;
 
     // ── Bulk construction ───────────────────────────────────────────────────
 
@@ -413,42 +416,37 @@ impl<T> TryVec<T> for Vec<T> {
         Ok(())
     }
 
-    fn try_shrink_to_fit(&mut self) -> Result<(), TryReserveError> {
-        self.try_shrink_to(self.len())
+    fn try_shrink_to_fit(&mut self) -> Result<(), TryVecError> {
+        <Self as TryVec<T>>::try_shrink_to(self, self.len())
     }
 
-    fn try_shrink_to(&mut self, min_capacity: usize) -> Result<(), TryReserveError> {
+    fn try_shrink_to(&mut self, min_capacity: usize) -> Result<(), TryVecError> {
         let target = core::cmp::max(self.len(), min_capacity);
         if self.capacity() <= target {
             return Ok(());
         }
-        // Reallocate into a buffer whose capacity is closer to `target`.
-        // We build a fresh Vec by reserving the desired size and copying
-        // the raw bytes over. The allocator may round up, which is fine — the
-        // contract is simply that we attempt to reduce excess capacity.
-        // Important: we must not take ownership of elements from `self` before
-        // the allocation succeeds, because a failed reservation would leave us
-        // with lost data. Using ptr::copy_nonoverlapping avoids needing Clone
-        // and mirrors what the standard library does internally.
-        let len = self.len();
-        if len == 0 {
-            *self = Vec::new();
-            return Ok(());
+        let (mut current_raw, current_len) = RawVecInnerView::from_vec(std::mem::take(self));
+        // SAFETY: target < self.capacity() (guaranteed by the early-return guard
+        // above), and elem_layout matches the type T
+        // that was used to allocate the original buffer.
+        let res = unsafe { current_raw.shrink_unchecked(target, Layout::new::<T>()) };
+        match res {
+            Ok(()) => {
+                // SAFETY: shrink succeeded; current_raw holds the new (or same)
+                // allocation with updated capacity. Length is unchanged.
+                *self = unsafe { current_raw.to_vec(current_len) };
+                Ok(())
+            }
+            Err(e) => {
+                // Allocation failed. shrink_unchecked returns early via `?` on
+                // realloc failure, BEFORE updating self.ptr / self.cap — so
+                // current_raw still holds the original (unshrunk) allocation.
+                // SAFETY: pointer, length, and capacity are all still valid from
+                // the original Vec.
+                *self = unsafe { current_raw.to_vec(current_len) };
+                Err(TryVecError::Alloc(e))
+            }
         }
-        let mut out = Vec::<T>::new();
-        out.try_reserve(target)?;
-        unsafe {
-            let src = self.as_ptr();
-            let dst = out.as_mut_ptr();
-            core::ptr::copy_nonoverlapping(src, dst, len);
-            out.set_len(len);
-            // Elements have been bit-moved into `out`. Zero out `self`'s length
-            // so that when `*self = out` replaces it, the old Vec's Drop only
-            // frees the buffer without running destructors on the elements.
-            self.set_len(0);
-        }
-        *self = out;
-        Ok(())
     }
 
     fn try_collect<I: IntoIterator<Item = T>>(iter: I) -> Result<Vec<T>, TryReserveError> {

@@ -17,10 +17,12 @@
 //! [`TryToOwned`](crate::try_to_owned::TryToOwned) for `Path`.
 
 use crate::alloc::AllocError;
+use crate::path::path_buf::inner_push;
 use crate::try_clone::{TryClone, TryCloneError};
 use crate::try_to_owned::{TryToOwned, TryToOwnedError};
 use core::fmt;
 use std::collections::TryReserveError;
+use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
 
 /// Error returned by [`TryPath`] operations.
@@ -42,10 +44,7 @@ impl fmt::Display for TryPathError {
             Self::Alloc(_) => write!(f, "Path operation failed: heap allocation error"),
             Self::Reserve(e) => write!(f, "Path operation failed: {}", e),
             Self::Overflow => {
-                write!(
-                    f,
-                    "Path operation failed: capacity calculation overflowed"
-                )
+                write!(f, "Path operation failed: capacity calculation overflowed")
             }
             Self::Other(msg) => write!(f, "Path operation failed: {}", msg),
         }
@@ -53,8 +52,8 @@ impl fmt::Display for TryPathError {
 }
 
 impl From<AllocError> for TryPathError {
-    fn from(_: AllocError) -> Self {
-        Self::Alloc(AllocError)
+    fn from(e: AllocError) -> Self {
+        Self::Alloc(e)
     }
 }
 
@@ -87,56 +86,30 @@ pub trait TryPath {
     /// Mirrors [`Path::join`] but reserves capacity upfront so that allocation
     /// failures return [`TryPathError::Reserve`] instead of panicking.
     fn try_join<P: AsRef<Path>>(&self, child: P) -> Result<PathBuf, TryPathError>;
+
+    /// Fallibly produce a new [`PathBuf`] with an extension appended to the
+    /// file name.
+    ///
+    /// Unlike converting via [`try_to_path_buf`](Self::try_to_path_buf) then
+    /// calling `set_extension`, this appends `.ext` to whatever filename
+    /// currently exists, even if it already has an extension. For example,
+    /// `foo.tar.gz.try_with_added_extension("xz")` yields `foo.tar.gz.xz`.
+    ///
+    /// Returns [`TryPathError::Reserve`] on allocation failure.
+    /// Returns [`TryPathError::Other`] if `ext` contains path separators.
+    fn try_with_added_extension<E: AsRef<OsStr>>(&self, ext: E) -> Result<PathBuf, TryPathError>;
 }
 
 // ---------------------------------------------------------------------------
 // Internal helper: build a PathBuf by manually pushing into the inner OsString
 // ---------------------------------------------------------------------------
 
-/// Builds a `PathBuf` from `base` with `child` appended, replicating the
-/// logic of `PathBuf::_push` directly on the inner [`OsString`] so every
-/// allocation step is guarded by a prior `try_reserve`.
-fn os_join(base: &Path, child: &Path) -> Result<PathBuf, TryReserveError> {
-    let mut out = PathBuf::new();
-    let os = out.as_mut_os_string();
-
-    let base_str = base.as_os_str();
-    let child_str = child.as_os_str();
-
-    if child.is_absolute() {
-        // Absolute child replaces everything.
-        let needed = child_str.len();
-        if needed > 0 {
-            os.try_reserve(needed)?;
-        }
-        os.push(child_str);
-        return Ok(out);
-    }
-
-    // Relative child: copy base, maybe add separator, then append child.
-    let base_len = base_str.len();
-    // base is empty initially, so we first push base content
-    if base_len > 0 {
-        os.try_reserve(base_len)?;
-        os.push(base_str);
-    }
-
-    // Check if we need a separator after base content.
-    let encoded = os.as_encoded_bytes();
-    let need_sep = encoded
-        .last()
-        .map(|&b| b != b'/' && b != b'\\')
-        .unwrap_or(false);
-
-    let sep_len: usize = if need_sep { 1 } else { 0 };
-    let extra = sep_len.saturating_add(child_str.len());
-    if extra > 0 {
-        os.try_reserve(extra)?;
-    }
-    if need_sep {
-        os.push("/");
-    }
-    os.push(child_str);
+/// Builds a `PathBuf` from `base` with `child` appended, delegating to
+/// [`inner_push`](crate::path::path_buf::inner_push) so that both `try_join`
+/// and `try_push` share the same platform-aware logic.
+fn inner_join(base: &Path, child: &Path) -> Result<PathBuf, TryPathError> {
+    let mut out = base.try_to_path_buf()?;
+    inner_push(&mut out, child)?;
     Ok(out)
 }
 
@@ -154,7 +127,19 @@ impl TryPath for Path {
     }
 
     fn try_join<P: AsRef<Path>>(&self, child: P) -> Result<PathBuf, TryPathError> {
-        os_join(self, child.as_ref()).map_err(TryPathError::Reserve)
+        inner_join(self, child.as_ref())
+    }
+
+    fn try_with_added_extension<E: AsRef<OsStr>>(&self, ext: E) -> Result<PathBuf, TryPathError> {
+        use crate::path::{TryPathBuf, TryPathBufError};
+        let mut out = self.try_to_path_buf()?;
+        out.try_add_extension(ext).map_err(|e| match e {
+            TryPathBufError::Alloc(a) => TryPathError::Alloc(a),
+            TryPathBufError::Reserve(r) => TryPathError::Reserve(r),
+            TryPathBufError::Overflow => TryPathError::Overflow,
+            TryPathBufError::Other(m) => TryPathError::Other(m),
+        })?;
+        Ok(out)
     }
 }
 
@@ -195,6 +180,18 @@ mod tests {
     use super::*;
     use crate::path::TryPathBuf;
 
+    /// Assert that `try_join(base, child)` produces the same result as
+    /// `Path::join(base, child)` on this platform.
+    fn assert_join_matches_std(base: &str, child: &str) {
+        let expected = Path::new(base).join(child);
+        let actual = Path::new(base).try_join(child).unwrap();
+        assert_eq!(
+            expected, actual,
+            "join mismatch for base={} child={}",
+            base, child
+        );
+    }
+
     // ── try_to_path_buf ────────────────────────────────────────────────────────
 
     #[test]
@@ -226,56 +223,55 @@ mod tests {
         assert_eq!(actual, expected);
     }
 
-    // ── try_join ───────────────────────────────────────────────────────────────
+    // ── Property tests: try_join matches Path::join ───────────────────────────
 
     #[test]
-    fn try_join_relative() {
-        let p = Path::new("/tmp");
-        let r = p.try_join("file.txt").unwrap();
-        assert_eq!(r, Path::new("/tmp/file.txt"));
+    fn join_relative_on_various_bases() {
+        assert_join_matches_std("/tmp", "file.txt");
+        assert_join_matches_std("/home/user", "projects/fallibles");
+        assert_join_matches_std("", "hello");
+        assert_join_matches_std("a/b", "c/d");
     }
 
     #[test]
-    fn try_join_absolute_replaces() {
-        let p = Path::new("/tmp/foo");
-        let r = p.try_join("/etc/passwd").unwrap();
-        assert_eq!(r, Path::new("/etc/passwd"));
+    fn join_absolute_replaces() {
+        assert_join_matches_std("/tmp/foo", "/etc/passwd");
+        assert_join_matches_std("relative", "/absolute");
     }
 
     #[test]
-    fn try_join_empty_base() {
-        let p = Path::new("");
-        let r = p.try_join("hello").unwrap();
-        assert_eq!(r, Path::new("hello"));
+    fn join_empty_cases() {
+        assert_join_matches_std("", "");
+        assert_join_matches_std("/tmp", "");
+        assert_join_matches_std("", "only-child");
     }
 
     #[test]
-    fn try_join_empty_child() {
-        let p = Path::new("/tmp");
-        let r = p.try_join("").unwrap();
-        assert_eq!(r, Path::new("/tmp"));
+    fn join_trailing_separator() {
+        assert_join_matches_std("/tmp/", "file.txt");
+        assert_join_matches_std("a/b/", "c");
     }
 
     #[test]
-    fn try_join_both_empty() {
-        let p = Path::new("");
-        let r = p.try_join("").unwrap();
-        assert!(r.as_os_str().is_empty());
+    fn join_curdir_parentdir() {
+        assert_join_matches_std("/tmp", ".");
+        assert_join_matches_std("/tmp/a", "..");
+        assert_join_matches_std("/tmp/a/b", "../..");
     }
 
     #[test]
-    fn try_join_unicode() {
-        let p = Path::new("/docs");
-        let r = p.try_join("日本語ファイル.txt").unwrap();
-        assert_eq!(r, Path::new("/docs/日本語ファイル.txt"));
+    fn join_unicode() {
+        assert_join_matches_std("/docs", "日本語ファイル.txt");
+        assert_join_matches_std("/home/用户", "文档/文件");
     }
 
     #[test]
-    fn try_join_matches_std() {
-        let p = Path::new("/var/log");
-        let expected = p.join("syslog");
-        let actual = p.try_join("syslog").unwrap();
-        assert_eq!(actual, expected);
+    fn join_deeply_nested() {
+        let deep = (0..50)
+            .map(|i| format!("level{i}"))
+            .collect::<Vec<_>>()
+            .join("/");
+        assert_join_matches_std("/root", &deep);
     }
 
     // ── TryClone for &Path ─────────────────────────────────────────────────────
@@ -324,6 +320,46 @@ mod tests {
         let p = Path::new("/test");
         let owned: PathBuf = <Path as std::borrow::ToOwned>::to_owned(p);
         assert_eq!(owned, Path::new("/test"));
+    }
+
+    // ── try_with_added_extension ─────────────────────────────────────────────
+
+    fn assert_with_added_ext_matches_std(base: &str, ext: &str) {
+        let expected = Path::new(base).with_added_extension(ext);
+        let actual = Path::new(base).try_with_added_extension(ext).unwrap();
+        assert_eq!(
+            expected, actual,
+            "with_added_extension mismatch for base={} ext={}",
+            base, ext
+        );
+    }
+
+    #[test]
+    fn with_added_ext_simple() {
+        assert_with_added_ext_matches_std("notes", "txt");
+        assert_with_added_ext_matches_std("/tmp/file", "log");
+    }
+
+    #[test]
+    fn with_added_ext_appends_to_existing() {
+        assert_with_added_ext_matches_std("foo.tar.gz", "xz");
+        assert_with_added_ext_matches_std("archive.zip.bak", "enc");
+    }
+
+    #[test]
+    fn with_added_ext_empty_noop() {
+        assert_with_added_ext_matches_std("foo.txt", "");
+    }
+
+    #[test]
+    fn with_added_ext_no_filename() {
+        assert_with_added_ext_matches_std("/", "txt");
+        assert_with_added_ext_matches_std("..", "txt");
+    }
+
+    #[test]
+    fn with_added_ext_unicode() {
+        assert_with_added_ext_matches_std("/docs/日本語ファイル", "txt");
     }
 
     // ── Combined workflows ─────────────────────────────────────────────────────

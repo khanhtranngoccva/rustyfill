@@ -46,8 +46,8 @@ impl fmt::Display for TryCloneError {
 }
 
 impl From<AllocError> for TryCloneError {
-    fn from(_: AllocError) -> Self {
-        Self::Alloc(AllocError)
+    fn from(e: AllocError) -> Self {
+        Self::Alloc(e)
     }
 }
 

@@ -14,16 +14,13 @@ impl TryToOwned for CStr {
         let bytes = self.to_bytes_with_nul();
         // to_bytes_with_nul always returns at least one byte (the nul), so it's
         // never empty. An empty CStr is b"\0".
-        let buf = bytes.try_to_vec()
-            .map_err(|e| match e {
-                TryVecError::Reserve(r) => TryToOwnedError::Reserve(r),
-                TryVecError::Clone(c) => c.into(),
-                TryVecError::Overflow => TryToOwnedError::Overflow,
-                TryVecError::Alloc(_) => TryToOwnedError::Alloc(
-                    crate::alloc::AllocError,
-                ),
-                TryVecError::Other(m) => TryToOwnedError::Other(m),
-            })?;
+        let buf = bytes.try_to_vec().map_err(|e| match e {
+            TryVecError::Reserve(r) => TryToOwnedError::Reserve(r),
+            TryVecError::Clone(c) => c.into(),
+            TryVecError::Overflow => TryToOwnedError::Overflow,
+            TryVecError::Alloc(e) => TryToOwnedError::Alloc(e),
+            TryVecError::Other(m) => TryToOwnedError::Other(m),
+        })?;
 
         // SAFETY: The bytes came from a valid CStr so there are no interior
         // nul bytes, and the slice already ends with exactly one nul.

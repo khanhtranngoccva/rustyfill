@@ -52,8 +52,8 @@ impl fmt::Display for TryStringError {
 }
 
 impl From<AllocError> for TryStringError {
-    fn from(_: AllocError) -> Self {
-        Self::Alloc(AllocError)
+    fn from(e: AllocError) -> Self {
+        Self::Alloc(e)
     }
 }
 
@@ -171,7 +171,8 @@ impl TryString for String {
             ));
         }
         let encoded_len = c.len_utf8();
-        self.try_reserve(encoded_len).map_err(TryStringError::from)?;
+        self.try_reserve(encoded_len)
+            .map_err(TryStringError::from)?;
         self.insert(idx, c);
         Ok(())
     }

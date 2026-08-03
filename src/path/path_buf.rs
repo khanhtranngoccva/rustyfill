@@ -59,8 +59,8 @@ impl fmt::Display for TryPathBufError {
 }
 
 impl From<AllocError> for TryPathBufError {
-    fn from(_: AllocError) -> Self {
-        Self::Alloc(AllocError)
+    fn from(e: AllocError) -> Self {
+        Self::Alloc(e)
     }
 }
 
@@ -101,10 +101,25 @@ pub trait TryPathBuf: Sized {
 
     /// Fallibly set the file name extension for this `PathBuf`.
     ///
+    /// Replaces any existing extension. Returns [`TryPathBufError::Reserve`] if
+    /// growing the internal buffer fails. Returns [`TryPathBufError::Other`] if
+    /// there is no file stem to attach the extension to, or if `ext` contains
+    /// path separators.
+    fn try_set_extension<E: AsRef<OsStr>>(&mut self, ext: E) -> Result<(), TryPathBufError>;
+
+    /// Fallibly append an extension to the file name of this `PathBuf`.
+    ///
+    /// Unlike [`Self::try_set_extension`], this appends `.ext` to whatever
+    /// filename currently exists, even if it already has an extension.
+    /// For example, `foo.tar.gz.try_add_extension("xz")` yields `foo.tar.gz.xz`.
+    ///
+    /// If the path has no file name (e.g., `/` or `..`) returns `Ok(false)`.
+    /// On success with a non-empty extension returns `Ok(true)`. An empty
+    /// extension also returns `Ok(true)` but makes no modification.
+    ///
     /// Returns [`TryPathBufError::Reserve`] if growing the internal buffer fails.
-    /// Returns [`TryPathBufError::Other`] if there is no file stem to attach the
-    /// extension to.
-    fn try_set_extension(&mut self, ext: &str) -> Result<(), TryPathBufError>;
+    /// Returns [`TryPathBufError::Other`] if `ext` contains path separators.
+    fn try_add_extension<E: AsRef<OsStr>>(&mut self, ext: E) -> Result<bool, TryPathBufError>;
 }
 
 // ---------------------------------------------------------------------------
@@ -152,7 +167,7 @@ fn prefix_is_verbatim(prefix: &Prefix<'_>) -> bool {
 }
 
 /// Replicates the platform-dependent logic of `PathBuf::_push`.
-fn inner_push(target: &mut PathBuf, path: &Path) -> Result<(), TryReserveError> {
+pub(crate) fn inner_push(target: &mut PathBuf, path: &Path) -> Result<(), TryReserveError> {
     // in general, a separator is needed if the rightmost byte is not a separator
     let buf = target.as_os_str().as_encoded_bytes();
     let mut need_sep = buf
@@ -180,13 +195,20 @@ fn inner_push(target: &mut PathBuf, path: &Path) -> Result<(), TryReserveError> 
         }
     }
 
+    // Check if the child path has a prefix (needed for need_clear decision).
+    // Path::prefix() is private on stable, so we scan components instead.
+    let child_has_prefix = path
+        .components()
+        .next()
+        .is_some_and(|c| matches!(c, Component::Prefix(_)));
+
     let need_clear = if cfg!(target_os = "cygwin") {
         // If path is absolute and its prefix is none, it is like `/foo`,
         // and will be handled below.
-        prefix.is_some()
+        child_has_prefix
     } else {
         // On Unix: prefix is always None.
-        path.is_absolute() || prefix.is_some()
+        path.is_absolute() || child_has_prefix
     };
 
     // absolute `path` replaces `self`
@@ -276,16 +298,23 @@ impl TryPathBuf for PathBuf {
 
     fn try_push<P: AsRef<Path>>(&mut self, path: P) -> Result<(), TryPathBufError> {
         let path = path.as_ref();
-        self.push(path);
         inner_push(self, path).map_err(TryPathBufError::Reserve)?;
         Ok(())
     }
 
-    fn try_set_extension(&mut self, ext: &str) -> Result<(), TryPathBufError> {
+    fn try_set_extension<E: AsRef<OsStr>>(&mut self, ext: E) -> Result<(), TryPathBufError> {
+        let ext = ext.as_ref();
         if self.file_stem().is_none() {
             return Err(TryPathBufError::Other(
                 "cannot set extension on a path with no file stem",
             ));
+        }
+        for &b in ext.as_encoded_bytes() {
+            if is_separator(b as char) {
+                return Err(TryPathBufError::Other(
+                    "extension cannot contain path separators",
+                ));
+            }
         }
         // Reserve room for the dot and extension.
         if !ext.is_empty() {
@@ -294,6 +323,56 @@ impl TryPathBuf for PathBuf {
         }
         self.set_extension(ext);
         Ok(())
+    }
+
+    fn try_add_extension<E: AsRef<OsStr>>(&mut self, ext: E) -> Result<bool, TryPathBufError> {
+        let ext = ext.as_ref();
+
+        // Validate: extension must not contain path separators.
+        for &b in ext.as_encoded_bytes() {
+            if is_separator(b as char) {
+                return Err(TryPathBufError::Other(
+                    "extension cannot contain path separators",
+                ));
+            }
+        }
+
+        // Must have a file name component to attach an extension to.
+        let file_name = match self.file_name() {
+            None => return Ok(false),
+            Some(f) => f,
+        };
+
+        if ext.is_empty() {
+            // Empty extension is a no-op but succeeds.
+            return Ok(true);
+        }
+
+        // Truncate the inner OsString so it ends right after the file name.
+        // This mirrors std's pointer-arithmetic truncation: we find the byte
+        // offset just past the end of the file name within the full path.
+        //
+        // OsString::truncate is unstable, so we swap out the bytes, truncate
+        // the owned buffer, and reconstruct.
+        let all = self.as_os_str().as_encoded_bytes();
+        let fname = file_name.as_encoded_bytes();
+        // Safety: file_name was obtained from self.file_name(), which returns
+        // a subslice of self's inner data. Taking the pointer of the empty
+        // tail slice gives us the address just past the end of the file name.
+        let fname_end_offset = fname[fname.len()..].as_ptr() as usize - all.as_ptr() as usize;
+        let current = std::mem::take(self.as_mut_os_string());
+        let mut current_bytes = current.into_encoded_bytes();
+        current_bytes.truncate(fname_end_offset);
+        *self.as_mut_os_string() = unsafe { OsString::from_encoded_bytes_unchecked(current_bytes) };
+
+        // Append ".<ext>" via the inner OsString so allocation is fallible.
+        let os = self.as_mut_os_string();
+        os.try_reserve(ext.len() + 1)
+            .map_err(TryPathBufError::Reserve)?;
+        os.try_push(OsStr::new("."))
+            .map_err(TryPathBufError::Reserve)?;
+        os.try_push(ext).map_err(TryPathBufError::Reserve)?;
+        Ok(true)
     }
 }
 
@@ -325,6 +404,48 @@ impl TryDefault for PathBuf {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::path::TryPath;
+
+    // ── Helpers ────────────────────────────────────────────────────────────────
+
+    /// Assert that `try_push(base, child)` produces the same result as
+    /// `PathBuf::push(base, child)` on this platform.
+    fn assert_push_matches_std(base: &str, child: &str) {
+        let (mut expected, mut actual) = {
+            let mut e = PathBuf::from(base);
+            e.push(child);
+            let mut a = PathBuf::try_from_path(base).unwrap();
+            a.try_push(child).unwrap();
+            (e, a)
+        };
+
+        assert_eq!(
+            expected, actual,
+            "push mismatch for base={} child={}",
+            base, child
+        );
+
+        // Verify idempotency: pushing again should also match.
+        expected.push(child);
+        actual.try_push(child).unwrap();
+        assert_eq!(
+            expected, actual,
+            "double-push mismatch for base={} child={}",
+            base, child
+        );
+    }
+
+    /// Assert that `try_join(base, child)` produces the same result as
+    /// `Path::join(base, child)` on this platform.
+    fn assert_join_matches_std(base: &str, child: &str) {
+        let expected = Path::new(base).join(child);
+        let actual = Path::new(base).try_join(child).unwrap();
+        assert_eq!(
+            expected, actual,
+            "join mismatch for base={} child={}",
+            base, child
+        );
+    }
 
     // ── Construction ─────────────────────────────────────────────────────────
 
@@ -372,43 +493,127 @@ mod tests {
         assert_eq!(p.to_string_lossy(), long);
     }
 
-    // ── Mutation ─────────────────────────────────────────────────────────────
+    // ── Property tests: try_push matches PathBuf::push ────────────────────────
 
     #[test]
-    fn try_push_relative() {
-        let mut p = PathBuf::try_from_path("/tmp").unwrap();
-        p.try_push("file.txt").unwrap();
-        assert_eq!(p, Path::new("/tmp/file.txt"));
+    fn push_relative_on_unix_style_base() {
+        assert_push_matches_std("/tmp", "file.txt");
+        assert_push_matches_std("/home/user", "projects/fallibles");
+        assert_push_matches_std("/var/log", "");
     }
 
     #[test]
-    fn try_push_absolute_replaces() {
-        let mut p = PathBuf::try_from_path("/tmp/foo").unwrap();
-        p.try_push("/etc/passwd").unwrap();
-        assert_eq!(p, Path::new("/etc/passwd"));
+    fn push_absolute_replaces() {
+        assert_push_matches_std("/tmp/foo", "/etc/passwd");
+        assert_push_matches_std("relative/path", "/absolute");
+        assert_push_matches_std("", "/root");
     }
 
     #[test]
-    fn try_push_multiple_components() {
-        let mut p = PathBuf::try_new().unwrap();
-        p.try_push("a").unwrap();
-        p.try_push("b").unwrap();
-        p.try_push("c.txt").unwrap();
-        assert_eq!(p, Path::new("a/b/c.txt"));
+    fn push_empty_child_is_noop() {
+        assert_push_matches_std("/tmp", "");
+        assert_push_matches_std("", "");
+        assert_push_matches_std("a/b/c", "");
     }
 
     #[test]
-    fn try_push_empty_component() {
-        let mut p = PathBuf::try_from_path("/tmp").unwrap();
-        p.try_push(Path::new("")).unwrap();
-        assert_eq!(p, Path::new("/tmp"));
+    fn push_trailing_separator_base() {
+        assert_push_matches_std("/tmp/", "file.txt");
+        assert_push_matches_std("a/b/", "c");
     }
 
     #[test]
-    fn try_push_unicode() {
-        let mut p = PathBuf::try_from_path("/docs").unwrap();
-        p.try_push(Path::new("日本語ファイル.txt")).unwrap();
-        assert_eq!(p, Path::new("/docs/日本語ファイル.txt"));
+    fn push_curdir_parentdir() {
+        assert_push_matches_std("/tmp", ".");
+        assert_push_matches_std("/tmp/a", "..");
+        assert_push_matches_std("/tmp/a/b", "../..");
+        assert_push_matches_std(".", "..");
+    }
+
+    #[test]
+    fn push_unicode_paths() {
+        assert_push_matches_std("/docs", "日本語ファイル.txt");
+        assert_push_matches_std("/home/用户", "文档/文件");
+        assert_push_matches_std("/data/🔥", "emoji/path");
+    }
+
+    #[test]
+    fn push_deeply_nested() {
+        let deep = (0..50)
+            .map(|i| format!("level{i}"))
+            .collect::<Vec<_>>()
+            .join("/");
+        assert_push_matches_std("/root", &deep);
+    }
+
+    #[test]
+    fn push_multiple_sequential() {
+        // Simulate sequential pushes: a -> b -> c
+        let mut expected = PathBuf::new();
+        let mut actual = PathBuf::try_new().unwrap();
+        for component in ["a", "b", "c", "d.txt"] {
+            expected.push(component);
+            actual.try_push(component).unwrap();
+            assert_eq!(expected, actual, "diverged at component {:?}", component);
+        }
+    }
+
+    #[test]
+    fn push_alternating_relative_absolute() {
+        let mut expected = PathBuf::from("/start");
+        let mut actual = PathBuf::try_from_path("/start").unwrap();
+        let sequence: &[&str] = if cfg!(target_os = "linux") {
+            &["relative", "/abs1", "another", "/abs2", "."]
+        } else {
+            &["relative", r#"C:\abs1"#, "another", r#"D:\abs2"#, "."]
+        };
+        for child in sequence {
+            expected.push(*child);
+            actual.try_push(*child).unwrap();
+            assert_eq!(expected, actual, "diverged at {:?}", child);
+        }
+    }
+
+    // ── Property tests: try_join matches Path::join ──────────────────────────
+
+    #[test]
+    fn join_relative_on_various_bases() {
+        assert_join_matches_std("/tmp", "file.txt");
+        assert_join_matches_std("/home/user", "projects/fallibles");
+        assert_join_matches_std("", "hello");
+        assert_join_matches_std("a/b", "c/d");
+    }
+
+    #[test]
+    fn join_absolute_replaces() {
+        assert_join_matches_std("/tmp/foo", "/etc/passwd");
+        assert_join_matches_std("relative", "/absolute");
+    }
+
+    #[test]
+    fn join_empty_cases() {
+        assert_join_matches_std("", "");
+        assert_join_matches_std("/tmp", "");
+        assert_join_matches_std("", "only-child");
+    }
+
+    #[test]
+    fn join_trailing_separator() {
+        assert_join_matches_std("/tmp/", "file.txt");
+        assert_join_matches_std("a/b/", "c");
+    }
+
+    #[test]
+    fn join_curdir_parentdir() {
+        assert_join_matches_std("/tmp", ".");
+        assert_join_matches_std("/tmp/a", "..");
+        assert_join_matches_std("/tmp/a/b", "../..");
+    }
+
+    #[test]
+    fn join_unicode() {
+        assert_join_matches_std("/docs", "日本語ファイル.txt");
+        assert_join_matches_std("/home/用户", "文档/文件");
     }
 
     // ── Set Extension ────────────────────────────────────────────────────────
@@ -445,6 +650,93 @@ mod tests {
     fn try_set_extension_root_fails() {
         let mut p = PathBuf::try_from_path("/").unwrap();
         let result = p.try_set_extension("txt");
+        assert!(matches!(result, Err(TryPathBufError::Other(_))));
+    }
+
+    // ── Add Extension ────────────────────────────────────────────────────────
+
+    /// Assert that `try_add_extension(base, ext)` produces the same result as
+    /// `PathBuf::add_extension(base, ext)` on this platform.
+    fn assert_add_ext_matches_std(base: &str, ext: &str) {
+        let (expected, actual) = {
+            let mut e = PathBuf::from(base);
+            let e_ok = e.add_extension(ext);
+            let mut a = PathBuf::try_from_path(base).unwrap();
+            let a_ok = a.try_add_extension(ext).unwrap();
+            assert_eq!(
+                e_ok, a_ok,
+                "add_extension bool mismatch for base={} ext={}",
+                base, ext
+            );
+            (e, a)
+        };
+        assert_eq!(
+            expected, actual,
+            "add_extension mismatch for base={} ext={}",
+            base, ext
+        );
+    }
+
+    #[test]
+    fn add_extension_simple() {
+        assert_add_ext_matches_std("notes", "txt");
+        assert_add_ext_matches_std("/tmp/file", "log");
+    }
+
+    #[test]
+    fn add_extension_appends_to_existing() {
+        assert_add_ext_matches_std("foo.tar.gz", "xz");
+        assert_add_ext_matches_std("archive.zip.bak", "enc");
+    }
+
+    #[test]
+    fn add_extension_empty_ext_noop() {
+        assert_add_ext_matches_std("foo.txt", "");
+        assert_add_ext_matches_std("/path/file.tar.gz", "");
+    }
+
+    #[test]
+    fn add_extension_no_filename_returns_false() {
+        let mut p = PathBuf::try_from_path("/").unwrap();
+        assert!(!p.try_add_extension("txt").unwrap());
+        let mut p = PathBuf::try_from_path("..").unwrap();
+        assert!(!p.try_add_extension("txt").unwrap());
+        let mut p = PathBuf::try_from_path(".").unwrap();
+        assert!(!p.try_add_extension("txt").unwrap());
+    }
+
+    #[test]
+    fn add_extension_unicode() {
+        assert_add_ext_matches_std("/docs/日本語ファイル", "txt");
+        assert_add_ext_matches_std("/数据/文件", "json");
+    }
+
+    #[test]
+    fn add_extension_trailing_separator() {
+        assert_add_ext_matches_std("/tmp/file/", "txt");
+        assert_add_ext_matches_std("a/b/c/", "dat");
+    }
+
+    #[test]
+    fn add_extension_multiple_sequential() {
+        let mut p = PathBuf::try_from_path("data").unwrap();
+        p.try_add_extension("csv").unwrap();
+        p.try_add_extension("gz").unwrap();
+        p.try_add_extension("bz2").unwrap();
+        assert_eq!(p, Path::new("data.csv.gz.bz2"));
+    }
+
+    #[test]
+    fn add_extension_rejects_separator() {
+        let mut p = PathBuf::try_from_path("file").unwrap();
+        let result = p.try_add_extension("a/b");
+        assert!(matches!(result, Err(TryPathBufError::Other(_))));
+    }
+
+    #[test]
+    fn set_extension_rejects_separator() {
+        let mut p = PathBuf::try_from_path("file.txt").unwrap();
+        let result = p.try_set_extension("a/b");
         assert!(matches!(result, Err(TryPathBufError::Other(_))));
     }
 

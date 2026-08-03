@@ -101,7 +101,7 @@ mod alloc_inner {
         let ptr = unsafe {
             let raw = std::alloc::alloc(layout);
             if raw.is_null() {
-                return Err(AllocError);
+                return Err(AllocError { layout });
             }
             raw.cast::<MaybeUninit<T>>()
         };
@@ -117,7 +117,7 @@ mod alloc_inner {
         let ptr = unsafe {
             let raw = std::alloc::alloc_zeroed(layout);
             if raw.is_null() {
-                return Err(AllocError);
+                return Err(AllocError { layout });
             }
             raw.cast::<MaybeUninit<T>>()
         };
@@ -207,9 +207,10 @@ impl<T: TryClone> TryClone for Box<[T]> {
             crate::vec::TryVecError::Reserve(r) => TryCloneError::Reserve(r),
             crate::vec::TryVecError::Clone(c) => c,
             crate::vec::TryVecError::Overflow => TryCloneError::Overflow,
-            crate::vec::TryVecError::Alloc(_) => TryCloneError::Alloc(AllocError),
+            crate::vec::TryVecError::Alloc(e) => TryCloneError::Alloc(e),
             crate::vec::TryVecError::Other(m) => TryCloneError::Other(m),
         })?;
+        // FIXME: into_boxed_slice calls shrink_to_fit which may panic.
         Ok(vec.into_boxed_slice())
     }
 }

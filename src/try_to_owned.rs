@@ -49,8 +49,8 @@ impl core::error::Error for TryToOwnedError {
 }
 
 impl From<AllocError> for TryToOwnedError {
-    fn from(_: AllocError) -> Self {
-        Self::Alloc(AllocError)
+    fn from(e: AllocError) -> Self {
+        Self::Alloc(e)
     }
 }
 
@@ -63,7 +63,7 @@ impl From<std::collections::TryReserveError> for TryToOwnedError {
 impl From<TryCloneError> for TryToOwnedError {
     fn from(err: TryCloneError) -> Self {
         match err {
-            TryCloneError::Alloc(_) => Self::Alloc(AllocError),
+            TryCloneError::Alloc(e) => Self::Alloc(e),
             TryCloneError::Reserve(e) => Self::Reserve(e),
             TryCloneError::Overflow => Self::Overflow,
             TryCloneError::Other(msg) => Self::Other(msg),

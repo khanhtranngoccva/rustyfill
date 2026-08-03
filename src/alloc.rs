@@ -4,10 +4,13 @@
 //! so we provide our own equivalent for use across this library.
 
 use core::fmt;
+use std::alloc::Layout;
 
-/// Returned when a heap allocation fails.
+/// Polyfill allocation error returned when a heap allocation fails.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct AllocError;
+pub struct AllocError {
+    pub(crate) layout: Layout,
+}
 
 impl fmt::Display for AllocError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {

@@ -58,8 +58,8 @@ impl fmt::Display for TryCStringError {
 }
 
 impl From<AllocError> for TryCStringError {
-    fn from(_: AllocError) -> Self {
-        Self::Alloc(AllocError)
+    fn from(e: AllocError) -> Self {
+        Self::Alloc(e)
     }
 }
 
@@ -136,14 +136,13 @@ impl TryClone for CString {
         let bytes = self.as_bytes_with_nul();
         // as_bytes_with_nul always returns at least one byte (the nul), so it's
         // never empty. An empty CString is b"\0".
-        let buf = bytes.try_to_vec()
-            .map_err(|e| match e {
-                TryVecError::Reserve(r) => TryCloneError::Reserve(r),
-                TryVecError::Clone(c) => c,
-                TryVecError::Overflow => TryCloneError::Overflow,
-                TryVecError::Alloc(_) => TryCloneError::Alloc(AllocError),
-                TryVecError::Other(m) => TryCloneError::Other(m),
-            })?;
+        let buf = bytes.try_to_vec().map_err(|e| match e {
+            TryVecError::Reserve(r) => TryCloneError::Reserve(r),
+            TryVecError::Clone(c) => c,
+            TryVecError::Overflow => TryCloneError::Overflow,
+            TryVecError::Alloc(e) => TryCloneError::Alloc(e),
+            TryVecError::Other(m) => TryCloneError::Other(m),
+        })?;
 
         // SAFETY: buf was cloned from a valid CString's as_bytes_with_nul(),
         // so it has no interior nul bytes and ends with exactly one nul.
