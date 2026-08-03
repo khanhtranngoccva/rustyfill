@@ -173,6 +173,8 @@ pub trait TryHashMap<K, V, S>: Sized {
     /// inserting through the entry will not allocate again.
     ///
     /// [`Entry`]: std::collections::hash_map::Entry
+    /// [`Entry::or_insert`]: std::collections::hash_map::Entry::or_insert
+    /// [`Entry::and_modify`]: std::collections::hash_map::Entry::and_modify
     fn try_entry<'a>(
         &'a mut self,
         key: K,
@@ -295,7 +297,7 @@ pub trait TryHashMap<K, V, S>: Sized {
     /// Fallibly shrink the capacity of this hash map to match its length.
     ///
     /// Rebuilds the internal table so that it holds approximately `len` elements.
-    /// Requires [`BuildHasher::clone`] so the hasher can be reused for the new
+    /// Requires `S: Clone` so the hasher can be reused for the new
     /// table. Returns [`TryHashMapError::Reserve`] if the allocation for the
     /// rebuilt table fails. Equivalent to [`HashMap::shrink_to_fit`] but fallible.
     ///
@@ -315,7 +317,7 @@ pub trait TryHashMap<K, V, S>: Sized {
     ///
     /// If the current capacity is already less than or equal to `min_capacity`,
     /// does nothing and returns `Ok(())`. Otherwise rebuilds the table with the
-    /// target capacity. Requires [`BuildHasher::clone`] so the hasher can be
+    /// target capacity. Requires `S: Clone` so the hasher can be
     /// reused. Returns [`TryHashMapError::Reserve`] if the allocation fails.
     /// Equivalent to [`HashMap::shrink_to`] but fallible.
     ///
