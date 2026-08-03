@@ -30,6 +30,10 @@ pub use crate::boxed::TryBox;
 
 pub use crate::vec::{TrySlice, TryVec};
 
+// ── HashMap ───────────────────────────────────────────────────────────────────
+
+pub use crate::hashmap::TryHashMap;
+
 // ── String & str ─────────────────────────────────────────────────────────────
 
 pub use crate::string::{TryStr, TryString};

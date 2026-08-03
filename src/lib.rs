@@ -1,4 +1,4 @@
-//! Fallible allocation primitives.
+//! Fallible allocation polyfills.
 //!
 //! A standard-library-style crate that provides fallible versions of common
 //! allocation types, returning allocation errors on failure instead of
@@ -8,6 +8,7 @@ pub mod alloc;
 pub mod arc;
 pub mod boxed;
 pub mod ffi;
+pub mod hashmap;
 pub mod path;
 pub mod prelude;
 pub mod string;
