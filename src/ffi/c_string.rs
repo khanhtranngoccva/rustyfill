@@ -15,11 +15,11 @@
 //! variant returns the original buffer on any failure so no data is lost.
 
 use crate::alloc::AllocError;
+use crate::alloc::TryReserveError;
 use crate::try_clone::{TryClone, TryCloneError};
 use crate::try_default::{TryDefault, TryDefaultError};
 use crate::vec::{TrySlice, TryVecError};
 use core::fmt;
-use std::collections::TryReserveError;
 use std::ffi::CString;
 
 /// Error returned by [`TryCString`] operations.
@@ -66,6 +66,12 @@ impl From<AllocError> for TryCStringError {
 impl From<TryReserveError> for TryCStringError {
     fn from(err: TryReserveError) -> Self {
         Self::Reserve(err)
+    }
+}
+
+impl From<std::collections::TryReserveError> for TryCStringError {
+    fn from(err: std::collections::TryReserveError) -> Self {
+        Self::Reserve(TryReserveError::from(err))
     }
 }
 

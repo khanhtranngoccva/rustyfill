@@ -17,10 +17,10 @@
 //! [`TryDefault`](crate::try_default::TryDefault) for `OsString`.
 
 use crate::alloc::AllocError;
+use crate::alloc::TryReserveError;
 use crate::try_clone::{TryClone, TryCloneError};
 use crate::try_default::{TryDefault, TryDefaultError};
 use core::fmt;
-use std::collections::TryReserveError;
 use std::ffi::{OsStr, OsString};
 
 /// Error returned by [`TryOsString`] operations.
@@ -253,7 +253,7 @@ impl TryClone for OsString {
         let mut out = OsString::new();
         if !self.is_empty() {
             out.try_reserve(self.len())
-                .map_err(TryCloneError::Reserve)?;
+                .map_err(|e| TryCloneError::Reserve(e.into()))?;
         }
         out.push(self);
         Ok(out)

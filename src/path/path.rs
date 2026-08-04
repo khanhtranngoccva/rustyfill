@@ -17,11 +17,11 @@
 //! [`TryToOwned`](crate::try_to_owned::TryToOwned) for `Path`.
 
 use crate::alloc::AllocError;
+use crate::alloc::TryReserveError;
 use crate::path::path_buf::inner_push;
 use crate::try_clone::{TryClone, TryCloneError};
 use crate::try_to_owned::{TryToOwned, TryToOwnedError};
 use core::fmt;
-use std::collections::TryReserveError;
 use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
 
@@ -137,7 +137,7 @@ impl TryPath for Path {
         let src = self.as_os_str();
         let len = src.len();
         if len > 0 {
-            os.try_reserve(len).map_err(TryPathError::Reserve)?;
+            os.try_reserve(len).map_err(|e| TryPathError::Reserve(e.into()))?;
         }
         os.push(src);
         Ok(out)

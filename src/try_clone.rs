@@ -17,7 +17,7 @@
 //! Structs can derive `TryClone` via the [`fallibles_macros::TryClone`] proc macro,
 //! which requires every field to also implement `TryClone`.
 
-use crate::alloc::AllocError;
+use crate::alloc::{AllocError, TryReserveError};
 use core::clone::Clone;
 use core::fmt;
 
@@ -27,7 +27,7 @@ pub enum TryCloneError {
     /// A raw heap allocation failed (no collection involved).
     Alloc(AllocError),
     /// A capacity reservation on a collection failed (overflow or OOM).
-    Reserve(std::collections::TryReserveError),
+    Reserve(TryReserveError),
     /// A manually detected arithmetic overflow (e.g., size multiplication).
     Overflow,
     /// A logic-level failure with a static diagnostic message.
@@ -51,8 +51,8 @@ impl From<AllocError> for TryCloneError {
     }
 }
 
-impl From<std::collections::TryReserveError> for TryCloneError {
-    fn from(err: std::collections::TryReserveError) -> Self {
+impl From<TryReserveError> for TryCloneError {
+    fn from(err: TryReserveError) -> Self {
         Self::Reserve(err)
     }
 }
@@ -69,8 +69,8 @@ impl From<std::collections::TryReserveError> for TryCloneError {
 ///
 /// If cloning requires allocating memory (e.g. growing a buffer), reserve the
 /// backing storage **before** performing any logical work such as recursively
-/// cloning inner fields. This way an allocation failure short‑circuits early and
-/// avoids wasted computation or partially constructed intermediate values. See
+/// cloning inner fields if possible. This way an allocation failure short‑circuits
+/// early and avoids wasted computation or intermediate values. See
 /// [`Box<T>`](crate::boxed::TryBox) for an example of this pattern.
 pub trait TryClone: Clone {
     /// Attempt to clone `self`.

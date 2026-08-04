@@ -58,3 +58,7 @@ pub use crate::ffi::{TryCString, TryOsStr, TryOsString};
 // ── Paths ────────────────────────────────────────────────────────────────────
 
 pub use crate::path::{TryPath, TryPathBuf};
+
+// ── DashMap & DashSet ────────────────────────────────────────────────────────
+
+pub use crate::dashmap::{TryDashMap, TryDashSet};

@@ -16,12 +16,13 @@
 //! `K` and `V` satisfy the respective bounds.
 
 use crate::alloc::AllocError;
+use crate::alloc::TryReserveError;
 use crate::try_clone::{TryClone, TryCloneError};
 use crate::try_default::{TryDefault, TryDefaultError};
 use core::fmt;
 use std::cmp::Eq;
-use std::collections::{HashMap, TryReserveError, hash_map::RandomState};
-use std::hash::{BuildHasher, Hash};
+use std::collections::HashMap;
+use std::hash::{BuildHasher, Hash, RandomState};
 
 // ── Error type ────────────────────────────────────────────────────────────────
 
@@ -78,6 +79,23 @@ impl From<TryCloneError> for TryHashMapError {
     }
 }
 
+impl From<TryDefaultError> for TryHashMapError {
+    fn from(err: TryDefaultError) -> Self {
+        match err {
+            TryDefaultError::Alloc(e) => Self::Alloc(e),
+            TryDefaultError::Reserve(e) => Self::Reserve(e),
+            TryDefaultError::Overflow => Self::Overflow,
+            TryDefaultError::Other(msg) => Self::Other(msg),
+        }
+    }
+}
+
+impl From<std::collections::TryReserveError> for TryHashMapError {
+    fn from(e: std::collections::TryReserveError) -> Self {
+        Self::Reserve(TryReserveError::from(e))
+    }
+}
+
 // ── Trait ─────────────────────────────────────────────────────────────────────
 
 /// A trait for fallible hash map operations.
@@ -93,15 +111,36 @@ impl From<TryCloneError> for TryHashMapError {
 /// on allocation failure. Our [`Self::try_insert`] reserves capacity first so it
 /// never panics on OOM — it returns [`TryHashMapError::Reserve`] instead, but it
 /// does not return the old value on key collision.
-pub trait TryHashMap<K, V, S>: Sized {
+pub trait TryHashMap<K, V, S = RandomState>: Sized {
     // ── Construction ────────────────────────────────────────────────────────
+
+    /// Fallibly construct an empty `HashMap` with a default-constructed hasher.
+    ///
+    /// Unlike [`Self::try_with_capacity`], which hardcodes [`RandomState`] and
+    /// may panic on first use in a new thread (due to thread-local seeding),
+    /// this method uses [`TryDefault`] to construct the hasher fallibly. If
+    /// hasher construction fails (e.g. `RandomState` panics during seed
+    /// initialization), the error is returned rather than unwinding.
+    ///
+    /// Requires `S: [`TryDefault`]` so that hasher creation is safe even when
+    /// it involves runtime allocation or thread-local state.
+    fn try_new() -> Result<HashMap<K, V, S>, TryHashMapError>
+    where
+        S: TryDefault;
 
     /// Fallibly construct an empty `HashMap` with at least enough capacity for
     /// `capacity` elements.
     ///
-    /// Returns [`TryReserveError`] if the initial allocation fails.
-    /// Equivalent to [`HashMap::with_capacity`] but fallible.
-    fn try_with_capacity(capacity: usize) -> Result<HashMap<K, V, RandomState>, TryReserveError>;
+    /// Constructs the hasher via [`TryDefault`] (same as [`Self::try_new`]),
+    /// then reserves capacity for `capacity` elements. Returns
+    /// [`TryHashMapError::Reserve`] if the capacity reservation fails, or
+    /// [`TryHashMapError::Other`] if hasher construction panics.
+    ///
+    /// Requires `S: [`TryDefault`]` so that hasher creation is safe even when
+    /// it involves runtime allocation or thread-local state.
+    fn try_with_capacity(capacity: usize) -> Result<HashMap<K, V, S>, TryHashMapError>
+    where
+        S: TryDefault;
 
     /// Fallibly construct an empty `HashMap` with at least enough capacity for
     /// `capacity` elements, using the provided hash builder.
@@ -184,10 +223,19 @@ pub trait TryHashMap<K, V, S>: Sized {
 
     // ── Aliases with `fallible_` prefix ────────────────────────────────────
 
+    /// Alias for [`Self::try_new`].
+    fn fallible_new() -> Result<HashMap<K, V, S>, TryHashMapError>
+    where
+        S: TryDefault,
+    {
+        Self::try_new()
+    }
+
     /// Alias for [`Self::try_with_capacity`].
-    fn fallible_with_capacity(
-        capacity: usize,
-    ) -> Result<HashMap<K, V, RandomState>, TryReserveError> {
+    fn fallible_with_capacity(capacity: usize) -> Result<HashMap<K, V, S>, TryHashMapError>
+    where
+        S: TryDefault,
+    {
         Self::try_with_capacity(capacity)
     }
 
@@ -297,45 +345,32 @@ pub trait TryHashMap<K, V, S>: Sized {
     /// Fallibly shrink the capacity of this hash map to match its length.
     ///
     /// Rebuilds the internal table so that it holds approximately `len` elements.
-    /// Requires `S: Clone` so the hasher can be reused for the new
-    /// table. Returns [`TryHashMapError::Reserve`] if the allocation for the
-    /// rebuilt table fails. Equivalent to [`HashMap::shrink_to_fit`] but fallible.
-    ///
-    /// # Panics
-    ///
-    /// Cloning the hasher factory may panic if it relies on heap allocation.
-    /// This is not the case for any standard-library hasher (`RandomState`,
-    /// `SipHasher13`, etc.) or popular third-party hashers (`ahash`, `FxHash`,
-    /// FNV, DJB2, and so on), which store only small stack integers. However,
-    /// a custom hasher that internally allocates could panic during the clone step.
+    /// Requires `S: TryClone` so the hasher can be safely duplicated for the new
+    /// table without risking a panic. Returns [`TryHashMapError::Reserve`] if the
+    /// allocation for the rebuilt table fails, or [`TryHashMapError::Clone`] if
+    /// duplicating the hasher factory fails. Equivalent to
+    /// [`HashMap::shrink_to_fit`] but fallible.
     fn try_shrink_to_fit(&mut self) -> Result<(), TryHashMapError>
     where
-        S: Clone;
+        S: TryClone;
 
     /// Fallibly shrink the capacity of this hash map to hold at least
     /// `min_capacity` elements.
     ///
     /// If the current capacity is already less than or equal to `min_capacity`,
     /// does nothing and returns `Ok(())`. Otherwise rebuilds the table with the
-    /// target capacity. Requires `S: Clone` so the hasher can be
-    /// reused. Returns [`TryHashMapError::Reserve`] if the allocation fails.
+    /// target capacity. Requires `S: TryClone` so the hasher can be safely
+    /// duplicated. Returns [`TryHashMapError::Reserve`] if the allocation fails,
+    /// or [`TryHashMapError::Clone`] if duplicating the hasher factory fails.
     /// Equivalent to [`HashMap::shrink_to`] but fallible.
-    ///
-    /// # Panics
-    ///
-    /// Cloning the hasher factory may panic if it relies on heap allocation.
-    /// This is not the case for any standard-library hasher (`RandomState`,
-    /// `SipHasher13`, etc.) or popular third-party hashers (`ahash`, `FxHash`,
-    /// FNV, DJB2, and so on), which store only small stack integers. However,
-    /// a custom hasher that internally allocates could panic during the clone step.
     fn try_shrink_to(&mut self, min_capacity: usize) -> Result<(), TryHashMapError>
     where
-        S: Clone;
+        S: TryClone;
 
     /// Alias for [`Self::try_shrink_to_fit`].
     fn fallible_shrink_to_fit(&mut self) -> Result<(), TryHashMapError>
     where
-        S: Clone,
+        S: TryClone,
     {
         Self::try_shrink_to_fit(self)
     }
@@ -343,7 +378,7 @@ pub trait TryHashMap<K, V, S>: Sized {
     /// Alias for [`Self::try_shrink_to`].
     fn fallible_shrink_to(&mut self, min_capacity: usize) -> Result<(), TryHashMapError>
     where
-        S: Clone,
+        S: TryClone,
     {
         Self::try_shrink_to(self, min_capacity)
     }
@@ -352,10 +387,13 @@ pub trait TryHashMap<K, V, S>: Sized {
 
     /// Fallibly collect an iterator of `(K, V)` pairs into a `HashMap`.
     ///
-    /// Uses the iterator's size hint to pre-allocate when possible.
+    /// Constructs the hasher via [`TryDefault`] and uses the iterator's size
+    /// hint to pre-allocate when possible.
     fn try_collect<I: IntoIterator<Item = (K, V)>>(
         iter: I,
-    ) -> Result<HashMap<K, V, RandomState>, TryReserveError>;
+    ) -> Result<HashMap<K, V, S>, TryHashMapError>
+    where
+        S: TryDefault;
 
     /// Fallibly create a `HashMap` from an iterator using the provided hasher.
     fn try_collect_with_hasher<I: IntoIterator<Item = (K, V)>>(
@@ -366,7 +404,10 @@ pub trait TryHashMap<K, V, S>: Sized {
     /// Alias for [`Self::try_collect`].
     fn fallible_collect<I: IntoIterator<Item = (K, V)>>(
         iter: I,
-    ) -> Result<HashMap<K, V, RandomState>, TryReserveError> {
+    ) -> Result<HashMap<K, V, S>, TryHashMapError>
+    where
+        S: TryDefault,
+    {
         Self::try_collect(iter)
     }
 
@@ -385,10 +426,21 @@ pub trait TryHashMap<K, V, S>: Sized {
 impl<K: Eq + Hash, V, S: BuildHasher> TryHashMap<K, V, S> for HashMap<K, V, S> {
     // ── Construction ────────────────────────────────────────────────────────
 
-    fn try_with_capacity(capacity: usize) -> Result<HashMap<K, V, RandomState>, TryReserveError> {
-        let mut map = HashMap::new();
+    fn try_new() -> Result<HashMap<K, V, S>, TryHashMapError>
+    where
+        S: TryDefault,
+    {
+        let hasher = S::try_default()?;
+        Ok(HashMap::with_hasher(hasher))
+    }
+
+    fn try_with_capacity(capacity: usize) -> Result<HashMap<K, V, S>, TryHashMapError>
+    where
+        S: TryDefault,
+    {
+        let mut map = Self::try_new()?;
         if capacity > 0 {
-            map.try_reserve(capacity)?;
+            map.try_reserve(capacity).map_err(TryHashMapError::from)?;
         }
         Ok(map)
     }
@@ -410,7 +462,8 @@ impl<K: Eq + Hash, V, S: BuildHasher> TryHashMap<K, V, S> for HashMap<K, V, S> {
     where
         K: Eq + Hash,
     {
-        self.try_reserve(1).map_err(TryHashMapError::Reserve)?;
+        self.try_reserve(1)
+            .map_err(|e| TryHashMapError::Reserve(e.into()))?;
         Ok(self.insert(key, value))
     }
 
@@ -424,7 +477,7 @@ impl<K: Eq + Hash, V, S: BuildHasher> TryHashMap<K, V, S> for HashMap<K, V, S> {
     {
         match self.try_reserve(1) {
             Ok(()) => Ok(self.insert(key, value)),
-            Err(e) => Err((key, value, TryHashMapError::Reserve(e))),
+            Err(e) => Err((key, value, TryHashMapError::Reserve(e.into()))),
         }
     }
 
@@ -440,7 +493,7 @@ impl<K: Eq + Hash, V, S: BuildHasher> TryHashMap<K, V, S> for HashMap<K, V, S> {
                 self.insert(key, value);
                 Ok(())
             }
-            Err(e) => Err((key, value, TryHashMapError::Reserve(e))),
+            Err(e) => Err((key, value, TryHashMapError::Reserve(e.into()))),
         }
     }
 
@@ -451,7 +504,8 @@ impl<K: Eq + Hash, V, S: BuildHasher> TryHashMap<K, V, S> for HashMap<K, V, S> {
     where
         K: Eq + Hash,
     {
-        self.try_reserve(1).map_err(TryHashMapError::Reserve)?;
+        self.try_reserve(1)
+            .map_err(|e| TryHashMapError::Reserve(e.into()))?;
         Ok(self.entry(key))
     }
 
@@ -485,7 +539,7 @@ impl<K: Eq + Hash, V, S: BuildHasher> TryHashMap<K, V, S> for HashMap<K, V, S> {
         }
         let len_before = self.len();
         self.try_reserve(other.len())
-            .map_err(TryHashMapError::Reserve)?;
+            .map_err(|e| TryHashMapError::Reserve(e.into()))?;
         for (key, value) in other {
             match (key.try_clone(), value.try_clone()) {
                 (Ok(k), Ok(v)) => {
@@ -507,26 +561,25 @@ impl<K: Eq + Hash, V, S: BuildHasher> TryHashMap<K, V, S> for HashMap<K, V, S> {
 
     fn try_shrink_to_fit(&mut self) -> Result<(), TryHashMapError>
     where
-        S: Clone,
+        S: TryClone,
     {
         Self::try_shrink_to(self, self.len())
     }
 
     fn try_shrink_to(&mut self, min_capacity: usize) -> Result<(), TryHashMapError>
     where
-        S: Clone,
+        S: TryClone,
     {
         let target = core::cmp::max(self.len(), min_capacity);
         if self.capacity() <= target {
             return Ok(());
         }
-        let length = self.len();
-        let hasher = self.hasher().clone();
+        let hasher = self.hasher().try_clone().map_err(TryHashMapError::from)?;
         // Apparently, the hashbrown library also reallocates a new entire hash table for the shrink and moves items to the new table, so complexity wise, this should not be worse than the library.
-        let mut new_map = HashMap::with_capacity_and_hasher(target, hasher);
+        let mut new_map = HashMap::with_capacity_and_hasher(0, hasher);
         new_map
-            .try_reserve(length)
-            .map_err(TryHashMapError::Reserve)?;
+            .try_reserve(target)
+            .map_err(|e| TryHashMapError::Reserve(e.into()))?;
         for (k, v) in self.drain() {
             new_map.insert(k, v);
         }
@@ -538,13 +591,16 @@ impl<K: Eq + Hash, V, S: BuildHasher> TryHashMap<K, V, S> for HashMap<K, V, S> {
 
     fn try_collect<I: IntoIterator<Item = (K, V)>>(
         iter: I,
-    ) -> Result<HashMap<K, V, RandomState>, TryReserveError> {
+    ) -> Result<HashMap<K, V, S>, TryHashMapError>
+    where
+        S: TryDefault,
+    {
         let iter = iter.into_iter();
         let (lower, upper) = iter.size_hint();
         let capacity = upper.unwrap_or(lower);
-        let mut map = HashMap::new();
+        let mut map = Self::try_new()?;
         if capacity > 0 {
-            map.try_reserve(capacity)?;
+            map.try_reserve(capacity).map_err(TryHashMapError::from)?;
         }
         for (key, value) in iter {
             if map.len() == map.capacity() {
@@ -579,28 +635,20 @@ impl<K: Eq + Hash, V, S: BuildHasher> TryHashMap<K, V, S> for HashMap<K, V, S> {
 // ── TryClone for HashMap<K, V, S> ──────────────────────────────────────────────
 
 /// Implements [`TryClone`] for `HashMap<K, V, S>` when keys and values are
-/// cloneable and the hasher factory can be cloned.
-///
-/// # Panics
-///
-/// Cloning the hasher factory may panic if it relies on heap allocation.
-/// This is not the case for any standard-library hasher (`RandomState`,
-/// `SipHasher13`, etc.) or popular third-party hashers (`ahash`, `FxHash`,
-/// FNV, DJB2, and so on), which store only small stack integers. However,
-/// a custom hasher that internally allocates could panic during the clone step.
+/// cloneable and the hasher factory implements [`TryClone`].
 impl<K, V, S> TryClone for HashMap<K, V, S>
 where
     K: Eq + Hash + TryClone,
     V: TryClone,
-    S: BuildHasher + Clone,
+    S: BuildHasher + TryClone,
 {
     fn try_clone(&self) -> Result<Self, TryCloneError> {
-        let hasher = self.hasher().clone();
+        let hasher = self.hasher().try_clone()?;
         let mut out = HashMap::with_capacity_and_hasher(self.len(), hasher);
         if !self.is_empty() {
             // Reserve space first so allocation failures are caught early.
             out.try_reserve(self.len())
-                .map_err(TryCloneError::Reserve)?;
+                .map_err(|e| TryCloneError::Reserve(e.into()))?;
         }
         for (key, value) in self.iter() {
             match (key.try_clone(), value.try_clone()) {
@@ -619,16 +667,17 @@ where
 
 // ── TryDefault for HashMap<K, V, S> ────────────────────────────────────────────
 
-impl<K, V, S: BuildHasher + Default> TryDefault for HashMap<K, V, S> {
+impl<K, V, S: BuildHasher + TryDefault> TryDefault for HashMap<K, V, S> {
     fn try_default() -> Result<Self, TryDefaultError> {
-        // An empty HashMap requires no allocation.
-        Ok(HashMap::with_hasher(S::default()))
+        let hasher = S::try_default()?;
+        Ok(HashMap::with_hasher(hasher))
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::hash_map::RandomState;
 
     // ── Construction ─────────────────────────────────────────────────────────
 

@@ -15,10 +15,10 @@
 //! [`TryDefault`](crate::try_default::TryDefault) for `String`.
 
 use crate::alloc::AllocError;
+use crate::alloc::TryReserveError;
 use crate::try_clone::{TryClone, TryCloneError};
 use crate::try_default::{TryDefault, TryDefaultError};
 use core::fmt;
-use std::collections::TryReserveError;
 
 /// Error returned by [`TryString`] operations.
 ///
@@ -60,6 +60,12 @@ impl From<AllocError> for TryStringError {
 impl From<TryReserveError> for TryStringError {
     fn from(err: TryReserveError) -> Self {
         Self::Reserve(err)
+    }
+}
+
+impl From<std::collections::TryReserveError> for TryStringError {
+    fn from(err: std::collections::TryReserveError) -> Self {
+        Self::Reserve(TryReserveError::from(err))
     }
 }
 
@@ -272,7 +278,7 @@ impl TryClone for String {
         let mut out = String::new();
         if !self.is_empty() {
             out.try_reserve(self.len())
-                .map_err(TryCloneError::Reserve)?;
+                .map_err(|e| TryCloneError::Reserve(e.into()))?;
         }
         out.push_str(self);
         Ok(out)

@@ -25,9 +25,6 @@ fn main() {
 
 /// Run `cargo +nightly test` with the leak sanitizer enabled.
 fn cmd_sanitize() {
-    // Sanitizers require debug builds (no optimizations) and a cross-compilation
-    // target so that LLVM instrumentation is applied. We build libstd from source
-    // via `-Zbuild-std` so that panic paths are also instrumented.
     let mut cmd = Command::new("cargo");
     cmd.env(
         "RUSTFLAGS",
@@ -40,6 +37,8 @@ fn cmd_sanitize() {
         "build-std",
         "--target",
         "x86_64-unknown-linux-gnu",
+        "--lib",
+        "--tests",
         "--",
         "--nocapture",
     ]);

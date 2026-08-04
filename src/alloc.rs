@@ -3,7 +3,8 @@
 //! The [`alloc`](core::alloc) crate's `AllocError` is not exposed on stable Rust,
 //! so we provide our own equivalent for use across this library. We also provide
 //! [`PayloadBox`], an owning wrapper around the raw panic payload from
-//! [`std::panic::catch_unwind`].
+//! [`std::panic::catch_unwind`], and [`TryReserveError`], a unified polyfill for
+//! capacity-reservation failures across different collection backends.
 
 use core::fmt;
 use std::alloc::Layout;
@@ -22,6 +23,52 @@ impl fmt::Display for AllocError {
 }
 
 // Not impling `std::error::Error` to stay no_std compatible by default.
+
+/// Unified error for fallible capacity reservation.
+///
+/// Different collection types return different reserve-error types:
+/// standard collections expose [`std::collections::TryReserveError`] which carries
+/// diagnostic information, while third-party collections like `dashmap` provide an
+/// empty non-exhaustive struct with no usable fields. This enum unifies both cases
+/// so that error types across this crate can use a single `Reserve` variant.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TryReserveError {
+    /// The underlying collection provided a [`std::collections::TryReserveError`]
+    /// with diagnostic details about the failed allocation.
+    Std(std::collections::TryReserveError),
+    /// The underlying collection provided no diagnostic information.
+    Other,
+}
+
+impl fmt::Display for TryReserveError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Std(e) => write!(f, "{}", e),
+            Self::Other => write!(f, "capacity reservation failed"),
+        }
+    }
+}
+
+impl From<std::collections::TryReserveError> for TryReserveError {
+    fn from(e: std::collections::TryReserveError) -> Self {
+        Self::Std(e)
+    }
+}
+
+impl From<dashmap::TryReserveError> for TryReserveError {
+    fn from(_e: dashmap::TryReserveError) -> Self {
+        Self::Other
+    }
+}
+
+impl std::error::Error for TryReserveError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Std(e) => Some(e),
+            Self::Other => None,
+        }
+    }
+}
 
 /// Owning wrapper around the raw panic payload from [`std::panic::catch_unwind`].
 ///

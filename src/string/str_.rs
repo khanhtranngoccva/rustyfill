@@ -2,12 +2,11 @@
 //!
 //! Provides the [`TryStr`] trait with methods that mirror allocating `&str`
 //! constructors but return [`Result`] to handle allocation failures gracefully.
-//! Uses [`TryReserveError`](std::collections::TryReserveError) as the error type
+//! Uses [`TryReserveError`](crate::alloc::TryReserveError) as the error type
 //! for consistency with [`TryString`](super::string_::TryString).
 
-use crate::alloc::AllocError;
+use crate::alloc::{AllocError, TryReserveError};
 use core::fmt;
-use std::collections::TryReserveError;
 
 /// Error returned by [`TryStr`] operations.
 #[derive(Debug)]
@@ -85,7 +84,7 @@ impl TryStr for str {
     fn try_to_string(&self) -> Result<String, TryStrError> {
         let mut out = String::new();
         if !self.is_empty() {
-            out.try_reserve(self.len()).map_err(TryStrError::Reserve)?;
+            out.try_reserve(self.len()).map_err(|e| TryStrError::Reserve(e.into()))?;
         }
         out.push_str(self);
         Ok(out)
@@ -98,7 +97,7 @@ impl TryStr for str {
         }
         let total_len = len.checked_mul(n).ok_or(TryStrError::Overflow)?;
         let mut out = String::new();
-        out.try_reserve(total_len).map_err(TryStrError::Reserve)?;
+        out.try_reserve(total_len).map_err(|e| TryStrError::Reserve(e.into()))?;
         for _ in 0..n {
             out.push_str(self);
         }

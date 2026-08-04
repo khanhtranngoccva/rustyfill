@@ -22,6 +22,8 @@
 use crate::alloc::{AllocError, PayloadBox};
 use crate::try_clone::TryCloneError;
 use core::fmt;
+use core::mem::ManuallyDrop;
+use core::ptr;
 use std::collections::BTreeMap;
 use std::panic::{AssertUnwindSafe, RefUnwindSafe, catch_unwind};
 
@@ -131,18 +133,31 @@ pub trait TryBTreeMap<K, V>: Sized {
         K: Ord + RefUnwindSafe,
         V: RefUnwindSafe;
 
+    /// Like [`Self::try_insert`] or [`Self::fallible_insert`] but returns ownership
+    /// of `key` and `value` back on allocation failure.
+    ///
+    /// Unlike the original [`BTreeMap::try_insert`], key collisions cause the old
+    /// value to be evicted. See [`Self::try_insert_unique`] for the variant that
+    /// fails on key collisions.
+    fn try_insert_give_back(
+        &mut self,
+        key: K,
+        value: V,
+    ) -> Result<Option<V>, (K, V, TryBTreeMapError)>
+    where
+        K: Ord + RefUnwindSafe,
+        V: RefUnwindSafe;
+
     /// Fallibly insert a key-value pair only if the key is not already present.
     ///
     /// Catches allocation panics from internal B-tree node allocation.
     ///
     /// Returns `Ok(())` if the key was newly inserted. Returns
-    /// `Err(error)` if the insertion failed. The error is
+    /// `Err((key, value, error))` if the insertion failed, giving ownership of
+    /// both `key` and `value` back to the caller. The error is
     /// [`TryBTreeMapError::AllocPanic`] on allocation failure or
     /// [`TryBTreeMapError::Other`] if the key already exists.
-    ///
-    /// On allocation failure, `key` and `value` are dropped since they cannot be
-    /// reliably recovered after `catch_unwind` consumes the closure that moves them.
-    fn try_insert_unique(&mut self, key: K, value: V) -> Result<(), TryBTreeMapError>
+    fn try_insert_unique(&mut self, key: K, value: V) -> Result<(), (K, V, TryBTreeMapError)>
     where
         K: Ord + RefUnwindSafe,
         V: RefUnwindSafe;
@@ -192,8 +207,26 @@ pub trait TryBTreeMap<K, V>: Sized {
         Self::try_insert(self, key, value)
     }
 
+    /// Like [`Self::fallible_insert`] but returns ownership of `key` and `value`
+    /// back on allocation failure.
+    ///
+    /// Unlike the original [`BTreeMap::try_insert`], key collisions cause the old
+    /// value to be evicted. See [`Self::fallible_insert_unique`] for the variant
+    /// that fails on key collisions.
+    fn fallible_insert_give_back(
+        &mut self,
+        key: K,
+        value: V,
+    ) -> Result<Option<V>, (K, V, TryBTreeMapError)>
+    where
+        K: Ord + RefUnwindSafe,
+        V: RefUnwindSafe,
+    {
+        Self::try_insert_give_back(self, key, value)
+    }
+
     /// Alias for [`Self::try_insert_unique`].
-    fn fallible_insert_unique(&mut self, key: K, value: V) -> Result<(), TryBTreeMapError>
+    fn fallible_insert_unique(&mut self, key: K, value: V) -> Result<(), (K, V, TryBTreeMapError)>
     where
         K: Ord + RefUnwindSafe,
         V: RefUnwindSafe,
@@ -305,24 +338,109 @@ impl<K: Ord + RefUnwindSafe, V: RefUnwindSafe> TryBTreeMap<K, V> for BTreeMap<K,
         K: Ord + RefUnwindSafe,
         V: RefUnwindSafe,
     {
+        // FIXME: this does not catch aborting panics!
         let result: Option<V> = catch_unwind(AssertUnwindSafe(|| self.insert(key, value)))
             .map_err(|payload| TryBTreeMapError::AllocPanic(PayloadBox(payload)))?;
         Ok(result)
     }
 
-    fn try_insert_unique(&mut self, key: K, value: V) -> Result<(), TryBTreeMapError>
+    fn try_insert_give_back(
+        &mut self,
+        key: K,
+        value: V,
+    ) -> Result<Option<V>, (K, V, TryBTreeMapError)>
+    where
+        K: Ord + RefUnwindSafe,
+        V: RefUnwindSafe,
+    {
+        // Step 1: Transmute &mut BTreeMap<K, V> into &mut BTreeMap<ManuallyDrop<K>, ManuallyDrop<V>>
+        let md_map: &mut BTreeMap<ManuallyDrop<K>, ManuallyDrop<V>> = unsafe {
+            &mut *(self as *mut BTreeMap<K, V> as *mut BTreeMap<ManuallyDrop<K>, ManuallyDrop<V>>)
+        };
+
+        // Step 2: Wrap the originals in ManuallyDrop.
+        let md_value = ManuallyDrop::new(value);
+        let md_key = ManuallyDrop::new(key);
+
+        // Step 3: Insert into the ManuallyDrop map inside catch_unwind.
+        // Use ptr::read to move out of the references without consuming md_key/md_value,
+        // so they're still accessible on panic.
+        // FIXME: this does not catch aborting panics!
+        let result = catch_unwind(AssertUnwindSafe(|| {
+            let k = unsafe { ptr::read(&md_key) };
+            let v = unsafe { ptr::read(&md_value) };
+            md_map.insert(k, v)
+        }));
+
+        match result {
+            Ok(maybe_old_md_value) => {
+                if let Some(old_md_value) = maybe_old_md_value {
+                    // Collision: BTreeMap::insert kept the old key in the tree,
+                    // replaced the value with ours, and dropped the new key as
+                    // ManuallyDrop<K> (skipping the inner K's destructor).
+                    //
+                    // The new key is still valid in md_key on our stack (ptr::read
+                    // copies without invalidating). We extract it and drop it here
+                    // so the inner K is properly freed.
+                    let old_v = ManuallyDrop::into_inner(old_md_value);
+                    let _new_k = ManuallyDrop::into_inner(md_key);
+                    // _new_k drops here, freeing the inner K.
+                    return Ok(Some(old_v));
+                }
+                Ok(None)
+            }
+            Err(payload) => {
+                // Step 4 (failure): Recover the original values.
+                // Nothing was inserted, so the ManuallyDrop wrappers still hold valid data.
+                let key = ManuallyDrop::into_inner(md_key);
+                let value = ManuallyDrop::into_inner(md_value);
+                Err((
+                    key,
+                    value,
+                    TryBTreeMapError::AllocPanic(PayloadBox(payload)),
+                ))
+            }
+        }
+    }
+
+    fn try_insert_unique(&mut self, key: K, value: V) -> Result<(), (K, V, TryBTreeMapError)>
     where
         K: Ord + RefUnwindSafe,
         V: RefUnwindSafe,
     {
         if self.contains_key(&key) {
-            return Err(TryBTreeMapError::Other("key already exists"));
+            return Err((key, value, TryBTreeMapError::Other("key already exists")));
         }
-        catch_unwind(AssertUnwindSafe(|| {
-            self.insert(key, value);
-        }))
-        .map_err(|payload| TryBTreeMapError::AllocPanic(PayloadBox(payload)))?;
-        Ok(())
+        // Step 1: Transmute &mut BTreeMap<K, V> into &mut BTreeMap<ManuallyDrop<K>, ManuallyDrop<V>>
+        let md_map: &mut BTreeMap<ManuallyDrop<K>, ManuallyDrop<V>> = unsafe {
+            &mut *(self as *mut BTreeMap<K, V> as *mut BTreeMap<ManuallyDrop<K>, ManuallyDrop<V>>)
+        };
+
+        // Step 2: Wrap originals in ManuallyDrop.
+        let md_value = ManuallyDrop::new(value);
+        let md_key = ManuallyDrop::new(key);
+
+        // Step 3: Insert into the ManuallyDrop map.
+        // FIXME: this does not catch aborting panics!
+        let result = catch_unwind(AssertUnwindSafe(|| {
+            let k = unsafe { ptr::read(&md_key) };
+            let v = unsafe { ptr::read(&md_value) };
+            md_map.insert(k, v)
+        }));
+
+        match result {
+            Ok(_old) => Ok(()),
+            Err(payload) => {
+                // Step 4: Recover the original values.
+                let key = ManuallyDrop::into_inner(md_key);
+                let value = ManuallyDrop::into_inner(md_value);
+                Err((
+                    key,
+                    value,
+                    TryBTreeMapError::AllocPanic(PayloadBox(payload)),
+                ))
+            }
+        }
     }
 
     fn try_entry<'a>(
@@ -519,7 +637,9 @@ mod tests {
         let mut map: BTreeMap<i32, &str> = BTreeMap::new();
         map.try_insert_unique(1, "one").unwrap();
         let result = map.try_insert_unique(1, "TWO");
-        let err = result.unwrap_err();
+        let (returned_key, returned_val, err) = result.unwrap_err();
+        assert_eq!(returned_key, 1);
+        assert_eq!(returned_val, "TWO");
         matches!(err, TryBTreeMapError::Other(_));
         assert_eq!(map.get(&1), Some(&"one"));
         assert_eq!(map.len(), 1);
@@ -530,6 +650,130 @@ mod tests {
         let mut map: BTreeMap<i32, String> = BTreeMap::new();
         map.fallible_insert_unique(42, "hi".to_string()).unwrap();
         assert_eq!(map[&42], "hi");
+    }
+
+    // ── Give-back variants ───────────────────────────────────────────────────
+
+    #[test]
+    fn fallible_insert_give_back_success() {
+        let mut map: BTreeMap<String, Vec<u8>> = BTreeMap::new();
+        map.fallible_insert_give_back("k".to_string(), vec![1])
+            .unwrap();
+        assert_eq!(map["k"], vec![1]);
+    }
+
+    #[test]
+    fn fallible_insert_give_back_error_type_shape() {
+        let mut map: BTreeMap<i32, i32> = BTreeMap::new();
+        let result: Result<Option<i32>, (i32, i32, TryBTreeMapError)> =
+            map.fallible_insert_give_back(1, 2);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn fallible_insert_give_back_overwrite_returns_old() {
+        let mut map: BTreeMap<i32, String> = BTreeMap::new();
+        map.fallible_insert_give_back(1, "first".to_string())
+            .unwrap();
+        let old = map
+            .fallible_insert_give_back(1, "second".to_string())
+            .unwrap();
+        assert_eq!(old.as_deref(), Some("first"));
+        assert_eq!(map[&1], "second");
+    }
+
+    // ── Drop correctness (Miri / sanitizer validation) ───────────────────────
+
+    /// Verifies that overwriting an entry with Box-containing keys and values
+    /// does not double-free or leak. Miri and ASAN will catch violations.
+    #[test]
+    fn give_back_drop_behavior_no_double_free_or_leak() {
+        #[derive(Debug)]
+        struct DroppedKey(Box<u64>);
+        impl PartialEq for DroppedKey {
+            fn eq(&self, other: &Self) -> bool {
+                self.0 == other.0
+            }
+        }
+        impl Eq for DroppedKey {}
+        impl PartialOrd for DroppedKey {
+            fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+                Some(self.cmp(other))
+            }
+        }
+        impl Ord for DroppedKey {
+            fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+                self.0.cmp(&other.0)
+            }
+        }
+
+        #[derive(Debug)]
+        #[allow(clippy::box_collection)]
+        struct DroppedValue(Box<Vec<u8>>);
+
+        let mut map: BTreeMap<DroppedKey, DroppedValue> = BTreeMap::new();
+
+        // Insert initial entry with heap-allocated key and value.
+        map.fallible_insert_give_back(
+            DroppedKey(Box::new(42)),
+            DroppedValue(Box::new(vec![1, 2, 3])),
+        )
+        .unwrap();
+
+        // Overwrite — the old key/value and the new key must all be properly
+        // dropped without double-free or leaks.
+        let old = map
+            .fallible_insert_give_back(
+                DroppedKey(Box::new(42)),
+                DroppedValue(Box::new(vec![4, 5, 6])),
+            )
+            .unwrap();
+
+        // Verify the returned old value is valid and gets dropped correctly.
+        assert!(old.is_some());
+        let old_val = old.unwrap();
+        assert_eq!(*old_val.0, vec![1, 2, 3]);
+        // old_val drops here, freeing its Box<Vec<u8>>.
+
+        // Verify the current entry has the new value.
+        let cur_key = map.keys().next().unwrap();
+        assert_eq!(*cur_key.0, 42);
+        let cur_val = map.values().next().unwrap();
+        assert_eq!(*cur_val.0, vec![4, 5, 6]);
+
+        // map drops here — the remaining entry's Box<u64> key and Box<Vec<u8>>
+        // value must be freed exactly once.
+    }
+
+    /// Same check for try_insert_unique on a fresh key.
+    #[test]
+    fn insert_unique_drop_behavior_no_leak() {
+        #[derive(Debug)]
+        struct TrackedKey(Box<i32>);
+        impl PartialEq for TrackedKey {
+            fn eq(&self, other: &Self) -> bool {
+                self.0 == other.0
+            }
+        }
+        impl Eq for TrackedKey {}
+        impl PartialOrd for TrackedKey {
+            fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+                Some(self.cmp(other))
+            }
+        }
+        impl Ord for TrackedKey {
+            fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+                self.0.cmp(&other.0)
+            }
+        }
+
+        let mut map: BTreeMap<TrackedKey, String> = BTreeMap::new();
+        map.try_insert_unique(TrackedKey(Box::new(7)), "hello".to_string())
+            .unwrap();
+
+        let key = map.keys().next().unwrap();
+        assert_eq!(*key.0, 7);
+        // map drops here — TrackedKey's Box<i32> must be freed.
     }
 
     // ── Entry API ────────────────────────────────────────────────────────────

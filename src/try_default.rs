@@ -17,7 +17,7 @@
 //! Structs and enums can derive `TryDefault` via the [`fallibles_macros::TryDefault`]
 //! proc macro, which requires every field in every variant to also implement `TryDefault`.
 
-use crate::alloc::AllocError;
+use crate::alloc::{AllocError, TryReserveError};
 use core::fmt;
 
 /// Returned when a fallible default construction fails.
@@ -26,7 +26,7 @@ pub enum TryDefaultError {
     /// A raw heap allocation failed (no collection involved).
     Alloc(AllocError),
     /// A capacity reservation on a collection failed (overflow or OOM).
-    Reserve(std::collections::TryReserveError),
+    Reserve(TryReserveError),
     /// A manually detected arithmetic overflow (e.g., size multiplication).
     Overflow,
     /// A logic-level failure with a static diagnostic message.
@@ -50,8 +50,8 @@ impl From<AllocError> for TryDefaultError {
     }
 }
 
-impl From<std::collections::TryReserveError> for TryDefaultError {
-    fn from(err: std::collections::TryReserveError) -> Self {
+impl From<TryReserveError> for TryDefaultError {
+    fn from(err: TryReserveError) -> Self {
         Self::Reserve(err)
     }
 }

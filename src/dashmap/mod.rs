@@ -1,0 +1,13 @@
+//! Fallible operations for `dashmap::DashMap` and `dashmap::DashSet`.
+//!
+//! Provides [`TryDashMap`] and [`TryDashSet`] traits that mirror common
+//! construction and mutating operations but return [`Result`] values instead of
+//! panicking on allocation failure. Uses the `raw-api` feature to lock and
+//! operate on a single shard at a time.
+
+mod dashmap_;
+mod dashset_;
+pub mod mapref;
+
+pub use dashmap_::{TryDashMap, TryDashMapError, TryDashMapNonblockError};
+pub use dashset_::{TryDashSet, TryDashSetError};

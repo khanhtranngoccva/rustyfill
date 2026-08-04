@@ -22,6 +22,8 @@
 use crate::alloc::{AllocError, PayloadBox};
 use crate::try_clone::TryCloneError;
 use core::fmt;
+use core::mem::ManuallyDrop;
+use core::ptr;
 use std::collections::BTreeSet;
 use std::panic::{AssertUnwindSafe, RefUnwindSafe, catch_unwind};
 
@@ -113,6 +115,12 @@ pub trait TryBTreeSet<T>: Sized {
     where
         T: Ord + RefUnwindSafe;
 
+    /// Like [`Self::try_insert`] but returns ownership of `value` back on
+    /// allocation failure.
+    fn try_insert_give_back(&mut self, value: T) -> Result<bool, (T, TryBTreeSetError)>
+    where
+        T: Ord + RefUnwindSafe;
+
     // ── Aliases with `fallible_` prefix ────────────────────────────────────
 
     /// Alias for [`Self::try_new`].
@@ -128,6 +136,14 @@ pub trait TryBTreeSet<T>: Sized {
         Self::try_insert(self, value)
     }
 
+    /// Alias for [`Self::try_insert_give_back`].
+    fn fallible_insert_give_back(&mut self, value: T) -> Result<bool, (T, TryBTreeSetError)>
+    where
+        T: Ord + RefUnwindSafe,
+    {
+        Self::try_insert_give_back(self, value)
+    }
+
     // ── Extension ───────────────────────────────────────────────────────────
 
     /// Fallibly extend the set with all values from an iterator.
@@ -139,10 +155,7 @@ pub trait TryBTreeSet<T>: Sized {
     /// Note: because we catch the panic after the fact, partial extension may
     /// have occurred on failure. The set will be structurally consistent but
     /// may contain some of the extended elements.
-    fn try_extend<I: IntoIterator<Item = T>>(
-        &mut self,
-        iter: I,
-    ) -> Result<(), TryBTreeSetError>
+    fn try_extend<I: IntoIterator<Item = T>>(&mut self, iter: I) -> Result<(), TryBTreeSetError>
     where
         T: Ord + RefUnwindSafe;
 
@@ -180,16 +193,12 @@ pub trait TryBTreeSet<T>: Sized {
     ///
     /// Catches allocation panics from internal B-tree node allocation.
     /// Returns [`TryBTreeSetError::AllocPanic`] if an internal allocation fails.
-    fn try_collect<I: IntoIterator<Item = T>>(
-        iter: I,
-    ) -> Result<BTreeSet<T>, TryBTreeSetError>
+    fn try_collect<I: IntoIterator<Item = T>>(iter: I) -> Result<BTreeSet<T>, TryBTreeSetError>
     where
         T: Ord + RefUnwindSafe;
 
     /// Alias for [`Self::try_collect`].
-    fn fallible_collect<I: IntoIterator<Item = T>>(
-        iter: I,
-    ) -> Result<BTreeSet<T>, TryBTreeSetError>
+    fn fallible_collect<I: IntoIterator<Item = T>>(iter: I) -> Result<BTreeSet<T>, TryBTreeSetError>
     where
         T: Ord + RefUnwindSafe,
     {
@@ -214,12 +223,51 @@ impl<T: Ord + RefUnwindSafe> TryBTreeSet<T> for BTreeSet<T> {
         Ok(result)
     }
 
+    fn try_insert_give_back(&mut self, value: T) -> Result<bool, (T, TryBTreeSetError)>
+    where
+        T: Ord + RefUnwindSafe,
+    {
+        // Check containment first to avoid leaking on duplicate insertion.
+        // BTreeSet::insert drops the new value on duplicates, and with
+        // ManuallyDrop that would leak the inner value.
+        if self.contains(&value) {
+            return Ok(false);
+        }
+
+        // Step 1: Transmute &mut BTreeSet<T> into &mut BTreeSet<ManuallyDrop<T>>
+        let md_set: &mut BTreeSet<ManuallyDrop<T>> =
+            unsafe { &mut *(self as *mut BTreeSet<T> as *mut BTreeSet<ManuallyDrop<T>>) };
+
+        // Step 2: Wrap the original value in a ManuallyDrop.
+        let md_value = ManuallyDrop::new(value);
+
+        // Step 3: Insert into the ManuallyDrop set inside catch_unwind.
+        // Use ptr::read to move out of the reference without consuming md_value,
+        // so it's still accessible on panic.
+        let result = catch_unwind(AssertUnwindSafe(|| {
+            let v = unsafe { ptr::read(&md_value) };
+            md_set.insert(v)
+        }));
+
+        match result {
+            Ok(inserted) => {
+                // We already checked contains above, so this must be true.
+                // The ManuallyDrop wrapper is now owned by the set; forget the
+                // stack-local md_value since its contents were moved into the tree.
+                debug_assert!(inserted);
+                Ok(true)
+            }
+            Err(payload) => {
+                // Step 4: Recover the original value.
+                let value = ManuallyDrop::into_inner(md_value);
+                Err((value, TryBTreeSetError::AllocPanic(PayloadBox(payload))))
+            }
+        }
+    }
+
     // ── Extension ───────────────────────────────────────────────────────────
 
-    fn try_extend<I: IntoIterator<Item = T>>(
-        &mut self,
-        iter: I,
-    ) -> Result<(), TryBTreeSetError>
+    fn try_extend<I: IntoIterator<Item = T>>(&mut self, iter: I) -> Result<(), TryBTreeSetError>
     where
         T: Ord + RefUnwindSafe,
     {
@@ -257,9 +305,7 @@ impl<T: Ord + RefUnwindSafe> TryBTreeSet<T> for BTreeSet<T> {
 
     // ── Bulk construction ───────────────────────────────────────────────────
 
-    fn try_collect<I: IntoIterator<Item = T>>(
-        iter: I,
-    ) -> Result<BTreeSet<T>, TryBTreeSetError>
+    fn try_collect<I: IntoIterator<Item = T>>(iter: I) -> Result<BTreeSet<T>, TryBTreeSetError>
     where
         T: Ord + RefUnwindSafe,
     {
@@ -332,8 +378,7 @@ mod tests {
 
     #[test]
     fn fallible_new_alias_works() {
-        let set: BTreeSet<String> =
-            <BTreeSet<String> as TryBTreeSet<_>>::fallible_new();
+        let set: BTreeSet<String> = <BTreeSet<String> as TryBTreeSet<_>>::fallible_new();
         assert!(set.is_empty());
     }
 
@@ -372,6 +417,75 @@ mod tests {
         let mut set: BTreeSet<Vec<u8>> = BTreeSet::new();
         set.fallible_insert(vec![1, 2, 3]).unwrap();
         assert!(set.contains(&vec![1, 2, 3]));
+    }
+
+    // ── Give-back variants ───────────────────────────────────────────────────
+
+    #[test]
+    fn fallible_insert_give_back_success() {
+        let mut set: BTreeSet<String> = BTreeSet::new();
+        set.fallible_insert_give_back("hello".to_string()).unwrap();
+        assert!(set.contains("hello"));
+    }
+
+    #[test]
+    fn fallible_insert_give_back_error_type_shape() {
+        let mut set: BTreeSet<i32> = BTreeSet::new();
+        let result: Result<bool, (i32, TryBTreeSetError)> = set.fallible_insert_give_back(1);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn fallible_insert_give_back_duplicate_returns_false() {
+        let mut set: BTreeSet<i32> = BTreeSet::new();
+        assert!(set.fallible_insert_give_back(1).unwrap());
+        assert!(!set.fallible_insert_give_back(1).unwrap());
+        assert_eq!(set.len(), 1);
+    }
+
+    // ── Drop correctness (Miri / sanitizer validation) ───────────────────────
+
+    /// Verifies that inserting elements with Box-containing types does not
+    /// double-free or leak. Miri and ASAN will catch violations.
+    #[test]
+    fn give_back_drop_behavior_no_double_free_or_leak() {
+        #[derive(Debug)]
+        #[allow(clippy::box_collection)]
+        struct TrackedElem(Box<Vec<u8>>);
+        impl PartialEq for TrackedElem {
+            fn eq(&self, other: &Self) -> bool {
+                self.0 == other.0
+            }
+        }
+        impl Eq for TrackedElem {}
+        impl PartialOrd for TrackedElem {
+            fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+                Some(self.cmp(other))
+            }
+        }
+        impl Ord for TrackedElem {
+            fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+                self.0.cmp(&other.0)
+            }
+        }
+
+        let mut set: BTreeSet<TrackedElem> = BTreeSet::new();
+
+        // Insert several heap-allocated elements.
+        set.fallible_insert_give_back(TrackedElem(Box::new(vec![1, 2])))
+            .unwrap();
+        set.fallible_insert_give_back(TrackedElem(Box::new(vec![3, 4])))
+            .unwrap();
+
+        assert_eq!(set.len(), 2);
+
+        // Attempt a duplicate — must return false without leaking the new value.
+        assert!(
+            !set.fallible_insert_give_back(TrackedElem(Box::new(vec![1, 2])))
+                .unwrap()
+        );
+
+        // set drops here — all Box<Vec<u8>> members must be freed exactly once.
     }
 
     // ── Extension ────────────────────────────────────────────────────────────
@@ -428,8 +542,7 @@ mod tests {
 
     #[test]
     fn try_collect_range() {
-        let set: BTreeSet<i32> =
-            <BTreeSet<i32> as TryBTreeSet<_>>::try_collect(0..5).unwrap();
+        let set: BTreeSet<i32> = <BTreeSet<i32> as TryBTreeSet<_>>::try_collect(0..5).unwrap();
         assert_eq!(set.len(), 5);
         assert!(set.contains(&3));
     }
@@ -437,8 +550,7 @@ mod tests {
     #[test]
     fn try_collect_empty() {
         let set: BTreeSet<i32> =
-            <BTreeSet<i32> as TryBTreeSet<_>>::try_collect(std::iter::empty::<i32>())
-                .unwrap();
+            <BTreeSet<i32> as TryBTreeSet<_>>::try_collect(std::iter::empty::<i32>()).unwrap();
         assert!(set.is_empty());
     }
 
@@ -454,8 +566,7 @@ mod tests {
     #[test]
     fn try_collect_with_deduplication() {
         let set: BTreeSet<i32> =
-            <BTreeSet<i32> as TryBTreeSet<_>>::try_collect(vec![1, 2, 2, 3, 3])
-                .unwrap();
+            <BTreeSet<i32> as TryBTreeSet<_>>::try_collect(vec![1, 2, 2, 3, 3]).unwrap();
         assert_eq!(set.len(), 3);
     }
 
@@ -516,8 +627,7 @@ mod tests {
 
     #[test]
     fn collect_then_extend() {
-        let mut a: BTreeSet<i32> =
-            <BTreeSet<i32> as TryBTreeSet<_>>::try_collect([1, 2]).unwrap();
+        let mut a: BTreeSet<i32> = <BTreeSet<i32> as TryBTreeSet<_>>::try_collect([1, 2]).unwrap();
         a.try_extend([3, 4]).unwrap();
         assert_eq!(a.len(), 4);
         assert!(a.contains(&4));

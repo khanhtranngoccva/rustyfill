@@ -72,7 +72,7 @@ impl<T> TrySlice<T> for [T] {
     {
         let mut out = Vec::<T>::new();
         if !self.is_empty() {
-            out.try_reserve(self.len()).map_err(TryVecError::Reserve)?;
+            out.try_reserve(self.len()).map_err(|e| TryVecError::Reserve(e.into()))?;
         }
         for elem in self.iter() {
             out.push(elem.try_clone().map_err(TryVecError::Clone)?);
@@ -92,7 +92,7 @@ impl<T> TrySlice<T> for [T] {
             .checked_mul(n)
             .ok_or(TryVecError::Overflow)?;
         let mut out = Vec::<T>::new();
-        out.try_reserve(total_len).map_err(TryVecError::Reserve)?;
+        out.try_reserve(total_len).map_err(|e| TryVecError::Reserve(e.into()))?;
         for _ in 0..n {
             for elem in self.iter() {
                 out.push(elem.try_clone().map_err(TryVecError::Clone)?);

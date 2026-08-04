@@ -17,10 +17,11 @@
 //! satisfies the respective bounds.
 
 use crate::alloc::AllocError;
+use crate::alloc::TryReserveError;
 use crate::try_clone::{TryClone, TryCloneError};
 use crate::try_default::{TryDefault, TryDefaultError};
 use core::fmt;
-use std::collections::{VecDeque, TryReserveError};
+use std::collections::VecDeque;
 
 /// Error returned by [`TryVecDeque`] operations.
 #[derive(Debug)]
@@ -79,10 +80,7 @@ pub trait TryVecDeque<T>: Sized {
 
     /// Like [`Self::try_from_elem`] but takes ownership of `value` and returns
     /// it on failure so the caller is not left empty-handed.
-    fn try_from_elem_give_back(
-        value: T,
-        n: usize,
-    ) -> Result<VecDeque<T>, (T, TryVecDequeError)>
+    fn try_from_elem_give_back(value: T, n: usize) -> Result<VecDeque<T>, (T, TryVecDequeError)>
     where
         T: TryClone;
 
@@ -118,11 +116,8 @@ pub trait TryVecDeque<T>: Sized {
     fn try_insert(&mut self, index: usize, value: T) -> Result<(), TryVecDequeError>;
 
     /// Like [`Self::try_insert`] but returns ownership of `value` back on failure.
-    fn try_insert_give_back(
-        &mut self,
-        index: usize,
-        value: T,
-    ) -> Result<(), (T, TryVecDequeError)>;
+    fn try_insert_give_back(&mut self, index: usize, value: T)
+    -> Result<(), (T, TryVecDequeError)>;
 
     /// Remove and return the element at `index`, shifting all elements after it.
     ///
@@ -177,12 +172,17 @@ pub trait TryVecDeque<T>: Sized {
     }
 
     /// Alias for [`Self::try_extend`].
-    fn fallible_extend<I: IntoIterator<Item = T>>(&mut self, iter: I) -> Result<(), TryReserveError> {
+    fn fallible_extend<I: IntoIterator<Item = T>>(
+        &mut self,
+        iter: I,
+    ) -> Result<(), TryReserveError> {
         Self::try_extend(self, iter)
     }
 
     /// Alias for [`Self::try_collect`].
-    fn fallible_collect<I: IntoIterator<Item = T>>(iter: I) -> Result<VecDeque<T>, TryReserveError> {
+    fn fallible_collect<I: IntoIterator<Item = T>>(
+        iter: I,
+    ) -> Result<VecDeque<T>, TryReserveError> {
         Self::try_collect(iter)
     }
 }
@@ -204,7 +204,9 @@ impl<T> TryVecDeque<T> for VecDeque<T> {
     {
         let mut deque = VecDeque::<T>::new();
         if n > 0 {
-            deque.try_reserve(n).map_err(TryVecDequeError::Reserve)?;
+            deque
+                .try_reserve(n)
+                .map_err(|e| TryVecDequeError::Reserve(e.into()))?;
         }
         for _ in 0..n {
             deque.push_back(value.try_clone().map_err(TryVecDequeError::Clone)?);
@@ -212,10 +214,7 @@ impl<T> TryVecDeque<T> for VecDeque<T> {
         Ok(deque)
     }
 
-    fn try_from_elem_give_back(
-        value: T,
-        n: usize,
-    ) -> Result<VecDeque<T>, (T, TryVecDequeError)>
+    fn try_from_elem_give_back(value: T, n: usize) -> Result<VecDeque<T>, (T, TryVecDequeError)>
     where
         T: TryClone,
     {
@@ -250,7 +249,7 @@ impl<T> TryVecDeque<T> for VecDeque<T> {
         if !slice.is_empty() {
             deque
                 .try_reserve(slice.len())
-                .map_err(TryVecDequeError::Reserve)?;
+                .map_err(|e| TryVecDequeError::Reserve(e.into()))?;
         }
         for item in slice {
             deque.push_back(item.try_clone().map_err(TryVecDequeError::Clone)?);
@@ -272,7 +271,7 @@ impl<T> TryVecDeque<T> for VecDeque<T> {
                 self.push_back(value);
                 Ok(())
             }
-            Err(e) => Err((value, e)),
+            Err(e) => Err((value, e.into())),
         }
     }
 
@@ -288,7 +287,7 @@ impl<T> TryVecDeque<T> for VecDeque<T> {
                 self.push_front(value);
                 Ok(())
             }
-            Err(e) => Err((value, e)),
+            Err(e) => Err((value, e.into())),
         }
     }
 
@@ -302,7 +301,8 @@ impl<T> TryVecDeque<T> for VecDeque<T> {
         if index > self.len() {
             return Err(TryVecDequeError::Other("insert index out of bounds"));
         }
-        self.try_reserve(1).map_err(TryVecDequeError::Reserve)?;
+        self.try_reserve(1)
+            .map_err(|e| TryVecDequeError::Reserve(e.into()))?;
         self.insert(index, value);
         Ok(())
     }
@@ -320,7 +320,7 @@ impl<T> TryVecDeque<T> for VecDeque<T> {
                 self.insert(index, value);
                 Ok(())
             }
-            Err(e) => Err((value, TryVecDequeError::Reserve(e))),
+            Err(e) => Err((value, TryVecDequeError::Reserve(e.into()))),
         }
     }
 
@@ -392,7 +392,7 @@ impl<T> TryVecDeque<T> for VecDeque<T> {
         std::mem::swap(self, &mut spare);
         if !self.is_empty() {
             self.try_reserve(len)
-                .map_err(TryVecDequeError::Reserve)?;
+                .map_err(|e| TryVecDequeError::Reserve(e.into()))?;
         }
         for item in spare.drain(..) {
             self.push_back(item);
@@ -412,7 +412,7 @@ impl<T: TryClone> TryClone for VecDeque<T> {
         let mut out = VecDeque::<T>::new();
         if !self.is_empty() {
             out.try_reserve(self.len())
-                .map_err(crate::try_clone::TryCloneError::Reserve)?;
+                .map_err(|e| crate::try_clone::TryCloneError::Reserve(e.into()))?;
         }
         for elem in self.iter() {
             match elem.try_clone() {
@@ -462,7 +462,8 @@ mod tests {
     #[test]
     fn try_from_elem_multiple() {
         let elem = vec![1u8, 2];
-        let dq: VecDeque<Vec<u8>> = <VecDeque<Vec<u8>> as TryVecDeque<Vec<u8>>>::try_from_elem(&elem, 3).unwrap();
+        let dq: VecDeque<Vec<u8>> =
+            <VecDeque<Vec<u8>> as TryVecDeque<Vec<u8>>>::try_from_elem(&elem, 3).unwrap();
         assert_eq!(dq.len(), 3);
     }
 
@@ -641,14 +642,16 @@ mod tests {
 
     #[test]
     fn try_collect_empty() {
-        let dq: VecDeque<i32> = <VecDeque<i32> as TryVecDeque<i32>>::try_collect(std::iter::empty::<i32>()).unwrap();
+        let dq: VecDeque<i32> =
+            <VecDeque<i32> as TryVecDeque<i32>>::try_collect(std::iter::empty::<i32>()).unwrap();
         assert!(dq.is_empty());
     }
 
     #[test]
     fn try_from_slice_clones() {
         let slice: &[Vec<u8>] = &[vec![10], vec![20]];
-        let dq: VecDeque<Vec<u8>> = <VecDeque<Vec<u8>> as TryVecDeque<Vec<u8>>>::try_from_slice(slice).unwrap();
+        let dq: VecDeque<Vec<u8>> =
+            <VecDeque<Vec<u8>> as TryVecDeque<Vec<u8>>>::try_from_slice(slice).unwrap();
         assert_eq!(dq[0], vec![10]);
         assert_eq!(dq[1], vec![20]);
     }
@@ -662,7 +665,11 @@ mod tests {
     #[test]
     fn try_clone_empty_deque() {
         let dq: VecDeque<i32> = VecDeque::new();
-        assert!(crate::try_clone::TryClone::try_clone(&dq).unwrap().is_empty());
+        assert!(
+            crate::try_clone::TryClone::try_clone(&dq)
+                .unwrap()
+                .is_empty()
+        );
     }
 
     #[test]
@@ -704,203 +711,205 @@ mod tests {
     }
 }
 
-    #[test]
-    fn try_with_capacity_nonzero() {
-        let dq: VecDeque<i32> = <VecDeque<i32> as TryVecDeque<i32>>::try_with_capacity(10).unwrap();
-        assert!(dq.is_empty());
-        assert!(dq.capacity() >= 10);
-    }
+#[test]
+fn try_with_capacity_nonzero() {
+    let dq: VecDeque<i32> = <VecDeque<i32> as TryVecDeque<i32>>::try_with_capacity(10).unwrap();
+    assert!(dq.is_empty());
+    assert!(dq.capacity() >= 10);
+}
 
-    #[test]
-    fn try_from_elem_single() {
-        let dq: VecDeque<i32> = <VecDeque<i32> as TryVecDeque<i32>>::try_from_elem(&42, 1).unwrap();
-        assert_eq!(dq.len(), 1);
-        assert_eq!(dq[0], 42);
-    }
+#[test]
+fn try_from_elem_single() {
+    let dq: VecDeque<i32> = <VecDeque<i32> as TryVecDeque<i32>>::try_from_elem(&42, 1).unwrap();
+    assert_eq!(dq.len(), 1);
+    assert_eq!(dq[0], 42);
+}
 
-    #[test]
-    fn try_from_elem_multiple() {
-        let elem = vec![1u8, 2];
-        let dq: VecDeque<Vec<u8>> = <VecDeque<Vec<u8>> as TryVecDeque<Vec<u8>>>::try_from_elem(&elem, 3).unwrap();
-        assert_eq!(dq.len(), 3);
-    }
+#[test]
+fn try_from_elem_multiple() {
+    let elem = vec![1u8, 2];
+    let dq: VecDeque<Vec<u8>> =
+        <VecDeque<Vec<u8>> as TryVecDeque<Vec<u8>>>::try_from_elem(&elem, 3).unwrap();
+    assert_eq!(dq.len(), 3);
+}
 
-    #[test]
-    fn try_from_elem_zero() {
-        let dq: VecDeque<i32> = <VecDeque<i32> as TryVecDeque<i32>>::try_from_elem(&99, 0).unwrap();
-        assert!(dq.is_empty());
-    }
+#[test]
+fn try_from_elem_zero() {
+    let dq: VecDeque<i32> = <VecDeque<i32> as TryVecDeque<i32>>::try_from_elem(&99, 0).unwrap();
+    assert!(dq.is_empty());
+}
 
-    // ── Push / Pop ───────────────────────────────────────────────────────────
+// ── Push / Pop ───────────────────────────────────────────────────────────
 
-    #[test]
-    fn try_push_back_appends() {
-        let mut dq: VecDeque<i32> = VecDeque::new();
-        dq.try_push_back(1).unwrap();
-        dq.try_push_back(2).unwrap();
-        assert_eq!(dq[0], 1);
-        assert_eq!(dq[1], 2);
-    }
+#[test]
+fn try_push_back_appends() {
+    let mut dq: VecDeque<i32> = VecDeque::new();
+    dq.try_push_back(1).unwrap();
+    dq.try_push_back(2).unwrap();
+    assert_eq!(dq[0], 1);
+    assert_eq!(dq[1], 2);
+}
 
-    #[test]
-    fn try_push_front_prepends() {
-        let mut dq: VecDeque<i32> = VecDeque::new();
-        dq.try_push_front(2).unwrap();
-        dq.try_push_front(1).unwrap();
-        assert_eq!(dq[0], 1);
-        assert_eq!(dq[1], 2);
-    }
+#[test]
+fn try_push_front_prepends() {
+    let mut dq: VecDeque<i32> = VecDeque::new();
+    dq.try_push_front(2).unwrap();
+    dq.try_push_front(1).unwrap();
+    assert_eq!(dq[0], 1);
+    assert_eq!(dq[1], 2);
+}
 
-    #[test]
-    fn try_pop_back_returns_last() {
-        let mut dq: VecDeque<i32> = VecDeque::new();
-        dq.try_push_back(10).unwrap();
-        dq.try_push_back(20).unwrap();
-        assert_eq!(dq.try_pop_back(), Some(20));
-        assert_eq!(dq.try_pop_back(), Some(10));
-        assert_eq!(dq.try_pop_back(), None);
-    }
+#[test]
+fn try_pop_back_returns_last() {
+    let mut dq: VecDeque<i32> = VecDeque::new();
+    dq.try_push_back(10).unwrap();
+    dq.try_push_back(20).unwrap();
+    assert_eq!(dq.try_pop_back(), Some(20));
+    assert_eq!(dq.try_pop_back(), Some(10));
+    assert_eq!(dq.try_pop_back(), None);
+}
 
-    #[test]
-    fn push_back_give_back_success() {
-        let mut dq: VecDeque<i32> = VecDeque::new();
-        dq.try_push_back_give_back(42).unwrap();
-        assert_eq!(dq[0], 42);
-    }
+#[test]
+fn push_back_give_back_success() {
+    let mut dq: VecDeque<i32> = VecDeque::new();
+    dq.try_push_back_give_back(42).unwrap();
+    assert_eq!(dq[0], 42);
+}
 
-    #[test]
-    fn push_front_give_back_success() {
-        let mut dq: VecDeque<i32> = VecDeque::new();
-        dq.try_push_front_give_back(42).unwrap();
-        assert_eq!(dq[0], 42);
-    }
+#[test]
+fn push_front_give_back_success() {
+    let mut dq: VecDeque<i32> = VecDeque::new();
+    dq.try_push_front_give_back(42).unwrap();
+    assert_eq!(dq[0], 42);
+}
 
-    // ── Insert / Remove ──────────────────────────────────────────────────────
+// ── Insert / Remove ──────────────────────────────────────────────────────
 
-    #[test]
-    fn try_insert_at_start() {
-        let mut dq: VecDeque<i32> = VecDeque::new();
-        dq.try_push_back(2).unwrap();
-        dq.try_insert(0, 1).unwrap();
-        assert_eq!(dq[0], 1);
-        assert_eq!(dq[1], 2);
-    }
+#[test]
+fn try_insert_at_start() {
+    let mut dq: VecDeque<i32> = VecDeque::new();
+    dq.try_push_back(2).unwrap();
+    dq.try_insert(0, 1).unwrap();
+    assert_eq!(dq[0], 1);
+    assert_eq!(dq[1], 2);
+}
 
-    #[test]
-    fn try_insert_at_end() {
-        let mut dq: VecDeque<i32> = VecDeque::new();
-        dq.try_push_back(1).unwrap();
-        dq.try_insert(1, 2).unwrap();
-        assert_eq!(dq[0], 1);
-        assert_eq!(dq[1], 2);
-    }
+#[test]
+fn try_insert_at_end() {
+    let mut dq: VecDeque<i32> = VecDeque::new();
+    dq.try_push_back(1).unwrap();
+    dq.try_insert(1, 2).unwrap();
+    assert_eq!(dq[0], 1);
+    assert_eq!(dq[1], 2);
+}
 
-    #[test]
-    fn try_insert_out_of_bounds() {
-        let mut dq: VecDeque<i32> = VecDeque::new();
-        dq.try_push_back(1).unwrap();
-        let err = dq.try_insert(5, 99).unwrap_err();
-        matches!(err, TryVecDequeError::Other(_));
-    }
+#[test]
+fn try_insert_out_of_bounds() {
+    let mut dq: VecDeque<i32> = VecDeque::new();
+    dq.try_push_back(1).unwrap();
+    let err = dq.try_insert(5, 99).unwrap_err();
+    matches!(err, TryVecDequeError::Other(_));
+}
 
-    // ── Extend / Append ──────────────────────────────────────────────────────
+// ── Extend / Append ──────────────────────────────────────────────────────
 
-    #[test]
-    fn try_extend_from_range() {
-        let mut dq: VecDeque<i32> = VecDeque::new();
-        dq.try_extend(0..5).unwrap();
-        assert_eq!(dq.len(), 5);
-    }
+#[test]
+fn try_extend_from_range() {
+    let mut dq: VecDeque<i32> = VecDeque::new();
+    dq.try_extend(0..5).unwrap();
+    assert_eq!(dq.len(), 5);
+}
 
-    #[test]
-    fn try_extend_empty() {
-        let mut dq: VecDeque<i32> = VecDeque::new();
-        dq.try_extend(std::iter::empty::<i32>()).unwrap();
-        assert!(dq.is_empty());
-    }
+#[test]
+fn try_extend_empty() {
+    let mut dq: VecDeque<i32> = VecDeque::new();
+    dq.try_extend(std::iter::empty::<i32>()).unwrap();
+    assert!(dq.is_empty());
+}
 
-    #[test]
-    fn try_append_moves_elements() {
-        let mut a: VecDeque<i32> = VecDeque::new();
-        a.try_push_back(1).unwrap();
-        let mut b: VecDeque<i32> = VecDeque::new();
-        b.try_push_back(2).unwrap();
-        b.try_push_back(3).unwrap();
-        a.try_append(&mut b).unwrap();
-        assert_eq!(a.len(), 3);
-        assert!(b.is_empty());
-    }
+#[test]
+fn try_append_moves_elements() {
+    let mut a: VecDeque<i32> = VecDeque::new();
+    a.try_push_back(1).unwrap();
+    let mut b: VecDeque<i32> = VecDeque::new();
+    b.try_push_back(2).unwrap();
+    b.try_push_back(3).unwrap();
+    a.try_append(&mut b).unwrap();
+    assert_eq!(a.len(), 3);
+    assert!(b.is_empty());
+}
 
-    #[test]
-    fn try_append_both_empty() {
-        let mut a: VecDeque<i32> = VecDeque::new();
-        let mut b: VecDeque<i32> = VecDeque::new();
-        a.try_append(&mut b).unwrap();
-        assert!(a.is_empty());
-    }
+#[test]
+fn try_append_both_empty() {
+    let mut a: VecDeque<i32> = VecDeque::new();
+    let mut b: VecDeque<i32> = VecDeque::new();
+    a.try_append(&mut b).unwrap();
+    assert!(a.is_empty());
+}
 
-    // ── Resize / Shrink / Clear ──────────────────────────────────────────────
+// ── Resize / Shrink / Clear ──────────────────────────────────────────────
 
-    #[test]
-    fn try_resize_with_grow() {
-        let mut dq: VecDeque<i32> = VecDeque::new();
-        dq.try_push_back(1).unwrap();
-        let mut counter = 10;
-        dq.try_resize_with(4, || {
-            counter += 1;
-            counter
-        })
-        .unwrap();
-        assert_eq!(dq.len(), 4);
-        assert_eq!(dq[0], 1);
-        assert_eq!(dq[1], 11);
-    }
+#[test]
+fn try_resize_with_grow() {
+    let mut dq: VecDeque<i32> = VecDeque::new();
+    dq.try_push_back(1).unwrap();
+    let mut counter = 10;
+    dq.try_resize_with(4, || {
+        counter += 1;
+        counter
+    })
+    .unwrap();
+    assert_eq!(dq.len(), 4);
+    assert_eq!(dq[0], 1);
+    assert_eq!(dq[1], 11);
+}
 
-    #[test]
-    fn try_resize_with_shrink() {
-        let mut dq: VecDeque<i32> = VecDeque::new();
-        dq.try_push_back(1).unwrap();
-        dq.try_push_back(2).unwrap();
-        dq.try_push_back(3).unwrap();
-        dq.try_resize_with(1, || 99).unwrap();
-        assert_eq!(dq.len(), 1);
-        assert_eq!(dq[0], 1);
-    }
+#[test]
+fn try_resize_with_shrink() {
+    let mut dq: VecDeque<i32> = VecDeque::new();
+    dq.try_push_back(1).unwrap();
+    dq.try_push_back(2).unwrap();
+    dq.try_push_back(3).unwrap();
+    dq.try_resize_with(1, || 99).unwrap();
+    assert_eq!(dq.len(), 1);
+    assert_eq!(dq[0], 1);
+}
 
-    #[test]
-    fn fallible_shrink_to_fit_reduces_excess() {
-        let mut dq: VecDeque<i32> = VecDeque::new();
-        dq.try_reserve(1024).unwrap();
-        dq.try_push_back(1).unwrap();
-        let cap_before = dq.capacity();
-        assert!(cap_before >= 1024);
-        dq.fallible_shrink_to_fit().unwrap();
-        assert!(dq.capacity() < cap_before);
-        assert_eq!(dq[0], 1);
-    }
+#[test]
+fn fallible_shrink_to_fit_reduces_excess() {
+    let mut dq: VecDeque<i32> = VecDeque::new();
+    dq.try_reserve(1024).unwrap();
+    dq.try_push_back(1).unwrap();
+    let cap_before = dq.capacity();
+    assert!(cap_before >= 1024);
+    dq.fallible_shrink_to_fit().unwrap();
+    assert!(dq.capacity() < cap_before);
+    assert_eq!(dq[0], 1);
+}
 
-    #[test]
-    fn try_clear_removes_all() {
-        let mut dq: VecDeque<i32> = VecDeque::new();
-        dq.try_push_back(1).unwrap();
-        dq.try_push_back(2).unwrap();
-        dq.try_clear();
-        assert!(dq.is_empty());
-    }    #[test]
-    fn try_remove_middle() {
-        let mut dq: VecDeque<i32> = VecDeque::new();
-        dq.try_push_back(1).unwrap();
-        dq.try_push_back(2).unwrap();
-        dq.try_push_back(3).unwrap();
-        assert_eq!(dq.try_remove(1).unwrap(), Some(2));
-        assert_eq!(dq[0], 1);
-        assert_eq!(dq[1], 3);
-    }
+#[test]
+fn try_clear_removes_all() {
+    let mut dq: VecDeque<i32> = VecDeque::new();
+    dq.try_push_back(1).unwrap();
+    dq.try_push_back(2).unwrap();
+    dq.try_clear();
+    assert!(dq.is_empty());
+}
+#[test]
+fn try_remove_middle() {
+    let mut dq: VecDeque<i32> = VecDeque::new();
+    dq.try_push_back(1).unwrap();
+    dq.try_push_back(2).unwrap();
+    dq.try_push_back(3).unwrap();
+    assert_eq!(dq.try_remove(1).unwrap(), Some(2));
+    assert_eq!(dq[0], 1);
+    assert_eq!(dq[1], 3);
+}
 
-    #[test]
-    fn try_remove_out_of_bounds() {
-        let mut dq: VecDeque<i32> = VecDeque::new();
-        dq.try_push_back(1).unwrap();
-        let err = dq.try_remove(5).unwrap_err();
-        matches!(err, TryVecDequeError::Other(_));
-    }
+#[test]
+fn try_remove_out_of_bounds() {
+    let mut dq: VecDeque<i32> = VecDeque::new();
+    dq.try_push_back(1).unwrap();
+    let err = dq.try_remove(5).unwrap_err();
+    matches!(err, TryVecDequeError::Other(_));
+}

@@ -11,7 +11,7 @@
 //! Implementors must ensure `try_to_owned` never panics — allocation failures are
 //! returned as errors instead.
 
-use crate::alloc::AllocError;
+use crate::alloc::{AllocError, TryReserveError};
 use crate::try_clone::TryCloneError;
 use std::borrow::ToOwned;
 
@@ -21,7 +21,7 @@ pub enum TryToOwnedError {
     /// A raw heap allocation failed (no collection involved).
     Alloc(AllocError),
     /// A capacity reservation on a collection failed (overflow or OOM).
-    Reserve(std::collections::TryReserveError),
+    Reserve(TryReserveError),
     /// A manually detected arithmetic overflow (e.g., size multiplication).
     Overflow,
     /// A logic-level failure with a static diagnostic message.
@@ -54,9 +54,15 @@ impl From<AllocError> for TryToOwnedError {
     }
 }
 
+impl From<TryReserveError> for TryToOwnedError {
+    fn from(err: TryReserveError) -> Self {
+        Self::Reserve(err)
+    }
+}
+
 impl From<std::collections::TryReserveError> for TryToOwnedError {
     fn from(err: std::collections::TryReserveError) -> Self {
-        Self::Reserve(err)
+        Self::Reserve(TryReserveError::from(err))
     }
 }
 

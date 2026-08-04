@@ -16,11 +16,12 @@
 //! `T` satisfies the respective bounds.
 
 use crate::alloc::AllocError;
+use crate::alloc::TryReserveError;
 use crate::try_clone::{TryClone, TryCloneError};
 use crate::try_default::{TryDefault, TryDefaultError};
 use core::fmt;
 use std::cmp::Eq;
-use std::collections::{HashSet, TryReserveError};
+use std::collections::HashSet;
 use std::hash::{BuildHasher, Hash, RandomState};
 
 // ── Error type ────────────────────────────────────────────────────────────────
@@ -78,6 +79,23 @@ impl From<TryCloneError> for TryHashSetError {
     }
 }
 
+impl From<TryDefaultError> for TryHashSetError {
+    fn from(err: TryDefaultError) -> Self {
+        match err {
+            TryDefaultError::Alloc(e) => Self::Alloc(e),
+            TryDefaultError::Reserve(e) => Self::Reserve(e),
+            TryDefaultError::Overflow => Self::Overflow,
+            TryDefaultError::Other(msg) => Self::Other(msg),
+        }
+    }
+}
+
+impl From<std::collections::TryReserveError> for TryHashSetError {
+    fn from(e: std::collections::TryReserveError) -> Self {
+        Self::Reserve(TryReserveError::from(e))
+    }
+}
+
 // ── Trait ─────────────────────────────────────────────────────────────────────
 
 /// A trait for fallible hash set operations.
@@ -85,15 +103,36 @@ impl From<TryCloneError> for TryHashSetError {
 /// Implemented for `HashSet<T, S>`. Mirrors the most commonly-used `HashSet`
 /// methods that can fail due to allocation pressure, returning [`Result`] values
 /// that propagate [`TryReserveError`] or [`TryHashSetError`] on failure.
-pub trait TryHashSet<T, S>: Sized {
+pub trait TryHashSet<T, S = RandomState>: Sized {
     // ── Construction ────────────────────────────────────────────────────────
+
+    /// Fallibly construct an empty `HashSet` with a default-constructed hasher.
+    ///
+    /// Unlike [`Self::try_with_capacity`], which hardcodes [`RandomState`] and
+    /// may panic on first use in a new thread (due to thread-local seeding),
+    /// this method uses [`TryDefault`] to construct the hasher fallibly. If
+    /// hasher construction fails (e.g. `RandomState` panics during seed
+    /// initialization), the error is returned rather than unwinding.
+    ///
+    /// Requires `S: [`TryDefault`]` so that hasher creation is safe even when
+    /// it involves runtime allocation or thread-local state.
+    fn try_new() -> Result<HashSet<T, S>, TryHashSetError>
+    where
+        S: TryDefault;
 
     /// Fallibly construct an empty `HashSet` with at least enough capacity for
     /// `capacity` elements.
     ///
-    /// Returns [`TryReserveError`] if the initial allocation fails.
-    /// Equivalent to [`HashSet::with_capacity`] but fallible.
-    fn try_with_capacity(capacity: usize) -> Result<HashSet<T, RandomState>, TryReserveError>;
+    /// Constructs the hasher via [`TryDefault`] (same as [`Self::try_new`]),
+    /// then reserves capacity for `capacity` elements. Returns
+    /// [`TryHashSetError::Reserve`] if the capacity reservation fails, or
+    /// [`TryHashSetError::Other`] if hasher construction panics.
+    ///
+    /// Requires `S: [`TryDefault`]` so that hasher creation is safe even when
+    /// it involves runtime allocation or thread-local state.
+    fn try_with_capacity(capacity: usize) -> Result<HashSet<T, S>, TryHashSetError>
+    where
+        S: TryDefault;
 
     /// Fallibly construct an empty `HashSet` with at least enough capacity for
     /// `capacity` elements, using the provided hash builder.
@@ -121,19 +160,25 @@ pub trait TryHashSet<T, S>: Sized {
 
     /// Like [`Self::try_insert`] but returns ownership of `value` back on
     /// allocation failure.
-    fn try_insert_give_back(
-        &mut self,
-        value: T,
-    ) -> Result<bool, (T, TryHashSetError)>
+    fn try_insert_give_back(&mut self, value: T) -> Result<bool, (T, TryHashSetError)>
     where
         T: Eq + Hash;
 
     // ── Aliases with `fallible_` prefix ────────────────────────────────────
 
+    /// Alias for [`Self::try_new`].
+    fn fallible_new() -> Result<HashSet<T, S>, TryHashSetError>
+    where
+        S: TryDefault,
+    {
+        Self::try_new()
+    }
+
     /// Alias for [`Self::try_with_capacity`].
-    fn fallible_with_capacity(
-        capacity: usize,
-    ) -> Result<HashSet<T, RandomState>, TryReserveError> {
+    fn fallible_with_capacity(capacity: usize) -> Result<HashSet<T, S>, TryHashSetError>
+    where
+        S: TryDefault,
+    {
         Self::try_with_capacity(capacity)
     }
 
@@ -154,10 +199,7 @@ pub trait TryHashSet<T, S>: Sized {
     }
 
     /// Alias for [`Self::try_insert_give_back`].
-    fn fallible_insert_give_back(
-        &mut self,
-        value: T,
-    ) -> Result<bool, (T, TryHashSetError)>
+    fn fallible_insert_give_back(&mut self, value: T) -> Result<bool, (T, TryHashSetError)>
     where
         T: Eq + Hash,
     {
@@ -170,10 +212,7 @@ pub trait TryHashSet<T, S>: Sized {
     ///
     /// Uses the iterator's size hint to reserve capacity upfront when available.
     /// Returns [`TryReserveError`] if the allocation fails.
-    fn try_extend<I: IntoIterator<Item = T>>(
-        &mut self,
-        iter: I,
-    ) -> Result<(), TryReserveError>;
+    fn try_extend<I: IntoIterator<Item = T>>(&mut self, iter: I) -> Result<(), TryReserveError>;
 
     /// Fallibly extend the set by cloning elements from a slice.
     ///
@@ -204,45 +243,32 @@ pub trait TryHashSet<T, S>: Sized {
     /// Fallibly shrink the capacity of this hash set to match its length.
     ///
     /// Rebuilds the internal table so that it holds approximately `len` elements.
-    /// Requires `S: Clone` so the hasher can be reused for the new
-    /// table. Returns [`TryHashSetError::Reserve`] if the allocation for the
-    /// rebuilt table fails. Equivalent to [`HashSet::shrink_to_fit`] but fallible.
-    ///
-    /// # Panics
-    ///
-    /// Cloning the hasher factory may panic if it relies on heap allocation.
-    /// This is not the case for any standard-library hasher (`RandomState`,
-    /// `SipHasher13`, etc.) or popular third-party hashers (`ahash`, `FxHash`,
-    /// FNV, DJB2, and so on), which store only small stack integers. However,
-    /// a custom hasher that internally allocates could panic during the clone step.
+    /// Requires `S: TryClone` so the hasher can be safely duplicated for the new
+    /// table without risking a panic. Returns [`TryHashSetError::Reserve`] if the
+    /// allocation for the rebuilt table fails, or [`TryHashSetError::Clone`] if
+    /// duplicating the hasher factory fails. Equivalent to
+    /// [`HashSet::shrink_to_fit`] but fallible.
     fn try_shrink_to_fit(&mut self) -> Result<(), TryHashSetError>
     where
-        S: Clone;
+        S: TryClone;
 
     /// Fallibly shrink the capacity of this hash set to hold at least
     /// `min_capacity` elements.
     ///
     /// If the current capacity is already less than or equal to `min_capacity`,
     /// does nothing and returns `Ok(())`. Otherwise rebuilds the table with the
-    /// target capacity. Requires `S: Clone` so the hasher can be
-    /// reused. Returns [`TryHashSetError::Reserve`] if the allocation fails.
+    /// target capacity. Requires `S: TryClone` so the hasher can be safely
+    /// duplicated. Returns [`TryHashSetError::Reserve`] if the allocation fails,
+    /// or [`TryHashSetError::Clone`] if duplicating the hasher factory fails.
     /// Equivalent to [`HashSet::shrink_to`] but fallible.
-    ///
-    /// # Panics
-    ///
-    /// Cloning the hasher factory may panic if it relies on heap allocation.
-    /// This is not the case for any standard-library hasher (`RandomState`,
-    /// `SipHasher13`, etc.) or popular third-party hashers (`ahash`, `FxHash`,
-    /// FNV, DJB2, and so on), which store only small stack integers. However,
-    /// a custom hasher that internally allocates could panic during the clone step.
     fn try_shrink_to(&mut self, min_capacity: usize) -> Result<(), TryHashSetError>
     where
-        S: Clone;
+        S: TryClone;
 
     /// Alias for [`Self::try_shrink_to_fit`].
     fn fallible_shrink_to_fit(&mut self) -> Result<(), TryHashSetError>
     where
-        S: Clone,
+        S: TryClone,
     {
         Self::try_shrink_to_fit(self)
     }
@@ -250,7 +276,7 @@ pub trait TryHashSet<T, S>: Sized {
     /// Alias for [`Self::try_shrink_to`].
     fn fallible_shrink_to(&mut self, min_capacity: usize) -> Result<(), TryHashSetError>
     where
-        S: Clone,
+        S: TryClone,
     {
         Self::try_shrink_to(self, min_capacity)
     }
@@ -259,10 +285,11 @@ pub trait TryHashSet<T, S>: Sized {
 
     /// Fallibly collect an iterator of `T` values into a `HashSet`.
     ///
-    /// Uses the iterator's size hint to pre-allocate when possible.
-    fn try_collect<I: IntoIterator<Item = T>>(
-        iter: I,
-    ) -> Result<HashSet<T, RandomState>, TryReserveError>;
+    /// Constructs the hasher via [`TryDefault`] and uses the iterator's size
+    /// hint to pre-allocate when possible.
+    fn try_collect<I: IntoIterator<Item = T>>(iter: I) -> Result<HashSet<T, S>, TryHashSetError>
+    where
+        S: TryDefault;
 
     /// Fallibly create a `HashSet` from an iterator using the provided hasher.
     fn try_collect_with_hasher<I: IntoIterator<Item = T>>(
@@ -273,7 +300,10 @@ pub trait TryHashSet<T, S>: Sized {
     /// Alias for [`Self::try_collect`].
     fn fallible_collect<I: IntoIterator<Item = T>>(
         iter: I,
-    ) -> Result<HashSet<T, RandomState>, TryReserveError> {
+    ) -> Result<HashSet<T, S>, TryHashSetError>
+    where
+        S: TryDefault,
+    {
         Self::try_collect(iter)
     }
 
@@ -291,10 +321,21 @@ pub trait TryHashSet<T, S>: Sized {
 impl<T: Eq + Hash, S: BuildHasher> TryHashSet<T, S> for HashSet<T, S> {
     // ── Construction ────────────────────────────────────────────────────────
 
-    fn try_with_capacity(capacity: usize) -> Result<HashSet<T, RandomState>, TryReserveError> {
-        let mut set = HashSet::new();
+    fn try_new() -> Result<HashSet<T, S>, TryHashSetError>
+    where
+        S: TryDefault,
+    {
+        let hasher = S::try_default()?;
+        Ok(HashSet::with_hasher(hasher))
+    }
+
+    fn try_with_capacity(capacity: usize) -> Result<HashSet<T, S>, TryHashSetError>
+    where
+        S: TryDefault,
+    {
+        let mut set = Self::try_new()?;
         if capacity > 0 {
-            set.try_reserve(capacity)?;
+            set.try_reserve(capacity).map_err(TryHashSetError::from)?;
         }
         Ok(set)
     }
@@ -316,29 +357,24 @@ impl<T: Eq + Hash, S: BuildHasher> TryHashSet<T, S> for HashSet<T, S> {
     where
         T: Eq + Hash,
     {
-        self.try_reserve(1).map_err(TryHashSetError::Reserve)?;
+        self.try_reserve(1)
+            .map_err(|e| TryHashSetError::Reserve(e.into()))?;
         Ok(self.insert(value))
     }
 
-    fn try_insert_give_back(
-        &mut self,
-        value: T,
-    ) -> Result<bool, (T, TryHashSetError)>
+    fn try_insert_give_back(&mut self, value: T) -> Result<bool, (T, TryHashSetError)>
     where
         T: Eq + Hash,
     {
         match self.try_reserve(1) {
             Ok(()) => Ok(self.insert(value)),
-            Err(e) => Err((value, TryHashSetError::Reserve(e))),
+            Err(e) => Err((value, TryHashSetError::Reserve(e.into()))),
         }
     }
 
     // ── Extension ───────────────────────────────────────────────────────────
 
-    fn try_extend<I: IntoIterator<Item = T>>(
-        &mut self,
-        iter: I,
-    ) -> Result<(), TryReserveError> {
+    fn try_extend<I: IntoIterator<Item = T>>(&mut self, iter: I) -> Result<(), TryReserveError> {
         let iter = iter.into_iter();
         let (lower, _) = iter.size_hint();
         if lower > 0 {
@@ -362,7 +398,7 @@ impl<T: Eq + Hash, S: BuildHasher> TryHashSet<T, S> for HashSet<T, S> {
         }
         let len_before = self.len();
         self.try_reserve(other.len())
-            .map_err(TryHashSetError::Reserve)?;
+            .map_err(|e| TryHashSetError::Reserve(e.into()))?;
         for elem in other {
             match elem.try_clone() {
                 Ok(cloned) => {
@@ -384,25 +420,24 @@ impl<T: Eq + Hash, S: BuildHasher> TryHashSet<T, S> for HashSet<T, S> {
 
     fn try_shrink_to_fit(&mut self) -> Result<(), TryHashSetError>
     where
-        S: Clone,
+        S: TryClone,
     {
         Self::try_shrink_to(self, self.len())
     }
 
     fn try_shrink_to(&mut self, min_capacity: usize) -> Result<(), TryHashSetError>
     where
-        S: Clone,
+        S: TryClone,
     {
         let target = core::cmp::max(self.len(), min_capacity);
         if self.capacity() <= target {
             return Ok(());
         }
-        let length = self.len();
-        let hasher = self.hasher().clone();
-        let mut new_set = HashSet::with_capacity_and_hasher(target, hasher);
+        let hasher = self.hasher().try_clone().map_err(TryHashSetError::from)?;
+        let mut new_set = HashSet::with_capacity_and_hasher(0, hasher);
         new_set
-            .try_reserve(length)
-            .map_err(TryHashSetError::Reserve)?;
+            .try_reserve(target)
+            .map_err(|e| TryHashSetError::Reserve(e.into()))?;
         for v in self.drain() {
             new_set.insert(v);
         }
@@ -412,15 +447,16 @@ impl<T: Eq + Hash, S: BuildHasher> TryHashSet<T, S> for HashSet<T, S> {
 
     // ── Bulk construction ───────────────────────────────────────────────────
 
-    fn try_collect<I: IntoIterator<Item = T>>(
-        iter: I,
-    ) -> Result<HashSet<T, RandomState>, TryReserveError> {
+    fn try_collect<I: IntoIterator<Item = T>>(iter: I) -> Result<HashSet<T, S>, TryHashSetError>
+    where
+        S: TryDefault,
+    {
         let iter = iter.into_iter();
         let (lower, upper) = iter.size_hint();
         let capacity = upper.unwrap_or(lower);
-        let mut set = HashSet::new();
+        let mut set = Self::try_new()?;
         if capacity > 0 {
-            set.try_reserve(capacity)?;
+            set.try_reserve(capacity).map_err(TryHashSetError::from)?;
         }
         for value in iter {
             if set.len() == set.capacity() {
@@ -455,26 +491,18 @@ impl<T: Eq + Hash, S: BuildHasher> TryHashSet<T, S> for HashSet<T, S> {
 // ── TryClone for HashSet<T, S> ────────────────────────────────────────────────
 
 /// Implements [`TryClone`] for `HashSet<T, S>` when elements are cloneable and
-/// the hasher factory can be cloned.
-///
-/// # Panics
-///
-/// Cloning the hasher factory may panic if it relies on heap allocation.
-/// This is not the case for any standard-library hasher (`RandomState`,
-/// `SipHasher13`, etc.) or popular third-party hashers (`ahash`, `FxHash`,
-/// FNV, DJB2, and so on), which store only small stack integers. However,
-/// a custom hasher that internally allocates could panic during the clone step.
+/// the hasher factory implements [`TryClone`].
 impl<T, S> TryClone for HashSet<T, S>
 where
     T: Eq + Hash + TryClone,
-    S: BuildHasher + Clone,
+    S: BuildHasher + TryClone,
 {
     fn try_clone(&self) -> Result<Self, TryCloneError> {
-        let hasher = self.hasher().clone();
+        let hasher = self.hasher().try_clone()?;
         let mut out = HashSet::with_capacity_and_hasher(self.len(), hasher);
         if !self.is_empty() {
             out.try_reserve(self.len())
-                .map_err(TryCloneError::Reserve)?;
+                .map_err(|e| TryCloneError::Reserve(e.into()))?;
         }
         for elem in self.iter() {
             match elem.try_clone() {
@@ -493,16 +521,17 @@ where
 
 // ── TryDefault for HashSet<T, S> ──────────────────────────────────────────────
 
-impl<T, S: BuildHasher + Default> TryDefault for HashSet<T, S> {
+impl<T, S: BuildHasher + TryDefault> TryDefault for HashSet<T, S> {
     fn try_default() -> Result<Self, TryDefaultError> {
-        // An empty HashSet requires no allocation.
-        Ok(HashSet::with_hasher(S::default()))
+        let hasher = S::try_default()?;
+        Ok(HashSet::with_hasher(hasher))
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::hash::RandomState;
 
     // ── Construction ─────────────────────────────────────────────────────────
 
@@ -699,8 +728,7 @@ mod tests {
     #[test]
     fn try_collect_with_deduplication() {
         let set: HashSet<i32> =
-            <HashSet<i32> as TryHashSet<_, RandomState>>::try_collect(vec![1, 2, 2, 3, 3])
-                .unwrap();
+            <HashSet<i32> as TryHashSet<_, RandomState>>::try_collect(vec![1, 2, 2, 3, 3]).unwrap();
         assert_eq!(set.len(), 3);
     }
 
@@ -710,8 +738,7 @@ mod tests {
         use std::hash::BuildHasherDefault;
 
         let hasher = BuildHasherDefault::<DefaultHasher>::default();
-        let set: HashSet<i32, _> =
-            HashSet::try_collect_with_hasher([1, 2, 3], hasher).unwrap();
+        let set: HashSet<i32, _> = HashSet::try_collect_with_hasher([1, 2, 3], hasher).unwrap();
         assert_eq!(set.len(), 3);
     }
 
@@ -755,8 +782,7 @@ mod tests {
         use std::collections::hash_map::DefaultHasher;
         use std::hash::BuildHasherDefault;
 
-        let set: HashSet<i32, BuildHasherDefault<DefaultHasher>> =
-            HashSet::try_default().unwrap();
+        let set: HashSet<i32, BuildHasherDefault<DefaultHasher>> = HashSet::try_default().unwrap();
         assert!(set.is_empty());
     }
 

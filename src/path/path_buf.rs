@@ -16,12 +16,12 @@
 //! [`TryDefault`](crate::try_default::TryDefault) for `PathBuf`.
 
 use crate::alloc::AllocError;
+use crate::alloc::TryReserveError;
 use crate::ffi::TryOsString;
 use crate::try_clone::{TryClone, TryCloneError};
 use crate::try_default::{TryDefault, TryDefaultError};
 use crate::vec::TryVec;
 use core::fmt;
-use std::collections::TryReserveError;
 use std::ffi::{OsStr, OsString};
 use std::path::{Component, MAIN_SEPARATOR_STR, Path, PathBuf, Prefix, is_separator};
 
@@ -317,7 +317,8 @@ impl TryPathBuf for PathBuf {
         let os = out.as_mut_os_string();
         let needed = p.as_os_str().len();
         if needed > 0 {
-            os.try_reserve(needed).map_err(TryPathBufError::Reserve)?;
+            os.try_reserve(needed)
+                .map_err(|e| TryPathBufError::Reserve(e.into()))?;
         }
         os.push(p.as_os_str());
         Ok(out)
@@ -346,7 +347,7 @@ impl TryPathBuf for PathBuf {
         // Reserve room for the dot and extension.
         if !ext.is_empty() {
             self.try_reserve(ext.len() + 1)
-                .map_err(TryPathBufError::Reserve)?;
+                .map_err(|e| TryPathBufError::Reserve(e.into()))?;
         }
         self.set_extension(ext);
         Ok(())
@@ -395,7 +396,7 @@ impl TryPathBuf for PathBuf {
         // Append ".<ext>" via the inner OsString so allocation is fallible.
         let os = self.as_mut_os_string();
         os.try_reserve(ext.len() + 1)
-            .map_err(TryPathBufError::Reserve)?;
+            .map_err(|e| TryPathBufError::Reserve(e.into()))?;
         os.try_push(OsStr::new("."))
             .map_err(TryPathBufError::Reserve)?;
         os.try_push(ext).map_err(TryPathBufError::Reserve)?;
@@ -412,7 +413,8 @@ impl TryClone for PathBuf {
         let src = self.as_os_str();
         let len = src.len();
         if len > 0 {
-            os.try_reserve(len).map_err(TryCloneError::Reserve)?;
+            os.try_reserve(len)
+                .map_err(|e| TryCloneError::Reserve(e.into()))?;
         }
         os.push(src);
         Ok(out)

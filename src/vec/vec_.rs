@@ -15,12 +15,12 @@
 //! the respective bounds.
 
 use crate::alloc::AllocError;
+use crate::alloc::TryReserveError;
 use crate::try_clone::{TryClone, TryCloneError};
 use crate::try_default::{TryDefault, TryDefaultError};
 use crate::vec::raw_manipulation::RawVecInnerView;
 use core::fmt;
 use std::alloc::Layout;
-use std::collections::TryReserveError;
 
 /// Error returned by [`TryVec`] operations.
 ///
@@ -343,7 +343,7 @@ impl<T> TryVec<T> for Vec<T> {
         T: TryClone,
     {
         let mut vec = Vec::<T>::new();
-        vec.try_reserve(capacity).map_err(TryVecError::Reserve)?;
+        vec.try_reserve(capacity).map_err(|e| TryVecError::Reserve(e.into()))?;
         for _ in 0..capacity {
             vec.push(value.try_clone().map_err(TryVecError::Clone)?);
         }
@@ -372,7 +372,7 @@ impl<T> TryVec<T> for Vec<T> {
                 self.push(value);
                 Ok(())
             }
-            Err(e) => Err((value, e)),
+            Err(e) => Err((value, e.into())),
         }
     }
 
@@ -380,7 +380,7 @@ impl<T> TryVec<T> for Vec<T> {
         if index > self.len() {
             return Err(TryVecError::Other("insert index out of bounds"));
         }
-        self.try_reserve(1).map_err(TryVecError::Reserve)?;
+        self.try_reserve(1).map_err(|e| TryVecError::Reserve(e.into()))?;
         self.insert(index, value);
         Ok(())
     }
@@ -394,7 +394,7 @@ impl<T> TryVec<T> for Vec<T> {
                 self.insert(index, value);
                 Ok(())
             }
-            Err(e) => Err((value, TryVecError::Reserve(e))),
+            Err(e) => Err((value, TryVecError::Reserve(e.into()))),
         }
     }
 
@@ -422,7 +422,7 @@ impl<T> TryVec<T> for Vec<T> {
         }
         let len_before = self.len();
         self.try_reserve(other.len())
-            .map_err(TryVecError::Reserve)?;
+            .map_err(|e| TryVecError::Reserve(e.into()))?;
         for item in other {
             match item.try_clone() {
                 Ok(cloned) => self.push(cloned),
@@ -481,7 +481,7 @@ impl<T> TryVec<T> for Vec<T> {
         let count = end - start;
         let len_before = self.len();
         // Reserve first — lazy, no element copies until allocation succeeds.
-        self.try_reserve(count).map_err(TryVecError::Reserve)?;
+        self.try_reserve(count).map_err(|e| TryVecError::Reserve(e.into()))?;
         for i in start..end {
             match self[i].try_clone() {
                 Ok(cloned) => self.push(cloned),
@@ -506,7 +506,7 @@ impl<T> TryVec<T> for Vec<T> {
         }
         let extra = new_len - current;
         // Reserve first — lazy.
-        self.try_reserve(extra).map_err(TryVecError::Reserve)?;
+        self.try_reserve(extra).map_err(|e| TryVecError::Reserve(e.into()))?;
         // Clone elements one-by-one into pre-reserved space.
         for _ in 0..extra {
             match value.try_clone() {
@@ -594,7 +594,7 @@ impl<T> TryVec<T> for Vec<T> {
         T: TryClone,
     {
         let mut vec = Vec::<T>::new();
-        vec.try_reserve(slice.len()).map_err(TryVecError::Reserve)?;
+        vec.try_reserve(slice.len()).map_err(|e| TryVecError::Reserve(e.into()))?;
         for item in slice {
             vec.push(item.try_clone().map_err(TryVecError::Clone)?);
         }
@@ -609,7 +609,7 @@ impl<T: TryClone> TryClone for Vec<T> {
         let mut out = Vec::<T>::new();
         if !self.is_empty() {
             out.try_reserve(self.len())
-                .map_err(TryCloneError::Reserve)?;
+                .map_err(|e| TryCloneError::Reserve(e.into()))?;
         }
         for elem in self.iter() {
             match elem.try_clone() {

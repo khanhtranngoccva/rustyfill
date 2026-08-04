@@ -2,12 +2,11 @@
 //!
 //! Provides the [`TryOsStr`] trait with methods that mirror allocating `&OsStr`
 //! constructors but return [`Result`] to handle allocation failures gracefully.
-//! Uses [`TryReserveError`](std::collections::TryReserveError) as the error type
+//! Uses [`TryReserveError`](crate::alloc::TryReserveError) as the error type
 //! for consistency with [`TryOsString`](super::os_string::TryOsString).
 
-use crate::alloc::AllocError;
+use crate::alloc::{AllocError, TryReserveError};
 use core::fmt;
-use std::collections::TryReserveError;
 use std::ffi::{OsStr, OsString};
 
 /// Error returned by [`TryOsStr`] operations.
@@ -101,7 +100,7 @@ impl TryOsStr for OsStr {
         let mut out = OsString::new();
         if !self.is_empty() {
             out.try_reserve(self.len())
-                .map_err(TryOsStrError::Reserve)?;
+                .map_err(|e| TryOsStrError::Reserve(e.into()))?;
         }
         out.push(self);
         Ok(out)
