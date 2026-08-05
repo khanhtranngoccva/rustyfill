@@ -11,7 +11,6 @@ fn main() {
     // Detect if we're compiling with a nightly compiler by probing an unstable feature.
     let is_nightly = probe_nightly(&out_dir);
     cargo_build::rustc_check_cfg("nightly_compiler", ["true", "false"]);
-    cargo_build::warning(&format!("is_nightly: {}", is_nightly));
     if is_nightly {
         println!("cargo:rustc-cfg=nightly_compiler=\"true\"");
     } else {

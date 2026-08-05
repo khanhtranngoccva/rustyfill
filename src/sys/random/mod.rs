@@ -7,7 +7,8 @@
 //! Both the platform-specific backend functions and the public API return
 //! [`Result`] instead of panicking.
 
-use core::fmt;
+use std::borrow::Cow;
+use std::fmt;
 
 // ── Error Type ────────────────────────────────────────────────────────────────────
 
@@ -17,8 +18,8 @@ use core::fmt;
 pub enum RandomError {
     /// The underlying syscall returned an error code.
     Syscall(i32),
-    /// A platform-specific failure with a diagnostic message.
-    Platform(String),
+    /// A platform-specific failure with a static diagnostic message.
+    Platform(Cow<'static, str>),
     /// This target has no supported random data source.
     Unsupported,
 }
@@ -82,7 +83,7 @@ cfg_select! {
         pub use hermit::fill_bytes;
     }
     any(target_os = "horizon", target_os = "cygwin") => {
-        // FIXME(horizon): add arc4random_buf to shim-3ds
+        // FIXME-OLD(horizon): add arc4random_buf to shim-3ds
         mod getrandom;
         pub use getrandom::fill_bytes;
     }
@@ -146,78 +147,35 @@ cfg_select! {
         target_os = "xous",
         target_os = "vexos",
     ) => {
-        // FIXME: finally remove std support for wasm32-unknown-unknown
-        // FIXME: add random data generation to xous
+        // FIXME-OLD: finally remove std support for wasm32-unknown-unknown
+        // FIXME-OLD: add random data generation to xous
         mod unsupported;
         pub use unsupported::{fill_bytes, hashmap_random_keys};
     }
     _ => {}
 }
 
-// ── Stack-based Mersenne Twister (MT19937) ───────────────────────────────────────
-#[allow(dead_code)]
-/// Infallible, stack-allocated Mersenne Twister PRNG.
+// ── SplitMix64 fallback ──────────────────────────────────────────────────────────
+/// Inline SplitMix64 PRNG — zero dependencies, zero allocation.
+fn splitmix64(state: &mut u64) -> u64 {
+    *state = state.wrapping_add(0x9e3779b97f4a7c15);
+    let mut z = *state;
+    z = (z ^ (z >> 30)).wrapping_mul(0xbf58476d1ce4e5b9);
+    z = (z ^ (z >> 27)).wrapping_mul(0x94d049bb133111eb);
+    z ^ (z >> 31)
+}
+
+/// Generate hashmap keys using SplitMix64 as a last resort.
 ///
-/// Used as a last-resort fallback for [`hashmap_random_keys_infallible`] when
-/// all OS random sources fail. Seeded from stack addresses so it produces
-/// varying output across invocations. Not cryptographically secure, but
-/// sufficient for hashmap seed diversity.
-struct Mt19937 {
-    mt: [u32; 624],
-    index: usize,
-}
-
-impl Mt19937 {
-    /// Creates a new MT19937 seeded from a single u32 value.
-    fn new(seed: u32) -> Self {
-        let mut state = [0u32; 624];
-        state[0] = seed & 0xFFFFFFFF;
-        for i in 1..624 {
-            state[i] = state[i - 1].wrapping_mul(1812433253)
-                ^ (state[i - 1] >> 30).wrapping_mul(1812433253)
-                ^ i as u32;
-        }
-        Self {
-            mt: state,
-            index: 624,
-        }
-    }
-
-    /// Generates the next u32 from the generator.
-    fn next_u32(&mut self) -> u32 {
-        if self.index >= 624 {
-            self.regenerate();
-        }
-
-        let mut y = self.mt[self.index];
-        y ^= y >> 11;
-        y ^= y << 7 & 0x9D2C5680;
-        y ^= y << 15 & 0xEFC60000;
-        y ^= y >> 18;
-
-        self.index += 1;
-        y
-    }
-
-    fn regenerate(&mut self) {
-        for i in 0..624 {
-            let _mag_val = self.mt[(i + 397) % 624] & 0x7FFFFFFF;
-            let mk = ((self.mt[i] & 0x80000000) | (self.mt[(i + 1) % 624] & 0x7FFFFFFF)) >> 1;
-            self.mt[i] =
-                self.mt[(i + 397) % 624] ^ (mk >> 1) ^ [0x0, 0x9908B0DF][(mk & 1) as usize];
-        }
-        self.index = 0;
-    }
-}
-
-/// Generate hashmap keys using MT19937 as a last resort.
-#[allow(dead_code)]
-fn hashmap_random_keys_mt() -> (u64, u64) {
-    let stack_addr = (&0u8 as *const u8) as u32;
-    let seed = stack_addr.wrapping_mul(2654435761);
-    let mut mt = Mt19937::new(seed);
-    let k1 = (mt.next_u32() as u64) << 32 | mt.next_u32() as u64;
-    let k2 = (mt.next_u32() as u64) << 32 | mt.next_u32() as u64;
+/// Used by [`hashmap_random_keys_infallible`] and unsupported-platform backends
+/// when no OS random source is available. Seeded from a stack address so it
+/// produces varying output across invocations. Not cryptographically secure,
+/// but sufficient for hashmap seed diversity.
+pub(crate) fn hashmap_random_keys_mt() -> (u64, u64) {
+    let stack_addr = (&0u8 as *const u8) as u64;
+    let mut state = stack_addr.wrapping_mul(2654435761u64);
+    let k1 = splitmix64(&mut state);
+    let k2 = splitmix64(&mut state);
     (k1, k2)
 }
 

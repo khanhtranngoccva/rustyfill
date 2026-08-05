@@ -18,8 +18,10 @@
 
 // ── Foundational traits ──────────────────────────────────────────────────────
 
+pub use crate::recovery::{Resumable, ResumableSource};
 pub use crate::try_clone::TryClone;
 pub use crate::try_default::TryDefault;
+pub use crate::try_random_state::TryRandomState;
 pub use crate::try_to_owned::TryToOwned;
 
 // ── Box ──────────────────────────────────────────────────────────────────────
@@ -38,10 +40,6 @@ pub use crate::hashset::TryHashSet;
 // ── VecDeque ─────────────────────────────────────────────────────────────────
 
 pub use crate::vecdeque::TryVecDeque;
-
-// ── BTreeMap & BTreeSet ──────────────────────────────────────────────────────
-
-pub use crate::btrees::{TryBTreeMap, TryBTreeSet};
 
 // ── String & str ─────────────────────────────────────────────────────────────
 

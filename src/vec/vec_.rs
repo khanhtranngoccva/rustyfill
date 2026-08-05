@@ -22,6 +22,35 @@ use crate::vec::raw_manipulation::RawVecInnerView;
 use core::fmt;
 use std::alloc::Layout;
 
+/// Panic-safe guard that truncates a `Vec` back to its original length on drop
+/// unless disarmed via `forget()`. Used by fallible extend methods so that if
+/// an element's `try_clone` panics mid-way, partially-pushed elements are
+/// removed rather than left behind.
+struct TruncateGuard<'a, T> {
+    vec: &'a mut Vec<T>,
+    len_before: usize,
+}
+
+impl<'a, T> TruncateGuard<'a, T> {
+    fn new(vec: &'a mut Vec<T>) -> Self {
+        Self {
+            len_before: vec.len(),
+            vec,
+        }
+    }
+
+    /// Disable the guard — no truncation on scope exit.
+    fn forget(self) {
+        core::mem::forget(self);
+    }
+}
+
+impl<'a, T> Drop for TruncateGuard<'a, T> {
+    fn drop(&mut self) {
+        self.vec.truncate(self.len_before);
+    }
+}
+
 /// Error returned by [`TryVec`] operations.
 ///
 /// Wraps the two ways a vector operation can fail on stable Rust: a reserve
@@ -123,11 +152,23 @@ pub trait TryVec<T>: Sized {
     /// Like [`Self::try_insert`] but returns ownership of `value` back on failure.
     fn try_insert_give_back(&mut self, index: usize, value: T) -> Result<(), (T, TryVecError)>;
 
-    /// Fallibly extend the vector with all elements from an iterator.
+    /// Fallibly extend the vector with all elements from an iterator source.
     ///
-    /// Uses the iterator's upper bound (if available) to reserve capacity upfront.
-    /// Returns [`TryReserveError`] if the allocation fails.
-    fn try_extend<I: IntoIterator<Item = T>>(&mut self, iter: I) -> Result<(), TryReserveError>;
+    /// Accepts anything that implements [`ResumableSource`](crate::recovery::ResumableSource),
+    /// including both plain iterators and [`Resumable`](crate::recovery::Resumable)
+    /// wrappers from previous failures. The error type stays identical across
+    /// retries because `Resumable<I>` and bare iterators share the same inner type.
+    ///
+    /// Uses the iterator's size hint to reserve capacity upfront when available.
+    /// On reserve failure, returns a [`Resumable`](crate::recovery::Resumable)
+    /// containing any consumed-but-uncommitted element and the remainder of the
+    /// iterator, which the caller can pass right back in.
+    fn try_extend<S>(
+        &mut self,
+        source: S,
+    ) -> Result<(), (TryReserveError, crate::recovery::Resumable<S::Inner>)>
+    where
+        S: crate::recovery::ResumableSource<Item = T>;
 
     /// Fallibly append all elements from another slice by cloning each one.
     ///
@@ -192,14 +233,20 @@ pub trait TryVec<T>: Sized {
     ///
     /// **Deprecated:** This method name conflicts with the unstable inherent
     /// [`Vec::try_shrink_to_fit`]. Use [`Self::fallible_shrink_to_fit`] instead.
-    #[deprecated(since = "0.1.0", note = "conflicts with unstable Vec::try_shrink_to_fit; use fallible_shrink_to_fit")]
+    #[deprecated(
+        since = "0.1.0",
+        note = "conflicts with unstable Vec::try_shrink_to_fit; use fallible_shrink_to_fit"
+    )]
     fn try_shrink_to_fit(&mut self) -> Result<(), TryVecError>;
 
     /// Fallibly shrink the capacity of this vector to at least `min_capacity`.
     ///
     /// **Deprecated:** This method name conflicts with the unstable inherent
     /// [`Vec::try_shrink_to`]. Use [`Self::fallible_shrink_to`] instead.
-    #[deprecated(since = "0.1.0", note = "conflicts with unstable Vec::try_shrink_to; use fallible_shrink_to")]
+    #[deprecated(
+        since = "0.1.0",
+        note = "conflicts with unstable Vec::try_shrink_to; use fallible_shrink_to"
+    )]
     fn try_shrink_to(&mut self, min_capacity: usize) -> Result<(), TryVecError>;
 
     // ── Aliases with `fallible_` prefix ─────────────────────────────────────
@@ -241,13 +288,23 @@ pub trait TryVec<T>: Sized {
     }
 
     /// Alias for [`Self::try_insert_give_back`].
-    fn fallible_insert_give_back(&mut self, index: usize, value: T) -> Result<(), (T, TryVecError)> {
+    fn fallible_insert_give_back(
+        &mut self,
+        index: usize,
+        value: T,
+    ) -> Result<(), (T, TryVecError)> {
         Self::try_insert_give_back(self, index, value)
     }
 
     /// Alias for [`Self::try_extend`].
-    fn fallible_extend<I: IntoIterator<Item = T>>(&mut self, iter: I) -> Result<(), TryReserveError> {
-        Self::try_extend(self, iter)
+    fn fallible_extend<S>(
+        &mut self,
+        source: S,
+    ) -> Result<(), (TryReserveError, crate::recovery::Resumable<S::Inner>)>
+    where
+        S: crate::recovery::ResumableSource<Item = T>,
+    {
+        Self::try_extend(self, source)
     }
 
     /// Alias for [`Self::try_extend_from_slice`].
@@ -363,7 +420,8 @@ impl<T> TryVec<T> for Vec<T> {
     {
         let mut vec = Vec::<T>::new();
         if count > 0 {
-            vec.try_reserve(count).map_err(|e| TryVecError::Reserve(e.into()))?;
+            vec.try_reserve(count)
+                .map_err(|e| TryVecError::Reserve(e.into()))?;
         }
         for _ in 0..count {
             vec.push(value.try_clone().map_err(TryVecError::Clone)?);
@@ -401,7 +459,8 @@ impl<T> TryVec<T> for Vec<T> {
         if index > self.len() {
             return Err(TryVecError::Other("insert index out of bounds"));
         }
-        self.try_reserve(1).map_err(|e| TryVecError::Reserve(e.into()))?;
+        self.try_reserve(1)
+            .map_err(|e| TryVecError::Reserve(e.into()))?;
         self.insert(index, value);
         Ok(())
     }
@@ -419,15 +478,38 @@ impl<T> TryVec<T> for Vec<T> {
         }
     }
 
-    fn try_extend<I: IntoIterator<Item = T>>(&mut self, iter: I) -> Result<(), TryReserveError> {
-        let iter = iter.into_iter();
+    fn try_extend<S>(
+        &mut self,
+        source: S,
+    ) -> Result<(), (TryReserveError, crate::recovery::Resumable<S::Inner>)>
+    where
+        S: crate::recovery::ResumableSource<Item = T>,
+    {
+        use crate::recovery::Resumable;
+
+        let (head, mut iter) = source.safe_into_iter();
+
+        // Drain the head element first if present.
+        if let Some(h) = head {
+            if self.len() == self.capacity() {
+                if let Err(e) = self.try_reserve(1) {
+                    return Err((e.into(), Resumable::new(h, iter)));
+                }
+            }
+            self.push(h);
+        }
+
         let (lower, _) = iter.size_hint();
         if lower > 0 {
-            self.try_reserve(lower)?;
+            if let Err(e) = self.try_reserve(lower) {
+                return Err((e.into(), Resumable::from_remainder(iter)));
+            }
         }
-        for item in iter {
+        while let Some(item) = iter.next() {
             if self.len() == self.capacity() {
-                self.try_reserve(1)?;
+                if let Err(e) = self.try_reserve(1) {
+                    return Err((e.into(), Resumable::new(item, iter)));
+                }
             }
             self.push(item);
         }
@@ -441,18 +523,20 @@ impl<T> TryVec<T> for Vec<T> {
         if other.is_empty() {
             return Ok(());
         }
-        let len_before = self.len();
         self.try_reserve(other.len())
             .map_err(|e| TryVecError::Reserve(e.into()))?;
+        let guard = TruncateGuard::new(self);
         for item in other {
             match item.try_clone() {
-                Ok(cloned) => self.push(cloned),
+                Ok(cloned) => {
+                    guard.vec.push(cloned);
+                }
                 Err(e) => {
-                    self.truncate(len_before);
                     return Err(TryVecError::Clone(e));
                 }
             }
         }
+        guard.forget();
         Ok(())
     }
 
@@ -500,18 +584,19 @@ impl<T> TryVec<T> for Vec<T> {
         }
 
         let count = end - start;
-        let len_before = self.len();
         // Reserve first — lazy, no element copies until allocation succeeds.
-        self.try_reserve(count).map_err(|e| TryVecError::Reserve(e.into()))?;
+        self.try_reserve(count)
+            .map_err(|e| TryVecError::Reserve(e.into()))?;
+        let guard = TruncateGuard::new(self);
         for i in start..end {
-            match self[i].try_clone() {
-                Ok(cloned) => self.push(cloned),
+            match guard.vec[i].try_clone() {
+                Ok(cloned) => guard.vec.push(cloned),
                 Err(e) => {
-                    self.truncate(len_before);
                     return Err(TryVecError::Clone(e));
                 }
             }
         }
+        guard.forget();
         Ok(())
     }
 
@@ -527,17 +612,18 @@ impl<T> TryVec<T> for Vec<T> {
         }
         let extra = new_len - current;
         // Reserve first — lazy.
-        self.try_reserve(extra).map_err(|e| TryVecError::Reserve(e.into()))?;
-        // Clone elements one-by-one into pre-reserved space.
+        self.try_reserve(extra)
+            .map_err(|e| TryVecError::Reserve(e.into()))?;
+        let guard = TruncateGuard::new(self);
         for _ in 0..extra {
             match value.try_clone() {
-                Ok(cloned) => self.push(cloned),
+                Ok(cloned) => guard.vec.push(cloned),
                 Err(e) => {
-                    self.truncate(current);
                     return Err(TryVecError::Clone(e));
                 }
             }
         }
+        guard.forget();
         Ok(())
     }
 
@@ -553,9 +639,11 @@ impl<T> TryVec<T> for Vec<T> {
         let extra = new_len - current;
         // Reserve first — lazy, closure not called until allocation succeeds.
         self.try_reserve(extra)?;
+        let guard = TruncateGuard::new(self);
         for _ in 0..extra {
-            self.push(f());
+            guard.vec.push(f());
         }
+        guard.forget();
         Ok(())
     }
 
@@ -570,8 +658,8 @@ impl<T> TryVec<T> for Vec<T> {
         }
         let (mut current_raw, current_len) = RawVecInnerView::from_vec(std::mem::take(self));
         // SAFETY: target < self.capacity() (guaranteed by the early-return guard
-        // above), and elem_layout matches the type T
-        // that was used to allocate the original buffer.
+        // above), and elem_layout matches the type T that was used to allocate the original buffer.
+        // Should not panic here - the shrink_unchecked does not invoke user code.
         let res = unsafe { current_raw.shrink_unchecked(target, Layout::new::<T>()) };
         match res {
             Ok(()) => {
@@ -615,7 +703,8 @@ impl<T> TryVec<T> for Vec<T> {
         T: TryClone,
     {
         let mut vec = Vec::<T>::new();
-        vec.try_reserve(slice.len()).map_err(|e| TryVecError::Reserve(e.into()))?;
+        vec.try_reserve(slice.len())
+            .map_err(|e| TryVecError::Reserve(e.into()))?;
         for item in slice {
             vec.push(item.try_clone().map_err(TryVecError::Clone)?);
         }

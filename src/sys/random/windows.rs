@@ -22,7 +22,9 @@ pub fn fill_bytes(mut bytes: &mut [u8]) -> Result<(), RandomError> {
         let len = bytes.len().try_into().unwrap_or(u32::MAX);
         let ret = unsafe { RtlGenRandom(bytes.as_mut_ptr().cast(), len) };
         if ret == FALSE {
-            return Err(RandomError::Platform("RtlGenRandom failed".into()));
+            return Err(RandomError::Platform(
+                core::borrow::Cow::Borrowed("RtlGenRandom failed"),
+            ));
         }
         bytes = &mut bytes[len as usize..];
     }

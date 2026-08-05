@@ -35,9 +35,8 @@
 //! rather than unwinding through the caller. This means fallible collection
 //! operations remain non-panicking even with allocating hashers.
 //!
-//! Construction is intentionally [`unsafe`] so callers must acknowledge that
-//! hashing operations involving this factory may fail at runtime.
-
+//! # Notes
+//! - These types only guard against panics during creation of hasher factories. The user must ensure that the invocation via build_hasher does not implicitly panic, although it is practically never the case for the sake of performance.
 use crate::{
     try_clone::{TryClone, TryCloneError},
     try_default::{TryDefault, TryDefaultError},
@@ -102,22 +101,40 @@ impl TryClone for std::hash::RandomState {
     }
 }
 
+// Thread-local cache of a RandomState so that repeated `try_default()` calls
+// avoid re-invoking the platform random source. Each thread gets its own
+// cached instance after the first (potentially expensive) generation.
+thread_local! {
+    static CACHED_RANDOM_STATE: once_cell::unsync::OnceCell<std::hash::RandomState>
+        = const { once_cell::unsync::OnceCell::new() };
+}
+
 /// Implementation glue to support `HashMap::try_new`/`HashSet::try_new`/`DashMap::try_new`/`DashSet::try_new`
 impl TryDefault for std::hash::RandomState {
     #[inline]
     fn try_default() -> Result<Self, TryDefaultError> {
-        let (k1, k2) = crate::sys::random::hashmap_random_keys().map_err(|_| {
-            TryDefaultError::Other("failed to generate random keys for RandomState")
-        })?;
-        // SAFETY: RandomState's internal representation is two u64 values.
-        // We construct it directly from our randomly generated keys, avoiding
-        // the panic-prone Default::default() path entirely.
-        Ok(unsafe { core::mem::transmute::<(u64, u64), std::hash::RandomState>((k1, k2)) })
+        CACHED_RANDOM_STATE.with(|cell| {
+            if let Some(rs) = cell.get() {
+                return Ok(rs.clone());
+            }
+
+            // First call on this thread: generate and cache.
+            let (k1, k2) = crate::sys::random::hashmap_random_keys().map_err(|_| {
+                TryDefaultError::Other("failed to generate random keys for RandomState")
+            })?;
+            // SAFETY: RandomState's internal representation is two u64 values.
+            // We construct it directly from our randomly generated keys, avoiding
+            // the panic-prone Default::default() path entirely.
+            let rs = unsafe { core::mem::transmute::<(u64, u64), std::hash::RandomState>((k1, k2)) };
+            let rs_clone = rs.clone();
+            cell.set(rs).ok();
+            Ok(rs_clone)
+        })
     }
 }
 
 /// `BuildHasherDefault<H>` is a zero-sized wrapper around `PhantomData<H>`.
-/// Its `clone()` is infallible (no-op).
+/// Its `clone()` cannot panic (no-op).
 impl<H> TryClone for std::hash::BuildHasherDefault<H> {
     #[inline]
     fn try_clone(&self) -> Result<Self, TryCloneError> {
@@ -125,12 +142,12 @@ impl<H> TryClone for std::hash::BuildHasherDefault<H> {
     }
 }
 
+/// `BuildHasherDefault<H>` is a zero-sized wrapper around `PhantomData<H>`.
+/// Its `default()` cannot panic (no-op).
 impl<H> TryDefault for std::hash::BuildHasherDefault<H> {
     #[inline]
     fn try_default() -> Result<Self, TryDefaultError> {
-        // FIXME: this does not catch aborting panics!
-        std::panic::catch_unwind(Default::default)
-            .map_err(|_| TryDefaultError::Other("RandomState panicked during initialization"))
+        Ok(Default::default())
     }
 }
 

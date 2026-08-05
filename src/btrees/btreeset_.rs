@@ -18,6 +18,17 @@
 //! The trait also implements [`TryClone`](crate::try_clone::TryClone) and
 //! [`TryDefault`](crate::try_default::TryDefault) for `BTreeSet<T>` when
 //! `T` satisfies the respective bounds.
+//!
+//! # Deprecation
+//!
+//! Deprecated in 0.1.0. The `catch_unwind`-based approach cannot guarantee safe
+//! recovery on allocation failure — elements consumed from an iterator before
+//! the panic are silently dropped, partial extension occurs with no rollback,
+//! and the `ManuallyDrop` transmutation tricks required for give-back variants
+//! rely on layout assumptions that are fragile. Prefer `HashSet` with its
+//! `TryHashSet` counterpart which uses proper `try_reserve`-based semantics.
+
+#![allow(deprecated)]
 
 use crate::alloc::{AllocError, PayloadBox};
 use crate::try_clone::TryCloneError;
@@ -35,6 +46,11 @@ use std::panic::{AssertUnwindSafe, RefUnwindSafe, catch_unwind};
 /// wraps a caught panic as [`Self::AllocPanic`] when an internal node allocation
 /// fails during insertion or extension. Clone failures during bulk operations
 /// are wrapped as [`Self::Clone`].
+#[deprecated(
+    since = "0.1.0",
+    note = "TryBTreeSet is deprecated: catch_unwind-based polyfill cannot safely recover \
+            elements on allocation failure; prefer HashSet with TryHashSet"
+)]
 #[derive(Debug)]
 pub enum TryBTreeSetError {
     /// A raw heap allocation failed (no collection involved).
@@ -49,6 +65,7 @@ pub enum TryBTreeSetError {
     Other(&'static str),
 }
 
+#[allow(deprecated)]
 impl fmt::Display for TryBTreeSetError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
@@ -66,12 +83,14 @@ impl fmt::Display for TryBTreeSetError {
     }
 }
 
+#[allow(deprecated)]
 impl From<AllocError> for TryBTreeSetError {
     fn from(e: AllocError) -> Self {
         Self::Alloc(e)
     }
 }
 
+#[allow(deprecated)]
 impl From<TryCloneError> for TryBTreeSetError {
     fn from(err: TryCloneError) -> Self {
         Self::Clone(err)
@@ -91,6 +110,11 @@ impl From<TryCloneError> for TryBTreeSetError {
 /// Because `BTreeSet::try_reserve` does not exist, mutation methods use
 /// [`std::panic::catch_unwind`] internally to intercept OOM panics.
 /// Elements must be [`RefUnwindSafe`] for these methods.
+#[deprecated(
+    since = "0.1.0",
+    note = "TryBTreeSet is deprecated: catch_unwind-based polyfill cannot safely recover \
+            elements on allocation failure; prefer HashSet with TryHashSet"
+)]
 pub trait TryBTreeSet<T>: Sized {
     // ── Construction ────────────────────────────────────────────────────────
 
@@ -146,17 +170,19 @@ pub trait TryBTreeSet<T>: Sized {
 
     // ── Extension ───────────────────────────────────────────────────────────
 
-    /// Fallibly extend the set with all values from an iterator.
+    /// Fallibly extend the set with all values from an iterator source.
     ///
-    /// Catches allocation panics from internal B-tree node allocation during
-    /// the extend operation. Returns [`TryBTreeSetError::AllocPanic`] if an
-    /// internal allocation fails.
+    /// Accepts anything that implements [`ResumableSource`](crate::recovery::ResumableSource).
+    /// Uses [`Self::try_insert_give_back`] so that on allocation failure the
+    /// consumed-but-uncommitted element is returned in a [`Resumable`](crate::recovery::Resumable).
     ///
-    /// Note: because we catch the panic after the fact, partial extension may
-    /// have occurred on failure. The set will be structurally consistent but
-    /// may contain some of the extended elements.
-    fn try_extend<I: IntoIterator<Item = T>>(&mut self, iter: I) -> Result<(), TryBTreeSetError>
+    /// Note: elements already inserted before the failure are not rolled back.
+    fn try_extend<S>(
+        &mut self,
+        source: S,
+    ) -> Result<(), (TryBTreeSetError, crate::recovery::Resumable<S::Inner>)>
     where
+        S: crate::recovery::ResumableSource<Item = T>,
         T: Ord + RefUnwindSafe;
 
     /// Fallibly extend the set by cloning elements from a slice.
@@ -169,14 +195,15 @@ pub trait TryBTreeSet<T>: Sized {
         T: Ord + RefUnwindSafe + crate::try_clone::TryClone;
 
     /// Alias for [`Self::try_extend`].
-    fn fallible_extend<I: IntoIterator<Item = T>>(
+    fn fallible_extend<S>(
         &mut self,
-        iter: I,
-    ) -> Result<(), TryBTreeSetError>
+        source: S,
+    ) -> Result<(), (TryBTreeSetError, crate::recovery::Resumable<S::Inner>)>
     where
+        S: crate::recovery::ResumableSource<Item = T>,
         T: Ord + RefUnwindSafe,
     {
-        Self::try_extend(self, iter)
+        Self::try_extend(self, source)
     }
 
     /// Alias for [`Self::try_extend_from_slice`].
@@ -208,6 +235,7 @@ pub trait TryBTreeSet<T>: Sized {
 
 // ── Implementation ────────────────────────────────────────────────────────────
 
+#[allow(deprecated)]
 impl<T: Ord + RefUnwindSafe> TryBTreeSet<T> for BTreeSet<T> {
     // ── Construction ────────────────────────────────────────────────────────
 
@@ -267,14 +295,32 @@ impl<T: Ord + RefUnwindSafe> TryBTreeSet<T> for BTreeSet<T> {
 
     // ── Extension ───────────────────────────────────────────────────────────
 
-    fn try_extend<I: IntoIterator<Item = T>>(&mut self, iter: I) -> Result<(), TryBTreeSetError>
+    fn try_extend<S>(
+        &mut self,
+        source: S,
+    ) -> Result<(), (TryBTreeSetError, crate::recovery::Resumable<S::Inner>)>
     where
+        S: crate::recovery::ResumableSource<Item = T>,
         T: Ord + RefUnwindSafe,
     {
-        catch_unwind(AssertUnwindSafe(|| {
-            self.extend(iter);
-        }))
-        .map_err(|payload| TryBTreeSetError::AllocPanic(PayloadBox(payload)))?;
+        use crate::recovery::Resumable;
+
+        let (head, mut iter) = source.safe_into_iter();
+
+        if let Some(value) = head {
+            if let Err((v, e)) = Self::try_insert_give_back(self, value) {
+                return Err((e, Resumable::new(v, iter)));
+            }
+        }
+
+        while let Some(value) = iter.next() {
+            match Self::try_insert_give_back(self, value) {
+                Ok(_) => {}
+                Err((v, e)) => {
+                    return Err((e, Resumable::new(v, iter)));
+                }
+            }
+        }
         Ok(())
     }
 
@@ -324,6 +370,7 @@ impl<T: Ord + RefUnwindSafe> TryBTreeSet<T> for BTreeSet<T> {
 /// Uses fallible clone for each element and catches allocation panics from
 /// internal B-tree node growth. Clones one element at a time and inserts it
 /// directly, avoiding an intermediate `Vec` allocation.
+#[allow(deprecated)]
 impl<T> crate::try_clone::TryClone for BTreeSet<T>
 where
     T: Ord + crate::try_clone::TryClone,
@@ -352,6 +399,7 @@ where
 
 // ── TryDefault for BTreeSet<T> ────────────────────────────────────────────────
 
+#[allow(deprecated)]
 impl<T> crate::try_default::TryDefault for BTreeSet<T> {
     fn try_default() -> Result<Self, crate::try_default::TryDefaultError>
     where
@@ -363,6 +411,7 @@ impl<T> crate::try_default::TryDefault for BTreeSet<T> {
 }
 
 #[cfg(test)]
+#[allow(deprecated)]
 mod tests {
     use super::*;
     use crate::try_clone::TryClone;

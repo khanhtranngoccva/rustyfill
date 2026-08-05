@@ -9,6 +9,7 @@ use crate::try_default::{TryDefault, TryDefaultError};
 use core::alloc::Layout;
 use core::mem::{self, MaybeUninit};
 use core::pin::Pin;
+use std::ptr::{self, NonNull};
 /// A trait for fallibly allocating a value on the heap.
 ///
 /// Implemented for `Box<T>`.
@@ -20,21 +21,30 @@ pub trait TryBox<T>: Sized {
     ///
     /// **Deprecated:** This method name conflicts with the unstable inherent
     /// [`Box::try_new`]. Use [`Self::fallible_new`] instead.
-    #[deprecated(since = "0.1.0", note = "conflicts with unstable Box::try_new; use fallible_new")]
+    #[deprecated(
+        since = "0.1.0",
+        note = "conflicts with unstable Box::try_new; use fallible_new"
+    )]
     fn try_new(value: T) -> Result<Self, AllocError>;
 
     /// Fallibly allocate uninitialized memory on the heap.
     ///
     /// **Deprecated:** This method name conflicts with the unstable inherent
     /// [`Box::try_new_uninit`]. Use [`Self::fallible_new_uninit`] instead.
-    #[deprecated(since = "0.1.0", note = "conflicts with unstable Box::try_new_uninit; use fallible_new_uninit")]
+    #[deprecated(
+        since = "0.1.0",
+        note = "conflicts with unstable Box::try_new_uninit; use fallible_new_uninit"
+    )]
     fn try_new_uninit() -> Result<Self::Uninit, AllocError>;
 
     /// Fallibly allocate zero-initialised memory on the heap.
     ///
     /// **Deprecated:** This method name conflicts with the unstable inherent
     /// [`Box::try_new_zeroed`]. Use [`Self::fallible_new_zeroed`] instead.
-    #[deprecated(since = "0.1.0", note = "conflicts with unstable Box::try_new_zeroed; use fallible_new_zeroed")]
+    #[deprecated(
+        since = "0.1.0",
+        note = "conflicts with unstable Box::try_new_zeroed; use fallible_new_zeroed"
+    )]
     fn try_new_zeroed() -> Result<Self::Uninit, AllocError>;
 
     /// Like [`Self::try_new`] but returns ownership of `value` back on failure.
@@ -241,19 +251,92 @@ impl<T: TryDefault> TryDefault for Box<T> {
 // ── Boxed slice TryClone ───────────────────────────────────────────────────────
 // Box<[T]> owns a dynamically-sized slice on the heap. Cloning requires
 // allocating a new slice and cloning each element via T::try_clone().
+// We allocate exactly the right size upfront (no overshoot, no shrinking) and
+// follow the same MaybeUninit + guard pattern used for array cloning.
+// The allocation is wrapped in a Box immediately so its Drop handles cleanup
+// on both explicit errors and panics during element cloning.
+
+/// Panic-safe guard that drops any initialized elements in a `MaybeUninit` slice
+/// if dropped before `forget()` is called (e.g. on panic or early return).
+struct SliceInitGuard<'a, T> {
+    slots: &'a mut [MaybeUninit<T>],
+    count: usize,
+}
+
+impl<'a, T> SliceInitGuard<'a, T> {
+    fn new(slots: &'a mut [MaybeUninit<T>]) -> Self {
+        Self { slots, count: 0 }
+    }
+
+    /// Disable the guard's Drop so that it no longer cleans up on scope exit.
+    /// Call this only after all slots have been successfully initialized.
+    fn forget(mut self) {
+        self.count = 0;
+        mem::forget(self);
+    }
+}
+
+impl<'a, T> Drop for SliceInitGuard<'a, T> {
+    fn drop(&mut self) {
+        unsafe {
+            for slot in self.slots.iter_mut().take(self.count) {
+                core::ptr::drop_in_place(slot.as_mut_ptr());
+            }
+        }
+    }
+}
 
 impl<T: TryClone> TryClone for Box<[T]> {
     fn try_clone(&self) -> Result<Self, TryCloneError> {
-        use crate::vec::TrySlice;
-        let vec = self.as_ref().try_to_vec().map_err(|e| match e {
-            crate::vec::TryVecError::Reserve(r) => TryCloneError::Reserve(r),
-            crate::vec::TryVecError::Clone(c) => c,
-            crate::vec::TryVecError::Overflow => TryCloneError::Overflow,
-            crate::vec::TryVecError::Alloc(e) => TryCloneError::Alloc(e),
-            crate::vec::TryVecError::Other(m) => TryCloneError::Other(m),
-        })?;
-        // FIXME: into_boxed_slice calls shrink_to_fit which may panic.
-        Ok(vec.into_boxed_slice())
+        let len = self.len();
+
+        // Handle empty and ZST cases — no allocation needed.
+        if len == 0 || mem::size_of::<T>() == 0 {
+            let ptr: NonNull<T> =
+                NonNull::new(ptr::without_provenance_mut(Layout::new::<T>().align()))
+                    .expect("alignment should not be zero");
+            // SAFETY: for empty slices and ZSTs, a dangling aligned pointer is valid.
+            // We cast through a fat pointer constructed from the raw parts.
+            return Ok(unsafe {
+                let fat: *mut [T] = core::ptr::slice_from_raw_parts_mut(ptr.as_ptr().cast(), len);
+                Box::from_raw(fat)
+            });
+        }
+
+        // Allocate exactly `len` elements — no excess capacity, no shrinking.
+        let layout = Layout::array::<T>(len).map_err(|_| TryCloneError::Overflow)?;
+        let ptr = unsafe { std::alloc::alloc(layout) };
+        if ptr.is_null() {
+            return Err(TryCloneError::Alloc(AllocError { layout }));
+        }
+
+        // Wrap immediately in a Box so Drop cleans up the allocation on panic.
+        // SAFETY: layout matches `len` elements of MaybeUninit<T>, which has
+        // the same size and alignment as T.
+        let mut out: Box<[MaybeUninit<T>]> =
+            unsafe { Box::from_raw(core::ptr::slice_from_raw_parts_mut(ptr.cast(), len)) };
+        let mut guard = SliceInitGuard::new(&mut out);
+
+        for (slot, elem) in guard.slots.iter_mut().zip(self.iter()) {
+            match elem.try_clone() {
+                Ok(cloned) => {
+                    unsafe {
+                        core::ptr::write(slot.as_mut_ptr(), cloned);
+                    }
+                    guard.count += 1;
+                }
+                Err(e) => {
+                    // Guard drops initialized elements; Box drops the allocation.
+                    return Err(e);
+                }
+            }
+        }
+
+        guard.forget();
+
+        // SAFETY: all `len` slots were written successfully above.
+        // Box<[MaybeUninit<T>]> and Box<[T]> have identical memory layouts.
+        Ok(unsafe { mem::transmute::<Box<[MaybeUninit<T>]>, Box<[T]>>(out) })
     }
 }
 

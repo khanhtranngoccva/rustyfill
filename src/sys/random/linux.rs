@@ -56,10 +56,11 @@
 //! [^1]: <https://lwn.net/Articles/606141/>
 //! [^2]: <https://lwn.net/Articles/808575/>
 //!
-// FIXME(in 2040 or so): once the minimum kernel version is 5.6, remove the
+// FIXME-OLD(in 2040 or so): once the minimum kernel version is 5.6, remove the
 // `GRND_NONBLOCK` fallback and use `/dev/random` instead of `/dev/urandom`
 // when secure data is required.
 
+use std::borrow::Cow;
 use std::fs::File;
 use std::io::Read;
 use std::os::fd::AsRawFd;
@@ -70,26 +71,42 @@ use once_cell::sync::OnceCell;
 
 use super::RandomError;
 
+/// Type alias for the `getrandom` C library function.
+type GetrandomFn = unsafe extern "C-unwind" fn(*mut u8, usize, u32) -> isize;
+
+/// Dynamically resolve the `getrandom` symbol from the process's linked libc.
+///
+/// Uses `dlsym(RTLD_DEFAULT, ...)` so no explicit path or `dlopen` is needed —
+/// it searches the global symbol table of all loaded objects (main executable +
+/// shared libraries). Returns `None` if the symbol is not found (e.g., glibc < 2.25,
+/// musl < 1.1.20).
+static GETRANDOM_FN: OnceCell<Option<GetrandomFn>> = OnceCell::new();
+
+fn resolve_getrandom() -> Option<GetrandomFn> {
+    let result = GETRANDOM_FN.get_or_init(|| {
+        // SAFETY: RTLD_DEFAULT searches all currently loaded objects.
+        // dlsym never frees the returned pointer; it remains valid for the
+        // lifetime of the process. The cast to our function type is safe
+        // because the signature matches the C declaration of `getrandom`.
+        let sym = unsafe { libc::dlsym(libc::RTLD_DEFAULT, c"getrandom".as_ptr().cast()) };
+        if sym.is_null() {
+            None
+        } else {
+            Some(unsafe { std::mem::transmute::<*mut _, GetrandomFn>(sym) })
+        }
+    });
+    // Function pointers are Copy, so we can safely copy out of the reference.
+    *result
+}
+
 fn getrandom_impl(mut bytes: &mut [u8], insecure: bool) -> Result<(), RandomError> {
-    // A weak symbol allows interposition, e.g. for perf measurements that want to
-    // disable randomness for consistency. Otherwise, we'll try a raw syscall.
-    // (`getrandom` was added in glibc 2.25, musl 1.1.20, android API level 28)
-
-    // FIXME: we want to support more Linux targets
-    unsafe extern "C" {
-        fn getrandom(
-            buffer: *mut libc::c_void,
-            length: libc::size_t,
-            flags: libc::c_uint,
-        ) -> libc::ssize_t;
-    }
-
-    static GETRANDOM_AVAILABLE: AtomicBool = AtomicBool::new(true);
     static GRND_INSECURE_AVAILABLE: AtomicBool = AtomicBool::new(true);
     static URANDOM_READY: AtomicBool = AtomicBool::new(false);
     static DEVICE: OnceCell<File> = OnceCell::new();
 
-    if GETRANDOM_AVAILABLE.load(Relaxed) {
+    // Try the dynamically-resolved `getrandom` symbol first.
+    // (`getrandom` was added in glibc 2.25, musl 1.1.20, android API level 28)
+    if let Some(getrandom_fn) = resolve_getrandom() {
         loop {
             if bytes.is_empty() {
                 return Ok(());
@@ -105,7 +122,9 @@ fn getrandom_impl(mut bytes: &mut [u8], insecure: bool) -> Result<(), RandomErro
                 0
             };
 
-            let ret = unsafe { getrandom(bytes.as_mut_ptr().cast(), bytes.len(), flags) };
+            let ret = unsafe {
+                getrandom_fn(bytes.as_mut_ptr().cast(), bytes.len(), flags)
+            };
             if ret != -1 {
                 bytes = &mut bytes[ret as usize..];
             } else {
@@ -125,10 +144,7 @@ fn getrandom_impl(mut bytes: &mut [u8], insecure: bool) -> Result<(), RandomErro
                     libc::EAGAIN if flags == libc::GRND_NONBLOCK => break,
                     // `getrandom` is unavailable or blocked by seccomp.
                     // Don't try it again and fall back to /dev/urandom.
-                    libc::ENOSYS | libc::EPERM => {
-                        GETRANDOM_AVAILABLE.store(false, Relaxed);
-                        break;
-                    }
+                    libc::ENOSYS | libc::EPERM => break,
                     other => {
                         return Err(RandomError::Syscall(other));
                     }
@@ -140,8 +156,9 @@ fn getrandom_impl(mut bytes: &mut [u8], insecure: bool) -> Result<(), RandomErro
     // When we want cryptographic strength, we need to wait for the CPRNG-pool
     // to become initialized. Do this by polling `/dev/random` until it is ready.
     if !insecure && !URANDOM_READY.load(Acquire) {
-        let random = File::open("/dev/random")
-            .map_err(|e| RandomError::Platform(format!("failed to open /dev/random: {}", e)))?;
+        let random = File::open("/dev/random").map_err(|_| {
+            RandomError::Platform(Cow::Borrowed("failed to open /dev/random"))
+        })?;
         let mut fd = libc::pollfd {
             fd: random.as_raw_fd(),
             events: libc::POLLIN,
@@ -159,17 +176,24 @@ fn getrandom_impl(mut bytes: &mut [u8], insecure: bool) -> Result<(), RandomErro
                 -1 if std::io::Error::last_os_error().raw_os_error() == Some(libc::EINTR) => {
                     continue;
                 }
-                _ => return Err(RandomError::Platform("poll(\"/dev/random\") failed".into())),
+                _ => {
+                    return Err(RandomError::Platform(Cow::Borrowed(
+                        "poll(\"/dev/random\") failed",
+                    )))
+                }
             }
         }
     }
 
     let dev = DEVICE
         .get_or_try_init(|| File::open("/dev/urandom"))
-        .map_err(|e| RandomError::Platform(format!("failed to open /dev/urandom: {}", e)))?;
+        .map_err(|_| {
+            RandomError::Platform(Cow::Borrowed("failed to open /dev/urandom"))
+        })?;
     let mut dev = dev;
-    dev.read_exact(bytes)
-        .map_err(|e| RandomError::Platform(format!("failed to read from /dev/urandom: {}", e)))?;
+    dev.read_exact(bytes).map_err(|_| {
+        RandomError::Platform(Cow::Borrowed("failed to read from /dev/urandom"))
+    })?;
     Ok(())
 }
 

@@ -11,7 +11,9 @@ fn rdrand64() -> Result<u64, RandomError> {
                 return Ok(ret);
             }
         }
-        Err(RandomError::Platform("RDRAND64 failed after retries".into()))
+        Err(RandomError::Platform(core::borrow::Cow::Borrowed(
+            "RDRAND64 failed after retries",
+        )))
     }
 }
 
@@ -23,7 +25,9 @@ fn rdrand32() -> Result<u32, RandomError> {
                 return Ok(ret);
             }
         }
-        Err(RandomError::Platform("RDRAND32 failed after retries".into()))
+        Err(RandomError::Platform(core::borrow::Cow::Borrowed(
+            "RDRAND32 failed after retries",
+        )))
     }
 }
 
@@ -35,7 +39,9 @@ fn rdrand16() -> Result<u16, RandomError> {
                 return Ok(ret);
             }
         }
-        Err(RandomError::Platform("RDRAND16 failed after retries".into()))
+        Err(RandomError::Platform(core::borrow::Cow::Borrowed(
+            "RDRAND16 failed after retries",
+        )))
     }
 }
 

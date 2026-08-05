@@ -23,9 +23,9 @@ pub fn fill_bytes(bytes: &mut [u8]) -> Result<(), RandomError> {
         return Ok(());
     }
 
-    Err(RandomError::Platform(
-        "no random source available on UEFI".into(),
-    ))
+    Err(RandomError::Platform(std::borrow::Cow::Borrowed(
+        "no random source available on UEFI",
+    )))
 }
 
 mod rng_protocol {

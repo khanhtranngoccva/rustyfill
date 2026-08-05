@@ -5,12 +5,8 @@ pub fn fill_bytes(_: &mut [u8]) -> Result<(), RandomError> {
 }
 
 pub fn hashmap_random_keys() -> Result<(u64, u64), RandomError> {
-    // FIXME: Use the stack mersenne twister
-    // Use allocation addresses for a bit of randomness. This isn't
-    // particularly secure, but there isn't really an alternative.
-    let stack = 0u8;
-    let heap = Box::new(0u8);
-    let k1 = std::ptr::from_ref(&stack).addr() as u64;
-    let k2 = std::ptr::from_ref(&*heap).addr() as u64;
-    Ok((k1, k2))
+    // No OS random source available; fall back to a stack-based Mersenne Twister
+    // seeded from the stack address. Not cryptographically secure, but sufficient
+    // for hashmap seed diversity.
+    Ok(super::hashmap_random_keys_mt())
 }

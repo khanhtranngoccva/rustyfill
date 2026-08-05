@@ -448,15 +448,30 @@ pub trait TryDashMap<K, V, S = RandomState>: Sized {
 
     /// Fallibly extend the map with all key-value pairs from an iterator.
     ///
-    /// Uses the iterator's size hint to reserve capacity upfront when available.
-    fn try_extend<I: IntoIterator<Item = (K, V)>>(&self, iter: I) -> Result<(), TryDashMapError>;
+    /// Fallibly extend the map with all key-value pairs from an iterator source.
+    ///
+    /// Accepts anything that implements [`ResumableSource`](crate::recovery::ResumableSource).
+    /// Inserts each pair individually via [`Self::try_insert_give_back`] so that
+    /// on failure the consumed-but-uncommitted pair is returned in a
+    /// [`Resumable`](crate::recovery::Resumable).
+    ///
+    /// Note: elements already inserted before the failure are not rolled back.
+    fn try_extend<Src>(
+        &self,
+        source: Src,
+    ) -> Result<(), (TryDashMapError, crate::recovery::Resumable<Src::Inner>)>
+    where
+        Src: crate::recovery::ResumableSource<Item = (K, V)>;
 
     /// Alias for [`Self::try_extend`].
-    fn fallible_extend<I: IntoIterator<Item = (K, V)>>(
+    fn fallible_extend<Src>(
         &self,
-        iter: I,
-    ) -> Result<(), TryDashMapError> {
-        Self::try_extend(self, iter)
+        source: Src,
+    ) -> Result<(), (TryDashMapError, crate::recovery::Resumable<Src::Inner>)>
+    where
+        Src: crate::recovery::ResumableSource<Item = (K, V)>,
+    {
+        Self::try_extend(self, source)
     }
 
     // ── Capacity / shrink ───────────────────────────────────────────────────
@@ -855,9 +870,31 @@ impl<K: Eq + Hash, V, S: BuildHasher + TryClone> TryDashMap<K, V, S> for DashMap
 
     // ── Extension ───────────────────────────────────────────────────────────
 
-    fn try_extend<I: IntoIterator<Item = (K, V)>>(&self, iter: I) -> Result<(), TryDashMapError> {
-        for (key, value) in iter {
-            Self::try_insert(self, key, value)?;
+    fn try_extend<Src>(
+        &self,
+        source: Src,
+    ) -> Result<(), (TryDashMapError, crate::recovery::Resumable<Src::Inner>)>
+    where
+        Src: crate::recovery::ResumableSource<Item = (K, V)>,
+        K: Eq + Hash,
+    {
+        use crate::recovery::Resumable;
+
+        let (head, mut iter) = source.safe_into_iter();
+
+        if let Some(pair) = head {
+            if let Err((k, v, e)) = Self::try_insert_give_back(self, pair.0, pair.1) {
+                return Err((e, Resumable::new((k, v), iter)));
+            }
+        }
+
+        while let Some(pair) = iter.next() {
+            match Self::try_insert_give_back(self, pair.0, pair.1) {
+                Ok(_) => {}
+                Err((k, v, e)) => {
+                    return Err((e, Resumable::new((k, v), iter)));
+                }
+            }
         }
         Ok(())
     }

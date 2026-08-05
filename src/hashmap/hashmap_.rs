@@ -305,14 +305,18 @@ pub trait TryHashMap<K, V, S = RandomState>: Sized {
 
     // ── Extension ───────────────────────────────────────────────────────────
 
-    /// Fallibly extend the map with all key-value pairs from an iterator.
+    /// Fallibly extend the map with all key-value pairs from an iterator source.
     ///
-    /// Uses the iterator's size hint to reserve capacity upfront when available.
-    /// Returns [`TryReserveError`] if the allocation fails.
-    fn try_extend<I: IntoIterator<Item = (K, V)>>(
+    /// Accepts anything that implements [`ResumableSource`](crate::recovery::ResumableSource).
+    /// On reserve failure, returns a [`Resumable`](crate::recovery::Resumable)
+    /// containing any consumed-but-uncommitted pair and the remainder of the
+    /// iterator, which the caller can pass right back in.
+    fn try_extend<Src>(
         &mut self,
-        iter: I,
-    ) -> Result<(), TryReserveError>;
+        source: Src,
+    ) -> Result<(), (TryReserveError, crate::recovery::Resumable<Src::Inner>)>
+    where
+        Src: crate::recovery::ResumableSource<Item = (K, V)>;
 
     /// Fallibly extend the map by cloning key-value pairs from a slice.
     ///
@@ -324,11 +328,14 @@ pub trait TryHashMap<K, V, S = RandomState>: Sized {
         V: TryClone;
 
     /// Alias for [`Self::try_extend`].
-    fn fallible_extend<I: IntoIterator<Item = (K, V)>>(
+    fn fallible_extend<Src>(
         &mut self,
-        iter: I,
-    ) -> Result<(), TryReserveError> {
-        Self::try_extend(self, iter)
+        source: Src,
+    ) -> Result<(), (TryReserveError, crate::recovery::Resumable<Src::Inner>)>
+    where
+        Src: crate::recovery::ResumableSource<Item = (K, V)>,
+    {
+        Self::try_extend(self, source)
     }
 
     /// Alias for [`Self::try_extend_from_slice`].
@@ -511,20 +518,39 @@ impl<K: Eq + Hash, V, S: BuildHasher> TryHashMap<K, V, S> for HashMap<K, V, S> {
 
     // ── Extension ───────────────────────────────────────────────────────────
 
-    fn try_extend<I: IntoIterator<Item = (K, V)>>(
+    fn try_extend<Src>(
         &mut self,
-        iter: I,
-    ) -> Result<(), TryReserveError> {
-        let iter = iter.into_iter();
+        source: Src,
+    ) -> Result<(), (TryReserveError, crate::recovery::Resumable<Src::Inner>)>
+    where
+        Src: crate::recovery::ResumableSource<Item = (K, V)>,
+    {
+        use crate::recovery::Resumable;
+
+        let (head, mut iter) = source.safe_into_iter();
+
+        if let Some(pair) = head {
+            if self.len() == self.capacity() {
+                if let Err(e) = self.try_reserve(1) {
+                    return Err((e.into(), Resumable::new(pair, iter)));
+                }
+            }
+            self.insert(pair.0, pair.1);
+        }
+
         let (lower, _) = iter.size_hint();
         if lower > 0 {
-            self.try_reserve(lower)?;
-        }
-        for (key, value) in iter {
-            if self.len() == self.capacity() {
-                self.try_reserve(1)?;
+            if let Err(e) = self.try_reserve(lower) {
+                return Err((e.into(), Resumable::from_remainder(iter)));
             }
-            self.insert(key, value);
+        }
+        while let Some(pair) = iter.next() {
+            if self.len() == self.capacity() {
+                if let Err(e) = self.try_reserve(1) {
+                    return Err((e.into(), Resumable::new(pair, iter)));
+                }
+            }
+            self.insert(pair.0, pair.1);
         }
         Ok(())
     }

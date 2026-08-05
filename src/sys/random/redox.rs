@@ -13,7 +13,9 @@ pub fn fill_bytes(bytes: &mut [u8]) -> Result<(), RandomError> {
         .get_or_try_init(|| File::open("/scheme/rand"))
         .and_then(|mut scheme| scheme.read_exact(bytes))
         .map_err(|e| {
-            RandomError::Platform(format!("failed to open and read /scheme/rand: {}", e))
+            RandomError::Platform(core::borrow::Cow::Borrowed(
+                "failed to open and read /scheme/rand",
+            ))
         })?;
     Ok(())
 }

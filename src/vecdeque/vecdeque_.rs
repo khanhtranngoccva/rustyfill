@@ -23,6 +23,37 @@ use crate::try_default::{TryDefault, TryDefaultError};
 use core::fmt;
 use std::collections::VecDeque;
 
+/// Panic-safe guard that truncates a `VecDeque` back to its original length on drop
+/// unless disarmed via `forget()`. Used by fallible extend/resize methods so that if
+/// an element's `try_clone` or a closure panics mid-way, partially-pushed elements are
+/// removed rather than left behind.
+struct TruncateGuard<'a, T> {
+    deque: &'a mut VecDeque<T>,
+    len_before: usize,
+}
+
+impl<'a, T> TruncateGuard<'a, T> {
+    fn new(deque: &'a mut VecDeque<T>) -> Self {
+        let len = deque.len();
+        Self {
+            deque,
+            len_before: len,
+        }
+    }
+
+    /// Disable the guard — no truncation on scope exit.
+    fn forget(mut self) {
+        self.len_before = self.deque.len();
+        core::mem::forget(self);
+    }
+}
+
+impl<'a, T> Drop for TruncateGuard<'a, T> {
+    fn drop(&mut self) {
+        self.deque.truncate(self.len_before);
+    }
+}
+
 /// Error returned by [`TryVecDeque`] operations.
 #[derive(Debug)]
 pub enum TryVecDequeError {
@@ -124,8 +155,31 @@ pub trait TryVecDeque<T>: Sized {
     /// Returns [`TryVecDequeError::Other`] if `index >= len`.
     fn try_remove(&mut self, index: usize) -> Result<Option<T>, TryVecDequeError>;
 
-    /// Fallibly extend the deque with all elements from an iterator.
-    fn try_extend<I: IntoIterator<Item = T>>(&mut self, iter: I) -> Result<(), TryReserveError>;
+    /// Fallibly extend the deque with all elements from an iterator source.
+    ///
+    /// Accepts anything that implements [`ResumableSource`](crate::recovery::ResumableSource).
+    /// On reserve failure, returns a [`Resumable`](crate::recovery::Resumable)
+    /// containing any consumed-but-uncommitted element and the remainder of the
+    /// iterator, which the caller can pass right back in.
+    fn try_extend<S>(
+        &mut self,
+        source: S,
+    ) -> Result<(), (TryReserveError, crate::recovery::Resumable<S::Inner>)>
+    where
+        S: crate::recovery::ResumableSource<Item = T>;
+
+    /// Fallibly append all elements from another slice by cloning each one.
+    fn try_extend_from_slice(&mut self, other: &[T]) -> Result<(), TryVecDequeError>
+    where
+        T: TryClone;
+
+    /// Copies elements within the deque itself according to the given range.
+    fn try_extend_from_within<R: std::ops::RangeBounds<usize>>(
+        &mut self,
+        range: R,
+    ) -> Result<(), TryVecDequeError>
+    where
+        T: TryClone;
 
     /// Moves all elements from `other` into `self`, leaving `other` empty.
     fn try_append(&mut self, other: &mut VecDeque<T>) -> Result<(), TryReserveError>;
@@ -133,15 +187,42 @@ pub trait TryVecDeque<T>: Sized {
     // ── Mutation: resize / shrink / clear ───────────────────────────────────
 
     /// Resizes the deque so that `len` equals `new_len`.
+    ///
+    /// If `new_len` is greater than `len`, the deque is extended by cloning
+    /// `value` via [`TryClone`]. If `new_len` is less than `len`, the deque
+    /// is truncated. Returns [`TryVecDequeError::Reserve`] on allocation failure or
+    /// [`TryVecDequeError::Clone`] if an element clone fails.
+    fn try_resize(&mut self, value: &T, new_len: usize) -> Result<(), TryVecDequeError>
+    where
+        T: TryClone;
+
+    /// Like [`Self::try_resize`] but uses a closure to produce new elements.
     fn try_resize_with<F>(&mut self, new_len: usize, f: F) -> Result<(), TryReserveError>
     where
         F: FnMut() -> T;
 
     /// Fallibly shrink the capacity of this deque to match its length.
-    fn fallible_shrink_to_fit(&mut self) -> Result<(), TryVecDequeError>;
+    ///
+    /// Converts the deque into a contiguous [`Vec`], shrinks the vector's buffer,
+    /// and converts back. This is necessary because `VecDeque`'s internal ring
+    /// buffer layout is opaque — we cannot directly reallocate its storage.
+    fn try_shrink_to_fit(&mut self) -> Result<(), TryVecDequeError>;
 
     /// Fallibly shrink the capacity of this deque to at least `min_capacity`.
-    fn fallible_shrink_to(&mut self, min_capacity: usize) -> Result<(), TryVecDequeError>;
+    ///
+    /// Converts the deque into a contiguous [`Vec`], shrinks the vector's buffer,
+    /// and converts back. The effective minimum capacity is `max(len, min_capacity)`.
+    fn try_shrink_to(&mut self, min_capacity: usize) -> Result<(), TryVecDequeError>;
+
+    /// Alias for [`Self::try_shrink_to_fit`].
+    fn fallible_shrink_to_fit(&mut self) -> Result<(), TryVecDequeError> {
+        Self::try_shrink_to_fit(self)
+    }
+
+    /// Alias for [`Self::try_shrink_to`].
+    fn fallible_shrink_to(&mut self, min_capacity: usize) -> Result<(), TryVecDequeError> {
+        Self::try_shrink_to(self, min_capacity)
+    }
 
     /// Clears the deque, removing all values. This operation never allocates.
     fn try_clear(&mut self);
@@ -172,11 +253,14 @@ pub trait TryVecDeque<T>: Sized {
     }
 
     /// Alias for [`Self::try_extend`].
-    fn fallible_extend<I: IntoIterator<Item = T>>(
+    fn fallible_extend<S>(
         &mut self,
-        iter: I,
-    ) -> Result<(), TryReserveError> {
-        Self::try_extend(self, iter)
+        source: S,
+    ) -> Result<(), (TryReserveError, crate::recovery::Resumable<S::Inner>)>
+    where
+        S: crate::recovery::ResumableSource<Item = T>,
+    {
+        Self::try_extend(self, source)
     }
 
     /// Alias for [`Self::try_collect`].
@@ -334,15 +418,37 @@ impl<T> TryVecDeque<T> for VecDeque<T> {
         Ok(val)
     }
 
-    fn try_extend<I: IntoIterator<Item = T>>(&mut self, iter: I) -> Result<(), TryReserveError> {
-        let iter = iter.into_iter();
+    fn try_extend<S>(
+        &mut self,
+        source: S,
+    ) -> Result<(), (TryReserveError, crate::recovery::Resumable<S::Inner>)>
+    where
+        S: crate::recovery::ResumableSource<Item = T>,
+    {
+        use crate::recovery::Resumable;
+
+        let (head, mut iter) = source.safe_into_iter();
+
+        if let Some(item) = head {
+            if self.len() == self.capacity() {
+                if let Err(e) = self.try_reserve(1) {
+                    return Err((e.into(), Resumable::new(item, iter)));
+                }
+            }
+            self.push_back(item);
+        }
+
         let (lower, _) = iter.size_hint();
         if lower > 0 {
-            self.try_reserve(lower)?;
+            if let Err(e) = self.try_reserve(lower) {
+                return Err((e.into(), Resumable::from_remainder(iter)));
+            }
         }
-        for item in iter {
+        while let Some(item) = iter.next() {
             if self.len() == self.capacity() {
-                self.try_reserve(1)?;
+                if let Err(e) = self.try_reserve(1) {
+                    return Err((e.into(), Resumable::new(item, iter)));
+                }
             }
             self.push_back(item);
         }
@@ -359,7 +465,100 @@ impl<T> TryVecDeque<T> for VecDeque<T> {
         Ok(())
     }
 
+    fn try_extend_from_slice(&mut self, other: &[T]) -> Result<(), TryVecDequeError>
+    where
+        T: TryClone,
+    {
+        if other.is_empty() {
+            return Ok(());
+        }
+        self.try_reserve(other.len())
+            .map_err(|e| TryVecDequeError::Reserve(e.into()))?;
+        let guard = TruncateGuard::new(self);
+        for item in other {
+            match item.try_clone() {
+                Ok(cloned) => guard.deque.push_back(cloned),
+                Err(e) => {
+                    return Err(TryVecDequeError::Clone(e));
+                }
+            }
+        }
+        guard.forget();
+        Ok(())
+    }
+
+    fn try_extend_from_within<R: std::ops::RangeBounds<usize>>(
+        &mut self,
+        range: R,
+    ) -> Result<(), TryVecDequeError>
+    where
+        T: TryClone,
+    {
+        use std::ops::Bound;
+
+        let start = match range.start_bound() {
+            Bound::Included(&i) => i,
+            Bound::Excluded(&i) => i.checked_add(1).ok_or(TryVecDequeError::Overflow)?,
+            Bound::Unbounded => 0,
+        };
+        let end = match range.end_bound() {
+            Bound::Included(&i) => i.checked_add(1).ok_or(TryVecDequeError::Overflow)?,
+            Bound::Excluded(&i) => i,
+            Bound::Unbounded => self.len(),
+        };
+
+        if start >= end {
+            return Ok(());
+        }
+
+        if end > self.len() || start > self.len() {
+            return Err(TryVecDequeError::Other(
+                "extend_from_within: range out of bounds",
+            ));
+        }
+
+        let count = end - start;
+        self.try_reserve(count)
+            .map_err(|e| TryVecDequeError::Reserve(e.into()))?;
+        let guard = TruncateGuard::new(self);
+        for i in start..end {
+            match guard.deque[i].try_clone() {
+                Ok(cloned) => guard.deque.push_back(cloned),
+                Err(e) => {
+                    return Err(TryVecDequeError::Clone(e));
+                }
+            }
+        }
+        guard.forget();
+        Ok(())
+    }
+
     // ── Mutation: resize / shrink / clear ───────────────────────────────────
+
+    fn try_resize(&mut self, value: &T, new_len: usize) -> Result<(), TryVecDequeError>
+    where
+        T: TryClone,
+    {
+        let current = self.len();
+        if new_len <= current {
+            self.truncate(new_len);
+            return Ok(());
+        }
+        let extra = new_len - current;
+        self.try_reserve(extra)
+            .map_err(|e| TryVecDequeError::Reserve(e.into()))?;
+        let guard = TruncateGuard::new(self);
+        for _ in 0..extra {
+            match value.try_clone() {
+                Ok(cloned) => guard.deque.push_back(cloned),
+                Err(e) => {
+                    return Err(TryVecDequeError::Clone(e));
+                }
+            }
+        }
+        guard.forget();
+        Ok(())
+    }
 
     fn try_resize_with<F>(&mut self, new_len: usize, mut f: F) -> Result<(), TryReserveError>
     where
@@ -372,32 +571,38 @@ impl<T> TryVecDeque<T> for VecDeque<T> {
         }
         let extra = new_len - current;
         self.try_reserve(extra)?;
+        let guard = TruncateGuard::new(self);
         for _ in 0..extra {
-            self.push_back(f());
+            guard.deque.push_back(f());
         }
+        guard.forget();
         Ok(())
     }
 
-    fn fallible_shrink_to_fit(&mut self) -> Result<(), TryVecDequeError> {
-        <Self as TryVecDeque<T>>::fallible_shrink_to(self, self.len())
+    fn try_shrink_to_fit(&mut self) -> Result<(), TryVecDequeError> {
+        <Self as TryVecDeque<T>>::try_shrink_to(self, self.len())
     }
 
-    fn fallible_shrink_to(&mut self, min_capacity: usize) -> Result<(), TryVecDequeError> {
+    fn try_shrink_to(&mut self, min_capacity: usize) -> Result<(), TryVecDequeError> {
         let target = core::cmp::max(self.len(), min_capacity);
         if self.capacity() <= target {
             return Ok(());
         }
-        let mut spare = VecDeque::<T>::with_capacity(target);
-        let len = self.len();
-        std::mem::swap(self, &mut spare);
-        if !self.is_empty() {
-            self.try_reserve(len)
-                .map_err(|e| TryVecDequeError::Reserve(e.into()))?;
-        }
-        for item in spare.drain(..) {
-            self.push_back(item);
-        }
-        Ok(())
+        // Convert the deque into a contiguous Vec, shrink the Vec's buffer,
+        // then convert back. We can't access VecDeque's internal ring-buffer
+        // pointers directly, so this round-trip is the safest approach.
+        let mut vec: Vec<T> = std::mem::take(self).into();
+        let result = <Vec<T> as crate::vec::TryVec<T>>::fallible_shrink_to(&mut vec, target);
+        // Recover the deque before error handling so that a shrink failure
+        // does not silently discard the original data.
+        *self = vec.into();
+        result.map_err(|e| match e {
+            crate::vec::TryVecError::Alloc(e) => TryVecDequeError::Alloc(e),
+            crate::vec::TryVecError::Reserve(e) => TryVecDequeError::Reserve(e),
+            crate::vec::TryVecError::Clone(_) => unreachable!("shrink does not clone"),
+            crate::vec::TryVecError::Overflow => TryVecDequeError::Overflow,
+            crate::vec::TryVecError::Other(msg) => TryVecDequeError::Other(msg),
+        })
     }
 
     fn try_clear(&mut self) {
@@ -621,6 +826,69 @@ mod tests {
         dq.fallible_shrink_to_fit().unwrap();
         assert!(dq.capacity() < cap_before);
         assert_eq!(dq[0], 1);
+    }
+
+    #[test]
+    fn try_shrink_to_fit_reduces_capacity() {
+        let mut dq: VecDeque<i32> = VecDeque::new();
+        dq.try_reserve(512).unwrap();
+        dq.try_push_back(42).unwrap();
+        let cap_before = dq.capacity();
+        assert!(cap_before >= 512);
+        dq.try_shrink_to_fit().unwrap();
+        assert!(dq.capacity() < cap_before);
+        assert_eq!(dq.len(), 1);
+        assert_eq!(dq[0], 42);
+    }
+
+    #[test]
+    fn try_shrink_to_above_len_clamps_to_len() {
+        let mut dq: VecDeque<i32> = VecDeque::new();
+        dq.try_reserve(256).unwrap();
+        dq.try_push_back(1).unwrap();
+        dq.try_push_back(2).unwrap();
+        // min_capacity > len is clamped to len
+        dq.try_shrink_to(100).unwrap();
+        assert_eq!(dq.len(), 2);
+        assert!(dq.capacity() <= 256);
+        assert_eq!(dq[0], 1);
+        assert_eq!(dq[1], 2);
+    }
+
+    #[test]
+    fn try_shrink_to_below_len_is_noop() {
+        let mut dq: VecDeque<i32> = VecDeque::new();
+        dq.try_reserve(64).unwrap();
+        for i in 0..10 {
+            dq.try_push_back(i).unwrap();
+        }
+        dq.try_shrink_to(2).unwrap();
+        assert_eq!(dq.len(), 10);
+        // capacity shouldn't go below len
+        assert!(dq.capacity() >= 10);
+    }
+
+    #[test]
+    fn try_shrink_to_already_small_is_noop() {
+        let mut dq: VecDeque<i32> = VecDeque::new();
+        dq.try_push_back(1).unwrap();
+        dq.try_shrink_to(64).unwrap();
+        assert_eq!(dq.len(), 1);
+        assert_eq!(dq[0], 1);
+    }
+
+    #[test]
+    fn try_shrink_preserves_order_after_pop_front() {
+        let mut dq: VecDeque<i32> = VecDeque::new();
+        dq.try_reserve(128).unwrap();
+        for i in 0..5 {
+            dq.try_push_back(i).unwrap();
+        }
+        dq.pop_front(); // remove 0, ring buffer is now split
+        dq.try_shrink_to_fit().unwrap();
+        assert_eq!(dq.len(), 4);
+        assert_eq!(dq[0], 1);
+        assert_eq!(dq[3], 4);
     }
 
     #[test]

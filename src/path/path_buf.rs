@@ -376,30 +376,43 @@ impl TryPathBuf for PathBuf {
             return Ok(true);
         }
 
-        // Truncate the inner OsString so it ends right after the file name.
+        // Truncate the inner OsString so it ends right after the file name,
+        // then append ".<ext>". We calculate the net byte change upfront so
+        // that if reservation fails, the original path is untouched.
+        //
         // This mirrors std's pointer-arithmetic truncation: we find the byte
         // offset just past the end of the file name within the full path.
-        //
-        // OsString::truncate is unstable, so we swap out the bytes, truncate
-        // the owned buffer, and reconstruct.
         let all = self.as_os_str().as_encoded_bytes();
         let fname = file_name.as_encoded_bytes();
         // Safety: file_name was obtained from self.file_name(), which returns
         // a subslice of self's inner data. Taking the pointer of the empty
         // tail slice gives us the address just past the end of the file name.
         let fname_end_offset = fname[fname.len()..].as_ptr() as usize - all.as_ptr() as usize;
+
+        // Reserve enough capacity for the net change: we will remove
+        // `(len - fname_end_offset)` bytes (the old extension + separator)
+        // and add `ext.len() + 1` bytes ("." + new extension).
+        let len = all.len();
+        let bytes_to_truncate = len - fname_end_offset;
+        let needed = (ext.len() + 1).saturating_sub(bytes_to_truncate);
+        if needed > 0 {
+            self.as_mut_os_string()
+                .try_reserve(needed)
+                .map_err(|e| TryPathBufError::Reserve(e.into()))?;
+        }
+
+        // OsString::truncate is unstable, so we swap out the bytes, truncate
+        // the owned buffer, and reconstruct. At this point reservation has
+        // already succeeded, so the following pushes are infallible.
         let current = std::mem::take(self.as_mut_os_string());
         let mut current_bytes = current.into_encoded_bytes();
         current_bytes.truncate(fname_end_offset);
         *self.as_mut_os_string() = unsafe { OsString::from_encoded_bytes_unchecked(current_bytes) };
 
-        // Append ".<ext>" via the inner OsString so allocation is fallible.
+        // Append ".<ext>" — these cannot fail now that capacity is reserved.
         let os = self.as_mut_os_string();
-        os.try_reserve(ext.len() + 1)
-            .map_err(|e| TryPathBufError::Reserve(e.into()))?;
-        os.try_push(OsStr::new("."))
-            .map_err(TryPathBufError::Reserve)?;
-        os.try_push(ext).map_err(TryPathBufError::Reserve)?;
+        os.push(OsStr::new("."));
+        os.push(ext);
         Ok(true)
     }
 }

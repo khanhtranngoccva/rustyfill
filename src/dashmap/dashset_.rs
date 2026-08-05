@@ -175,12 +175,30 @@ pub trait TryDashSet<T, S = RandomState>: Sized {
 
     // ── Extension ───────────────────────────────────────────────────────────
 
-    /// Fallibly extend the set with all values from an iterator.
-    fn try_extend<I: IntoIterator<Item = T>>(&self, iter: I) -> Result<(), TryDashSetError>;
+    /// Fallibly extend the set with all values from an iterator source.
+    ///
+    /// Accepts anything that implements [`ResumableSource`](crate::recovery::ResumableSource).
+    /// Inserts each value individually via [`Self::try_insert_give_back`] so that
+    /// on failure the consumed-but-uncommitted element is returned in a
+    /// [`Resumable`](crate::recovery::Resumable).
+    ///
+    /// Note: elements already inserted before the failure are not rolled back.
+    fn try_extend<Src>(
+        &self,
+        source: Src,
+    ) -> Result<(), (TryDashSetError, crate::recovery::Resumable<Src::Inner>)>
+    where
+        Src: crate::recovery::ResumableSource<Item = T>;
 
     /// Alias for [`Self::try_extend`].
-    fn fallible_extend<I: IntoIterator<Item = T>>(&self, iter: I) -> Result<(), TryDashSetError> {
-        Self::try_extend(self, iter)
+    fn fallible_extend<Src>(
+        &self,
+        source: Src,
+    ) -> Result<(), (TryDashSetError, crate::recovery::Resumable<Src::Inner>)>
+    where
+        Src: crate::recovery::ResumableSource<Item = T>,
+    {
+        Self::try_extend(self, source)
     }
 
     // ── Capacity / shrink ───────────────────────────────────────────────────
@@ -309,9 +327,31 @@ impl<T: Eq + Hash, S: BuildHasher + TryClone> TryDashSet<T, S> for DashSet<T, S>
 
     // ── Extension ───────────────────────────────────────────────────────────
 
-    fn try_extend<I: IntoIterator<Item = T>>(&self, iter: I) -> Result<(), TryDashSetError> {
-        for value in iter {
-            Self::try_insert(self, value)?;
+    fn try_extend<Src>(
+        &self,
+        source: Src,
+    ) -> Result<(), (TryDashSetError, crate::recovery::Resumable<Src::Inner>)>
+    where
+        Src: crate::recovery::ResumableSource<Item = T>,
+        T: Eq + Hash,
+    {
+        use crate::recovery::Resumable;
+
+        let (head, mut iter) = source.safe_into_iter();
+
+        if let Some(value) = head {
+            if let Err((v, e)) = Self::try_insert_give_back(self, value) {
+                return Err((e, Resumable::new(v, iter)));
+            }
+        }
+
+        while let Some(value) = iter.next() {
+            match Self::try_insert_give_back(self, value) {
+                Ok(_) => {}
+                Err((v, e)) => {
+                    return Err((e, Resumable::new(v, iter)));
+                }
+            }
         }
         Ok(())
     }
