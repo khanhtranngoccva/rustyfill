@@ -83,18 +83,24 @@ impl From<TryCloneError> for TryVecError {
 pub trait TryVec<T>: Sized {
     // ── Construction ────────────────────────────────────────────────────────
 
-    /// Fallibly construct a `Vec<T>` containing `value` cloned `capacity` times.
+    /// Fallibly construct an empty `Vec<T>` with at least enough capacity for
+    /// `capacity` elements. Equivalent to [`Vec::with_capacity`] but fallible.
+    ///
+    /// Returns [`TryReserveError`] if the initial allocation fails.
+    fn try_with_capacity(capacity: usize) -> Result<Vec<T>, TryReserveError>;
+
+    /// Fallibly construct a `Vec<T>` containing `value` cloned `count` times.
     ///
     /// Returns [`TryVecError::Reserve`] if the capacity allocation fails, or
     /// [`TryVecError::Clone`] if an element's [`TryClone::try_clone`] fails.
-    /// Equivalent to `vec![value; capacity]` but fully fallible.
-    fn try_from_elem(value: &T, capacity: usize) -> Result<Vec<T>, TryVecError>
+    /// Equivalent to `vec![value; count]` but fully fallible.
+    fn try_from_elem(value: &T, count: usize) -> Result<Vec<T>, TryVecError>
     where
         T: TryClone;
 
     /// Like [`Self::try_from_elem`] but takes ownership of `value` and returns
     /// it on failure so the caller is not left empty-handed.
-    fn try_from_elem_give_back(value: T, capacity: usize) -> Result<Vec<T>, (T, TryVecError)>
+    fn try_from_elem_give_back(value: T, count: usize) -> Result<Vec<T>, (T, TryVecError)>
     where
         T: TryClone;
 
@@ -198,20 +204,25 @@ pub trait TryVec<T>: Sized {
 
     // ── Aliases with `fallible_` prefix ─────────────────────────────────────
 
+    /// Alias for [`Self::try_with_capacity`].
+    fn fallible_with_capacity(capacity: usize) -> Result<Vec<T>, TryReserveError> {
+        Self::try_with_capacity(capacity)
+    }
+
     /// Alias for [`Self::try_from_elem`].
-    fn fallible_from_elem(value: &T, capacity: usize) -> Result<Vec<T>, TryVecError>
+    fn fallible_from_elem(value: &T, count: usize) -> Result<Vec<T>, TryVecError>
     where
         T: TryClone,
     {
-        Self::try_from_elem(value, capacity)
+        Self::try_from_elem(value, count)
     }
 
     /// Alias for [`Self::try_from_elem_give_back`].
-    fn fallible_from_elem_give_back(value: T, capacity: usize) -> Result<Vec<T>, (T, TryVecError)>
+    fn fallible_from_elem_give_back(value: T, count: usize) -> Result<Vec<T>, (T, TryVecError)>
     where
         T: TryClone,
     {
-        Self::try_from_elem_give_back(value, capacity)
+        Self::try_from_elem_give_back(value, count)
     }
 
     /// Alias for [`Self::try_push`].
@@ -338,23 +349,33 @@ pub trait TryVec<T>: Sized {
 
 #[allow(deprecated)]
 impl<T> TryVec<T> for Vec<T> {
-    fn try_from_elem(value: &T, capacity: usize) -> Result<Vec<T>, TryVecError>
+    fn try_with_capacity(capacity: usize) -> Result<Vec<T>, TryReserveError> {
+        let mut vec = Vec::<T>::new();
+        if capacity > 0 {
+            vec.try_reserve(capacity)?;
+        }
+        Ok(vec)
+    }
+
+    fn try_from_elem(value: &T, count: usize) -> Result<Vec<T>, TryVecError>
     where
         T: TryClone,
     {
         let mut vec = Vec::<T>::new();
-        vec.try_reserve(capacity).map_err(|e| TryVecError::Reserve(e.into()))?;
-        for _ in 0..capacity {
+        if count > 0 {
+            vec.try_reserve(count).map_err(|e| TryVecError::Reserve(e.into()))?;
+        }
+        for _ in 0..count {
             vec.push(value.try_clone().map_err(TryVecError::Clone)?);
         }
         Ok(vec)
     }
 
-    fn try_from_elem_give_back(value: T, capacity: usize) -> Result<Vec<T>, (T, TryVecError)>
+    fn try_from_elem_give_back(value: T, count: usize) -> Result<Vec<T>, (T, TryVecError)>
     where
         T: TryClone,
     {
-        match Self::try_from_elem(&value, capacity) {
+        match Self::try_from_elem(&value, count) {
             Ok(v) => Ok(v),
             Err(e) => Err((value, e)),
         }
@@ -640,6 +661,26 @@ mod tests {
     use super::*;
 
     // ── Construction ─────────────────────────────────────────────────────────
+
+    #[test]
+    fn try_with_capacity_zero() {
+        let v: Vec<i32> = <Vec<i32> as TryVec<i32>>::try_with_capacity(0).unwrap();
+        assert!(v.is_empty());
+    }
+
+    #[test]
+    fn try_with_capacity_nonzero() {
+        let v: Vec<i32> = <Vec<i32> as TryVec<i32>>::try_with_capacity(10).unwrap();
+        assert!(v.is_empty());
+        assert!(v.capacity() >= 10);
+    }
+
+    #[test]
+    fn fallible_with_capacity_alias() {
+        let v: Vec<String> = <Vec<String> as TryVec<String>>::fallible_with_capacity(5).unwrap();
+        assert!(v.is_empty());
+        assert!(v.capacity() >= 5);
+    }
 
     #[test]
     fn try_from_elem_single() {

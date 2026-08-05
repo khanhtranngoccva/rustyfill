@@ -1,3 +1,4 @@
+// Module verified
 use super::RandomError;
 
 #[cfg(not(target_vendor = "win7"))]
@@ -28,6 +29,7 @@ pub fn fill_bytes(mut bytes: &mut [u8]) -> Result<(), RandomError> {
     Ok(())
 }
 
+// Windows functions are known to keep their link names.
 #[cfg(not(target_vendor = "win7"))]
 unsafe extern "system" {
     fn ProcessPrng(random_buffer: *mut u8, length: u32) -> BOOLEAN;

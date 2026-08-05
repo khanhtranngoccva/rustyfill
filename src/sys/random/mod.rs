@@ -7,20 +7,18 @@
 //! Both the platform-specific backend functions and the public API return
 //! [`Result`] instead of panicking.
 
-pub mod uefi;
-
 use core::fmt;
 
 // ── Error Type ────────────────────────────────────────────────────────────────────
 
 /// Error returned when random data generation fails.
 #[derive(Debug)]
+#[allow(unused)]
 pub enum RandomError {
     /// The underlying syscall returned an error code.
     Syscall(i32),
     /// A platform-specific failure with a diagnostic message.
     Platform(String),
-    #[allow(unused)]
     /// This target has no supported random data source.
     Unsupported,
 }
@@ -268,11 +266,10 @@ pub fn hashmap_random_keys_infallible() -> (u64, u64) {
     target_os = "xous",
     target_os = "vexos",
 )))]
-fn hashmap_random_keys() -> Result<(u64, u64), RandomError> {
+pub fn hashmap_random_keys() -> Result<(u64, u64), RandomError> {
     let mut buf = [0; 16];
-    backend_fill_bytes(&mut buf)?;
+    fill_bytes(&mut buf)?;
     let k1 = u64::from_ne_bytes(buf[..8].try_into().unwrap());
     let k2 = u64::from_ne_bytes(buf[8..].try_into().unwrap());
     Ok((k1, k2))
 }
-

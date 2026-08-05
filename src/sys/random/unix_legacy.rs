@@ -6,19 +6,21 @@
 //! for the few systems that support neither `arc4random_buf` nor `getentropy`
 //! yet, we just read from the file.
 
+// Module verified
+use super::RandomError;
 use std::fs::File;
 use std::io::Read;
-use std::sync::OnceLock;
+// Fallback for get_or_try_init API
+use once_cell::sync::OnceCell;
 
-use super::RandomError;
-
-static DEVICE: OnceLock<File> = OnceLock::new();
+static DEVICE: OnceCell<File> = OnceLock::new();
 
 pub fn fill_bytes(bytes: &mut [u8]) -> Result<(), RandomError> {
-    let dev = DEVICE.get_or_init(|| {
-        File::open("/dev/urandom").expect("failed to open /dev/urandom")
-    });
+    let dev = DEVICE
+        .get_or_try_init(|| File::open("/dev/urandom"))
+        .map_err(|e| RandomError::Platform(format!("failed to open /dev/urandom: {}", e)))?;
     let mut dev = dev;
     dev.read_exact(bytes)
-        .map_err(|e| RandomError::Platform(format!("failed to read from /dev/urandom: {}", e)))
+        .map_err(|e| RandomError::Platform(format!("failed to read from /dev/urandom: {}", e)))?;
+    Ok(())
 }

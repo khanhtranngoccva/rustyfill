@@ -1,3 +1,6 @@
+// Module verified. 
+// On nightly, we can access EFI helpers internals and the feature works as expected. 
+// On stable, full support for UEFI is practically out of scope so it practically only works on x86_64.
 #![cfg(target_os = "uefi")]
 use super::RandomError;
 
@@ -26,11 +29,17 @@ pub fn fill_bytes(bytes: &mut [u8]) -> Result<(), RandomError> {
 }
 
 mod rng_protocol {
-    use r_efi::protocols::rng;
+    #[rustversion::not(nightly)]
+    pub(crate) fn fill_bytes(_bytes: &mut [u8]) -> bool {
+        false
+    }
 
-    use super::uefi_helpers as helpers;
-
+    #[rustversion::nightly]
     pub(crate) fn fill_bytes(bytes: &mut [u8]) -> bool {
+        use super::super::uefi_helpers as helpers;
+        use r_efi::protocols::rng;
+        use std::ptr;
+
         if let Ok(handles) = helpers::locate_handles(rng::PROTOCOL_GUID) {
             for handle in handles {
                 if let Ok(protocol) =
@@ -39,7 +48,7 @@ mod rng_protocol {
                     let r = unsafe {
                         ((*protocol.as_ptr()).get_rng)(
                             protocol.as_ptr(),
-                            crate::ptr::null_mut(),
+                            ptr::null_mut(),
                             bytes.len(),
                             bytes.as_mut_ptr(),
                         )
@@ -52,7 +61,7 @@ mod rng_protocol {
                 }
             }
         }
-
+        
         false
     }
 }

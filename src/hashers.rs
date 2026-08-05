@@ -106,16 +106,13 @@ impl TryClone for std::hash::RandomState {
 impl TryDefault for std::hash::RandomState {
     #[inline]
     fn try_default() -> Result<Self, TryDefaultError> {
-        let (k1, k2) = crate::sys::random::hashmap_random_keys()
-            .map_err(|_| TryDefaultError::Other(
-                "failed to generate random keys for RandomState"
-            ))?;
+        let (k1, k2) = crate::sys::random::hashmap_random_keys().map_err(|_| {
+            TryDefaultError::Other("failed to generate random keys for RandomState")
+        })?;
         // SAFETY: RandomState's internal representation is two u64 values.
         // We construct it directly from our randomly generated keys, avoiding
         // the panic-prone Default::default() path entirely.
-        Ok(unsafe {
-            core::mem::transmute::<(u64, u64), std::hash::RandomState>((k1, k2))
-        })
+        Ok(unsafe { core::mem::transmute::<(u64, u64), std::hash::RandomState>((k1, k2)) })
     }
 }
 
@@ -851,14 +848,10 @@ mod tests {
 
     #[test]
     fn arbitrary_factory_not_copy() {
-        // Verify that ArbitraryHasherFactory is NOT Copy by checking that
-        // the compiler rejects bitwise copies. We test this at runtime by
+        // Verify that ArbitraryHasherFactory does not require Copy by
         // confirming Clone works (since RandomState is Clone but not Copy).
         let factory = unsafe { ArbitraryHasherFactory::new(std::hash::RandomState::new()) };
         // This compiles because TryClone is implemented (RandomState: Clone):
-        let cloned = factory.try_clone().unwrap();
-        // But `let copy = factory;` would be a move, not a copy.
-        drop(cloned);
-        // factory is moved/unusable after try_clone borrows it — that's expected.
+        let _cloned = factory.try_clone().unwrap();
     }
 }

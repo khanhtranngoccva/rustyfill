@@ -5,6 +5,7 @@ pub fn fill_bytes(_: &mut [u8]) -> Result<(), RandomError> {
 }
 
 pub fn hashmap_random_keys() -> Result<(u64, u64), RandomError> {
+    // FIXME: Use the stack mersenne twister
     // Use allocation addresses for a bit of randomness. This isn't
     // particularly secure, but there isn't really an alternative.
     let stack = 0u8;
