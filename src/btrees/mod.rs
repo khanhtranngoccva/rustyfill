@@ -4,14 +4,14 @@
 //! construction, insertion, extension, and capacity management — returning
 //! [`Result`] values instead of panicking on allocation failure.
 //!
-//! **Deprecated:** The `catch_unwind`-based approach cannot safely recover
-//! elements on allocation failure. Prefer `HashMap`/`HashSet` with their
-//! `Try*` counterparts which use proper `try_reserve`-based semantics.
+//! These wrappers rely on [`std::panic::catch_unwind`] to intercept allocation
+//! panics from B-tree internal node growth (since `BTreeMap::try_reserve` does
+//! not exist). This feature is guarded behind the `"panic"` cargo feature and
+//! requires that the crate be compiled with `panic = "unwind"`. The build script
+//! will error if this feature is enabled but the panic strategy is `"abort"`.
 
 mod btreemap_;
 mod btreeset_;
 
-#[allow(deprecated)]
 pub use btreemap_::{TryBTreeMap, TryBTreeMapError};
-#[allow(deprecated)]
 pub use btreeset_::{TryBTreeSet, TryBTreeSetError};

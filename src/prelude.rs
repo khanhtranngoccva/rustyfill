@@ -60,3 +60,8 @@ pub use crate::path::{TryPath, TryPathBuf};
 // ── DashMap & DashSet ────────────────────────────────────────────────────────
 
 pub use crate::dashmap::{TryDashMap, TryDashSet};
+
+// ── BTreeMap & BTreeSet (requires `panic` feature) ───────────────────────────
+
+#[cfg(feature = "panic")]
+pub use crate::btrees::{TryBTreeMap, TryBTreeSet};

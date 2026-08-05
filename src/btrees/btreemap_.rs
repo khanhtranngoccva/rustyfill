@@ -18,19 +18,6 @@
 //! The trait also implements [`TryClone`](crate::try_clone::TryClone) and
 //! [`TryDefault`](crate::try_default::TryDefault) for `BTreeMap<K, V>` when
 //! `K` and `V` satisfy the respective bounds.
-//!
-//! # Deprecation
-//!
-//! Deprecated in 0.1.0. The `catch_unwind`-based approach cannot guarantee safe
-//! recovery on allocation failure — elements consumed from an iterator before
-//! the panic are silently dropped, partial extension occurs with no rollback,
-//! and the `ManuallyDrop` transmutation tricks required for give-back variants
-//! rely on layout assumptions that are fragile. Prefer `HashMap`/`HashSet` with
-//! their `Try*` counterparts which use proper `try_reserve`-based semantics.
-
-#![allow(deprecated)]
-
-#![allow(deprecated)]
 
 use crate::alloc::{AllocError, PayloadBox};
 use crate::try_clone::TryCloneError;
@@ -48,11 +35,6 @@ use std::panic::{AssertUnwindSafe, RefUnwindSafe, catch_unwind};
 /// wraps a caught panic as [`Self::AllocPanic`] when an internal node allocation
 /// fails during insertion or extension. Clone failures during bulk operations
 /// are wrapped as [`Self::Clone`].
-#[deprecated(
-    since = "0.1.0",
-    note = "TryBTreeMap is deprecated: catch_unwind-based polyfill cannot safely recover \
-            elements on allocation failure; prefer HashMap with TryHashMap"
-)]
 #[derive(Debug)]
 pub enum TryBTreeMapError {
     /// A raw heap allocation failed (no collection involved).
@@ -67,7 +49,6 @@ pub enum TryBTreeMapError {
     Other(&'static str),
 }
 
-#[allow(deprecated)]
 impl fmt::Display for TryBTreeMapError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
@@ -85,14 +66,12 @@ impl fmt::Display for TryBTreeMapError {
     }
 }
 
-#[allow(deprecated)]
 impl From<AllocError> for TryBTreeMapError {
     fn from(e: AllocError) -> Self {
         Self::Alloc(e)
     }
 }
 
-#[allow(deprecated)]
 impl From<TryCloneError> for TryBTreeMapError {
     fn from(err: TryCloneError) -> Self {
         Self::Clone(err)
@@ -121,11 +100,6 @@ impl From<TryCloneError> for TryBTreeMapError {
 /// on allocation failure. Our [`Self::try_insert`] catches allocation panics so it
 /// never propagates one — it returns [`TryBTreeMapError::AllocPanic`] instead, but it
 /// does not return the old value on key collision.
-#[deprecated(
-    since = "0.1.0",
-    note = "TryBTreeMap is deprecated: catch_unwind-based polyfill cannot safely recover \
-            elements on allocation failure; prefer HashMap with TryHashMap"
-)]
 pub trait TryBTreeMap<K, V>: Sized {
     // ── Construction ────────────────────────────────────────────────────────
 
@@ -148,12 +122,8 @@ pub trait TryBTreeMap<K, V>: Sized {
     /// Returns `Ok(None)` if the key was not previously present, or
     /// `Ok(Some(old_value))` if the key existed and was replaced.
     ///
-    /// **Deprecated:** This method name conflicts with the inherent
-    /// [`BTreeMap::try_insert`] (nightly). Use [`Self::fallible_insert`] instead.
-    #[deprecated(
-        since = "0.1.0",
-        note = "conflicts with inherent BTreeMap::try_insert; use fallible_insert"
-    )]
+    /// **Note:** This method name conflicts with the inherent
+    /// [`BTreeMap::try_insert`] (nightly). Prefer [`Self::fallible_insert`] instead.
     fn try_insert(&mut self, key: K, value: V) -> Result<Option<V>, TryBTreeMapError>
     where
         K: Ord + RefUnwindSafe,
@@ -222,9 +192,8 @@ pub trait TryBTreeMap<K, V>: Sized {
     /// Returns `Ok(None)` if the key was not previously present, or
     /// `Ok(Some(old_value))` if the key existed and was replaced.
     ///
-    /// This method replaces the deprecated [`Self::try_insert`] which shares its
+    /// This method replaces the [`Self::try_insert`] which shares its
     /// name with the inherent [`BTreeMap::try_insert`].
-    #[allow(deprecated)]
     fn fallible_insert(&mut self, key: K, value: V) -> Result<Option<V>, TryBTreeMapError>
     where
         K: Ord + RefUnwindSafe,
@@ -349,7 +318,6 @@ pub trait TryBTreeMap<K, V>: Sized {
 
 // ── Implementation ────────────────────────────────────────────────────────────
 
-#[allow(deprecated)]
 impl<K: Ord + RefUnwindSafe, V: RefUnwindSafe> TryBTreeMap<K, V> for BTreeMap<K, V> {
     // ── Construction ────────────────────────────────────────────────────────
 
@@ -565,7 +533,6 @@ impl<K: Ord + RefUnwindSafe, V: RefUnwindSafe> TryBTreeMap<K, V> for BTreeMap<K,
 /// cloneable. Clones one pair at a time and inserts it directly, avoiding an
 /// intermediate `Vec` allocation. Catches allocation panics from internal
 /// B-tree node growth.
-#[allow(deprecated)]
 impl<K, V> crate::try_clone::TryClone for BTreeMap<K, V>
 where
     K: Ord + crate::try_clone::TryClone,
@@ -594,7 +561,6 @@ where
 
 // ── TryDefault for BTreeMap<K, V> ─────────────────────────────────────────────
 
-#[allow(deprecated)]
 impl<K, V> crate::try_default::TryDefault for BTreeMap<K, V> {
     fn try_default() -> Result<Self, crate::try_default::TryDefaultError>
     where
@@ -606,7 +572,6 @@ impl<K, V> crate::try_default::TryDefault for BTreeMap<K, V> {
 }
 
 #[cfg(test)]
-#[allow(deprecated)]
 mod tests {
     use super::*;
     use crate::try_clone::TryClone;

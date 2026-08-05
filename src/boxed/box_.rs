@@ -9,7 +9,6 @@ use crate::try_default::{TryDefault, TryDefaultError};
 use core::alloc::Layout;
 use core::mem::{self, MaybeUninit};
 use core::pin::Pin;
-use std::ptr::{self, NonNull};
 /// A trait for fallibly allocating a value on the heap.
 ///
 /// Implemented for `Box<T>`.
@@ -245,127 +244,6 @@ impl<T: TryDefault> TryDefault for Box<T> {
             }
             Err(e) => Err(e),
         }
-    }
-}
-
-// ── Boxed slice TryClone ───────────────────────────────────────────────────────
-// Box<[T]> owns a dynamically-sized slice on the heap. Cloning requires
-// allocating a new slice and cloning each element via T::try_clone().
-// We allocate exactly the right size upfront (no overshoot, no shrinking) and
-// follow the same MaybeUninit + guard pattern used for array cloning.
-// The allocation is wrapped in a Box immediately so its Drop handles cleanup
-// on both explicit errors and panics during element cloning.
-
-/// Panic-safe guard that drops any initialized elements in a `MaybeUninit` slice
-/// if dropped before `forget()` is called (e.g. on panic or early return).
-struct SliceInitGuard<'a, T> {
-    slots: &'a mut [MaybeUninit<T>],
-    count: usize,
-}
-
-impl<'a, T> SliceInitGuard<'a, T> {
-    fn new(slots: &'a mut [MaybeUninit<T>]) -> Self {
-        Self { slots, count: 0 }
-    }
-
-    /// Disable the guard's Drop so that it no longer cleans up on scope exit.
-    /// Call this only after all slots have been successfully initialized.
-    fn forget(mut self) {
-        self.count = 0;
-        mem::forget(self);
-    }
-}
-
-impl<'a, T> Drop for SliceInitGuard<'a, T> {
-    fn drop(&mut self) {
-        unsafe {
-            for slot in self.slots.iter_mut().take(self.count) {
-                core::ptr::drop_in_place(slot.as_mut_ptr());
-            }
-        }
-    }
-}
-
-impl<T: TryClone> TryClone for Box<[T]> {
-    fn try_clone(&self) -> Result<Self, TryCloneError> {
-        let len = self.len();
-
-        // Handle empty and ZST cases — no allocation needed.
-        if len == 0 || mem::size_of::<T>() == 0 {
-            let ptr: NonNull<T> =
-                NonNull::new(ptr::without_provenance_mut(Layout::new::<T>().align()))
-                    .expect("alignment should not be zero");
-            // SAFETY: for empty slices and ZSTs, a dangling aligned pointer is valid.
-            // We cast through a fat pointer constructed from the raw parts.
-            return Ok(unsafe {
-                let fat: *mut [T] = core::ptr::slice_from_raw_parts_mut(ptr.as_ptr().cast(), len);
-                Box::from_raw(fat)
-            });
-        }
-
-        // Allocate exactly `len` elements — no excess capacity, no shrinking.
-        let layout = Layout::array::<T>(len).map_err(|_| TryCloneError::Overflow)?;
-        let ptr = unsafe { std::alloc::alloc(layout) };
-        if ptr.is_null() {
-            return Err(TryCloneError::Alloc(AllocError { layout }));
-        }
-
-        // Wrap immediately in a Box so Drop cleans up the allocation on panic.
-        // SAFETY: layout matches `len` elements of MaybeUninit<T>, which has
-        // the same size and alignment as T.
-        let mut out: Box<[MaybeUninit<T>]> =
-            unsafe { Box::from_raw(core::ptr::slice_from_raw_parts_mut(ptr.cast(), len)) };
-        let mut guard = SliceInitGuard::new(&mut out);
-
-        for (slot, elem) in guard.slots.iter_mut().zip(self.iter()) {
-            match elem.try_clone() {
-                Ok(cloned) => {
-                    unsafe {
-                        core::ptr::write(slot.as_mut_ptr(), cloned);
-                    }
-                    guard.count += 1;
-                }
-                Err(e) => {
-                    // Guard drops initialized elements; Box drops the allocation.
-                    return Err(e);
-                }
-            }
-        }
-
-        guard.forget();
-
-        // SAFETY: all `len` slots were written successfully above.
-        // Box<[MaybeUninit<T>]> and Box<[T]> have identical memory layouts.
-        Ok(unsafe { mem::transmute::<Box<[MaybeUninit<T>]>, Box<[T]>>(out) })
-    }
-}
-
-// ── Boxed str TryClone ─────────────────────────────────────────────────────────
-
-impl TryClone for Box<str> {
-    fn try_clone(&self) -> Result<Self, TryCloneError> {
-        // Delegate to String's fallible construction then convert back to Box<str>.
-        let s = <String as crate::string::TryString>::try_from_str(self)
-            .map_err(TryCloneError::Reserve)?;
-        Ok(s.into_boxed_str())
-    }
-}
-
-// ── Boxed slice TryDefault ─────────────────────────────────────────────────────
-// An empty boxed slice is the natural default — no allocation needed beyond
-// a thin/dangling pointer for ZST-like empty slices.
-
-impl<T> TryDefault for Box<[T]> {
-    fn try_default() -> Result<Self, TryDefaultError> {
-        Ok(Box::new([]))
-    }
-}
-
-// ── Boxed str TryDefault ───────────────────────────────────────────────────────
-
-impl TryDefault for Box<str> {
-    fn try_default() -> Result<Self, TryDefaultError> {
-        Ok(<String as Default>::default().into_boxed_str())
     }
 }
 

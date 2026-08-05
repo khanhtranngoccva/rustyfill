@@ -1,4 +1,4 @@
-//! Build script that detects the compiler channel and target OS,
+//! Build script that detects the compiler channel, target OS, and panic strategy,
 //! emitting cfg flags for conditional compilation of unstable features.
 
 use std::env;
@@ -15,6 +15,21 @@ fn main() {
         println!("cargo:rustc-cfg=nightly_compiler=\"true\"");
     } else {
         println!("cargo:rustc-cfg=nightly_compiler=\"false\"");
+    }
+
+    // Detect the panic strategy so the `panic` feature can guard itself at compile time.
+    let panic_strategy = env::var("CARGO_CFG_PANIC").unwrap_or_else(|_| "unwind".to_string());
+    cargo_build::rustc_check_cfg("panic_strategy", ["abort", "unwind"]);
+    println!("cargo:rustc-cfg=panic_strategy={panic_strategy:?}");
+
+    // If the `panic` feature is enabled but we're in `panic = "abort"` mode, fail early.
+    // The btree wrappers rely on `catch_unwind`, which cannot intercept aborting panics.
+    if env::var("CARGO_FEATURE_PANIC").is_ok() && panic_strategy == "abort" {
+        cargo_build::error(
+            "the `panic` feature requires `panic = \"unwind\"` \
+             (currently `panic = \"abort\"`). Disable the `panic` feature or change \
+             the panic strategy.",
+        );
     }
 
     // Re-run if the target changes (e.g., switching between host and UEFI targets).

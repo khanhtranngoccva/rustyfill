@@ -15,6 +15,7 @@
 pub mod alloc;
 pub mod arc;
 pub mod boxed;
+#[cfg(feature = "panic")]
 pub mod btrees;
 pub mod dashmap;
 pub mod ffi;
@@ -35,3 +36,6 @@ pub mod vecdeque;
 
 pub use fallibles_macros::{TryClone, TryDefault};
 pub use try_random_state::TryRandomState;
+
+#[cfg(test)]
+mod test_allocator;

@@ -45,6 +45,14 @@ r-efi-alloc = { version = "2.0.0", features = ['rustc-dep-of-std'] }
 [profile.dev]
 opt-level = 2
 
+[features]
+# Enables the B-tree map/set fallible wrappers which rely on `catch_unwind`.
+# Requires that the crate is compiled with `panic = "unwind"` (the default).
+# The build script will error if this feature is enabled but the crate is
+# compiled in `panic = "abort"` mode, since `catch_unwind` cannot intercept
+# aborting panics.
+panic = []
+
 [dev-dependencies]
 no-panic = "0.1.37"
 

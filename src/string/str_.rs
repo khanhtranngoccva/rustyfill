@@ -6,6 +6,8 @@
 //! for consistency with [`TryString`](super::string_::TryString).
 
 use crate::alloc::{AllocError, TryReserveError};
+use crate::try_clone::{TryClone, TryCloneError};
+use crate::try_default::{TryDefault, TryDefaultError};
 use core::fmt;
 
 /// Error returned by [`TryStr`] operations.
@@ -119,6 +121,25 @@ impl TryToOwned for str {
         }
         out.push_str(self);
         Ok(out)
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Boxed str TryClone + TryDefault
+// ---------------------------------------------------------------------------
+
+impl TryClone for Box<str> {
+    fn try_clone(&self) -> Result<Self, TryCloneError> {
+        // Delegate to String's fallible construction then convert back to Box<str>.
+        let s = <String as super::string_::TryString>::try_from_str(self)
+            .map_err(TryCloneError::Reserve)?;
+        Ok(s.into_boxed_str())
+    }
+}
+
+impl TryDefault for Box<str> {
+    fn try_default() -> Result<Self, TryDefaultError> {
+        Ok(<String as Default>::default().into_boxed_str())
     }
 }
 
