@@ -11,6 +11,20 @@ edition = "2024"
 dashmap = { version = "6", features = ["raw-api"] }
 fallibles-macros = { path = "fallibles-macros" }
 hashbrown = "0.14.5"
+libc = "0.2.189"
+once_cell = "1.21.4"
+
+[target.'cfg(target_os = "motor")'.dependencies]
+moto-rt = { version = "0.16", features = ['rustc-dep-of-std'], public = true }
+
+[target.'cfg(target_os = "hermit")'.dependencies]
+hermit-abi = { version = "0.5.0", features = [
+    'rustc-dep-of-std',
+], public = true }
+
+[target.'cfg(target_os = "uefi")'.dependencies]
+r-efi = { version = "5.2.0", features = ['rustc-dep-of-std'] }
+r-efi-alloc = { version = "2.0.0", features = ['rustc-dep-of-std'] }
 
 [profile.dev]
 opt-level = 2

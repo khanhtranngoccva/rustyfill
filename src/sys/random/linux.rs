@@ -60,36 +60,39 @@
 // `GRND_NONBLOCK` fallback and use `/dev/random` instead of `/dev/urandom`
 // when secure data is required.
 
-use crate::fs::File;
-use crate::io::Read;
-use crate::os::fd::AsRawFd;
-use crate::sync::OnceLock;
-use crate::sync::atomic::Ordering::{Acquire, Relaxed, Release};
-use crate::sync::atomic::{Atomic, AtomicBool};
-use crate::sys::io::errno;
-use crate::sys::pal::weak::syscall;
+use std::fs::File;
+use std::io::Read;
+use std::os::fd::AsRawFd;
+use std::sync::atomic::AtomicBool;
+use std::sync::atomic::Ordering::{Acquire, Relaxed, Release};
+// Fallback for get_or_try_init API
+use once_cell::sync::OnceCell;
 
-fn getrandom(mut bytes: &mut [u8], insecure: bool) {
+use super::RandomError;
+
+fn getrandom_impl(mut bytes: &mut [u8], insecure: bool) -> Result<(), RandomError> {
     // A weak symbol allows interposition, e.g. for perf measurements that want to
     // disable randomness for consistency. Otherwise, we'll try a raw syscall.
     // (`getrandom` was added in glibc 2.25, musl 1.1.20, android API level 28)
-    syscall!(
+
+    // FIXME: we want to support more Linux targets
+    unsafe extern "C" {
         fn getrandom(
             buffer: *mut libc::c_void,
             length: libc::size_t,
             flags: libc::c_uint,
         ) -> libc::ssize_t;
-    );
+    }
 
-    static GETRANDOM_AVAILABLE: Atomic<bool> = AtomicBool::new(true);
-    static GRND_INSECURE_AVAILABLE: Atomic<bool> = AtomicBool::new(true);
-    static URANDOM_READY: Atomic<bool> = AtomicBool::new(false);
-    static DEVICE: OnceLock<File> = OnceLock::new();
+    static GETRANDOM_AVAILABLE: AtomicBool = AtomicBool::new(true);
+    static GRND_INSECURE_AVAILABLE: AtomicBool = AtomicBool::new(true);
+    static URANDOM_READY: AtomicBool = AtomicBool::new(false);
+    static DEVICE: OnceCell<File> = OnceCell::new();
 
     if GETRANDOM_AVAILABLE.load(Relaxed) {
         loop {
             if bytes.is_empty() {
-                return;
+                return Ok(());
             }
 
             let flags = if insecure {
@@ -106,7 +109,10 @@ fn getrandom(mut bytes: &mut [u8], insecure: bool) {
             if ret != -1 {
                 bytes = &mut bytes[ret as usize..];
             } else {
-                match errno() {
+                let err = std::io::Error::last_os_error()
+                    .raw_os_error()
+                    .unwrap_or(libc::EIO);
+                match err {
                     libc::EINTR => continue,
                     // `GRND_INSECURE` is not available, try
                     // `GRND_NONBLOCK`.
@@ -124,7 +130,7 @@ fn getrandom(mut bytes: &mut [u8], insecure: bool) {
                         break;
                     }
                     other => {
-                        panic!("failed to generate random data: errno={other:?}, flags={flags:?}")
+                        return Err(RandomError::Syscall(other));
                     }
                 }
             }
@@ -133,44 +139,48 @@ fn getrandom(mut bytes: &mut [u8], insecure: bool) {
 
     // When we want cryptographic strength, we need to wait for the CPRNG-pool
     // to become initialized. Do this by polling `/dev/random` until it is ready.
-    if !insecure {
-        if !URANDOM_READY.load(Acquire) {
-            let random = File::open("/dev/random").expect("failed to open /dev/random");
-            let mut fd = libc::pollfd {
-                fd: random.as_raw_fd(),
-                events: libc::POLLIN,
-                revents: 0,
-            };
+    if !insecure && !URANDOM_READY.load(Acquire) {
+        let random = File::open("/dev/random")
+            .map_err(|e| RandomError::Platform(format!("failed to open /dev/random: {}", e)))?;
+        let mut fd = libc::pollfd {
+            fd: random.as_raw_fd(),
+            events: libc::POLLIN,
+            revents: 0,
+        };
 
-            while !URANDOM_READY.load(Acquire) {
-                let ret = unsafe { libc::poll(&mut fd, 1, -1) };
-                match ret {
-                    1 => {
-                        assert_eq!(fd.revents, libc::POLLIN);
-                        URANDOM_READY.store(true, Release);
-                        break;
-                    }
-                    -1 if errno() == libc::EINTR => continue,
-                    _ => panic!("poll(\"/dev/random\") failed"),
+        while !URANDOM_READY.load(Acquire) {
+            let ret = unsafe { libc::poll(&mut fd, 1, -1) };
+            match ret {
+                1 => {
+                    assert_eq!(fd.revents, libc::POLLIN);
+                    URANDOM_READY.store(true, Release);
+                    break;
                 }
+                -1 if std::io::Error::last_os_error().raw_os_error() == Some(libc::EINTR) => {
+                    continue;
+                }
+                _ => return Err(RandomError::Platform("poll(\"/dev/random\") failed".into())),
             }
         }
     }
 
-    DEVICE
+    let dev = DEVICE
         .get_or_try_init(|| File::open("/dev/urandom"))
-        .and_then(|mut dev| dev.read_exact(bytes))
-        .expect("failed to generate random data");
+        .map_err(|e| RandomError::Platform(format!("failed to open /dev/urandom: {}", e)))?;
+    let mut dev = dev;
+    dev.read_exact(bytes)
+        .map_err(|e| RandomError::Platform(format!("failed to read from /dev/urandom: {}", e)))?;
+    Ok(())
 }
 
-pub fn fill_bytes(bytes: &mut [u8]) {
-    getrandom(bytes, false);
+pub fn fill_bytes(bytes: &mut [u8]) -> Result<(), RandomError> {
+    getrandom_impl(bytes, false)
 }
 
-pub fn hashmap_random_keys() -> (u64, u64) {
+pub fn hashmap_random_keys() -> Result<(u64, u64), RandomError> {
     let mut bytes = [0; 16];
-    getrandom(&mut bytes, true);
+    getrandom_impl(&mut bytes, true)?;
     let k1 = u64::from_ne_bytes(bytes[..8].try_into().unwrap());
     let k2 = u64::from_ne_bytes(bytes[8..].try_into().unwrap());
-    (k1, k2)
+    Ok((k1, k2))
 }

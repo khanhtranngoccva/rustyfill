@@ -106,9 +106,16 @@ impl TryClone for std::hash::RandomState {
 impl TryDefault for std::hash::RandomState {
     #[inline]
     fn try_default() -> Result<Self, TryDefaultError> {
-        // FIXME: this does not catch aborting panics!
-        std::panic::catch_unwind(Default::default)
-            .map_err(|_| TryDefaultError::Other("RandomState panicked during initialization"))
+        let (k1, k2) = crate::sys::random::hashmap_random_keys()
+            .map_err(|_| TryDefaultError::Other(
+                "failed to generate random keys for RandomState"
+            ))?;
+        // SAFETY: RandomState's internal representation is two u64 values.
+        // We construct it directly from our randomly generated keys, avoiding
+        // the panic-prone Default::default() path entirely.
+        Ok(unsafe {
+            core::mem::transmute::<(u64, u64), std::hash::RandomState>((k1, k2))
+        })
     }
 }
 

@@ -6,15 +6,19 @@
 //! for the few systems that support neither `arc4random_buf` nor `getentropy`
 //! yet, we just read from the file.
 
-use crate::fs::File;
-use crate::io::Read;
-use crate::sync::OnceLock;
+use std::fs::File;
+use std::io::Read;
+use std::sync::OnceLock;
+
+use super::RandomError;
 
 static DEVICE: OnceLock<File> = OnceLock::new();
 
-pub fn fill_bytes(bytes: &mut [u8]) {
-    DEVICE
-        .get_or_try_init(|| File::open("/dev/urandom"))
-        .and_then(|mut dev| dev.read_exact(bytes))
-        .expect("failed to generate random data");
+pub fn fill_bytes(bytes: &mut [u8]) -> Result<(), RandomError> {
+    let dev = DEVICE.get_or_init(|| {
+        File::open("/dev/urandom").expect("failed to open /dev/urandom")
+    });
+    let mut dev = dev;
+    dev.read_exact(bytes)
+        .map_err(|e| RandomError::Platform(format!("failed to read from /dev/urandom: {}", e)))
 }

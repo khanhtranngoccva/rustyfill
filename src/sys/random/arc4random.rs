@@ -9,6 +9,9 @@
 //! wrapper for `getrandom`. Since we need to hook into `getrandom` directly for
 //! `HashMap` keys anyway, we just keep our version).
 
+// Module verified
+use super::RandomError;
+
 #[cfg(not(target_os = "vita"))]
 use libc::arc4random_buf;
 
@@ -18,6 +21,7 @@ unsafe extern "C" {
     fn arc4random_buf(buf: *mut core::ffi::c_void, nbytes: libc::size_t);
 }
 
-pub fn fill_bytes(bytes: &mut [u8]) {
+pub fn fill_bytes(bytes: &mut [u8]) -> Result<(), RandomError> {
     unsafe { arc4random_buf(bytes.as_mut_ptr().cast(), bytes.len()) }
+    Ok(())
 }

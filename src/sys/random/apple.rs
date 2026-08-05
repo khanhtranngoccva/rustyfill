@@ -9,7 +9,17 @@
 //! into the same system service anyway, and `CCRandomGenerateBytes` has been
 //! proven to be App Store-compatible.
 
-pub fn fill_bytes(bytes: &mut [u8]) {
+// Module verified
+use super::RandomError;
+
+pub fn fill_bytes(bytes: &mut [u8]) -> Result<(), RandomError> {
     let ret = unsafe { libc::CCRandomGenerateBytes(bytes.as_mut_ptr().cast(), bytes.len()) };
-    assert_eq!(ret, libc::kCCSuccess, "failed to generate random data");
+    if ret == libc::kCCSuccess {
+        Ok(())
+    } else {
+        Err(RandomError::Platform(format!(
+            "CCRandomGenerateBytes failed with code {}",
+            ret
+        )))
+    }
 }

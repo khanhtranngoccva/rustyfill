@@ -3,11 +3,15 @@
 //! Fuchsia, as always, is quite nice and provides exactly the API we need:
 //! <https://fuchsia.dev/reference/syscalls/cprng_draw>.
 
+// Module verified
+use super::RandomError;
+
 #[link(name = "zircon")]
 unsafe extern "C" {
     fn zx_cprng_draw(buffer: *mut u8, len: usize);
 }
 
-pub fn fill_bytes(bytes: &mut [u8]) {
+pub fn fill_bytes(bytes: &mut [u8]) -> Result<(), RandomError> {
     unsafe { zx_cprng_draw(bytes.as_mut_ptr(), bytes.len()) }
+    Ok(())
 }

@@ -15,7 +15,7 @@ pub mod hashmap;
 pub mod hashset;
 pub mod path;
 pub mod prelude;
-mod random;
+mod sys;
 pub mod string;
 pub mod try_clone;
 pub mod try_default;

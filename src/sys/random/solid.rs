@@ -1,8 +1,19 @@
-use crate::sys::pal::abi;
+use super::RandomError;
 
-pub fn fill_bytes(bytes: &mut [u8]) {
+unsafe extern "C" {
+    fn SOLID_RNG_SampleRandomBytes(buffer: *mut u8, length: usize) -> c_int;
+}
+
+pub fn fill_bytes(bytes: &mut [u8]) -> Result<(), RandomError> {
     unsafe {
-        let result = abi::SOLID_RNG_SampleRandomBytes(bytes.as_mut_ptr(), bytes.len());
-        assert_eq!(result, 0, "failed to generate random data");
+        let result = SOLID_RNG_SampleRandomBytes(bytes.as_mut_ptr(), bytes.len());
+        if result == 0 {
+            Ok(())
+        } else {
+            Err(RandomError::Platform(format!(
+                "SOLID_RNG_SampleRandomBytes failed with code {}",
+                result
+            )))
+        }
     }
 }

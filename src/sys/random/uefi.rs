@@ -1,12 +1,15 @@
-pub fn fill_bytes(bytes: &mut [u8]) {
+#![cfg(target_os = "uefi")]
+use super::RandomError;
+
+pub fn fill_bytes(bytes: &mut [u8]) -> Result<(), RandomError> {
     // Handle zero-byte request
     if bytes.is_empty() {
-        return;
+        return Ok(());
     }
 
     // Try EFI_RNG_PROTOCOL
     if rng_protocol::fill_bytes(bytes) {
-        return;
+        return Ok(());
     }
 
     // Fallback to rdrand if rng protocol missing.
@@ -14,16 +17,18 @@ pub fn fill_bytes(bytes: &mut [u8]) {
     // For real-world example, see [issue-13825](https://github.com/rust-lang/rust/issues/138252#issuecomment-2891270323)
     #[cfg(any(target_arch = "x86_64", target_arch = "x86"))]
     if rdrand::fill_bytes(bytes) {
-        return;
+        return Ok(());
     }
 
-    panic!("failed to generate random data");
+    Err(RandomError::Platform(
+        "no random source available on UEFI".into(),
+    ))
 }
 
 mod rng_protocol {
     use r_efi::protocols::rng;
 
-    use crate::sys::pal::helpers;
+    use super::uefi_helpers as helpers;
 
     pub(crate) fn fill_bytes(bytes: &mut [u8]) -> bool {
         if let Ok(handles) = helpers::locate_handles(rng::PROTOCOL_GUID) {
@@ -57,18 +62,18 @@ mod rng_protocol {
 mod rdrand {
     cfg_select! {
         target_arch = "x86_64" => {
-            use crate::arch::x86_64 as arch;
+            use core::arch::x86_64 as arch;
             use arch::_rdrand64_step as rdrand_step;
             type Word = u64;
         }
         target_arch = "x86" => {
-            use crate::arch::x86 as arch;
+            use core::arch::x86 as arch;
             use arch::_rdrand32_step as rdrand_step;
             type Word = u32;
         }
     }
 
-    static RDRAND_GOOD: crate::sync::LazyLock<bool> = crate::sync::LazyLock::new(is_rdrand_good);
+    static RDRAND_GOOD: std::sync::LazyLock<bool> = std::sync::LazyLock::new(is_rdrand_good);
 
     // Recommendation from "Intel® Digital Random Number Generator (DRNG) Software
     // Implementation Guide" - Section 5.2.1 and "Intel® 64 and IA-32 Architectures
@@ -113,8 +118,11 @@ mod rdrand {
             }
             let cpuid1 = arch::__cpuid(1);
 
-            let vendor_id =
-                [cpuid0.ebx.to_le_bytes(), cpuid0.edx.to_le_bytes(), cpuid0.ecx.to_le_bytes()];
+            let vendor_id = [
+                cpuid0.ebx.to_le_bytes(),
+                cpuid0.edx.to_le_bytes(),
+                cpuid0.ecx.to_le_bytes(),
+            ];
             if vendor_id == [*b"Auth", *b"enti", *b"cAMD"] {
                 let mut family = (cpuid1.eax >> 8) & 0xF;
                 if family == 0xF {
@@ -153,6 +161,10 @@ mod rdrand {
     }
 
     pub(crate) fn fill_bytes(bytes: &mut [u8]) -> bool {
-        if *RDRAND_GOOD { unsafe { rdrand_exact(bytes).is_some() } } else { false }
+        if *RDRAND_GOOD {
+            unsafe { rdrand_exact(bytes).is_some() }
+        } else {
+            false
+        }
     }
 }
