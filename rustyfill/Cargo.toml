@@ -1,0 +1,52 @@
+[package]
+name = "rustyfill"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+dashmap = { workspace = true, optional = true }
+rustyfill-macros = { workspace = true }
+hashbrown = { workspace = true }
+libc = { workspace = true }
+once_cell = { workspace = true }
+rustversion = { workspace = true }
+
+[target.'cfg(target_os = "motor")'.dependencies]
+moto-rt = { workspace = true }
+
+[target.'cfg(target_os = "hermit")'.dependencies]
+hermit-abi = { workspace = true }
+
+[target.'cfg(all(target_os = "wasi", target_env = "p1"))'.dependencies]
+wasip1 = { workspace = true }
+
+[target.'cfg(all(target_os = "wasi", target_env = "p2"))'.dependencies]
+wasip2 = { workspace = true }
+
+[target.'cfg(all(target_os = "wasi", target_env = "p3"))'.dependencies]
+wasip3 = { workspace = true }
+
+[target.'cfg(target_os = "uefi")'.dependencies]
+r-efi = { workspace = true }
+r-efi-alloc = { workspace = true }
+
+[features]
+# Deprecated: enables the B-tree map/set fallible wrappers which rely on
+# `catch_unwind`. This approach cannot survive genuine OOM because
+# `handle_alloc_error` calls `abort()` rather than panicking, so `catch_unwind`
+# never catches anything. Use the `scapegoat` crate for fallible trees instead.
+# Retained for backward compatibility only. Requires `panic = "unwind"` (the
+# default); the build script errors if enabled under `panic = "abort"`.
+panic = []
+# Enables DashMap/DashSet wrappers. These do NOT guarantee panic-free behavior:
+# `DashMap::new()` implicitly allocates shards and has no fallible constructor,
+# so construction can still panic under memory pressure. Only enable this if you
+# accept that limitation and want the fallible mutation APIs on top.
+unstable = ["dep:dashmap"]
+
+[dev-dependencies]
+no-panic = { workspace = true }
+static_assertions = { workspace = true }
+
+[build-dependencies]
+cargo-build = { workspace = true }
