@@ -70,8 +70,6 @@ The library implements `TryClone` for most built-in types that are `Clone`, and 
 | `TryHashMap` | `HashMap<K, V, S>` | `try_insert`, `try_extend`, `try_reserve`, entry API |
 | `TryHashSet` | `HashSet<T, S>` | `try_insert`, `try_extend`, `try_reserve` |
 | `TryVecDeque` | `VecDeque<T>` | `try_push_back`, `try_push_front`, `try_extend`, `try_reserve` |
-| `TryDashMap` | `DashMap<K, V>` | `try_insert`, `try_extend`, `try_reserve` |
-| `TryDashSet` | `DashSet<T>` | `try_insert`, `try_extend`, `try_reserve` |
 | `TryCString` | `CString` | `try_new`, `try_new_give_back` |
 | `TryOsString` | `OsString` | `try_new`, `try_push` |
 | `TryPath` | `&Path` | `try_to_path_buf`, `try_join`, `try_with_added_extension` |
@@ -106,6 +104,7 @@ match vec.try_extend(Resumable::from_remainder(remaining)) {
         - The default OOM handler when linked against std aborts the process.
         - Since panic allocates memory, these structures abort the process when absolutely no memory can be allocated.
     - If you wish to use it anyway, you also need to call `std::alloc::set_alloc_error_hook` to prevent the default abort behavior and trigger a panic, but you risk non-cooperating code interfering with the process.
+- **`unstable`** - enables `TryDashMap` and `TryDashSet`. Currently, they do not work, because the fallible construction API is not there yet, although [these APIs are pending review](https://github.com/xacrimon/dashmap/pull/372). They might be removed from this crate and moved into a downstream crate to allow usage in libraries.
 
 ## Hasher factories
 

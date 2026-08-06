@@ -209,6 +209,7 @@ impl FailAllocGuard {
     }
 
     /// Convenience: fail the next allocation on this thread.
+    #[allow(unused)]
     fn fail_next_alloc() -> Self {
         Self::install(FailPolicy::fail_next_alloc())
     }
@@ -300,10 +301,9 @@ mod tests {
 
     #[test]
     fn with_policy_fails_alloc() {
-        let r: Result<Box<i32>, AllocError> = with_policy(
-            FailPolicy::fail_next_alloc(),
-            || <Box<i32> as TryBox<i32>>::fallible_new(1),
-        );
+        let r: Result<Box<i32>, AllocError> = with_policy(FailPolicy::fail_next_alloc(), || {
+            <Box<i32> as TryBox<i32>>::fallible_new(1)
+        });
         assert!(r.is_err());
         let r: Result<Box<i32>, AllocError> = <Box<i32> as TryBox<i32>>::fallible_new(2);
         assert!(r.is_ok());
@@ -318,10 +318,9 @@ mod tests {
     #[test]
     fn with_policy_nested() {
         let inner_r: Result<Box<u8>, AllocError> = with_policy(FailPolicy::nothing(), || {
-            with_policy(
-                FailPolicy::fail_next_alloc(),
-                || <Box<u8> as TryBox<u8>>::fallible_new(0),
-            )
+            with_policy(FailPolicy::fail_next_alloc(), || {
+                <Box<u8> as TryBox<u8>>::fallible_new(0)
+            })
         });
         assert!(inner_r.is_err());
         let outer_r: Result<Box<u8>, AllocError> = <Box<u8> as TryBox<u8>>::fallible_new(1);
@@ -494,17 +493,17 @@ mod tests {
     }
 
     /// Basically, if output capturing is enabled, panicking locks the backtrace and attempts to write to an output
-    /// vector buffer, and fail because it tries to allocate while the FailAllocGuard is active. The second allocation 
+    /// vector buffer, and fail because it tries to allocate while the FailAllocGuard is active. The second allocation
     /// error tries to lock the backtrace output lock again, which causes a deadlock.
-    /// 
-    /// In short, the allocator must not fail while encountering a panic if output capturing is set. If all else fails, 
-    /// run the suite with --nocapture. 
-    /// 
+    ///
+    /// In short, the allocator must not fail while encountering a panic if output capturing is set. If all else fails,
+    /// run the suite with --nocapture.
+    ///
     /// https://github.com/rust-lang/rust/issues/130187
     #[test]
     #[ignore = "deadlocks - demonstrates issue #130187"]
     fn backtrace_deadlock() {
         let _g = FailAllocGuard::fail_next_alloc();
-        panic!("something fishy.");
+        panic!("this may trigger re-entrant deadlock");
     }
 }

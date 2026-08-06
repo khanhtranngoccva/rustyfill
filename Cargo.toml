@@ -8,7 +8,7 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-dashmap = { version = "6", features = ["raw-api"] }
+dashmap = { version = "6", features = ["raw-api"], optional = true }
 rustyfill-macros = { path = "rustyfill-macros" }
 hashbrown = "0.14.5"
 libc = "0.2.189"
@@ -53,6 +53,11 @@ opt-level = 2
 # Retained for backward compatibility only. Requires `panic = "unwind"` (the
 # default); the build script errors if enabled under `panic = "abort"`.
 panic = []
+# Enables DashMap/DashSet wrappers. These do NOT guarantee panic-free behavior:
+# `DashMap::new()` implicitly allocates shards and has no fallible constructor,
+# so construction can still panic under memory pressure. Only enable this if you
+# accept that limitation and want the fallible mutation APIs on top.
+unstable = ["dep:dashmap"]
 
 [dev-dependencies]
 no-panic = "0.1.37"

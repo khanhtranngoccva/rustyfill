@@ -17,6 +17,7 @@ pub mod arc;
 pub mod boxed;
 #[cfg(feature = "panic")]
 pub mod btrees;
+#[cfg(feature = "unstable")]
 pub mod dashmap;
 pub mod ffi;
 pub mod hashers;

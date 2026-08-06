@@ -10,7 +10,9 @@
 //! made this work.
 //!
 //! Use the [`scapegoat`](https://crates.io/crates/scapegoat) crate instead, which
-//! provides a fully fallible scapegoat tree implementation with proper OOM handling.
+//! provides a fully fallible scapegoat tree implementation with proper OOM handling. 
+//! Or if you still want to use a version that is similar to std (but still not ABI compatible!), 
+//! refer to [`fallible_collections`](https://crates.io/crates/fallible_collections)
 //!
 //! If you must use this anyway, you will have to use [`std::alloc::set_alloc_error_hook`].
 mod btreemap_;

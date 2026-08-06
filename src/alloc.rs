@@ -55,6 +55,7 @@ impl From<std::collections::TryReserveError> for TryReserveError {
     }
 }
 
+#[cfg(feature = "unstable")]
 impl From<dashmap::TryReserveError> for TryReserveError {
     fn from(_e: dashmap::TryReserveError) -> Self {
         Self::Other

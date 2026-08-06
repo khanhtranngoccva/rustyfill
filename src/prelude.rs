@@ -57,8 +57,9 @@ pub use crate::ffi::{TryCString, TryOsStr, TryOsString};
 
 pub use crate::path::{TryPath, TryPathBuf};
 
-// ── DashMap & DashSet ────────────────────────────────────────────────────────
+// ── DashMap & DashSet (unstable — see `unstable` feature) ────────────────────
 
+#[cfg(feature = "unstable")]
 pub use crate::dashmap::{TryDashMap, TryDashSet};
 
 // ── BTreeMap & BTreeSet (deprecated — use the `scapegoat` crate) ─────────────
