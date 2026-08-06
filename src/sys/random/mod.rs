@@ -1,3 +1,7 @@
+// qnx was refactored to nto; kept for backward compatibility.
+// https://doc.rust-lang.org/rustc/platform-support/nto-qnx.html
+#![allow(unexpected_cfgs, reason = "qnx refactored to nto")]
+
 //! Fallible random data generation.
 //!
 //! Provides [`fill_bytes`] for filling a buffer with random bytes, and
