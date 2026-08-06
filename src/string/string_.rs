@@ -81,7 +81,10 @@ pub trait TryString: Sized {
     ///
     /// **Deprecated:** This method name conflicts with the unstable inherent
     /// [`String::try_with_capacity`]. Use [`Self::fallible_with_capacity`] instead.
-    #[deprecated(since = "0.1.0", note = "conflicts with unstable String::try_with_capacity; use fallible_with_capacity")]
+    #[deprecated(
+        since = "0.1.0",
+        note = "conflicts with unstable String::try_with_capacity; use fallible_with_capacity"
+    )]
     fn try_with_capacity(capacity: usize) -> Result<String, TryReserveError>;
 
     /// Fallibly construct a `String` from any value that references a `str`.
@@ -689,5 +692,76 @@ mod tests {
         s.try_insert(1, '.').unwrap();
         // inserts '.' at byte index 1 → between 'x' and 'y'.
         assert_eq!(s, "x.yz");
+    }
+
+    // ── OOM tests ─────────────────────────────────────────────────────────────
+
+    use crate::test_allocator::{FailAllocGuard, FailPolicy, with_policy};
+
+    #[test]
+    fn string_try_clone_fails_on_oom() {
+        let orig = String::from("test data");
+        let _g = FailAllocGuard::fail_next_alloc();
+        let r: Result<String, TryCloneError> = orig.try_clone();
+        assert!(r.is_err());
+    }
+
+    #[test]
+    fn string_try_clone_empty_succeeds_under_oom() {
+        let orig = String::new();
+        let _g = FailAllocGuard::fail_next_alloc();
+        let r: Result<String, TryCloneError> = orig.try_clone();
+        assert!(r.is_ok());
+        assert!(r.unwrap().is_empty());
+    }
+
+    #[test]
+    fn string_disable_fail_allocation_policy() {
+        let orig = String::from("data");
+        let _g = FailAllocGuard::fail_next_alloc();
+        let r: Result<String, TryCloneError> = orig.try_clone();
+        assert!(r.is_err());
+        drop(_g);
+        let r = orig.try_clone();
+        assert!(r.is_ok());
+    }
+
+    #[test]
+    fn string_nth_alloc_fail_targets_correct_call() {
+        let a = String::from("first");
+        let b = String::from("second");
+        with_policy(FailPolicy::fail_nth_alloc(2), || {
+            let r: Result<String, TryCloneError> = a.try_clone();
+            assert!(r.is_ok());
+            let r: Result<String, TryCloneError> = b.try_clone();
+            assert!(r.is_err());
+        });
+    }
+
+    // ── Box<str> OOM tests ────────────────────────────────────────────────────
+
+    #[test]
+    fn box_str_try_clone_fails_on_oom() {
+        let bs: Box<str> = "clone me".into();
+        let _g = FailAllocGuard::fail_next_alloc();
+        let r: Result<Box<str>, TryCloneError> = bs.try_clone();
+        assert!(r.is_err());
+    }
+
+    #[test]
+    fn box_str_try_clone_empty_succeeds_under_oom() {
+        let bs: Box<str> = "".into();
+        let _g = FailAllocGuard::fail_next_alloc();
+        let r: Result<Box<str>, TryCloneError> = bs.try_clone();
+        assert!(r.is_ok());
+        assert!(r.unwrap().is_empty());
+    }
+
+    #[test]
+    fn box_str_try_clone_unicode_fails_on_oom() {
+        let bs: Box<str> = "こんにちは 🦀".into();
+        let _g = FailAllocGuard::fail_next_alloc();
+        let r: Result<Box<str>, TryCloneError> = bs.try_clone();
+        assert!(r.is_err());
     }
 }

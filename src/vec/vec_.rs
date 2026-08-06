@@ -491,25 +491,25 @@ impl<T> TryVec<T> for Vec<T> {
 
         // Drain the head element first if present.
         if let Some(h) = head {
-            if self.len() == self.capacity() {
-                if let Err(e) = self.try_reserve(1) {
-                    return Err((e.into(), Resumable::new(h, iter)));
-                }
+            if self.len() == self.capacity()
+                && let Err(e) = self.try_reserve(1)
+            {
+                return Err((e.into(), Resumable::new(h, iter)));
             }
             self.push(h);
         }
 
         let (lower, _) = iter.size_hint();
-        if lower > 0 {
-            if let Err(e) = self.try_reserve(lower) {
-                return Err((e.into(), Resumable::from_remainder(iter)));
-            }
+        if lower > 0
+            && let Err(e) = self.try_reserve(lower)
+        {
+            return Err((e.into(), Resumable::from_remainder(iter)));
         }
         while let Some(item) = iter.next() {
-            if self.len() == self.capacity() {
-                if let Err(e) = self.try_reserve(1) {
-                    return Err((e.into(), Resumable::new(item, iter)));
-                }
+            if self.len() == self.capacity()
+                && let Err(e) = self.try_reserve(1)
+            {
+                return Err((e.into(), Resumable::new(item, iter)));
             }
             self.push(item);
         }
@@ -1199,5 +1199,136 @@ mod tests {
         combined.try_append(&mut b).unwrap();
         assert_eq!(combined, [1, 2, 3, 4, 5, 6]);
         assert!(b.is_empty());
+    }
+
+    // ── OOM tests ─────────────────────────────────────────────────────────────
+
+    use crate::test_allocator::{FailAllocGuard, FailPolicy, with_policy};
+
+    #[test]
+    fn vec_try_with_capacity_fails_on_oom() {
+        let _g = FailAllocGuard::fail_next_alloc();
+        let r: Result<Vec<u8>, TryReserveError> = <Vec<u8> as TryVec<u8>>::try_with_capacity(10);
+        assert!(r.is_err());
+    }
+
+    #[test]
+    fn vec_try_with_capacity_zero_succeeds_under_oom() {
+        // Zero-capacity Vec doesn't allocate.
+        let _g = FailAllocGuard::fail_next_alloc();
+        let r: Result<Vec<u8>, TryReserveError> = <Vec<u8> as TryVec<u8>>::try_with_capacity(0);
+        assert!(r.is_ok());
+        assert!(r.unwrap().is_empty());
+    }
+
+    #[test]
+    fn vec_try_reserve_fails_on_oom() {
+        // Build value before guard to avoid clone-time allocation issues.
+        let mut v: Vec<u32> = Vec::new();
+        let _g = FailAllocGuard::fail_next_alloc();
+        let r = v.try_reserve(100);
+        assert!(r.is_err());
+    }
+
+    #[test]
+    fn vec_try_clone_fails_on_oom() {
+        // Create the vec before activating the guard.
+        let orig: Vec<u32> = vec![1, 2, 3];
+        let _g = FailAllocGuard::fail_next_alloc();
+        let r: Result<Vec<u32>, TryCloneError> = orig.try_clone();
+        assert!(r.is_err());
+    }
+
+    #[test]
+    fn vec_try_clone_empty_succeeds_under_oom() {
+        let orig: Vec<u32> = Vec::new();
+        let _g = FailAllocGuard::fail_next_alloc();
+        let r: Result<Vec<u32>, TryCloneError> = orig.try_clone();
+        assert!(r.is_ok());
+        assert!(r.unwrap().is_empty());
+    }
+
+    #[test]
+    fn vec_try_from_slice_fails_on_oom() {
+        let slice: &[u32] = &[10, 20, 30];
+        let _g = FailAllocGuard::fail_next_alloc();
+        let r: Result<Vec<u32>, TryVecError> = Vec::<u32>::try_from_slice(slice);
+        assert!(matches!(r, Err(TryVecError::Reserve(_))));
+    }
+
+    #[test]
+    fn vec_try_insert_fails_on_oom() {
+        let mut v: Vec<u32> = Vec::new();
+        let _g = FailAllocGuard::fail_next_alloc();
+        let r = v.try_insert(0, 42);
+        assert!(r.is_err());
+    }
+
+    #[test]
+    fn vec_try_push_fails_on_oom() {
+        let mut v: Vec<u32> = Vec::new();
+        let _g = FailAllocGuard::fail_next_alloc();
+        let r = v.try_push(42);
+        assert!(r.is_err());
+    }
+
+    #[test]
+    fn vec_try_resize_grow_fails_on_oom() {
+        let mut v: Vec<u32> = Vec::new();
+        let _g = FailAllocGuard::fail_next_alloc();
+        let r = v.try_resize_with(10, || 99u32);
+        assert!(r.is_err());
+    }
+
+    #[test]
+    fn vec_try_extend_fails_on_oom() {
+        let items: Vec<u32> = vec![1, 2, 3];
+        let mut v: Vec<u32> = Vec::new();
+        let _g = FailAllocGuard::fail_next_alloc();
+        let r = v.try_extend(items.iter().copied());
+        assert!(r.is_err());
+    }
+
+    #[test]
+    fn vec_try_collect_fails_on_oom() {
+        let _g = FailAllocGuard::fail_next_alloc();
+        let r: Result<Vec<u32>, TryReserveError> = Vec::try_collect(1..=3);
+        assert!(r.is_err());
+    }
+
+    #[test]
+    fn vec_try_from_elem_fails_on_oom() {
+        let _g = FailAllocGuard::fail_next_alloc();
+        let r: Result<Vec<u32>, TryVecError> = Vec::try_from_elem(&0u32, 5);
+        assert!(r.is_err());
+    }
+
+    #[test]
+    fn vec_oom_restores_allocation_afterwards() {
+        let _g = FailAllocGuard::fail_next_alloc();
+        let r: Result<Vec<u8>, TryReserveError> = <Vec<u8> as TryVec<u8>>::try_with_capacity(10);
+        assert!(r.is_err());
+        drop(_g);
+        // Allocation works again.
+        let r: Result<Vec<u8>, TryReserveError> = <Vec<u8> as TryVec<u8>>::try_with_capacity(10);
+        assert!(r.is_ok());
+    }
+
+    #[test]
+    fn vec_nth_alloc_fail_targets_correct_call() {
+        with_policy(FailPolicy::fail_nth_alloc(2), || {
+            // First alloc succeeds.
+            let r1: Result<Vec<u8>, TryReserveError> =
+                <Vec<u8> as TryVec<u8>>::try_with_capacity(1);
+            assert!(r1.is_ok());
+            // Second alloc fails.
+            let r2: Result<Vec<u8>, TryReserveError> =
+                <Vec<u8> as TryVec<u8>>::try_with_capacity(1);
+            assert!(r2.is_err());
+            // Third alloc succeeds again (nth was one-shot).
+            let r3: Result<Vec<u8>, TryReserveError> =
+                <Vec<u8> as TryVec<u8>>::try_with_capacity(1);
+            assert!(r3.is_ok());
+        });
     }
 }

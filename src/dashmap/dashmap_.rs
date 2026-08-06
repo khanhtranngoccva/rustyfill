@@ -882,10 +882,10 @@ impl<K: Eq + Hash, V, S: BuildHasher + TryClone> TryDashMap<K, V, S> for DashMap
 
         let (head, mut iter) = source.safe_into_iter();
 
-        if let Some(pair) = head {
-            if let Err((k, v, e)) = Self::try_insert_give_back(self, pair.0, pair.1) {
-                return Err((e, Resumable::new((k, v), iter)));
-            }
+        if let Some(pair) = head
+            && let Err((k, v, e)) = Self::try_insert_give_back(self, pair.0, pair.1)
+        {
+            return Err((e, Resumable::new((k, v), iter)));
         }
 
         while let Some(pair) = iter.next() {
@@ -1032,7 +1032,7 @@ where
 {
     fn try_clone(&self) -> Result<Self, crate::try_clone::TryCloneError> {
         let hasher = self.hasher().clone();
-        let out = DashMap::with_capacity_and_hasher(self.len(), hasher);
+        let out = DashMap::with_hasher(hasher);
         // We cannot reserve everything immediately because shards may be uneven.
         for ref_cell in self.iter() {
             let entry = TryDashMap::try_entry_ref(&out, ref_cell.key()).map_err(|e| match e {

@@ -8,6 +8,7 @@
 use crate::alloc::{AllocError, TryReserveError};
 use crate::try_clone::{TryClone, TryCloneError};
 use crate::try_default::{TryDefault, TryDefaultError};
+use core::alloc::Layout;
 use core::fmt;
 
 /// Error returned by [`TryStr`] operations.
@@ -130,10 +131,38 @@ impl TryToOwned for str {
 
 impl TryClone for Box<str> {
     fn try_clone(&self) -> Result<Self, TryCloneError> {
-        // Delegate to String's fallible construction then convert back to Box<str>.
-        let s = <String as super::string_::TryString>::try_from_str(self)
-            .map_err(TryCloneError::Reserve)?;
-        Ok(s.into_boxed_str())
+        let bytes = self.as_bytes();
+        let len = bytes.len();
+
+        // Empty string — no allocation needed.
+        if len == 0 {
+            return Ok(<String as Default>::default().into_boxed_str());
+        }
+
+        // Allocate exactly `len` bytes — no excess capacity.
+        // Layout::array handles overflow checking internally.
+        let layout = Layout::array::<u8>(len).map_err(|_| TryCloneError::Overflow)?;
+        let ptr = unsafe { std::alloc::alloc(layout) };
+        if ptr.is_null() {
+            return Err(TryCloneError::Alloc(AllocError { layout }));
+        }
+
+        // Wrap immediately in a Box<[u8]> so that Drop cleans up on any panic
+        // between here and the final transmute to Box<str>.
+        // SAFETY: layout matches `len` elements of u8.
+        let mut out: Box<[u8]> = unsafe {
+            Box::from_raw(core::ptr::slice_from_raw_parts_mut(ptr, len))
+        };
+
+        // SAFETY: `bytes` is valid UTF-8 and lives for at least the duration of
+        // this memcpy (borrowed from `self`). Destination has exactly `len` bytes.
+        unsafe {
+            core::ptr::copy_nonoverlapping(bytes.as_ptr(), out.as_mut_ptr(), len);
+        }
+
+        // SAFETY: we just copied valid UTF-8 bytes. `Box<[u8]>` and `Box<str>`
+        // have identical memory layouts (fat pointer: data ptr + length).
+        Ok(unsafe { core::mem::transmute::<Box<[u8]>, Box<str>>(out) })
     }
 }
 

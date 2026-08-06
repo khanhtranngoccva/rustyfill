@@ -396,25 +396,25 @@ impl<T: Eq + Hash, S: BuildHasher> TryHashSet<T, S> for HashSet<T, S> {
         let (head, mut iter) = source.safe_into_iter();
 
         if let Some(value) = head {
-            if self.len() == self.capacity() {
-                if let Err(e) = self.try_reserve(1) {
-                    return Err((e.into(), Resumable::new(value, iter)));
-                }
+            if self.len() == self.capacity()
+                && let Err(e) = self.try_reserve(1)
+            {
+                return Err((e.into(), Resumable::new(value, iter)));
             }
             self.insert(value);
         }
 
         let (lower, _) = iter.size_hint();
-        if lower > 0 {
-            if let Err(e) = self.try_reserve(lower) {
-                return Err((e.into(), Resumable::from_remainder(iter)));
-            }
+        if lower > 0
+            && let Err(e) = self.try_reserve(lower)
+        {
+            return Err((e.into(), Resumable::from_remainder(iter)));
         }
         while let Some(value) = iter.next() {
-            if self.len() == self.capacity() {
-                if let Err(e) = self.try_reserve(1) {
-                    return Err((e.into(), Resumable::new(value, iter)));
-                }
+            if self.len() == self.capacity()
+                && let Err(e) = self.try_reserve(1)
+            {
+                return Err((e.into(), Resumable::new(value, iter)));
             }
             self.insert(value);
         }
@@ -531,7 +531,7 @@ where
 {
     fn try_clone(&self) -> Result<Self, TryCloneError> {
         let hasher = self.hasher().try_clone()?;
-        let mut out = HashSet::with_capacity_and_hasher(self.len(), hasher);
+        let mut out = HashSet::with_hasher(hasher);
         if !self.is_empty() {
             out.try_reserve(self.len())
                 .map_err(|e| TryCloneError::Reserve(e.into()))?;
@@ -857,5 +857,83 @@ mod tests {
             <HashSet<i32> as TryHashSet<_, RandomState>>::try_with_capacity(5).unwrap();
         assert!(s1.is_empty());
         assert!(s2.is_empty());
+    }
+
+    // ── OOM tests ─────────────────────────────────────────────────────────────
+    use crate::test_allocator::{FailAllocGuard, FailPolicy, with_policy};
+
+    #[test]
+    fn hashset_try_with_capacity_fails_on_oom() {
+        let _g = FailAllocGuard::fail_next_alloc();
+        let r: Result<HashSet<u32>, TryHashSetError> =
+            <HashSet<u32> as TryHashSet<u32, RandomState>>::try_with_capacity(10);
+        assert!(matches!(r, Err(TryHashSetError::Reserve(_))));
+    }
+
+    #[test]
+    fn hashset_try_with_capacity_zero_succeeds_under_oom() {
+        let _g = FailAllocGuard::fail_next_alloc();
+        let r: Result<HashSet<u32>, TryHashSetError> =
+            <HashSet<u32> as TryHashSet<u32, RandomState>>::try_with_capacity(0);
+        assert!(r.is_ok());
+    }
+
+    #[test]
+    fn hashset_try_insert_fails_on_oom() {
+        let mut set: HashSet<u32> = HashSet::new();
+        let _g = FailAllocGuard::fail_next_alloc();
+        let r = set.try_insert(42);
+        assert!(matches!(r, Err(TryHashSetError::Reserve(_))));
+    }
+
+    #[test]
+    fn hashset_try_clone_fails_on_oom() {
+        let orig: HashSet<u32> = HashSet::from([1, 2, 3]);
+        let _g = FailAllocGuard::fail_next_alloc();
+        let r: Result<HashSet<u32>, TryCloneError> = orig.try_clone();
+        assert!(r.is_err());
+    }
+
+    #[test]
+    fn hashset_try_clone_empty_succeeds_under_oom() {
+        let orig: HashSet<u32> = HashSet::new();
+        let _g = FailAllocGuard::fail_next_alloc();
+        let r: Result<HashSet<u32>, TryCloneError> = orig.try_clone();
+        assert!(r.is_ok());
+    }
+
+    #[test]
+    fn hashset_try_collect_fails_on_oom() {
+        let items = [1u32, 2u32, 3u32];
+        let _g = FailAllocGuard::fail_next_alloc();
+        let r: Result<HashSet<u32>, TryHashSetError> = HashSet::try_collect(items.iter().copied());
+        assert!(r.is_err());
+    }
+
+    #[test]
+    fn hashset_oom_restores_allocation_afterwards() {
+        let _g = FailAllocGuard::fail_next_alloc();
+        let r: Result<HashSet<u32>, TryHashSetError> =
+            <HashSet<u32> as TryHashSet<u32, RandomState>>::try_with_capacity(10);
+        assert!(r.is_err());
+        drop(_g);
+        let r: Result<HashSet<u32>, TryHashSetError> =
+            <HashSet<u32> as TryHashSet<u32, RandomState>>::try_with_capacity(10);
+        assert!(r.is_ok());
+    }
+
+    #[test]
+    fn hashset_nth_alloc_fail_targets_correct_call() {
+        with_policy(FailPolicy::fail_nth_alloc(2), || {
+            let r1: Result<HashSet<u32>, TryHashSetError> =
+                <HashSet<u32> as TryHashSet<u32, RandomState>>::try_with_capacity(1);
+            assert!(r1.is_ok());
+            let r2: Result<HashSet<u32>, TryHashSetError> =
+                <HashSet<u32> as TryHashSet<u32, RandomState>>::try_with_capacity(1);
+            assert!(r2.is_err());
+            let r3: Result<HashSet<u32>, TryHashSetError> =
+                <HashSet<u32> as TryHashSet<u32, RandomState>>::try_with_capacity(1);
+            assert!(r3.is_ok());
+        });
     }
 }

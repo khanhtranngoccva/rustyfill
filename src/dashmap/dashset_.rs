@@ -339,11 +339,10 @@ impl<T: Eq + Hash, S: BuildHasher + TryClone> TryDashSet<T, S> for DashSet<T, S>
 
         let (head, mut iter) = source.safe_into_iter();
 
-        if let Some(value) = head {
-            if let Err((v, e)) = Self::try_insert_give_back(self, value) {
+        if let Some(value) = head
+            && let Err((v, e)) = Self::try_insert_give_back(self, value) {
                 return Err((e, Resumable::new(v, iter)));
             }
-        }
 
         while let Some(value) = iter.next() {
             match Self::try_insert_give_back(self, value) {

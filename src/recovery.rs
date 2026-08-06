@@ -217,7 +217,7 @@ mod tests {
     #[test]
     fn safe_into_iter_no_head() {
         let r = Resumable::from_remainder(0..4);
-        let (head, mut iter) = r.safe_into_iter();
+        let (head, iter) = r.safe_into_iter();
         assert!(head.is_none());
         assert_eq!(iter.collect::<Vec<_>>(), vec![0, 1, 2, 3]);
     }
@@ -256,7 +256,7 @@ mod tests {
     #[test]
     fn blanket_safe_iterable_for_range() {
         let range = 10..13;
-        let (head, mut inner): (Option<i32>, _) = range.safe_into_iter();
+        let (head, inner): (Option<i32>, _) = range.safe_into_iter();
         assert!(head.is_none());
         assert_eq!(inner.collect::<Vec<_>>(), vec![10, 11, 12]);
     }
@@ -264,7 +264,7 @@ mod tests {
     #[test]
     fn blanket_safe_iterable_for_vec() {
         let v = vec![1, 2, 3];
-        let (head, mut inner): (Option<i32>, _) = v.safe_into_iter();
+        let (head, inner): (Option<i32>, _) = v.safe_into_iter();
         assert!(head.is_none());
         assert_eq!(inner.collect::<Vec<_>>(), vec![1, 2, 3]);
     }

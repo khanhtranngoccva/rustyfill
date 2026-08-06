@@ -530,25 +530,25 @@ impl<K: Eq + Hash, V, S: BuildHasher> TryHashMap<K, V, S> for HashMap<K, V, S> {
         let (head, mut iter) = source.safe_into_iter();
 
         if let Some(pair) = head {
-            if self.len() == self.capacity() {
-                if let Err(e) = self.try_reserve(1) {
-                    return Err((e.into(), Resumable::new(pair, iter)));
-                }
+            if self.len() == self.capacity()
+                && let Err(e) = self.try_reserve(1)
+            {
+                return Err((e.into(), Resumable::new(pair, iter)));
             }
             self.insert(pair.0, pair.1);
         }
 
         let (lower, _) = iter.size_hint();
-        if lower > 0 {
-            if let Err(e) = self.try_reserve(lower) {
-                return Err((e.into(), Resumable::from_remainder(iter)));
-            }
+        if lower > 0
+            && let Err(e) = self.try_reserve(lower)
+        {
+            return Err((e.into(), Resumable::from_remainder(iter)));
         }
         while let Some(pair) = iter.next() {
-            if self.len() == self.capacity() {
-                if let Err(e) = self.try_reserve(1) {
-                    return Err((e.into(), Resumable::new(pair, iter)));
-                }
+            if self.len() == self.capacity()
+                && let Err(e) = self.try_reserve(1)
+            {
+                return Err((e.into(), Resumable::new(pair, iter)));
             }
             self.insert(pair.0, pair.1);
         }
@@ -670,7 +670,7 @@ where
 {
     fn try_clone(&self) -> Result<Self, TryCloneError> {
         let hasher = self.hasher().try_clone()?;
-        let mut out = HashMap::with_capacity_and_hasher(self.len(), hasher);
+        let mut out = HashMap::with_hasher(hasher);
         if !self.is_empty() {
             // Reserve space first so allocation failures are caught early.
             out.try_reserve(self.len())
@@ -1094,5 +1094,84 @@ mod tests {
             <HashMap<i32, i32> as TryHashMap<_, _, RandomState>>::try_with_capacity(5).unwrap();
         assert!(m1.is_empty());
         assert!(m2.is_empty());
+    }
+
+    // ── OOM tests ─────────────────────────────────────────────────────────────
+    use crate::test_allocator::{FailAllocGuard, FailPolicy, with_policy};
+
+    #[test]
+    fn hashmap_try_with_capacity_fails_on_oom() {
+        let _g = FailAllocGuard::fail_next_alloc();
+        let r: Result<HashMap<u32, u32>, TryHashMapError> =
+            <HashMap<u32, u32> as TryHashMap<u32, u32, RandomState>>::try_with_capacity(10);
+        assert!(matches!(r, Err(TryHashMapError::Reserve(_))));
+    }
+
+    #[test]
+    fn hashmap_try_with_capacity_zero_succeeds_under_oom() {
+        let _g = FailAllocGuard::fail_next_alloc();
+        let r: Result<HashMap<u32, u32>, TryHashMapError> =
+            <HashMap<u32, u32> as TryHashMap<u32, u32, RandomState>>::try_with_capacity(0);
+        assert!(r.is_ok());
+    }
+
+    #[test]
+    fn hashmap_try_insert_fails_on_oom() {
+        let mut map: HashMap<u32, u32> = HashMap::new();
+        let _g = FailAllocGuard::fail_next_alloc();
+        let r = map.fallible_insert(1, 2);
+        assert!(matches!(r, Err(TryHashMapError::Reserve(_))));
+    }
+
+    #[test]
+    fn hashmap_try_clone_fails_on_oom() {
+        let orig: HashMap<u32, u32> = HashMap::from([(1, 2), (3, 4)]);
+        let _g = FailAllocGuard::fail_next_alloc();
+        let r: Result<HashMap<u32, u32>, TryCloneError> = orig.try_clone();
+        assert!(r.is_err());
+    }
+
+    #[test]
+    fn hashmap_try_clone_empty_succeeds_under_oom() {
+        let orig: HashMap<u32, u32> = HashMap::new();
+        let _g = FailAllocGuard::fail_next_alloc();
+        let r: Result<HashMap<u32, u32>, TryCloneError> = orig.try_clone();
+        assert!(r.is_ok());
+    }
+
+    #[test]
+    fn hashmap_try_collect_fails_on_oom() {
+        let pairs = [(1u32, 2u32), (3u32, 4u32)];
+        let _g = FailAllocGuard::fail_next_alloc();
+        let r: Result<HashMap<u32, u32>, TryHashMapError> =
+            HashMap::try_collect(pairs.iter().copied());
+        assert!(r.is_err());
+    }
+
+    #[test]
+    fn hashmap_oom_restores_allocation_afterwards() {
+        let _g = FailAllocGuard::fail_next_alloc();
+        let r: Result<HashMap<u32, u32>, TryHashMapError> =
+            <HashMap<u32, u32> as TryHashMap<u32, u32, RandomState>>::try_with_capacity(10);
+        assert!(r.is_err());
+        drop(_g);
+        let r: Result<HashMap<u32, u32>, TryHashMapError> =
+            <HashMap<u32, u32> as TryHashMap<u32, u32, RandomState>>::try_with_capacity(10);
+        assert!(r.is_ok());
+    }
+
+    #[test]
+    fn hashmap_nth_alloc_fail_targets_correct_call() {
+        with_policy(FailPolicy::fail_nth_alloc(2), || {
+            let r1: Result<HashMap<u32, u32>, TryHashMapError> =
+                <HashMap<u32, u32> as TryHashMap<u32, u32, RandomState>>::try_with_capacity(1);
+            assert!(r1.is_ok());
+            let r2: Result<HashMap<u32, u32>, TryHashMapError> =
+                <HashMap<u32, u32> as TryHashMap<u32, u32, RandomState>>::try_with_capacity(1);
+            assert!(r2.is_err());
+            let r3: Result<HashMap<u32, u32>, TryHashMapError> =
+                <HashMap<u32, u32> as TryHashMap<u32, u32, RandomState>>::try_with_capacity(1);
+            assert!(r3.is_ok());
+        });
     }
 }

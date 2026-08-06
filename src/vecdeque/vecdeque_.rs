@@ -430,25 +430,25 @@ impl<T> TryVecDeque<T> for VecDeque<T> {
         let (head, mut iter) = source.safe_into_iter();
 
         if let Some(item) = head {
-            if self.len() == self.capacity() {
-                if let Err(e) = self.try_reserve(1) {
-                    return Err((e.into(), Resumable::new(item, iter)));
-                }
+            if self.len() == self.capacity()
+                && let Err(e) = self.try_reserve(1)
+            {
+                return Err((e.into(), Resumable::new(item, iter)));
             }
             self.push_back(item);
         }
 
         let (lower, _) = iter.size_hint();
-        if lower > 0 {
-            if let Err(e) = self.try_reserve(lower) {
-                return Err((e.into(), Resumable::from_remainder(iter)));
-            }
+        if lower > 0
+            && let Err(e) = self.try_reserve(lower)
+        {
+            return Err((e.into(), Resumable::from_remainder(iter)));
         }
         while let Some(item) = iter.next() {
-            if self.len() == self.capacity() {
-                if let Err(e) = self.try_reserve(1) {
-                    return Err((e.into(), Resumable::new(item, iter)));
-                }
+            if self.len() == self.capacity()
+                && let Err(e) = self.try_reserve(1)
+            {
+                return Err((e.into(), Resumable::new(item, iter)));
             }
             self.push_back(item);
         }

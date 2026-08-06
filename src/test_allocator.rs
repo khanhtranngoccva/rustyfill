@@ -38,6 +38,7 @@ impl FailPolicy {
     }
 
     /// Fail the very next realloc.
+    #[allow(unused)]
     pub const fn fail_next_realloc() -> Self {
         Self {
             fail_alloc_at: None,
@@ -54,6 +55,7 @@ impl FailPolicy {
     }
 
     /// Fail the Nth realloc (1-indexed).
+    #[allow(unused)]
     pub const fn fail_nth_realloc(n: u64) -> Self {
         Self {
             fail_alloc_at: None,
@@ -66,8 +68,8 @@ impl FailPolicy {
 
 thread_local! {
     static FAIL_POLICY: Cell<FailPolicy> = Cell::new(FailPolicy::default());
-    static ALLOC_INVOCATIONS: Cell<u64> = Cell::new(0);
-    static REALLOC_INVOCATIONS: Cell<u64> = Cell::new(0);
+    static ALLOC_INVOCATIONS: Cell<u64> = const { Cell::new(0) };
+    static REALLOC_INVOCATIONS: Cell<u64> = const { Cell::new(0) };
 }
 
 /// Snapshot of the current thread-local policy and invocation counters.
@@ -212,16 +214,19 @@ impl FailAllocGuard {
     }
 
     /// Convenience: fail the next reallocation on this thread.
+    #[allow(unused)]
     pub fn fail_next_realloc() -> Self {
         Self::install(FailPolicy::fail_next_realloc())
     }
 
     /// Convenience: fail the Nth allocation on this thread.
+    #[allow(unused)]
     pub fn fail_nth_alloc(n: u64) -> Self {
         Self::install(FailPolicy::fail_nth_alloc(n))
     }
 
     /// Convenience: fail the Nth reallocation on this thread.
+    #[allow(unused)]
     pub fn fail_nth_realloc(n: u64) -> Self {
         Self::install(FailPolicy::fail_nth_realloc(n))
     }
@@ -252,7 +257,10 @@ mod tests {
         drop(_inner);
         // Outer restored with 0 invocations counted.
         let r1: Result<Box<i32>, AllocError> = <Box<i32> as TryBox<i32>>::fallible_new(2);
-        assert!(r1.is_ok(), "first alloc under restored outer should succeed");
+        assert!(
+            r1.is_ok(),
+            "first alloc under restored outer should succeed"
+        );
         let r2: Result<Box<i32>, AllocError> = <Box<i32> as TryBox<i32>>::fallible_new(3);
         assert!(r2.is_err(), "second alloc under restored outer should fail");
         drop(outer);
@@ -293,8 +301,7 @@ mod tests {
     #[test]
     fn with_policy_fails_alloc() {
         with_policy(FailPolicy::fail_next_alloc(), || {
-            let r: Result<Box<i32>, AllocError> =
-                <Box<i32> as TryBox<i32>>::fallible_new(1);
+            let r: Result<Box<i32>, AllocError> = <Box<i32> as TryBox<i32>>::fallible_new(1);
             assert!(r.is_err());
         });
         let r: Result<Box<i32>, AllocError> = <Box<i32> as TryBox<i32>>::fallible_new(2);
@@ -311,8 +318,7 @@ mod tests {
     fn with_policy_nested() {
         with_policy(FailPolicy::nothing(), || {
             with_policy(FailPolicy::fail_next_alloc(), || {
-                let r: Result<Box<u8>, AllocError> =
-                    <Box<u8> as TryBox<u8>>::fallible_new(0);
+                let r: Result<Box<u8>, AllocError> = <Box<u8> as TryBox<u8>>::fallible_new(0);
                 assert!(r.is_err());
             });
             let r: Result<Box<u8>, AllocError> = <Box<u8> as TryBox<u8>>::fallible_new(1);
@@ -323,11 +329,17 @@ mod tests {
     #[test]
     fn with_policy_restores_after_closure_returns() {
         // Verify that after with_policy returns (even with Err), allocation works.
-        let result = with_policy(FailPolicy::fail_next_alloc(), || -> Result<(), &'static str> {
-            let r: Result<Box<i32>, AllocError> =
-                <Box<i32> as TryBox<i32>>::fallible_new(1);
-            if r.is_err() { Ok(()) } else { Err("should have failed") }
-        });
+        let result = with_policy(
+            FailPolicy::fail_next_alloc(),
+            || -> Result<(), &'static str> {
+                let r: Result<Box<i32>, AllocError> = <Box<i32> as TryBox<i32>>::fallible_new(1);
+                if r.is_err() {
+                    Ok(())
+                } else {
+                    Err("should have failed")
+                }
+            },
+        );
         assert!(result.is_ok());
         // Policy restored — allocation works again.
         let r: Result<Box<i32>, AllocError> = <Box<i32> as TryBox<i32>>::fallible_new(2);
