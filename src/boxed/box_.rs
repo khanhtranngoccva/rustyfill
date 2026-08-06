@@ -252,6 +252,8 @@ impl<T: TryDefault> TryDefault for Box<T> {
 mod tests {
     use super::*;
 
+    type PinBoxResult<T> = Result<Pin<Box<T>>, (T, AllocError)>;
+
     #[test]
     fn try_new_returns_value() {
         let b = <Box<i32> as TryBox<i32>>::try_new(42).unwrap();
@@ -394,7 +396,7 @@ mod tests {
     #[test]
     fn box_try_pin_give_back_signature() {
         let val = vec![1, 2, 3];
-        let result: Result<Pin<Box<Vec<i32>>>, (Vec<i32>, AllocError)> =
+        let result: PinBoxResult<Vec<i32>> =
             <Box<Vec<i32>> as TryBox<Vec<i32>>>::try_pin_give_back(val);
         let _pinned = result.unwrap();
     }

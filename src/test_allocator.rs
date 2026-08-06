@@ -426,12 +426,5 @@ mod tests {
 
     // ── Guard !Send / !Sync ───────────────────────────────────────────────
 
-    #[test]
-    fn guard_is_not_send_or_sync() {
-        fn require_send<T: Send>() {}
-        fn require_sync<T: Sync>() {}
-        // Uncommenting either line below must cause a compilation error.
-        // require_send::<FailAllocGuard>();
-        // require_sync::<FailAllocGuard>();
-    }
+    static_assertions::assert_not_impl_all!(FailAllocGuard: Send, Sync);
 }

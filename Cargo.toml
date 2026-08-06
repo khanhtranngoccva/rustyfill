@@ -55,6 +55,7 @@ panic = []
 
 [dev-dependencies]
 no-panic = "0.1.37"
+static_assertions = "1.1"
 
 [build-dependencies]
 cargo-build = "1.0.0"

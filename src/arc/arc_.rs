@@ -476,6 +476,8 @@ impl<T> TryDefault for Weak<T> {
 mod tests {
     use super::*;
 
+    type PinArcResult<T> = Result<Pin<Arc<T>>, (T, AllocError)>;
+
     #[test]
     fn try_new_basic() {
         let arc = <Arc<i32> as TryArc<i32>>::try_new(42).unwrap();
@@ -1047,7 +1049,7 @@ mod tests {
     #[test]
     fn arc_try_pin_give_back_signature() {
         let val = vec![1, 2, 3];
-        let result: Result<Pin<Arc<Vec<i32>>>, (Vec<i32>, AllocError)> =
+        let result: PinArcResult<Vec<i32>> =
             <Arc<Vec<i32>> as TryArc<Vec<i32>>>::try_pin_give_back(val);
         let _pinned = result.unwrap();
     }
