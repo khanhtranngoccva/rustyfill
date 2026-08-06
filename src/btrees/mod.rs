@@ -1,17 +1,29 @@
 //! Fallible B-tree map and set operations.
 //!
-//! Provides [`TryBTreeMap`] and [`TryBTreeSet`] for fallible B-tree collection
-//! construction, insertion, extension, and capacity management — returning
-//! [`Result`] values instead of panicking on allocation failure.
+//! # Deprecated
 //!
-//! These wrappers rely on [`std::panic::catch_unwind`] to intercept allocation
-//! panics from B-tree internal node growth (since `BTreeMap::try_reserve` does
-//! not exist). This feature is guarded behind the `"panic"` cargo feature and
-//! requires that the crate be compiled with `panic = "unwind"`. The build script
-//! will error if this feature is enabled but the panic strategy is `"abort"`.
-
+//! This module is deprecated. The `catch_unwind`-based approach cannot survive
+//! genuine out-of-memory conditions: `handle_alloc_error` calls `abort()` rather
+//! than panicking, so `catch_unwind` never gets a chance to catch anything.
+//! Additionally, Rust's `-Z oom=panic` flag was removed in 1.94.0 due to
+//! reentrancy soundness concerns, eliminating the only mechanism that would have
+//! made this work.
+//!
+//! Use the [`scapegoat`](https://crates.io/crates/scapegoat) crate instead, which
+//! provides a fully fallible scapegoat tree implementation with proper OOM handling.
+//!
+//! If you must use this anyway, you will have to use [`std::alloc::set_alloc_error_hook`].
 mod btreemap_;
 mod btreeset_;
 
+#[deprecated(
+    since = "0.2.0",
+    note = "catch_unwind cannot intercept OOM aborts; use the `scapegoat` crate for fallible trees"
+)]
 pub use btreemap_::{TryBTreeMap, TryBTreeMapError};
+
+#[deprecated(
+    since = "0.2.0",
+    note = "catch_unwind cannot intercept OOM aborts; use the `scapegoat` crate for fallible trees"
+)]
 pub use btreeset_::{TryBTreeSet, TryBTreeSetError};

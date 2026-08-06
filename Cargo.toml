@@ -46,11 +46,12 @@ r-efi-alloc = { version = "2.0.0", features = ['rustc-dep-of-std'] }
 opt-level = 2
 
 [features]
-# Enables the B-tree map/set fallible wrappers which rely on `catch_unwind`.
-# Requires that the crate is compiled with `panic = "unwind"` (the default).
-# The build script will error if this feature is enabled but the crate is
-# compiled in `panic = "abort"` mode, since `catch_unwind` cannot intercept
-# aborting panics.
+# Deprecated: enables the B-tree map/set fallible wrappers which rely on
+# `catch_unwind`. This approach cannot survive genuine OOM because
+# `handle_alloc_error` calls `abort()` rather than panicking, so `catch_unwind`
+# never catches anything. Use the `scapegoat` crate for fallible trees instead.
+# Retained for backward compatibility only. Requires `panic = "unwind"` (the
+# default); the build script errors if enabled under `panic = "abort"`.
 panic = []
 
 [dev-dependencies]

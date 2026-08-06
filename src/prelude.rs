@@ -61,7 +61,8 @@ pub use crate::path::{TryPath, TryPathBuf};
 
 pub use crate::dashmap::{TryDashMap, TryDashSet};
 
-// ── BTreeMap & BTreeSet (requires `panic` feature) ───────────────────────────
+// ── BTreeMap & BTreeSet (deprecated — use the `scapegoat` crate) ─────────────
 
 #[cfg(feature = "panic")]
+#[allow(deprecated)]
 pub use crate::btrees::{TryBTreeMap, TryBTreeSet};

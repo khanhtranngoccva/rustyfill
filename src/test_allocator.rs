@@ -197,7 +197,7 @@ impl FailAllocGuard {
     /// Install `policy` for the current thread, resetting invocation counters
     /// to zero. The previous policy and counters are saved and restored when
     /// this guard is dropped.
-    pub fn install(policy: FailPolicy) -> Self {
+    fn install(policy: FailPolicy) -> Self {
         let snapshot = get_snapshot();
         FAIL_POLICY.set(policy);
         ALLOC_INVOCATIONS.set(0);
@@ -209,25 +209,25 @@ impl FailAllocGuard {
     }
 
     /// Convenience: fail the next allocation on this thread.
-    pub fn fail_next_alloc() -> Self {
+    fn fail_next_alloc() -> Self {
         Self::install(FailPolicy::fail_next_alloc())
     }
 
     /// Convenience: fail the next reallocation on this thread.
     #[allow(unused)]
-    pub fn fail_next_realloc() -> Self {
+    fn fail_next_realloc() -> Self {
         Self::install(FailPolicy::fail_next_realloc())
     }
 
     /// Convenience: fail the Nth allocation on this thread.
     #[allow(unused)]
-    pub fn fail_nth_alloc(n: u64) -> Self {
+    fn fail_nth_alloc(n: u64) -> Self {
         Self::install(FailPolicy::fail_nth_alloc(n))
     }
 
     /// Convenience: fail the Nth reallocation on this thread.
     #[allow(unused)]
-    pub fn fail_nth_realloc(n: u64) -> Self {
+    fn fail_nth_realloc(n: u64) -> Self {
         Self::install(FailPolicy::fail_nth_realloc(n))
     }
 }
@@ -300,10 +300,11 @@ mod tests {
 
     #[test]
     fn with_policy_fails_alloc() {
-        with_policy(FailPolicy::fail_next_alloc(), || {
-            let r: Result<Box<i32>, AllocError> = <Box<i32> as TryBox<i32>>::fallible_new(1);
-            assert!(r.is_err());
-        });
+        let r: Result<Box<i32>, AllocError> = with_policy(
+            FailPolicy::fail_next_alloc(),
+            || <Box<i32> as TryBox<i32>>::fallible_new(1),
+        );
+        assert!(r.is_err());
         let r: Result<Box<i32>, AllocError> = <Box<i32> as TryBox<i32>>::fallible_new(2);
         assert!(r.is_ok());
     }
@@ -316,14 +317,15 @@ mod tests {
 
     #[test]
     fn with_policy_nested() {
-        with_policy(FailPolicy::nothing(), || {
-            with_policy(FailPolicy::fail_next_alloc(), || {
-                let r: Result<Box<u8>, AllocError> = <Box<u8> as TryBox<u8>>::fallible_new(0);
-                assert!(r.is_err());
-            });
-            let r: Result<Box<u8>, AllocError> = <Box<u8> as TryBox<u8>>::fallible_new(1);
-            assert!(r.is_ok());
+        let inner_r: Result<Box<u8>, AllocError> = with_policy(FailPolicy::nothing(), || {
+            with_policy(
+                FailPolicy::fail_next_alloc(),
+                || <Box<u8> as TryBox<u8>>::fallible_new(0),
+            )
         });
+        assert!(inner_r.is_err());
+        let outer_r: Result<Box<u8>, AllocError> = <Box<u8> as TryBox<u8>>::fallible_new(1);
+        assert!(outer_r.is_ok());
     }
 
     #[test]
@@ -427,4 +429,82 @@ mod tests {
     // ── Guard !Send / !Sync ───────────────────────────────────────────────
 
     static_assertions::assert_not_impl_all!(FailAllocGuard: Send, Sync);
+
+    // ── Panic handler allocation investigation ────────────────────────────
+    //
+    // Documents why the `btrees` module (and the `panic` feature) were deprecated.
+    // See `src/btrees/mod.rs` for the full rationale and the recommendation to use
+    // the `scapegoat` crate instead.
+    //
+    // Summary of findings (confirmed empirically on Linux x86_64, Rust stable 1.97):
+    //
+    // 1. The panic infrastructure allocates a `Box<dyn Any + Send>` for every panic
+    //    payload. Under sustained OOM this allocation fails and the process aborts
+    //    before `catch_unwind` can intervene.
+    //
+    // 2. `handle_alloc_error` calls `abort()` directly on OOM, bypassing the unwind
+    //    mechanism entirely. No amount of `catch_unwind` nesting can intercept an
+    //    abort.
+    //
+    // 3. The `-Z oom=panic` flag that would have made `handle_alloc_error` panic
+    //    instead of abort was removed from Rust in 1.94.0 (PR #147725) due to
+    //    reentrancy soundness concerns. The replacement (`set_alloc_error_hook`)
+    //    suffers from the same payload-box allocation problem as (1).
+    //
+    // The tests below are intentionally marked `ignore` because they demonstrate
+    // aborting behavior. Run them individually with `--ignored` to observe.
+
+    /// Demonstrates that raising a panic while the allocator is disabled causes
+    /// the process to abort. The panic infrastructure needs to allocate a
+    /// `Box<dyn Any + Send>` for the payload, and when that fails, `abort()` is
+    /// called before `catch_unwind` can intervene.
+    ///
+    /// Expected outcome: SIGABRT ("memory allocation of N bytes failed").
+    #[test]
+    #[ignore = "intentionally aborts - demonstrates that panic infrastructure allocates"]
+    fn panic_infrastructure_allocates_payload_box() {
+        let _g = FailAllocGuard::install(FailPolicy::fail_nth_alloc(1));
+
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            panic!("synthetic");
+        }));
+
+        // Unreachable: the process aborts before reaching here.
+        assert!(result.is_err());
+    }
+
+    /// Demonstrates that `handle_alloc_error` aborts the process rather than
+    /// panicking. This is the root cause of why `catch_unwind` cannot intercept
+    /// OOM from standard library collections: the allocation failure path never
+    /// produces a catchable panic to begin with.
+    ///
+    /// Expected outcome: SIGABRT ("memory allocation of 8 bytes failed").
+    #[test]
+    #[ignore = "intentionally aborts - demonstrates that handle_alloc_error calls abort()"]
+    fn handle_alloc_error_aborts_instead_of_panicking() {
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            // Force an allocation failure and feed it into handle_alloc_error.
+            // Layout for a single u64 — small, innocuous, just needs to fail.
+            let layout = std::alloc::Layout::new::<u64>();
+            std::alloc::handle_alloc_error(layout);
+        }));
+
+        // Unreachable: handle_alloc_error aborts the process.
+        assert!(result.is_err());
+    }
+
+    /// Basically, if output capturing is enabled, panicking locks the backtrace and attempts to write to an output
+    /// vector buffer, and fail because it tries to allocate while the FailAllocGuard is active. The second allocation 
+    /// error tries to lock the backtrace output lock again, which causes a deadlock.
+    /// 
+    /// In short, the allocator must not fail while encountering a panic if output capturing is set. If all else fails, 
+    /// run the suite with --nocapture. 
+    /// 
+    /// https://github.com/rust-lang/rust/issues/130187
+    #[test]
+    #[ignore = "deadlocks - demonstrates issue #130187"]
+    fn backtrace_deadlock() {
+        let _g = FailAllocGuard::fail_next_alloc();
+        panic!("something fishy.");
+    }
 }

@@ -618,4 +618,36 @@ mod tests {
         set.try_extend([3, 4]).unwrap();
         assert_eq!(set.len(), 4);
     }
+
+    // ── OOM tests ─────────────────────────────────────────────────────
+    use crate::test_allocator::{FailPolicy, with_policy};
+
+    #[test]
+    fn dashset_try_insert_fails_on_oom() {
+        let set: DashSet<u32> = DashSet::new();
+        let r = with_policy(FailPolicy::fail_next_alloc(), || set.try_insert(1));
+        assert!(r.is_err());
+    }
+
+    #[test]
+    fn dashset_nth_alloc_fail_targets_correct_call() {
+        // DashSet::try_clone does multiple internal allocations before reaching
+        // fallible code, so nth-counting on try_clone is unreliable.
+        let set: DashSet<u32> = DashSet::new();
+        let (r1_ok, r2_err) = with_policy(FailPolicy::fail_nth_alloc(2), || {
+            let r1 = set.try_insert(1);
+            let r2 = set.try_insert(2);
+            (r1.is_ok(), r2.is_err())
+        });
+        assert!(r1_ok, "first insert should succeed");
+        assert!(r2_err, "second insert should fail");
+    }
+
+    #[test]
+    fn dashset_oom_restores_allocation_afterwards() {
+        let set: DashSet<u32> = DashSet::new();
+        let r = with_policy(FailPolicy::fail_next_alloc(), || set.try_insert(1));
+        assert!(r.is_err());
+        assert!(set.try_insert(1).is_ok());
+    }
 }

@@ -1700,4 +1700,37 @@ mod tests {
         assert!(m1.is_empty());
         assert!(m2.is_empty());
     }
+
+    // ── OOM tests ─────────────────────────────────────────────────────
+    use crate::test_allocator::{FailPolicy, with_policy};
+
+    #[test]
+    fn dashmap_try_insert_fails_on_oom() {
+        let map: DashMap<u32, u32> = DashMap::new();
+        let r = with_policy(FailPolicy::fail_next_alloc(), || map.try_insert(1, 10));
+        assert!(r.is_err());
+    }
+
+    #[test]
+    fn dashmap_nth_alloc_fail_targets_correct_call() {
+        // DashMap::try_clone does multiple internal allocations (hasher clone +
+        // shard array + entry storage) before reaching fallible code, so nth-counting
+        // on try_clone is unreliable. Instead we verify nth behavior on try_insert.
+        let map: DashMap<u32, u32> = DashMap::new();
+        let (r1_ok, r2_err) = with_policy(FailPolicy::fail_nth_alloc(2), || {
+            let r1 = map.try_insert(1, 10);
+            let r2 = map.try_insert(2, 20);
+            (r1.is_ok(), r2.is_err())
+        });
+        assert!(r1_ok, "first insert should succeed");
+        assert!(r2_err, "second insert should fail");
+    }
+
+    #[test]
+    fn dashmap_oom_restores_allocation_afterwards() {
+        let map: DashMap<u32, u32> = DashMap::new();
+        let r = with_policy(FailPolicy::fail_next_alloc(), || map.try_insert(1, 10));
+        assert!(r.is_err());
+        assert!(map.try_insert(1, 10).is_ok());
+    }
 }

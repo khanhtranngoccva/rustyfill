@@ -18,7 +18,6 @@
 //! The trait also implements [`TryClone`](crate::try_clone::TryClone) and
 //! [`TryDefault`](crate::try_default::TryDefault) for `BTreeSet<T>` when
 //! `T` satisfies the respective bounds.
-
 use crate::alloc::{AllocError, PayloadBox};
 use crate::try_clone::TryCloneError;
 use core::fmt;
@@ -282,10 +281,10 @@ impl<T: Ord + RefUnwindSafe> TryBTreeSet<T> for BTreeSet<T> {
 
         let (head, mut iter) = source.safe_into_iter();
 
-        if let Some(value) = head {
-            if let Err((v, e)) = Self::try_insert_give_back(self, value) {
-                return Err((e, Resumable::new(v, iter)));
-            }
+        if let Some(value) = head
+            && let Err((v, e)) = Self::try_insert_give_back(self, value)
+        {
+            return Err((e, Resumable::new(v, iter)));
         }
 
         while let Some(value) = iter.next() {

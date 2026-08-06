@@ -466,10 +466,10 @@ impl<K: Ord + RefUnwindSafe, V: RefUnwindSafe> TryBTreeMap<K, V> for BTreeMap<K,
 
         let (head, mut iter) = source.safe_into_iter();
 
-        if let Some(pair) = head {
-            if let Err((k, v, e)) = Self::try_insert_give_back(self, pair.0, pair.1) {
-                return Err((e, Resumable::new((k, v), iter)));
-            }
+        if let Some(pair) = head
+            && let Err((k, v, e)) = Self::try_insert_give_back(self, pair.0, pair.1)
+        {
+            return Err((e, Resumable::new((k, v), iter)));
         }
 
         while let Some(pair) = iter.next() {

@@ -843,4 +843,70 @@ mod tests {
         let c = p.try_clone().unwrap();
         assert_eq!(c, Path::new("/tmp/draft.md"));
     }
+
+    // ── OOM tests ─────────────────────────────────────────────────────
+    use crate::test_allocator::{FailPolicy, with_policy};
+
+    #[test]
+    fn pathbuf_try_from_path_fails_on_oom() {
+        let r: Result<PathBuf, TryPathBufError> =
+            with_policy(FailPolicy::fail_next_alloc(), || {
+                <PathBuf as TryPathBuf>::try_from_path("/some/path")
+            });
+        assert!(r.is_err());
+    }
+
+    #[test]
+    fn pathbuf_try_push_fails_on_oom() {
+        // Pushing onto an existing PathBuf triggers realloc (not alloc) when
+        // growing the underlying buffer. Use fail_next_realloc to target this.
+        let long = format!("/base/{}", "x".repeat(256));
+        let mut p = PathBuf::try_from_path(long).unwrap();
+        p.as_mut_os_string().try_shrink_to_fit().unwrap();
+        let extra = format!("child_{}", "y".repeat(256));
+        let r = with_policy(FailPolicy::fail_next_realloc(), || p.fallible_push(extra));
+        assert!(r.is_err());
+    }
+
+    #[test]
+    fn pathbuf_try_clone_fails_on_oom() {
+        let orig = PathBuf::try_from_path("/data/files").unwrap();
+        let r: Result<PathBuf, TryCloneError> =
+            with_policy(FailPolicy::fail_next_alloc(), || orig.try_clone());
+        assert!(r.is_err());
+    }
+
+    #[test]
+    fn pathbuf_try_clone_empty_succeeds_under_oom() {
+        let orig: PathBuf = PathBuf::new();
+        let r: Result<PathBuf, TryCloneError> =
+            with_policy(FailPolicy::fail_next_alloc(), || orig.try_clone());
+        assert!(r.is_ok());
+    }
+
+    #[test]
+    fn pathbuf_nth_alloc_fail_targets_correct_call() {
+        let orig = PathBuf::try_from_path("/data/files").unwrap();
+        let (r1_ok, r2_err, r3_ok) = with_policy(FailPolicy::fail_nth_alloc(2), || {
+            let r1: Result<PathBuf, TryCloneError> = orig.try_clone();
+            let r2: Result<PathBuf, TryCloneError> = orig.try_clone();
+            let r3: Result<PathBuf, TryCloneError> = orig.try_clone();
+            (r1.is_ok(), r2.is_err(), r3.is_ok())
+        });
+        assert!(r1_ok, "first clone should succeed");
+        assert!(r2_err, "second clone should fail");
+        assert!(r3_ok, "third clone should succeed");
+    }
+
+    #[test]
+    fn pathbuf_oom_restores_allocation_afterwards() {
+        let r: Result<PathBuf, TryPathBufError> =
+            with_policy(FailPolicy::fail_next_alloc(), || {
+                <PathBuf as TryPathBuf>::try_from_path("/x")
+            });
+        assert!(r.is_err());
+        // Allocation works again after guard scope ends.
+        let r: Result<PathBuf, TryPathBufError> = <PathBuf as TryPathBuf>::try_from_path("/y");
+        assert!(r.is_ok());
+    }
 }
