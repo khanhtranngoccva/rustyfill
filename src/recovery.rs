@@ -74,7 +74,7 @@ impl<I: IntoIterator> ResumableSource for I {
 /// # Example
 ///
 /// ```
-/// use fallibles::prelude::*;
+/// use rustyfill::prelude::*;
 ///
 /// let mut vec = Vec::<i32>::new();
 /// let items = 0..10_000;

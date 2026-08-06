@@ -1,4 +1,4 @@
-//! Procedural macros for [`fallibles`](https://docs.rs/fallibles).
+//! Procedural macros for [`rustyfill`](https://docs.rs/rustyfill).
 
 extern crate proc_macro;
 
@@ -107,8 +107,8 @@ pub fn derive_try_clone(input: TokenStream) -> TokenStream {
     };
 
     let expanded = quote! {
-        impl #impl_generics ::fallibles::try_clone::TryClone for #name #ty_generics #where_clause {
-            fn try_clone(&self) -> Result<Self, ::fallibles::try_clone::TryCloneError> {
+        impl #impl_generics ::rustyfill::try_clone::TryClone for #name #ty_generics #where_clause {
+            fn try_clone(&self) -> Result<Self, ::rustyfill::try_clone::TryCloneError> {
                 #clone_body
             }
         }
@@ -120,7 +120,7 @@ pub fn derive_try_clone(input: TokenStream) -> TokenStream {
 /// Generates `TryClone` implementations for tuples of arities 1 through `max`.
 ///
 /// ```ignore
-/// fallibles_macros::try_clone_tuples!(12);
+/// rustyfill_macros::try_clone_tuples!(12);
 /// ```
 #[proc_macro]
 pub fn try_clone_tuples(input: TokenStream) -> TokenStream {
@@ -202,7 +202,7 @@ pub fn derive_try_default(input: TokenStream) -> TokenStream {
                 let field_defaults = fields.named.iter().map(|field| {
                     let ident = &field.ident;
                     quote! {
-                        #ident: ::fallibles::try_default::TryDefault::try_default()?,
+                        #ident: ::rustyfill::try_default::TryDefault::try_default()?,
                     }
                 });
                 quote! {
@@ -213,7 +213,7 @@ pub fn derive_try_default(input: TokenStream) -> TokenStream {
                 let field_defaults = fields.unnamed.iter().map(|field| {
                     let ty = &field.ty;
                     quote! {
-                        <#ty as ::fallibles::try_default::TryDefault>::try_default()?,
+                        <#ty as ::rustyfill::try_default::TryDefault>::try_default()?,
                     }
                 });
                 quote! {
@@ -244,7 +244,7 @@ pub fn derive_try_default(input: TokenStream) -> TokenStream {
                     let field_defaults = fields.named.iter().map(|field| {
                         let ident = &field.ident;
                         quote! {
-                            #ident: ::fallibles::try_default::TryDefault::try_default()?,
+                            #ident: ::rustyfill::try_default::TryDefault::try_default()?,
                         }
                     });
                     quote! {
@@ -255,7 +255,7 @@ pub fn derive_try_default(input: TokenStream) -> TokenStream {
                     let field_defaults = fields.unnamed.iter().map(|field| {
                         let ty = &field.ty;
                         quote! {
-                            <#ty as ::fallibles::try_default::TryDefault>::try_default()?,
+                            <#ty as ::rustyfill::try_default::TryDefault>::try_default()?,
                         }
                     });
                     quote! {
@@ -280,8 +280,8 @@ pub fn derive_try_default(input: TokenStream) -> TokenStream {
     };
 
     let expanded = quote! {
-        impl #impl_generics ::fallibles::try_default::TryDefault for #name #ty_generics #where_clause {
-            fn try_default() -> Result<Self, ::fallibles::try_default::TryDefaultError> {
+        impl #impl_generics ::rustyfill::try_default::TryDefault for #name #ty_generics #where_clause {
+            fn try_default() -> Result<Self, ::rustyfill::try_default::TryDefaultError> {
                 #default_body
             }
         }
@@ -293,7 +293,7 @@ pub fn derive_try_default(input: TokenStream) -> TokenStream {
 /// Generates `TryDefault` implementations for tuples of arities 1 through `max`.
 ///
 /// ```ignore
-/// fallibles_macros::try_default_tuples!(12);
+/// rustyfill_macros::try_default_tuples!(12);
 /// ```
 #[proc_macro]
 pub fn try_default_tuples(input: TokenStream) -> TokenStream {

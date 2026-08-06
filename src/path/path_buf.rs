@@ -540,7 +540,7 @@ mod tests {
     #[test]
     fn push_relative_on_unix_style_base() {
         assert_push_matches_std("/tmp", "file.txt");
-        assert_push_matches_std("/home/user", "projects/fallibles");
+        assert_push_matches_std("/home/user", "projects/rustyfill");
         assert_push_matches_std("/var/log", "");
     }
 
@@ -621,7 +621,7 @@ mod tests {
     #[test]
     fn join_relative_on_various_bases() {
         assert_join_matches_std("/tmp", "file.txt");
-        assert_join_matches_std("/home/user", "projects/fallibles");
+        assert_join_matches_std("/home/user", "projects/rustyfill");
         assert_join_matches_std("", "hello");
         assert_join_matches_std("a/b", "c/d");
     }

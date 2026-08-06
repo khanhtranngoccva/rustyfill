@@ -34,7 +34,7 @@ pub mod try_to_owned;
 pub mod vec;
 pub mod vecdeque;
 
-pub use fallibles_macros::{TryClone, TryDefault};
+pub use rustyfill_macros::{TryClone, TryDefault};
 pub use try_random_state::TryRandomState;
 
 #[cfg(test)]

@@ -1,15 +1,15 @@
 [workspace]
-members = ["fallibles-macros", "xtask"]
+members = ["rustyfill-macros", "xtask"]
 resolver = "2"
 
 [package]
-name = "fallibles"
+name = "rustyfill"
 version = "0.1.0"
 edition = "2024"
 
 [dependencies]
 dashmap = { version = "6", features = ["raw-api"] }
-fallibles-macros = { path = "fallibles-macros" }
+rustyfill-macros = { path = "rustyfill-macros" }
 hashbrown = "0.14.5"
 libc = "0.2.189"
 once_cell = "1.21.4"

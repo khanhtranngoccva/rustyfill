@@ -59,37 +59,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "fallibles"
-version = "0.1.0"
-dependencies = [
- "cargo-build",
- "dashmap",
- "fallibles-macros",
- "hashbrown",
- "hermit-abi",
- "libc",
- "moto-rt",
- "no-panic",
- "once_cell",
- "r-efi",
- "r-efi-alloc",
- "rustversion",
- "static_assertions",
- "wasip1",
- "wasip2",
- "wasip3",
-]
-
-[[package]]
-name = "fallibles-macros"
-version = "0.1.0"
-dependencies = [
- "proc-macro2",
- "quote",
- "syn 2.0.119",
-]
-
-[[package]]
 name = "hashbrown"
 version = "0.14.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -227,6 +196,37 @@ name = "rustversion"
 version = "1.0.23"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "cf54715a573b99ac80df0bc206da022bcd442c974952c7b9720069370852e21f"
+
+[[package]]
+name = "rustyfill"
+version = "0.1.0"
+dependencies = [
+ "cargo-build",
+ "dashmap",
+ "hashbrown",
+ "hermit-abi",
+ "libc",
+ "moto-rt",
+ "no-panic",
+ "once_cell",
+ "r-efi",
+ "r-efi-alloc",
+ "rustversion",
+ "rustyfill-macros",
+ "static_assertions",
+ "wasip1",
+ "wasip2",
+ "wasip3",
+]
+
+[[package]]
+name = "rustyfill-macros"
+version = "0.1.0"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 2.0.119",
+]
 
 [[package]]
 name = "scopeguard"

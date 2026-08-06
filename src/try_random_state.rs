@@ -31,7 +31,7 @@ use std::hash::RandomState;
 /// # Example
 ///
 /// ```
-/// use fallibles::TryRandomState;
+/// use rustyfill::TryRandomState;
 /// use std::hash::RandomState;
 /// use std::collections::HashMap;
 ///

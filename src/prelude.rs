@@ -4,7 +4,7 @@
 //! scope as if their methods were inherent on the standard types:
 //!
 //! ```
-//! use fallibles::prelude::*;
+//! use rustyfill::prelude::*;
 //!
 //! // Now these all work without qualifying the trait name:
 //! let s = <str as TryStr>::try_to_string("hello").unwrap();

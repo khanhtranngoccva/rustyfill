@@ -209,7 +209,7 @@ where
 /// # Example
 ///
 /// ```
-/// use fallibles::hashers::CopyHasherFactory;
+/// use rustyfill::hashers::CopyHasherFactory;
 /// use std::hash::{BuildHasher, Hasher};
 ///
 /// #[derive(Clone, Copy, Default)]
@@ -343,7 +343,7 @@ impl<H: CopyBuildHasher + Eq> Eq for CopyHasherFactory<H> {}
 /// # Example
 ///
 /// ```
-/// use fallibles::hashers::ArbitraryHasherFactory;
+/// use rustyfill::hashers::ArbitraryHasherFactory;
 /// use std::collections::HashMap;
 /// use std::hash::RandomState;
 ///

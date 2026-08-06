@@ -245,7 +245,7 @@ mod tests {
     #[test]
     fn join_relative_on_various_bases() {
         assert_join_matches_std("/tmp", "file.txt");
-        assert_join_matches_std("/home/user", "projects/fallibles");
+        assert_join_matches_std("/home/user", "projects/rustyfill");
         assert_join_matches_std("", "hello");
         assert_join_matches_std("a/b", "c/d");
     }
@@ -383,9 +383,9 @@ mod tests {
     #[test]
     fn build_via_join_then_clone() {
         let base = Path::new("/home/user");
-        let buf = base.try_join("projects/fallibles").unwrap();
+        let buf = base.try_join("projects/rustyfill").unwrap();
         let cloned = buf.try_clone().unwrap();
-        assert_eq!(cloned, Path::new("/home/user/projects/fallibles"));
+        assert_eq!(cloned, Path::new("/home/user/projects/rustyfill"));
     }
 
     #[test]
