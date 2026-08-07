@@ -1,0 +1,11 @@
+[package]
+name = "rustyfill-errors"
+version = "0.1.0"
+edition = "2024"
+
+# Context-aware error handling with frame stacks inspired by error-stack,
+# optimized for OOM resilience — the tail of dynamic frames can be discarded
+# if allocation fails while building a report.
+
+[dependencies]
+rustyfill = { path = "../rustyfill" }

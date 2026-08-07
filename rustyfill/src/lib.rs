@@ -5,7 +5,7 @@
 //! panicking.
 
 // Enable unstable UEFI std and const error library features when building for UEFI on nightly.
-// Both cfg flags (`nightly_compiler` and `target_os`) are set by build.rs.
+// Both cfg flags (`nightly_compiler`) are set by build.rs.
 #![cfg_attr(all(nightly_compiler = "true", target_os = "uefi"), feature(uefi_std))]
 #![cfg_attr(
     all(nightly_compiler = "true", target_os = "uefi"),
