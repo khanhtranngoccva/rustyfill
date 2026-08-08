@@ -1144,7 +1144,7 @@ mod tests {
     }
 
     // ── OOM tests ─────────────────────────────────────────────────────────────
-    use crate::test_allocator::{FailPolicy, with_policy};
+    use rustyfill_test_allocator::{FailPolicy, with_policy};
 
     #[test]
     fn arc_fallible_new_fails_on_oom() {

@@ -347,7 +347,7 @@ mod tests {
     }
 
     // ── OOM tests ─────────────────────────────────────────────────────
-    use crate::test_allocator::{FailPolicy, with_policy};
+    use rustyfill_test_allocator::{FailPolicy, with_policy};
 
     #[test]
     fn cstring_try_clone_fails_on_oom() {

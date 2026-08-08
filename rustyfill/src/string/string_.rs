@@ -105,6 +105,16 @@ pub trait TryString: Sized {
     /// Returns [`TryReserveError`] if growing the internal buffer fails.
     fn try_push_str(&mut self, s: &str) -> Result<(), TryReserveError>;
 
+    /// Fallibly write formatted arguments into this string.
+    ///
+    /// Mirrors [`core::fmt::Write::write_fmt`] but returns [`Err(TryReserveError)`]
+    /// if growing the internal buffer fails. On failure the string may contain
+    /// a partial result.
+    fn try_write_fmt(
+        &mut self,
+        args: core::fmt::Arguments<'_>,
+    ) -> Result<(), TryReserveError>;
+
     /// Fallibly insert a `char` into this `String` at a valid byte index.
     ///
     /// The index must not exceed the length of the string and must lie on a
@@ -223,6 +233,25 @@ impl TryString for String {
         self.try_reserve(s.len())?;
         self.push_str(s);
         Ok(())
+    }
+
+    fn try_write_fmt(
+        &mut self,
+        args: core::fmt::Arguments<'_>,
+    ) -> Result<(), TryReserveError> {
+        // Use a wrapper that delegates write_str to try_push_str.
+        struct FallibleWriter<'a>(&'a mut String);
+        impl core::fmt::Write for FallibleWriter<'_> {
+            fn write_str(&mut self, s: &str) -> core::fmt::Result {
+                self.0.try_push_str(s).map_err(|_| core::fmt::Error)
+            }
+        }
+        core::fmt::write(&mut FallibleWriter(self), args).map_err(|_| {
+            // Distinguish: if the string grew since the last successful call,
+            // it was an OOM; otherwise it was a format error (shouldn't happen
+            // with valid Arguments, so treat as OOM conservatively).
+            TryReserveError::Other
+        })
     }
 
     fn try_insert(&mut self, idx: usize, c: char) -> Result<(), TryStringError> {
@@ -696,7 +725,7 @@ mod tests {
 
     // ── OOM tests ─────────────────────────────────────────────────────────────
 
-    use crate::test_allocator::{FailPolicy, with_policy};
+    use rustyfill_test_allocator::{FailPolicy, with_policy};
 
     #[test]
     fn string_try_clone_fails_on_oom() {

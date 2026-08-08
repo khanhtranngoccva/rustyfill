@@ -620,7 +620,7 @@ mod tests {
     }
 
     // ── OOM tests ─────────────────────────────────────────────────────
-    use crate::test_allocator::{FailPolicy, with_policy};
+    use rustyfill_test_allocator::{FailPolicy, with_policy};
 
     #[test]
     fn dashset_try_insert_fails_on_oom() {

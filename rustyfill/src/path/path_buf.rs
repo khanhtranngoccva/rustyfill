@@ -845,7 +845,7 @@ mod tests {
     }
 
     // ── OOM tests ─────────────────────────────────────────────────────
-    use crate::test_allocator::{FailPolicy, with_policy};
+    use rustyfill_test_allocator::{FailPolicy, with_policy};
 
     #[test]
     fn pathbuf_try_from_path_fails_on_oom() {

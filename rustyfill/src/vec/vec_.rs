@@ -1203,7 +1203,7 @@ mod tests {
 
     // ── OOM tests ─────────────────────────────────────────────────────────────
 
-    use crate::test_allocator::{FailPolicy, with_policy};
+    use rustyfill_test_allocator::{FailPolicy, with_policy};
 
     #[test]
     fn vec_try_with_capacity_fails_on_oom() {

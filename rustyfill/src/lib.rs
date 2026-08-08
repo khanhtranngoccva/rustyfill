@@ -37,6 +37,3 @@ pub mod vecdeque;
 
 pub use rustyfill_macros::{TryClone, TryDefault};
 pub use try_random_state::TryRandomState;
-
-#[cfg(test)]
-mod test_allocator;

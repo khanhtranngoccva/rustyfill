@@ -46,7 +46,7 @@ unstable = ["dep:dashmap"]
 
 [dev-dependencies]
 no-panic = { workspace = true }
-static_assertions = { workspace = true }
+rustyfill-test-allocator = { path = "../rustyfill-test-allocator" }
 
 [build-dependencies]
 cargo-build = { workspace = true }

@@ -28,6 +28,7 @@
 extern crate alloc;
 
 pub mod frame;
+mod fmt;
 mod report;
 
 pub use frame::{ContextFrame, DynamicFrame, ItemImpl, ItemKind, StaticFrame};

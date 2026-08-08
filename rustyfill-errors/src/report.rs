@@ -49,17 +49,6 @@ pub struct Report<C> {
     capacity: Option<usize>,
 }
 
-impl<C: core::fmt::Debug> core::fmt::Debug for Report<C> {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        f.debug_struct("Report")
-            .field("head", &self.head)
-            .field("peers_len", &self.peers.len())
-            .field("lost_peers", &self.lost_peers)
-            .field("capacity", &self.capacity)
-            .finish()
-    }
-}
-
 // ── Construction ─────────────────────────────────────────────────────────────
 
 impl<C> Report<C> {
@@ -388,12 +377,22 @@ impl<C> Report<C> {
 /// Because the implementation uses recoverable fallible pushes, the original
 /// report is always reconstructed and given back alongside the new context
 /// that was supplied to [`try_change_context`](Report::try_change_context).
-#[derive(Debug)]
 pub struct ChangeContextError<C, T> {
     /// The original report, recovered from whatever frames could be rebuilt.
     pub report: Report<C>,
     /// The new context that was passed to [`try_change_context`].
     pub context: T,
+}
+
+impl<C: core::fmt::Debug + Error + Send + Sync + 'static, T: core::fmt::Debug> core::fmt::Debug
+    for ChangeContextError<C, T>
+{
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("ChangeContextError")
+            .field("report", &self.report)
+            .field("context", &self.context)
+            .finish()
+    }
 }
 
 /// Intermediate frame used during [`try_change_context`] to defer boxing until

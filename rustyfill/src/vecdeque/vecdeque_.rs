@@ -1184,7 +1184,7 @@ fn try_remove_out_of_bounds() {
 
 // ── OOM tests ─────────────────────────────────────────────────────────────
 #[cfg(test)]
-use crate::test_allocator::{FailPolicy, with_policy};
+use rustyfill_test_allocator::{FailPolicy, with_policy};
 
 #[test]
 fn vecdeque_try_with_capacity_fails_on_oom() {

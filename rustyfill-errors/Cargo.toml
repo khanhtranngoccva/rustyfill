@@ -9,3 +9,6 @@ edition = "2024"
 
 [dependencies]
 rustyfill = { path = "../rustyfill" }
+
+[dev-dependencies]
+rustyfill-test-allocator = { path = "../rustyfill-test-allocator" }

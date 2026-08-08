@@ -7,6 +7,7 @@
 
 mod str_;
 mod string_;
+mod try_format;
 
 pub use str_::{TryStr, TryStrError};
 pub use string_::{TryString, TryStringError};
