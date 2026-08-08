@@ -640,6 +640,14 @@ impl<T: TryDefault> TryDefault for VecDeque<T> {
     }
 }
 
+// ── TryDebug for VecDeque<T> ─────────────────────────────────────────────────
+
+impl<T: crate::try_fmt::TryDebug> crate::try_fmt::TryDebug for VecDeque<T> {
+    fn try_fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_list().entries(self.iter()).finish()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

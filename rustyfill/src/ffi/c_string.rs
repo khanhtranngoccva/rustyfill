@@ -177,6 +177,14 @@ impl TryDefault for CString {
     }
 }
 
+// ── TryDebug for CString ─────────────────────────────────────────────────────
+
+impl crate::try_fmt::TryDebug for CString {
+    fn try_fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.as_c_str().try_fmt(f)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

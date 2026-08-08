@@ -192,6 +192,41 @@ impl TryToOwned for Path {
     }
 }
 
+// ---------------------------------------------------------------------------
+// TryDebug for &Path and PathBuf
+// ---------------------------------------------------------------------------
+
+impl crate::try_fmt::TryDebug for Path {
+    fn try_fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        // Delegates to OsStr's TryDebug which handles encoding safely.
+        self.as_os_str().try_fmt(f)
+    }
+}
+
+impl crate::try_fmt::TryDebug for PathBuf {
+    fn try_fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.as_path().try_fmt(f)
+    }
+}
+
+// ---------------------------------------------------------------------------
+// TryDebug + TryDisplay for std::path::Display<'_>
+// ---------------------------------------------------------------------------
+// std::path::Display's canonical Debug and Display impls write the path to the
+// formatter without allocating. Safe to passthrough.
+
+impl crate::try_fmt::TryDebug for std::path::Display<'_> {
+    fn try_fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        fmt::Debug::fmt(self, f)
+    }
+}
+
+impl crate::try_fmt::TryDisplay for std::path::Display<'_> {
+    fn try_fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        fmt::Display::fmt(self, f)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

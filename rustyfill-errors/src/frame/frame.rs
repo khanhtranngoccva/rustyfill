@@ -334,18 +334,7 @@ impl DynamicFrame {
                 return Some(r);
             }
         }
-        // Iterate children in reverse using as_slices to handle wrap-around.
-        let (first, second) = self.children.as_slices();
-        let ptr2 = second.as_ptr() as *mut DynamicFrame;
-        for i in (0..second.len()).rev() {
-            let child = unsafe { &mut *ptr2.add(i) };
-            if let Some(r) = child.downcast_mut::<T>() {
-                return Some(r);
-            }
-        }
-        let ptr1 = first.as_ptr() as *mut DynamicFrame;
-        for i in (0..first.len()).rev() {
-            let child = unsafe { &mut *ptr1.add(i) };
+        for child in self.children.iter_mut().rev() {
             if let Some(r) = child.downcast_mut::<T>() {
                 return Some(r);
             }

@@ -30,10 +30,11 @@ pub mod string;
 mod sys;
 pub mod try_clone;
 pub mod try_default;
+pub mod try_fmt;
 pub mod try_random_state;
 pub mod try_to_owned;
 pub mod vec;
 pub mod vecdeque;
 
-pub use rustyfill_macros::{TryClone, TryDefault};
+pub use rustyfill_macros::{TryClone, TryDebug, TryDefault};
 pub use try_random_state::TryRandomState;

@@ -560,6 +560,14 @@ impl<T, S: BuildHasher + TryDefault> TryDefault for HashSet<T, S> {
     }
 }
 
+// ── TryDebug for HashSet<T, S> ────────────────────────────────────────────────
+
+impl<T: crate::try_fmt::TryDebug, S> crate::try_fmt::TryDebug for HashSet<T, S> {
+    fn try_fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_set().entries(self.iter()).finish()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -1,22 +1,22 @@
 //! Multi-process test runner that verifies whether various `Display`/`Debug`
 //! implementations trigger heap allocations during formatting.
 //!
-//! Each test case runs in its own child process with all heap allocations
-//! disabled via [`rustyfill_test_allocator`]. Formatting is done into a fixed-size
-//! stack buffer (via [`StackBuffer`]) so that only the `Display`/`Debug` impl
-//! itself is exercised, not stdio's internal buffering which allocates lazily.
+//! Each test case runs in its own child process with heap allocations
+//! disabled via [`rustyfill_test_allocator`] at critical sections.
+//! Formatting is done into a fixed-size stack buffer (via [`StackBuffer`])
+//! so that only the `Display`/`Debug` impl itself is exercised.
 //!
-//! If the formatting code attempts to allocate, the process aborts and the
-//! test is marked as **ALLOCATES**. If the process exits cleanly, the test is
-//! marked as **SAFE** — no allocations occurred.
+//! If the formatting code attempts to allocate during the Display/Debug invocation,
+//! the process aborts due to allocation failure and the test is marked as `ALLOCATES`.
+//! If the process exits cleanly, the test is marked as `SAFE` — no allocations occurred.
 //!
 //! Because tests may abort the process, they must run in separate child
-//! processes rather than in the same thread.
+//! processes rather than in the same process (a-la cargo test).
 
-use std::fmt::{Write, format};
+use std::fmt::Write;
 use std::process::{Command, Stdio};
 
-use rustyfill_test_allocator::{FailAllocGuard, FailPolicy, with_policy};
+use rustyfill_test_allocator::FailAllocGuard;
 
 // ── Stack-backed formatter ────────────────────────────────────────────────────
 
@@ -63,13 +63,13 @@ struct TestCase {
     id: &'static str,
     /// Human-readable label shown in the summary table.
     name: &'static str,
-    /// The code to execute under the no-allocation guard.
+    /// The code to execute.
     run: fn(),
 }
 
 // ── Individual test bodies ────────────────────────────────────────────────────
 
-/// Static string formatting — should never allocate.
+/// Static string formatting — no allocation.
 fn test_static_string() {
     let _guard = FailAllocGuard::fail_all();
     format_on_stack(format_args!("hello from a static string"));
@@ -136,28 +136,28 @@ fn test_result() {
     format_on_stack(format_args!("{:?}", Err::<i32, &str>("bad")));
 }
 
-/// Duration Debug — may allocate internally.
+/// Duration Debug — no allocation.
 fn test_duration() {
-    let _guard = FailAllocGuard::fail_all();
     let d = std::time::Duration::from_secs(3600) + std::time::Duration::from_nanos(123_456_789);
+    let _guard = FailAllocGuard::fail_all();
     format_on_stack(format_args!("{:?}", d));
 }
 
-/// SystemTime Debug — may allocate for internal timestamp representation.
+/// SystemTime Debug — no allocation.
 fn test_system_time() {
-    let _guard = FailAllocGuard::fail_all();
     let t = std::time::SystemTime::now();
+    let _guard = FailAllocGuard::fail_all();
     format_on_stack(format_args!("{:?}", t));
 }
 
-/// Instant Debug — typically safe, just stores ticks.
+/// Instant Debug — no allocation.
 fn test_instant() {
-    let _guard = FailAllocGuard::fail_all();
     let i = std::time::Instant::now();
+    let _guard = FailAllocGuard::fail_all();
     format_on_stack(format_args!("{:?}", i));
 }
 
-/// PathBuf Display and Debug — Debug may allocate for escape sequences.
+/// PathBuf Display and Debug — no allocation.
 fn test_pathbuf() {
     let p = std::path::PathBuf::from("/tmp/test");
     let _guard = FailAllocGuard::fail_all();
@@ -165,63 +165,63 @@ fn test_pathbuf() {
     format_on_stack(format_args!("{:?}", p));
 }
 
-/// OsString Debug — may allocate.
+/// OsString Debug — no allocation.
 fn test_osstring() {
     let o = std::ffi::OsString::from("test-value");
     let _guard = FailAllocGuard::fail_all();
     format_on_stack(format_args!("{:?}", o));
 }
 
-/// CString Debug.
+/// CString Debug — no allocation.
 fn test_cstring() {
     let c = std::ffi::CString::new("hello").unwrap();
     let _guard = FailAllocGuard::fail_all();
     format_on_stack(format_args!("{:?}", c));
 }
 
-/// IP address Display and Debug — should be safe.
+/// IP address Display and Debug — no allocation.
 fn test_ip_addr() {
-    let _guard = FailAllocGuard::fail_all();
     let ipv4 = std::net::Ipv4Addr::LOCALHOST;
     let ipv6 = std::net::Ipv6Addr::LOCALHOST;
+    let _guard = FailAllocGuard::fail_all();
     format_on_stack(format_args!("{}", ipv4));
     format_on_stack(format_args!("{}", ipv6));
     format_on_stack(format_args!("{:?}", ipv4));
 }
 
-/// SocketAddr Display and Debug — should be safe.
+/// SocketAddr Display and Debug — no allocation.
 fn test_socket_addr() {
-    let _guard = FailAllocGuard::fail_all();
     let addr = std::net::SocketAddr::from(([127, 0, 0, 1], 8080));
+    let _guard = FailAllocGuard::fail_all();
     format_on_stack(format_args!("{}", addr));
     format_on_stack(format_args!("{:?}", addr));
 }
 
-/// f64 default Display — should be safe on modern Rust.
+/// f64 default Display — no allocation.
 fn test_f64_default() {
     let _guard = FailAllocGuard::fail_all();
-    format_on_stack(format_args!("{}", 3.14159));
+    format_on_stack(format_args!("{}", std::f64::consts::PI));
     format_on_stack(format_args!("{:?}", -0.0_f64));
     format_on_stack(format_args!("{}", f64::INFINITY));
     format_on_stack(format_args!("{}", f64::NAN));
 }
 
-/// f64 with precision specifier — historically allocated in ryu fallback.
+/// f64 with precision specifier — no allocation.
 fn test_f64_precision() {
     let _guard = FailAllocGuard::fail_all();
-    format_on_stack(format_args!("{:.10}", 3.14159265358979));
+    format_on_stack(format_args!("{:.10}", std::f64::consts::PI));
     format_on_stack(format_args!("{:.5e}", 123456789.0));
     format_on_stack(format_args!("{:.5E}", 123456789.0));
 }
 
-/// f32 with precision specifier.
+/// f32 with precision specifier — no allocation.
 fn test_f32_precision() {
     let _guard = FailAllocGuard::fail_all();
-    format_on_stack(format_args!("{:.10}", 3.14159_f32));
+    format_on_stack(format_args!("{:.10}", std::f32::consts::PI));
     format_on_stack(format_args!("{:.5e}", 123456.0_f32));
 }
 
-/// Large integer formatting — should be safe.
+/// Large integer formatting — no allocation.
 fn test_large_ints() {
     let _guard = FailAllocGuard::fail_all();
     format_on_stack(format_args!("{}", u128::MAX));
@@ -229,7 +229,7 @@ fn test_large_ints() {
     format_on_stack(format_args!("{}", i128::MIN));
 }
 
-/// Alignment and padding — no allocation expected.
+/// Alignment and padding — no allocation.
 fn test_alignment() {
     let _guard = FailAllocGuard::fail_all();
     format_on_stack(format_args!("{:<10}", "left"));
@@ -245,19 +245,19 @@ fn test_nested_types() {
     format_on_stack(format_args!("{:?}", v));
 }
 
-/// eprintln! — tests actual stderr output path.
+/// eprint! — tests actual stderr output path, no allocation.
 fn test_eprintln() {
     let _guard = FailAllocGuard::fail_all();
     eprint!("error message");
 }
 
-/// format! macro — control test, DOES allocate (builds a String).
+/// to_string() — control test, DOES allocate (builds a String).
 fn test_format_macro() {
     let _guard = FailAllocGuard::fail_all();
     let _s = "this will definitely allocate".to_string();
 }
 
-/// Debug for an empty struct.
+/// Debug for an empty struct — no allocation.
 fn test_debug_empty_struct() {
     let _guard = FailAllocGuard::fail_all();
     #[derive(Debug)]
@@ -265,69 +265,68 @@ fn test_debug_empty_struct() {
     format_on_stack(format_args!("{:?}", Empty));
 }
 
-/// Debug for a struct with primitive fields.
+/// Debug for a struct with primitive fields — no allocation.
 fn test_debug_struct_with_primitives() {
+    let point = Point {
+        x: 1,
+        y: 2,
+        label: "origin",
+    };
     let _guard = FailAllocGuard::fail_all();
-    #[derive(Debug)]
-    #[allow(dead_code)]
-    struct Point {
-        x: i32,
-        y: i32,
-        label: &'static str,
-    }
-    format_on_stack(format_args!(
-        "{:?}",
-        Point {
-            x: 1,
-            y: 2,
-            label: "origin"
-        }
-    ));
+    format_on_stack(format_args!("{:?}", point));
 }
 
-/// Network-related types.
+#[allow(dead_code)]
+#[derive(Debug)]
+struct Point {
+    x: i32,
+    y: i32,
+    label: &'static str,
+}
+
+/// Network-related types — no allocation.
 fn test_network_types() {
-    let _guard = FailAllocGuard::fail_all();
     let addr_v6 = std::net::SocketAddrV6::new(std::net::Ipv6Addr::LOCALHOST, 443, 0, 0);
+    let _guard = FailAllocGuard::fail_all();
     format_on_stack(format_args!("{:?}", addr_v6));
 }
 
-/// Thread ID.
+/// Thread ID — no allocation.
 fn test_thread_id() {
-    let _guard = FailAllocGuard::fail_all();
     let id = std::thread::current().id();
+    let _guard = FailAllocGuard::fail_all();
     format_on_stack(format_args!("{:?}", id));
 }
 
-/// Panic location.
+/// Panic location — no allocation.
 fn test_panic_location() {
-    let _guard = FailAllocGuard::fail_all();
     let loc = std::panic::Location::caller();
+    let _guard = FailAllocGuard::fail_all();
     format_on_stack(format_args!("{:?}", loc));
 }
 
-/// OnceLock interior.
+/// OnceLock interior — no allocation.
 fn test_once_lock() {
-    let _guard = FailAllocGuard::fail_all();
     let lock = std::sync::OnceLock::<i32>::new();
+    let _guard = FailAllocGuard::fail_all();
     format_on_stack(format_args!("{:?}", lock));
     lock.set(42).ok();
     format_on_stack(format_args!("{:?}", lock.get()));
 }
 
-/// Cell / RefCell with primitives.
+/// Cell / RefCell with primitives — no allocation.
 fn test_cell_refcell() {
-    let _guard = FailAllocGuard::fail_all();
     let cell = std::cell::Cell::new(99);
-    format_on_stack(format_args!("{:?}", cell.get()));
     let rc = std::cell::RefCell::new([1, 2, 3]);
+    let _guard = FailAllocGuard::fail_all();
+    format_on_stack(format_args!("{:?}", cell.get()));
     format_on_stack(format_args!("{:?}", rc.borrow()));
 }
 
 /// Vec::new().push() — control test, Vec growth allocates.
 fn test_vec_push() {
-    let _guard = FailAllocGuard::fail_all();
     let mut v: Vec<i32> = Vec::new();
+    let _guard = FailAllocGuard::fail_all();
     v.push(1);
 }
 
@@ -516,7 +515,9 @@ fn run_single_test(id: &str) {
         );
         std::process::exit(2);
     });
-    with_policy(FailPolicy::fail_all(), test.run);
+    // initialization of structs may allocate, we only want to test display,
+    // so we have to let test cases call with_policy() manually
+    (test.run)();
 }
 
 // ── Runner mode ───────────────────────────────────────────────────────────────

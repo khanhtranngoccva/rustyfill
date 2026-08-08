@@ -136,6 +136,47 @@ impl TryToOwned for OsStr {
     }
 }
 
+// ---------------------------------------------------------------------------
+// TryDebug for OsStr
+// ---------------------------------------------------------------------------
+
+impl crate::try_fmt::TryDebug for OsStr {
+    fn try_fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        // Mirrors std's Debug impl for OsStr which shows encoded bytes.
+        write!(f, "b\"")?;
+        for &byte in self.as_encoded_bytes() {
+            match byte {
+                b'"' => write!(f, "\\\"")?,
+                b'\\' => write!(f, "\\\\")?,
+                b'\n' => write!(f, "\\n")?,
+                b'\r' => write!(f, "\\r")?,
+                b'\t' => write!(f, "\\t")?,
+                b if (0x20..=0x7E).contains(&b) => write!(f, "{}", b as char)?,
+                _ => write!(f, "\\x{:02x}", byte)?,
+            }
+        }
+        write!(f, "\"")
+    }
+}
+
+// ---------------------------------------------------------------------------
+// TryDebug + TryDisplay for std::ffi::os_str::Display<'_>
+// ---------------------------------------------------------------------------
+// std::ffi::os_str::Display's canonical Debug and Display impls write the OsStr
+// to the formatter without allocating. Safe to passthrough.
+
+impl crate::try_fmt::TryDebug for std::ffi::os_str::Display<'_> {
+    fn try_fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        fmt::Debug::fmt(self, f)
+    }
+}
+
+impl crate::try_fmt::TryDisplay for std::ffi::os_str::Display<'_> {
+    fn try_fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        fmt::Display::fmt(self, f)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

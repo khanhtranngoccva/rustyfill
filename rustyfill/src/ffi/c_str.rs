@@ -28,6 +28,29 @@ impl TryToOwned for CStr {
     }
 }
 
+// ---------------------------------------------------------------------------
+// TryDebug for CStr
+// ---------------------------------------------------------------------------
+
+impl crate::try_fmt::TryDebug for CStr {
+    fn try_fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        // Mirrors std's Debug impl for CStr which shows as a quoted UTF-8 string.
+        write!(f, "\"")?;
+        for &byte in self.to_bytes() {
+            match byte {
+                b'"' => write!(f, "\\\"")?,
+                b'\\' => write!(f, "\\\\")?,
+                b'\n' => write!(f, "\\n")?,
+                b'\r' => write!(f, "\\r")?,
+                b'\t' => write!(f, "\\t")?,
+                b if (0x20..=0x7E).contains(&b) => write!(f, "{}", b as char)?,
+                _ => write!(f, "\\x{:02x}", byte)?,
+            }
+        }
+        write!(f, "\"")
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

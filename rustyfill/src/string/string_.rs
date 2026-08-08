@@ -110,10 +110,7 @@ pub trait TryString: Sized {
     /// Mirrors [`core::fmt::Write::write_fmt`] but returns [`Err(TryReserveError)`]
     /// if growing the internal buffer fails. On failure the string may contain
     /// a partial result.
-    fn try_write_fmt(
-        &mut self,
-        args: core::fmt::Arguments<'_>,
-    ) -> Result<(), TryReserveError>;
+    fn try_write_fmt(&mut self, args: core::fmt::Arguments<'_>) -> Result<(), TryReserveError>;
 
     /// Fallibly insert a `char` into this `String` at a valid byte index.
     ///
@@ -235,10 +232,7 @@ impl TryString for String {
         Ok(())
     }
 
-    fn try_write_fmt(
-        &mut self,
-        args: core::fmt::Arguments<'_>,
-    ) -> Result<(), TryReserveError> {
+    fn try_write_fmt(&mut self, args: core::fmt::Arguments<'_>) -> Result<(), TryReserveError> {
         // Use a wrapper that delegates write_str to try_push_str.
         struct FallibleWriter<'a>(&'a mut String);
         impl core::fmt::Write for FallibleWriter<'_> {
@@ -323,6 +317,24 @@ impl TryDefault for String {
     fn try_default() -> Result<Self, TryDefaultError> {
         // An empty String requires no allocation.
         Ok(String::new())
+    }
+}
+
+// ── TryDebug + TryDisplay for String (passthrough) ────────────────────────────
+// String's Debug and Display delegate to str's implementations, which write
+// directly to the formatter without allocating. Safe to passthrough.
+
+impl crate::try_fmt::TryDebug for String {
+    #[inline]
+    fn try_fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        fmt::Debug::fmt(self, f)
+    }
+}
+
+impl crate::try_fmt::TryDisplay for String {
+    #[inline]
+    fn try_fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        fmt::Display::fmt(self, f)
     }
 }
 
@@ -730,20 +742,16 @@ mod tests {
     #[test]
     fn string_try_clone_fails_on_oom() {
         let orig = String::from("test data");
-        let r: Result<String, TryCloneError> = with_policy(
-            FailPolicy::fail_next_alloc(),
-            || orig.try_clone(),
-        );
+        let r: Result<String, TryCloneError> =
+            with_policy(FailPolicy::fail_next_alloc(), || orig.try_clone());
         assert!(r.is_err());
     }
 
     #[test]
     fn string_try_clone_empty_succeeds_under_oom() {
         let orig = String::new();
-        let r: Result<String, TryCloneError> = with_policy(
-            FailPolicy::fail_next_alloc(),
-            || orig.try_clone(),
-        );
+        let r: Result<String, TryCloneError> =
+            with_policy(FailPolicy::fail_next_alloc(), || orig.try_clone());
         assert!(r.is_ok());
         assert!(r.as_ref().unwrap().is_empty());
     }
@@ -751,10 +759,8 @@ mod tests {
     #[test]
     fn string_oom_restores_allocation_afterwards() {
         let orig = String::from("data");
-        let r: Result<String, TryCloneError> = with_policy(
-            FailPolicy::fail_next_alloc(),
-            || orig.try_clone(),
-        );
+        let r: Result<String, TryCloneError> =
+            with_policy(FailPolicy::fail_next_alloc(), || orig.try_clone());
         assert!(r.is_err());
         // Allocation works again after guard scope ends.
         let r = orig.try_clone();
@@ -779,20 +785,16 @@ mod tests {
     #[test]
     fn box_str_try_clone_fails_on_oom() {
         let bs: Box<str> = "clone me".into();
-        let r: Result<Box<str>, TryCloneError> = with_policy(
-            FailPolicy::fail_next_alloc(),
-            || bs.try_clone(),
-        );
+        let r: Result<Box<str>, TryCloneError> =
+            with_policy(FailPolicy::fail_next_alloc(), || bs.try_clone());
         assert!(r.is_err());
     }
 
     #[test]
     fn box_str_try_clone_empty_succeeds_under_oom() {
         let bs: Box<str> = "".into();
-        let r: Result<Box<str>, TryCloneError> = with_policy(
-            FailPolicy::fail_next_alloc(),
-            || bs.try_clone(),
-        );
+        let r: Result<Box<str>, TryCloneError> =
+            with_policy(FailPolicy::fail_next_alloc(), || bs.try_clone());
         assert!(r.is_ok());
         assert!(r.as_ref().unwrap().is_empty());
     }
@@ -800,10 +802,8 @@ mod tests {
     #[test]
     fn box_str_try_clone_unicode_fails_on_oom() {
         let bs: Box<str> = "こんにちは 🦀".into();
-        let r: Result<Box<str>, TryCloneError> = with_policy(
-            FailPolicy::fail_next_alloc(),
-            || bs.try_clone(),
-        );
+        let r: Result<Box<str>, TryCloneError> =
+            with_policy(FailPolicy::fail_next_alloc(), || bs.try_clone());
         assert!(r.is_err());
     }
 }

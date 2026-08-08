@@ -9,9 +9,10 @@
 //! source location.
 
 mod attachment;
+#[allow(clippy::module_inception)]
+mod frame;
 mod item;
-mod static_frame;
 
 pub use attachment::{OpaqueAttachment, PrintableAttachment};
+pub use frame::{DynamicFrame, StaticFrame};
 pub use item::{ContextFrame, ItemImpl, ItemKind};
-pub use static_frame::{DynamicFrame, StaticFrame};

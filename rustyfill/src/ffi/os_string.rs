@@ -269,6 +269,14 @@ impl TryDefault for OsString {
     }
 }
 
+// ── TryDebug for OsString ────────────────────────────────────────────────────
+
+impl crate::try_fmt::TryDebug for OsString {
+    fn try_fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.as_os_str().try_fmt(f)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

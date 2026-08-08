@@ -50,7 +50,7 @@ impl From<TryReserveError> for TryStrError {
 /// A trait for fallibly converting a string slice into an owned [`String`].
 ///
 /// Implemented for [`str`]. Methods reserve capacity upfront so that allocation
-/// failures are returned as errors rather than panicking.
+/// failures are returned as errors rather than panicking or aborting.
 pub trait TryStr {
     /// Fallibly copy this string slice into a new [`String`].
     ///

@@ -873,6 +873,69 @@ where
     }
 }
 
+impl<C> Report<C>
+where
+    C: Error + Send + Sync + 'static,
+{
+    /// Returns a depth-first walker over every error node in the report.
+    ///
+    /// Order: head → head's children (recursively) → next peer → that peer's
+    /// children → … → oldest peer → its children. Synthetic
+    /// [`FrameRef::LostFrames`] markers are
+    /// yielded where frames were lost to OOM or capacity eviction.
+    ///
+    /// Each item is `(Result<FrameRef<'a>, TryReserveError>, usize)` where the
+    /// `usize` is the tree depth (head and peers at 0, children at 1, etc.).
+    /// An `Err` variant is emitted when pushing a child iterator onto the internal
+    /// stack fails due to allocation pressure; the frame that triggered the failure
+    /// is still yielded as `Ok` beforehand, so no frame is silently skipped.
+    #[must_use]
+    pub fn frames(&'_ self) -> Frames<'_, C> {
+        Frames {
+            peer_iter: self.peers.iter(),
+            head_remaining: true,
+            head_ref: &self.head,
+            stack: Vec::new(),
+            root_lost_emitted: false,
+            root_lost_peers: self.lost_peers,
+            pending_err: None,
+        }
+    }
+
+    /// Returns a reverse (chronological) depth-first walker: oldest peer first,
+    /// head last. Useful for displaying errors in the order they occurred.
+    ///
+    /// Each item is `(Result<FrameRef<'a>, TryReserveError>, usize)` where the
+    /// `usize` is the tree depth. An `Err` variant is emitted when pushing a child
+    /// iterator onto the internal stack fails; the triggering frame is still yielded
+    /// as `Ok` beforehand.
+    #[must_use]
+    pub fn frames_chronological(&'_ self) -> ChronoFrames<'_, C> {
+        ChronoFrames {
+            peer_iter: self.peers.iter().rev(),
+            root_peer_remaining: true,
+            head_ref: &self.head,
+            stack: Vec::new(),
+            root_lost_emitted: false,
+            root_lost_peers: self.lost_peers,
+            pending_err: None,
+        }
+    }
+
+    /// Visits every error node depth-first with mutable access.
+    ///
+    /// Uses internal iteration so that [`&mut FrameRefMut`] cannot escape the
+    /// callback — preventing aliasing vulnerabilities.
+    ///
+    /// Returns [`Err(TryReserveError)`] if stack allocation fails during descent.
+    pub fn frames_mut<F, B>(&mut self, visitor: F) -> Result<ControlFlow<B>, TryReserveError>
+    where
+        F: FnMut(&mut FrameRefMut<'_, C>) -> ControlFlow<B>,
+    {
+        dfs_mut_report(self, visitor)
+    }
+}
+
 /// One level of the DFS stack during frame traversal.
 struct StackEntry<'a> {
     /// Iterator over the parent's dynamic children.
@@ -900,83 +963,21 @@ pub struct Frames<'a, C> {
     root_lost_peers: usize,
     /// Whether we've emitted the final lost-peers marker.
     root_lost_emitted: bool,
-    /// Cached error from a failed stack reservation, paired with the tree depth
-    /// at which it occurred. Checked after `next()` returns `None` to distinguish
-    /// exhaustion from allocation failure.
-    err: Option<(usize, TryReserveError)>,
-    _phantom: PhantomData<&'a ()>,
-}
-
-impl<C> Report<C>
-where
-    C: Error + Send + Sync + 'static,
-{
-    /// Returns a depth-first walker over every error node in the report.
-    ///
-    /// Order: head → head's children (recursively) → next peer → that peer's
-    /// children → … → oldest peer → its children. Synthetic
-    /// [`FrameRef::LostFrames`] markers are
-    /// yielded where frames were lost to OOM or capacity eviction.
-    ///
-    /// Each item is `(FrameRef<'a>, usize)` where the `usize` is the tree depth
-    /// (head and peers at 0, children at 1, etc.).
-    ///
-    /// Allocation may occur when pushing child iterators onto the internal
-    /// stack. If allocation fails, iteration stops early; call
-    /// [`Frames::take_err`] after `next()` returns `None` to check for errors.
-    #[must_use]
-    pub fn frames(&'_ self) -> Frames<'_, C> {
-        Frames {
-            peer_iter: self.peers.iter(),
-            head_remaining: true,
-            head_ref: &self.head,
-            stack: Vec::new(),
-            root_lost_emitted: false,
-            root_lost_peers: self.lost_peers,
-            err: None,
-            _phantom: PhantomData,
-        }
-    }
-
-    /// Returns a reverse (chronological) depth-first walker: oldest peer first,
-    /// head last. Useful for displaying errors in the order they occurred.
-    #[must_use]
-    pub fn frames_chronological(&'_ self) -> ChronoFrames<'_, C> {
-        ChronoFrames {
-            peer_iter: self.peers.iter().rev(),
-            root_peer_remaining: true,
-            head_ref: &self.head,
-            stack: Vec::new(),
-            root_lost_emitted: false,
-            root_lost_peers: self.lost_peers,
-            err: None,
-            _phantom: PhantomData,
-        }
-    }
-
-    /// Visits every error node depth-first with mutable access.
-    ///
-    /// Uses internal iteration so that [`&mut FrameRefMut`] cannot escape the
-    /// callback — preventing aliasing vulnerabilities.
-    ///
-    /// Returns [`Err(TryReserveError)`] if stack allocation fails during descent.
-    pub fn frames_mut<F, B>(&mut self, visitor: F) -> Result<ControlFlow<B>, TryReserveError>
-    where
-        F: FnMut(&mut FrameRefMut<'_, C>) -> ControlFlow<B>,
-    {
-        dfs_mut_report(self, visitor)
-    }
+    /// Pending error from a failed stack reservation, queued for emission on the
+    /// next call so that the frame which triggered the failure is not silently skipped.
+    pending_err: Option<(TryReserveError, usize)>,
 }
 
 impl<'a, C> Iterator for Frames<'a, C>
 where
     C: Error + Send + Sync + 'static,
 {
-    type Item = (FrameRef<'a, C>, usize);
+    type Item = (Result<FrameRef<'a, C>, TryReserveError>, usize);
 
     fn next(&mut self) -> Option<Self::Item> {
-        if self.err.is_some() {
-            return None;
+        // Emit a pending allocation error before continuing iteration.
+        if let Some((e, depth)) = self.pending_err.take() {
+            return Some((Err(e), depth));
         }
 
         // Yield head first.
@@ -991,17 +992,16 @@ where
                         lost_children: self.head_ref.lost_children(),
                     },
                 ) {
-                    self.err = Some((1, e));
-                    return None;
+                    self.pending_err = Some((e, 1));
                 }
             }
-            return Some((FrameRef::Static(self.head_ref), 0));
+            return Some((Ok(FrameRef::Static(self.head_ref)), 0));
         }
 
         loop {
             if let Some(top) = self.stack.last_mut() {
                 if let Some(df) = top.iter.next() {
-                    // Push new stack entry for this child's subtree.
+                    // Push new stack entry to descend into this child's subtree.
                     if !df.children().is_empty() {
                         let child_iter = df.children().iter();
                         if let Err((_, e)) = TryVec::try_push_give_back(
@@ -1011,19 +1011,18 @@ where
                                 lost_children: df.lost_children(),
                             },
                         ) {
-                            self.err = Some((self.stack.len() + 1, e));
-                            return None;
+                            self.pending_err = Some((e, self.stack.len() + 1));
                         }
                     }
                     let depth = self.stack.len();
-                    return Some((FrameRef::Dynamic(df), depth));
+                    return Some((Ok(FrameRef::Dynamic(df)), depth));
                 } else {
                     // Children exhausted — emit lost marker if any.
                     let n = top.lost_children;
                     let depth = self.stack.len();
                     self.stack.pop();
                     if n > 0 {
-                        return Some((FrameRef::LostFrames(n), depth));
+                        return Some((Ok(FrameRef::LostFrames(n)), depth));
                     }
                     continue;
                 }
@@ -1040,18 +1039,17 @@ where
                             lost_children: peer.lost_children(),
                         },
                     ) {
-                        self.err = Some((self.stack.len() + 1, e));
-                        return None;
+                        self.pending_err = Some((e, self.stack.len() + 1));
                     }
                 }
-                return Some((FrameRef::Static(peer), 0));
+                return Some((Ok(FrameRef::Static(peer)), 0));
             }
 
             // All frames visited — emit lost peers last, then finish.
             if !self.root_lost_emitted && self.root_lost_peers > 0 {
                 self.root_lost_emitted = true;
                 let n = self.root_lost_peers;
-                return Some((FrameRef::LostFrames(n), 0));
+                return Some((Ok(FrameRef::LostFrames(n)), 0));
             }
 
             return None;
@@ -1059,18 +1057,8 @@ where
     }
 }
 
-impl<'a, C> Frames<'a, C> {
-    /// Returns any error that occurred during iteration, paired with the tree
-    /// depth at which the allocation failed.
-    ///
-    /// Check this after [`next`](Iterator::next) returns `None` to distinguish
-    /// normal exhaustion from a stack allocation failure. The depth tells
-    /// displayers where to insert an ``<failed to display, out of memory>`` marker.
-    #[must_use]
-    pub fn take_err(&mut self) -> Option<(usize, TryReserveError)> {
-        self.err.take()
-    }
-}
+// Errors are emitted directly as `Err` items in the iterator stream;
+// no separate take_err method is needed.
 
 /// Chronological walker — iterates peers from oldest to newest first, then
 /// yields head and its children last (matching the order errors were pushed).
@@ -1085,19 +1073,21 @@ pub struct ChronoFrames<'a, C> {
     root_lost_peers: usize,
     /// Whether we've emitted the final lost-peers marker.
     root_lost_emitted: bool,
-    err: Option<(usize, TryReserveError)>,
-    _phantom: PhantomData<&'a ()>,
+    /// Pending error from a failed stack reservation, queued for emission on the
+    /// next call so that the frame which triggered the failure is not silently skipped.
+    pending_err: Option<(TryReserveError, usize)>,
 }
 
 impl<'a, C> Iterator for ChronoFrames<'a, C>
 where
     C: Error + Send + Sync + 'static,
 {
-    type Item = (FrameRef<'a, C>, usize);
+    type Item = (Result<FrameRef<'a, C>, TryReserveError>, usize);
 
     fn next(&mut self) -> Option<Self::Item> {
-        if self.err.is_some() {
-            return None;
+        // Emit a pending allocation error before continuing iteration.
+        if let Some((e, depth)) = self.pending_err.take() {
+            return Some((Err(e), depth));
         }
 
         loop {
@@ -1112,18 +1102,17 @@ where
                                 lost_children: df.lost_children(),
                             },
                         ) {
-                            self.err = Some((self.stack.len() + 1, e));
-                            return None;
+                            self.pending_err = Some((e, self.stack.len() + 1));
                         }
                     }
                     let depth = self.stack.len();
-                    return Some((FrameRef::Dynamic(df), depth));
+                    return Some((Ok(FrameRef::Dynamic(df)), depth));
                 } else {
                     let n = top.lost_children;
                     let depth = self.stack.len();
                     self.stack.pop();
                     if n > 0 {
-                        return Some((FrameRef::LostFrames(n), depth));
+                        return Some((Ok(FrameRef::LostFrames(n)), depth));
                     }
                     continue;
                 }
@@ -1141,11 +1130,10 @@ where
                                 lost_children: peer.lost_children(),
                             },
                         ) {
-                            self.err = Some((self.stack.len() + 1, e));
-                            return None;
+                            self.pending_err = Some((e, self.stack.len() + 1));
                         }
                     }
-                    return Some((FrameRef::Static(peer), 0));
+                    return Some((Ok(FrameRef::Static(peer)), 0));
                 } else {
                     // Peers exhausted — transition to head.
                     self.root_peer_remaining = false;
@@ -1158,11 +1146,10 @@ where
                                 lost_children: self.head_ref.lost_children(),
                             },
                         ) {
-                            self.err = Some((1, e));
-                            return None;
+                            self.pending_err = Some((e, 1));
                         }
                     }
-                    return Some((FrameRef::Static(self.head_ref), 0));
+                    return Some((Ok(FrameRef::Static(self.head_ref)), 0));
                 }
             }
 
@@ -1170,25 +1157,12 @@ where
             if !self.root_lost_emitted && self.root_lost_peers > 0 {
                 self.root_lost_emitted = true;
                 let n = self.root_lost_peers;
-                return Some((FrameRef::LostFrames(n), 0));
+                return Some((Ok(FrameRef::LostFrames(n)), 0));
             }
 
             // Head is done, nothing left.
             return None;
         }
-    }
-}
-
-impl<'a, C> ChronoFrames<'a, C> {
-    /// Returns any error that occurred during iteration, paired with the tree
-    /// depth at which the allocation failed.
-    ///
-    /// Check this after [`next`](Iterator::next) returns `None` to distinguish
-    /// normal exhaustion from a stack allocation failure. The depth tells
-    /// displayers where to insert an ``<failed to display, out of memory>`` marker.
-    #[must_use]
-    pub fn take_err(&mut self) -> Option<(usize, TryReserveError)> {
-        self.err.take()
     }
 }
 
@@ -1498,13 +1472,15 @@ mod tests {
         let mut walker = report.frames();
 
         // 1. Head: OtherError("outer"), depth 0
-        let (frame, depth) = walker.next().unwrap();
+        let (frame_result, depth) = walker.next().unwrap();
         assert_eq!(depth, 0);
+        let frame = frame_result.unwrap();
         assert!(matches!(frame, FrameRef::Static(_)));
 
         // 2. Child: demoted frame with TestError("inner"), depth 1
-        let (frame, depth) = walker.next().unwrap();
+        let (frame_result, depth) = walker.next().unwrap();
         assert_eq!(depth, 1);
+        let frame = frame_result.unwrap();
         assert!(matches!(frame, FrameRef::Dynamic(_)));
 
         // Exhausted (attachments are NOT yielded by frames())

@@ -7,6 +7,7 @@ use crate::alloc::AllocError;
 use crate::try_clone::{TryClone, TryCloneError};
 use crate::try_default::{TryDefault, TryDefaultError};
 use core::alloc::Layout;
+use core::fmt;
 use core::mem::{self, MaybeUninit};
 use core::pin::Pin;
 /// A trait for fallibly allocating a value on the heap.
@@ -244,6 +245,14 @@ impl<T: TryDefault> TryDefault for Box<T> {
             }
             Err(e) => Err(e),
         }
+    }
+}
+
+// ── TryDebug for Box<T> ──────────────────────────────────────────────────────
+
+impl<T: crate::try_fmt::TryDebug> crate::try_fmt::TryDebug for Box<T> {
+    fn try_fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        (**self).try_fmt(f)
     }
 }
 

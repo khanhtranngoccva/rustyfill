@@ -471,6 +471,14 @@ impl<T> TryDefault for Weak<T> {
     }
 }
 
+// ── TryDebug for Arc<T> ──────────────────────────────────────────────────────
+
+impl<T: ?Sized + crate::try_fmt::TryDebug> crate::try_fmt::TryDebug for Arc<T> {
+    fn try_fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        (**self).try_fmt(f)
+    }
+}
+
 #[cfg(test)]
 #[allow(deprecated)]
 mod tests {

@@ -4,12 +4,7 @@
 //! in the report tree and renders them with indentation. The [`Debug`] impl
 //! delegates to [`Display`] so that `{:#?}` and `{}` produce the same output.
 //!
-//! # OOM Safety
-//!
-//! Indentation strings are cached lazily using fallible allocation. If caching
-//! fails, formatting falls back to writing characters directly to the formatter,
-//! which theoretically never allocates.
-
+//! [`Display`]: core::fmt::Display
 use core::error::Error;
 use core::fmt;
 
@@ -86,9 +81,9 @@ where
         }
 
         let mut walker = self.frames();
-        for (frame, depth) in walker.by_ref() {
-            match frame {
-                FrameRef::Static(sf) => {
+        for (frame_result, depth) in walker.by_ref() {
+            match frame_result {
+                Ok(FrameRef::Static(sf)) => {
                     write_vert_indent(f, &indents, depth)?;
                     write!(f, "{}", sf.context())?;
                     if let Some(seg) = sf.context().segment() {
@@ -108,7 +103,7 @@ where
                     }
                     try_ensure_indent(&mut indents, depth.saturating_add(1));
                 }
-                FrameRef::Dynamic(df) => {
+                Ok(FrameRef::Dynamic(df)) => {
                     write_vert_indent(f, &indents, depth)?;
                     write!(f, "{:?}", df.context_item())?;
                     writeln!(f)?;
@@ -123,18 +118,16 @@ where
                     }
                     try_ensure_indent(&mut indents, depth.saturating_add(1));
                 }
-                FrameRef::LostFrames(n) => {
+                Ok(FrameRef::LostFrames(n)) => {
                     write_vert_indent(f, &indents, depth)?;
                     write!(f, "<{} frame{} lost>", n, if n == 1 { "" } else { "s" })?;
                     writeln!(f)?;
                 }
+                Err(_) => {
+                    write_vert_indent(f, &indents, depth)?;
+                    writeln!(f, "<failed to display, out of memory>")?;
+                }
             }
-        }
-
-        // Check for iteration OOM errors.
-        if let Some((depth, _err)) = walker.take_err() {
-            write_vert_indent(f, &indents, depth)?;
-            writeln!(f, "<failed to display, out of memory>")?;
         }
 
         Ok(())

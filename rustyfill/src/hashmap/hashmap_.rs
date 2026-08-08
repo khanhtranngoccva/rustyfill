@@ -700,6 +700,14 @@ impl<K, V, S: BuildHasher + TryDefault> TryDefault for HashMap<K, V, S> {
     }
 }
 
+// ── TryDebug for HashMap<K, V, S> ──────────────────────────────────────────────
+
+impl<K: crate::try_fmt::TryDebug, V: crate::try_fmt::TryDebug, S> crate::try_fmt::TryDebug for HashMap<K, V, S> {
+    fn try_fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_map().entries(self.iter()).finish()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
