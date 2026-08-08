@@ -62,6 +62,31 @@ impl FailPolicy {
             fail_realloc_at: Some(n),
         }
     }
+
+    /// Fail every alloc and alloc_zeroed call unconditionally.
+    /// Useful for verifying that a code path performs zero heap allocations.
+    pub const fn fail_all_alloc() -> Self {
+        Self {
+            fail_alloc_at: Some(0),
+            fail_realloc_at: None,
+        }
+    }
+
+    /// Fail every realloc call unconditionally.
+    pub const fn fail_all_realloc() -> Self {
+        Self {
+            fail_alloc_at: None,
+            fail_realloc_at: Some(0),
+        }
+    }
+
+    /// Fail every allocation call (both alloc and realloc) unconditionally.
+    pub const fn fail_all() -> Self {
+        Self {
+            fail_alloc_at: Some(0),
+            fail_realloc_at: Some(0),
+        }
+    }
 }
 
 // ── Thread-local state ────────────────────────────────────────────────────────
@@ -145,6 +170,10 @@ fn check_should_fail_alloc() -> bool {
         Some(at) => at,
         None => return false,
     };
+    // Zero means "fail every call" — no counter increment needed.
+    if at == 0 {
+        return true;
+    }
     ALLOC_INVOCATIONS.with(|c| {
         let n = c.get();
         c.set(n + 1);
@@ -157,6 +186,10 @@ fn check_should_fail_realloc() -> bool {
         Some(at) => at,
         None => return false,
     };
+    // Zero means "fail every call" — no counter increment needed.
+    if at == 0 {
+        return true;
+    }
     REALLOC_INVOCATIONS.with(|c| {
         let n = c.get();
         c.set(n + 1);
@@ -227,6 +260,11 @@ impl FailAllocGuard {
     /// Convenience: fail the Nth reallocation on this thread.
     pub fn fail_nth_realloc(n: u64) -> Self {
         Self::install(FailPolicy::fail_nth_realloc(n))
+    }
+
+    /// Convenience: fail every allocation on this thread.
+    pub fn fail_all() -> Self {
+        Self::install(FailPolicy::fail_all())
     }
 }
 

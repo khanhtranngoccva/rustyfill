@@ -23,8 +23,9 @@
 //! point with precision specifiers). If such a value is formatted through
 //! `try_format!` while using a constrained allocator, the allocation will
 //! happen *inside* the formatter callback and will panic rather than return
-//! an error. See the [`display_allocation_tests`] module in the test suite for
-//! a matrix of which types are safe.
+//! an error. Run the `display-allocation-tests` binary crate (`cargo run -p
+//! display-allocation-tests`) for a matrix of which types are safe under
+//! zero-allocation conditions.
 
 /// Fallibly format arguments into a newly allocated [`String`].
 ///
