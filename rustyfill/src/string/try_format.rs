@@ -1,20 +1,8 @@
 //! Fallible formatting into a new [`String`].
 //!
-//! The [`try_format`] macro mirrors the standard [`format!`] macro but returns
-//! [`Result<String, TryReserveError>`] so that allocation failures are handled
-//! gracefully instead of panicking.
-//!
-//! # Example
-//!
-//! ```
-//! use rustyfill::prelude::TryString;
-//!
-//! fn example() -> Result<(), Box<dyn std::error::Error>> {
-//!     let result = rustyfill::try_format!("hello {}", 42)?;
-//!     assert_eq!(result, "hello 42");
-//!     Ok(())
-//! }
-//! ```
+//! The [`try_format`](crate::try_format) proc-macro mirrors the standard
+//! [`format!`] macro but returns [`Result<String, TryReserveError>`] so that
+//! allocation failures are handled gracefully instead of panicking.
 //!
 //! # Warning: Display implementations that allocate
 //!
@@ -26,14 +14,3 @@
 //! an error. Run the `display-allocation-tests` binary crate (`cargo run -p
 //! display-allocation-tests`) for a matrix of which types are safe under
 //! zero-allocation conditions.
-
-/// Fallibly format arguments into a newly allocated [`String`].
-///
-/// Mirrors [`format!`] but returns [`Result<String, TryReserveError>`].
-#[macro_export]
-macro_rules! try_format {
-    ($($arg:tt)+) => {{
-        let mut buf = String::new();
-        $crate::string::TryString::try_write_fmt(&mut buf, core::format_args!($($arg)+)).map(|()| buf)
-    }};
-}

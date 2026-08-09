@@ -37,4 +37,12 @@ pub mod vec;
 pub mod vecdeque;
 
 pub use rustyfill_macros::{TryClone, TryDebug, TryDefault};
+pub use rustyfill_macros::{
+    try_format_args,
+    try_println,
+    try_print,
+    try_write,
+    try_writeln,
+    try_format,
+};
 pub use try_random_state::TryRandomState;

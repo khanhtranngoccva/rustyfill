@@ -2,9 +2,13 @@
 
 extern crate proc_macro;
 
+mod try_clone;
+mod try_debug;
+mod try_default;
+mod try_format_args;
+
 use proc_macro::TokenStream;
 use quote::quote;
-use syn::{Data, DeriveInput, Fields, parse_macro_input};
 
 /// Derives `TryClone` for a struct or enum.
 ///
@@ -12,167 +16,13 @@ use syn::{Data, DeriveInput, Fields, parse_macro_input};
 /// implementation clones each field fallibly and propagates the first error encountered.
 #[proc_macro_derive(TryClone)]
 pub fn derive_try_clone(input: TokenStream) -> TokenStream {
-    let input = parse_macro_input!(input as DeriveInput);
-    let name = &input.ident;
-    let (impl_generics, ty_generics, where_clause) = input.generics.split_for_impl();
-
-    let clone_body = match &input.data {
-        Data::Struct(data) => match &data.fields {
-            Fields::Named(fields) => {
-                let field_clones = fields.named.iter().map(|field| {
-                    let ident = &field.ident;
-                    quote! {
-                        #ident: self.#ident.try_clone()?,
-                    }
-                });
-                quote! {
-                    Ok(Self { #(#field_clones)* })
-                }
-            }
-            Fields::Unnamed(fields) => {
-                let indices = 0..fields.unnamed.len();
-                let field_clones = indices.map(|i| {
-                    let idx = syn::Index::from(i);
-                    quote! {
-                        self.#idx.try_clone()?,
-                    }
-                });
-                quote! {
-                    Ok(Self (#(#field_clones)*))
-                }
-            }
-            Fields::Unit => {
-                quote! {
-                    Ok(Self)
-                }
-            }
-        },
-        Data::Enum(data) => {
-            let arms = data.variants.iter().map(|variant| {
-                let variant_ident = &variant.ident;
-                match &variant.fields {
-                    Fields::Named(fields) if !fields.named.is_empty() => {
-                        let field_idents: Vec<_> = fields
-                            .named
-                            .iter()
-                            .map(|f| f.ident.as_ref().unwrap())
-                            .collect();
-                        let field_patterns: Vec<_> =
-                            field_idents.iter().map(|id| quote!(#id)).collect();
-                        let field_clones = field_idents.iter().map(|id| {
-                            quote! {
-                                #id: #id.try_clone()?,
-                            }
-                        });
-                        quote! {
-                            Self::#variant_ident { #(#field_patterns),* } => {
-                                Ok(Self::#variant_ident { #(#field_clones)* })
-                            },
-                        }
-                    }
-                    Fields::Named(_) | Fields::Unit => {
-                        quote! {
-                            Self::#variant_ident => Ok(Self::#variant_ident),
-                        }
-                    }
-                    Fields::Unnamed(fields) => {
-                        let field_names: Vec<_> = (0..fields.unnamed.len())
-                            .map(|i| quote::format_ident!("f{i}"))
-                            .collect();
-                        let field_clones = field_names.iter().map(|fn_| {
-                            quote! {
-                                #fn_.try_clone()?,
-                            }
-                        });
-                        quote! {
-                            Self::#variant_ident (#(#field_names),*) => {
-                                Ok(Self::#variant_ident (#(#field_clones)*))
-                            },
-                        }
-                    }
-                }
-            });
-            quote! {
-                match self {
-                    #(#arms)*
-                }
-            }
-        }
-        Data::Union(_) => {
-            return syn::Error::new_spanned(name, "#[derive(TryClone)] is not supported on unions")
-                .to_compile_error()
-                .into();
-        }
-    };
-
-    let expanded = quote! {
-        impl #impl_generics ::rustyfill::try_clone::TryClone for #name #ty_generics #where_clause {
-            fn try_clone(&self) -> Result<Self, ::rustyfill::try_clone::TryCloneError> {
-                #clone_body
-            }
-        }
-    };
-
-    TokenStream::from(expanded)
+    try_clone::derive_try_clone(input)
 }
 
 /// Generates `TryClone` implementations for tuples of arities 1 through `max`.
 #[proc_macro]
 pub fn try_clone_tuples(input: TokenStream) -> TokenStream {
-    let max: usize = syn::parse::<syn::LitInt>(input)
-        .ok()
-        .and_then(|lit| lit.base10_parse().ok())
-        .unwrap_or(12);
-    let max = max.clamp(1, 16);
-
-    let mut output = Vec::new();
-
-    for arity in 1..=max {
-        let type_params: Vec<_> = (0..arity).map(|i| quote::format_ident!("T{i}")).collect();
-        let bounds: Vec<_> = type_params.iter().map(|t| quote!(#t: TryClone)).collect();
-
-        let types_joined: proc_macro2::TokenStream = {
-            let mut ts = proc_macro2::TokenStream::new();
-            for (i, tp) in type_params.iter().enumerate() {
-                if i > 0 { ts.extend(quote!(,)); }
-                ts.extend(quote!(#tp));
-            }
-            ts
-        };
-
-        let tuple_pat = if arity == 1 {
-            quote!((#types_joined ,))
-        } else {
-            quote!((#types_joined))
-        };
-
-        let fields_joined: proc_macro2::TokenStream = {
-            let mut ts = proc_macro2::TokenStream::new();
-            for i in 0..arity {
-                if i > 0 { ts.extend(quote!(,)); }
-                let idx = syn::Index::from(i);
-                ts.extend(quote!(self.#idx.try_clone()?));
-            }
-            ts
-        };
-
-        let body = if arity == 1 {
-            quote!(((#fields_joined ),))
-        } else {
-            quote!((#fields_joined))
-        };
-
-        output.push(quote! {
-            impl<#(#bounds),*> TryClone for #tuple_pat {
-                #[inline]
-                fn try_clone(&self) -> Result<Self, TryCloneError> {
-                    Ok(#body)
-                }
-            }
-        });
-    }
-
-    TokenStream::from(quote!(#(#output)*))
+    try_clone::try_clone_tuples(input)
 }
 
 /// Derives `TryDebug` for a struct or enum.
@@ -183,209 +33,13 @@ pub fn try_clone_tuples(input: TokenStream) -> TokenStream {
 /// generates the formatting code directly and can guarantee no hidden allocations.
 #[proc_macro_derive(TryDebug)]
 pub fn derive_try_debug(input: TokenStream) -> TokenStream {
-    let input = parse_macro_input!(input as DeriveInput);
-    let name = &input.ident;
-    let (impl_generics, ty_generics, where_clause) = input.generics.split_for_impl();
-
-    let debug_body = match &input.data {
-        Data::Struct(data) => match &data.fields {
-            Fields::Named(fields) => {
-                if fields.named.is_empty() {
-                    quote! {
-                        f.write_str(concat!(stringify!(#name), "()"))?;
-                        Ok(())
-                    }
-                } else {
-                    let field_fmts = fields.named.iter().map(|field| {
-                        let ident = &field.ident;
-                        let field_name = ident.as_ref().map(|i| i.to_string()).unwrap_or_default();
-                        quote! {
-                            f.write_str(concat!(" ", #field_name, ": "))?;
-                            ::rustyfill::try_fmt::TryDebug::try_fmt(&self.#ident, f)?;
-                        }
-                    });
-                    quote! {
-                        f.write_str(concat!(stringify!(#name), "{"))?;
-                        #(#field_fmts)*
-                        f.write_str("}")?;
-                        Ok(())
-                    }
-                }
-            }
-            Fields::Unnamed(fields) => {
-                if fields.unnamed.is_empty() {
-                    quote! {
-                        f.write_str(concat!(stringify!(#name), "()"))?;
-                        Ok(())
-                    }
-                } else {
-                    let field_fmts = (0..fields.unnamed.len()).map(|i| {
-                        let idx = syn::Index::from(i);
-                        quote! {
-                            if #i > 0 { f.write_str(", ")?; }
-                            ::rustyfill::try_fmt::TryDebug::try_fmt(&self.#idx, f)?;
-                        }
-                    });
-                    quote! {
-                        f.write_str(concat!(stringify!(#name), "("))?;
-                        #(#field_fmts)*
-                        f.write_str(")")?;
-                        Ok(())
-                    }
-                }
-            }
-            Fields::Unit => {
-                quote! {
-                    f.write_str(stringify!(#name))?;
-                    Ok(())
-                }
-            }
-        },
-        Data::Enum(data) => {
-            if data.variants.is_empty() {
-                return syn::Error::new_spanned(
-                    name,
-                    "#[derive(TryDebug)] on empty enums is not supported",
-                )
-                .to_compile_error()
-                .into();
-            }
-            let arms = data.variants.iter().map(|variant| {
-                let variant_ident = &variant.ident;
-                match &variant.fields {
-                    Fields::Named(fields) if !fields.named.is_empty() => {
-                        let field_idents: Vec<_> = fields
-                            .named
-                            .iter()
-                            .map(|f| f.ident.as_ref().unwrap())
-                            .collect();
-                        let field_patterns: Vec<_> =
-                            field_idents.iter().map(|id| quote!(#id)).collect();
-                        let field_fmts = field_idents.iter().map(|id| {
-                            let fname = id.to_string();
-                            quote! {
-                                f.write_str(concat!(" ", #fname, ": "))?;
-                                ::rustyfill::try_fmt::TryDebug::try_fmt(#id, f)?;
-                            }
-                        });
-                        quote! {
-                            Self::#variant_ident { #(#field_patterns),* } => {
-                                f.write_str(concat!(stringify!(#name), "::", stringify!(#variant_ident), "{"))?;
-                                #(#field_fmts)*
-                                f.write_str("}")?;
-                                Ok(())
-                            },
-                        }
-                    }
-                    Fields::Named(_) | Fields::Unit => {
-                        quote! {
-                            Self::#variant_ident => {
-                                f.write_str(concat!(stringify!(#name), "::", stringify!(#variant_ident)))?;
-                                Ok(())
-                            },
-                        }
-                    }
-                    Fields::Unnamed(fields) => {
-                        let field_names: Vec<_> = (0..fields.unnamed.len())
-                            .map(|i| quote::format_ident!("f{i}"))
-                            .collect();
-                        let field_fmts = field_names.iter().enumerate().map(|(i, fn_)| {
-                            quote! {
-                                if #i > 0 { f.write_str(", ")?; }
-                                ::rustyfill::try_fmt::TryDebug::try_fmt(#fn_, f)?;
-                            }
-                        });
-                        quote! {
-                            Self::#variant_ident (#(#field_names),*) => {
-                                f.write_str(concat!(stringify!(#name), "::", stringify!(#variant_ident), "("))?;
-                                #(#field_fmts)*
-                                f.write_str(")")?;
-                                Ok(())
-                            },
-                        }
-                    }
-                }
-            });
-            quote! {
-                match self {
-                    #(#arms)*
-                }
-            }
-        }
-        Data::Union(_) => {
-            return syn::Error::new_spanned(name, "#[derive(TryDebug)] is not supported on unions")
-                .to_compile_error()
-                .into();
-        }
-    };
-
-    let expanded = quote! {
-        impl #impl_generics ::rustyfill::try_fmt::TryDebug for #name #ty_generics #where_clause {
-            fn try_fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-                #debug_body
-            }
-        }
-    };
-
-    TokenStream::from(expanded)
+    try_debug::derive_try_debug(input)
 }
 
 /// Generates `TryDebug` implementations for tuples of arities 1 through `max`.
 #[proc_macro]
 pub fn try_debug_tuples(input: TokenStream) -> TokenStream {
-    let max: usize = syn::parse::<syn::LitInt>(input)
-        .ok()
-        .and_then(|lit| lit.base10_parse().ok())
-        .unwrap_or(12);
-    let max = max.clamp(1, 16);
-
-    let mut output = Vec::new();
-
-    for arity in 1..=max {
-        let type_params: Vec<_> = (0..arity).map(|i| quote::format_ident!("T{i}")).collect();
-        let bounds: Vec<_> = type_params.iter()
-            .map(|t| quote!(#t: TryDebug))
-            .collect();
-
-        let types_joined: proc_macro2::TokenStream = {
-            let mut ts = proc_macro2::TokenStream::new();
-            for (i, tp) in type_params.iter().enumerate() {
-                if i > 0 { ts.extend(quote!(,)); }
-                ts.extend(quote!(#tp));
-            }
-            ts
-        };
-
-        let tuple_pat = if arity == 1 {
-            quote!((#types_joined ,))
-        } else {
-            quote!((#types_joined))
-        };
-
-        let body_lines: Vec<_> = (0..arity).map(|i| {
-            let idx = syn::Index::from(i);
-            quote! {
-                if #i > 0 { f.write_str(", ")?; }
-                TryDebug::try_fmt(&self.#idx, f)?;
-            }
-        }).collect();
-
-        let close_paren = if arity == 1 { ",)" } else { ")" };
-
-        output.push(quote! {
-            impl<#(#bounds),*> TryDebug for #tuple_pat {
-                #[inline]
-                fn try_fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-                    f.write_str("(")?;
-                    #(#body_lines)*
-                    f.write_str(#close_paren)?;
-                    Ok(())
-                }
-            }
-        });
-    }
-
-    TokenStream::from(quote!(#(#output)*))
+    try_debug::try_debug_tuples(input)
 }
 
 /// Derives `TryDefault` for a struct or enum.
@@ -394,158 +48,156 @@ pub fn try_debug_tuples(input: TokenStream) -> TokenStream {
 /// implementation constructs each field fallibly and propagates the first error encountered.
 #[proc_macro_derive(TryDefault)]
 pub fn derive_try_default(input: TokenStream) -> TokenStream {
-    let input = parse_macro_input!(input as DeriveInput);
-    let name = &input.ident;
-    let (impl_generics, ty_generics, where_clause) = input.generics.split_for_impl();
-
-    let default_body = match &input.data {
-        Data::Struct(data) => match &data.fields {
-            Fields::Named(fields) => {
-                let field_defaults = fields.named.iter().map(|field| {
-                    let ident = &field.ident;
-                    quote! {
-                        #ident: ::rustyfill::try_default::TryDefault::try_default()?,
-                    }
-                });
-                quote! {
-                    Ok(Self { #(#field_defaults)* })
-                }
-            }
-            Fields::Unnamed(fields) => {
-                let field_defaults = fields.unnamed.iter().map(|field| {
-                    let ty = &field.ty;
-                    quote! {
-                        <#ty as ::rustyfill::try_default::TryDefault>::try_default()?,
-                    }
-                });
-                quote! {
-                    Ok(Self (#(#field_defaults)*))
-                }
-            }
-            Fields::Unit => {
-                quote! {
-                    Ok(Self)
-                }
-            }
-        },
-        Data::Enum(data) => {
-            if data.variants.is_empty() {
-                return syn::Error::new_spanned(
-                    name,
-                    "#[derive(TryDefault)] on empty enums is not supported",
-                )
-                .to_compile_error()
-                .into();
-            }
-            let first_variant = &data.variants[0];
-            let variant_ident = &first_variant.ident;
-
-            match &first_variant.fields {
-                Fields::Named(fields) => {
-                    let field_defaults = fields.named.iter().map(|field| {
-                        let ident = &field.ident;
-                        quote! {
-                            #ident: ::rustyfill::try_default::TryDefault::try_default()?,
-                        }
-                    });
-                    quote! {
-                        Ok(Self::#variant_ident { #(#field_defaults)* })
-                    }
-                }
-                Fields::Unnamed(fields) => {
-                    let field_defaults = fields.unnamed.iter().map(|field| {
-                        let ty = &field.ty;
-                        quote! {
-                            <#ty as ::rustyfill::try_default::TryDefault>::try_default()?,
-                        }
-                    });
-                    quote! {
-                        Ok(Self::#variant_ident (#(#field_defaults)*))
-                    }
-                }
-                Fields::Unit => {
-                    quote! {
-                        Ok(Self::#variant_ident)
-                    }
-                }
-            }
-        }
-        Data::Union(_) => {
-            return syn::Error::new_spanned(
-                name,
-                "#[derive(TryDefault)] is not supported on unions",
-            )
-            .to_compile_error()
-            .into();
-        }
-    };
-
-    let expanded = quote! {
-        impl #impl_generics ::rustyfill::try_default::TryDefault for #name #ty_generics #where_clause {
-            fn try_default() -> Result<Self, ::rustyfill::try_default::TryDefaultError> {
-                #default_body
-            }
-        }
-    };
-
-    TokenStream::from(expanded)
+    try_default::derive_try_default(input)
 }
 
 /// Generates `TryDefault` implementations for tuples of arities 1 through `max`.
 #[proc_macro]
 pub fn try_default_tuples(input: TokenStream) -> TokenStream {
-    let max: usize = syn::parse::<syn::LitInt>(input)
-        .ok()
-        .and_then(|lit| lit.base10_parse().ok())
-        .unwrap_or(12);
-    let max = max.clamp(1, 16);
+    try_default::try_default_tuples(input)
+}
 
-    let mut output = Vec::new();
+/// Produces a [`core::fmt::Arguments`] value identical to what
+/// [`core::format_args!`] would produce, except that every argument used as
+/// a display or debug value is wrapped in [`TryFmt::new`] so that formatting
+/// routes through the fallible [`TryDebug`] / [`TryDisplay`] paths.
+///
+/// Arguments that are *only* referenced as width or precision specifiers
+/// (e.g., `"{val:<width$}"`) are passed through unwrapped, since those
+/// positions expect raw numeric values rather than formatted output.
+#[proc_macro]
+pub fn try_format_args(input: TokenStream) -> TokenStream {
+    try_format_args::try_format_args(input)
+}
 
-    for arity in 1..=max {
-        let type_params: Vec<_> = (0..arity).map(|i| quote::format_ident!("T{i}")).collect();
-        let bounds: Vec<_> = type_params.iter().map(|t| quote!(#t: TryDefault)).collect();
+/// Fallibly print with a newline, writing to `std::io::stdout()`.
+#[proc_macro]
+pub fn try_println(input: TokenStream) -> TokenStream {
+    let tokens: proc_macro2::TokenStream = input.clone().into();
+    if tokens.is_empty() {
+        return quote! { std::write!(std::io::stdout(), "\n") }.into();
+    }
+    quote! {{
+        let mut out = std::io::stdout().lock();
+        std::io::Write::write_fmt(
+            &mut out,
+            ::rustyfill::try_format_args!(#tokens),
+        )
+    }}
+    .into()
+}
 
-        let types_joined: proc_macro2::TokenStream = {
-            let mut ts = proc_macro2::TokenStream::new();
-            for (i, tp) in type_params.iter().enumerate() {
-                if i > 0 { ts.extend(quote!(,)); }
-                ts.extend(quote!(#tp));
+/// Fallibly print without a newline, writing to `std::io::stdout()`.
+#[proc_macro]
+pub fn try_print(input: TokenStream) -> TokenStream {
+    let tokens: proc_macro2::TokenStream = input.clone().into();
+    if tokens.is_empty() {
+        return quote! { Ok::<_, std::io::Error>(()) }.into();
+    }
+    quote! {{
+        let mut out = std::io::stdout().lock();
+        std::io::Write::write_fmt(
+            &mut out,
+            ::rustyfill::try_format_args!(#tokens),
+        )
+    }}
+    .into()
+}
+
+/// Fallibly write formatted output to a writer.
+#[proc_macro]
+pub fn try_write(input: TokenStream) -> TokenStream {
+    let tokens: proc_macro2::TokenStream = input.clone().into();
+    let tts: Vec<proc_macro2::TokenTree> = tokens.clone().into_iter().collect();
+
+    let mut depth = 0i32;
+    let mut comma_pos = None;
+    for (i, tt) in tts.iter().enumerate() {
+        match tt {
+            proc_macro2::TokenTree::Group(_) => {
+                depth += 1;
             }
-            ts
-        };
-
-        let tuple_pat = if arity == 1 {
-            quote!((#types_joined ,))
-        } else {
-            quote!((#types_joined))
-        };
-
-        let fields_joined: proc_macro2::TokenStream = {
-            let mut ts = proc_macro2::TokenStream::new();
-            (0..arity).for_each(|type_params_index| {
-                if type_params_index > 0 { ts.extend(quote!(,)); }
-                let tp = &type_params[type_params_index];
-                ts.extend(quote!(<#tp as TryDefault>::try_default()?));
-            });
-            ts
-        };
-
-        let body = if arity == 1 {
-            quote!(((#fields_joined ),))
-        } else {
-            quote!((#fields_joined))
-        };
-
-        output.push(quote! {
-            impl<#(#bounds),*> TryDefault for #tuple_pat {
-                #[inline]
-                fn try_default() -> Result<Self, TryDefaultError> {
-                    Ok(#body)
-                }
+            proc_macro2::TokenTree::Punct(p) if p.as_char() == ',' && depth == 0 => {
+                comma_pos = Some(i);
+                break;
             }
-        });
+            _ => {}
+        }
     }
 
-    TokenStream::from(quote!(#(#output)*))
+    match comma_pos {
+        None => {
+            let dst_ts: proc_macro2::TokenStream = tts.into_iter().collect();
+            quote! {{
+                let _ = #dst_ts;
+                Ok::<_, std::io::Error>(())
+            }}
+            .into()
+        }
+        Some(idx) => {
+            let dst_ts: proc_macro2::TokenStream = tts[..idx].into_iter().cloned().collect();
+            let fmt_ts: proc_macro2::TokenStream = tts[idx + 1..].into_iter().cloned().collect();
+            quote! {{
+                let mut dst = #dst_ts;
+                std::io::Write::write_fmt(
+                    &mut dst,
+                    ::rustyfill::try_format_args!(#fmt_ts),
+                )
+            }}
+            .into()
+        }
+    }
+}
+
+/// Fallibly write formatted output with a newline to a writer.
+#[proc_macro]
+pub fn try_writeln(input: TokenStream) -> TokenStream {
+    let tokens: proc_macro2::TokenStream = input.clone().into();
+    let tts: Vec<proc_macro2::TokenTree> = tokens.clone().into_iter().collect();
+
+    let mut depth = 0i32;
+    let mut comma_pos = None;
+    for (i, tt) in tts.iter().enumerate() {
+        match tt {
+            proc_macro2::TokenTree::Group(_) => {
+                depth += 1;
+            }
+            proc_macro2::TokenTree::Punct(p) if p.as_char() == ',' && depth == 0 => {
+                comma_pos = Some(i);
+                break;
+            }
+            _ => {}
+        }
+    }
+
+    match comma_pos {
+        None => {
+            let dst_ts: proc_macro2::TokenStream = tts.into_iter().collect();
+            quote! { std::write!(#dst_ts, "\n") }.into()
+        }
+        Some(idx) => {
+            let dst_ts: proc_macro2::TokenStream = tts[..idx].into_iter().cloned().collect();
+            let fmt_ts: proc_macro2::TokenStream = tts[idx + 1..].into_iter().cloned().collect();
+            quote! {{
+                let mut dst = #dst_ts;
+                std::io::Write::write_fmt(&mut dst, ::rustyfill::try_format_args!(#fmt_ts))
+                    .and_then(|()| std::io::Write::write_all(&mut dst, b"\n"))
+            }}
+            .into()
+        }
+    }
+}
+
+/// Fallibly format arguments into a newly allocated `String`.
+#[proc_macro]
+pub fn try_format(input: TokenStream) -> TokenStream {
+    let tokens: proc_macro2::TokenStream = input.clone().into();
+    quote! {{
+        let mut buf = String::new();
+        ::rustyfill::string::TryString::try_write_fmt(
+            &mut buf,
+            ::rustyfill::try_format_args!(#tokens),
+        ).map(|()| buf)
+    }}
+    .into()
 }

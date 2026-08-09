@@ -66,6 +66,14 @@ pub trait TryDisplay: fmt::Display {
 /// fallible paths.
 pub struct TryFmt<T>(pub T);
 
+impl<T> TryFmt<T> {
+    /// Wrap a value so that standard formatting routes through fallible paths.
+    #[inline]
+    pub const fn new(value: T) -> Self {
+        Self(value)
+    }
+}
+
 impl<T: TryDebug> fmt::Debug for TryFmt<T> {
     #[inline]
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -292,60 +300,11 @@ impl_try_debug_for_range!(
 );
 
 // ── Formatting macros ──────────────────────────────────────────────────────────
-
-/// Fallibly print with a newline, writing to [`io::stdout()`](std::io::stdout).
-///
-/// Returns an [`io::Result`](std::io::Result). Wraps all arguments in [`TryFmt`].
-#[macro_export]
-macro_rules! try_println {
-    () => {
-        std::write!(std::io::stdout(), "\n")
-    };
-    ($($arg:tt)+) => {{
-        std::write!(std::io::stdout(), core::format_args!($($arg)+))
-    }};
-}
-
-/// Fallibly print without a newline, writing to [`io::stdout()`](std::io::stdout).
-///
-/// Returns an [`io::Result`](std::io::Result). Wraps all arguments in [`TryFmt`].
-#[macro_export]
-macro_rules! try_print {
-    () => {
-        Ok::<_, std::io::Error>(())
-    };
-    ($($arg:tt)+) => {{
-        std::write!(std::io::stdout(), core::format_args!($($arg)+))
-    }};
-}
-
-/// Fallibly write formatted output to a writer.
-///
-/// Mirrors [`write!`] but routes through [`TryFmt`] wrappers. Returns
-/// [`io::Result`](std::io::Result).
-#[macro_export]
-macro_rules! try_write {
-    ($dst:expr) => {
-        Ok::<_, std::io::Error>(())
-    };
-    ($dst:expr, $($arg:tt)+) => {{
-        std::write!($dst, core::format_args!($($arg)+))
-    }};
-}
-
-/// Fallibly write formatted output with a newline to a writer.
-///
-/// Mirrors [`writeln!`] but routes through [`TryFmt`] wrappers. Returns
-/// [`io::Result`](std::io::Result).
-#[macro_export]
-macro_rules! try_writeln {
-    ($dst:expr) => {
-        std::write!($dst, "\n")
-    };
-    ($dst:expr, $($arg:tt)+) => {{
-        std::writeln!($dst, core::format_args!($($arg)+))
-    }};
-}
+// The `try_format_args` proc-macro is defined in `rustyfill-macros` and re-exported
+// from the crate root. It selectively wraps display/debug arguments in TryFmt while
+// leaving width/precision specifier arguments unwrapped.
+// The helper macros (try_println, try_print, try_write, try_writeln, try_format)
+// are now proc-macros defined in rustyfill-macros and re-exported from the crate root.
 
 // ── Passthrough macros ─────────────────────────────────────────────────────────
 
