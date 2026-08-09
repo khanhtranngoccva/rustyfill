@@ -198,14 +198,16 @@ impl TryToOwned for Path {
 
 impl crate::try_fmt::TryDebug for Path {
     fn try_fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        // Delegates to OsStr's TryDebug which handles encoding safely.
-        self.as_os_str().try_fmt(f)
+        // Delegate to std Debug impl for parity. Path's Debug impl writes a
+        // best-effort UTF-8 representation without allocating on platforms
+        // where OsStr is UTF-8 (Unix) or lossy-converts (Windows).
+        fmt::Debug::fmt(self, f)
     }
 }
 
 impl crate::try_fmt::TryDebug for PathBuf {
     fn try_fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        self.as_path().try_fmt(f)
+        fmt::Debug::fmt(self, f)
     }
 }
 

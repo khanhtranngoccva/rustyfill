@@ -59,8 +59,14 @@ pub fn try_default_tuples(input: TokenStream) -> TokenStream {
 
 /// Produces a [`core::fmt::Arguments`] value identical to what
 /// [`core::format_args!`] would produce, except that every argument used as
-/// a display or debug value is wrapped in [`TryFmt::new`] so that formatting
-/// routes through the fallible [`TryDebug`] / [`TryDisplay`] paths.
+/// a formatted value is wrapped in the appropriate wrapper type
+/// ([`TryDebugWrapper`], [`TryDisplayWrapper`], [`TryLowerHexWrapper`], or
+/// [`TryUpperHexWrapper`]) so that formatting routes through the fallible
+/// [`TryDebug`] / [`TryDisplay`] / [`TryLowerHex`] / [`TryUpperHex`] paths.
+///
+/// The wrapper is selected based on the trailing format character of each
+/// placeholder: `?` → Debug, `x` → LowerHex, `X` → UpperHex, everything else
+/// (including bare `{}`) → Display.
 ///
 /// Arguments that are *only* referenced as width or precision specifiers
 /// (e.g., `"{val:<width$}"`) are passed through unwrapped, since those
@@ -135,8 +141,8 @@ pub fn try_write(input: TokenStream) -> TokenStream {
             .into()
         }
         Some(idx) => {
-            let dst_ts: proc_macro2::TokenStream = tts[..idx].into_iter().cloned().collect();
-            let fmt_ts: proc_macro2::TokenStream = tts[idx + 1..].into_iter().cloned().collect();
+            let dst_ts: proc_macro2::TokenStream = tts[..idx].iter().cloned().collect();
+            let fmt_ts: proc_macro2::TokenStream = tts[idx + 1..].iter().cloned().collect();
             quote! {{
                 let mut dst = #dst_ts;
                 std::io::Write::write_fmt(
@@ -176,8 +182,8 @@ pub fn try_writeln(input: TokenStream) -> TokenStream {
             quote! { std::write!(#dst_ts, "\n") }.into()
         }
         Some(idx) => {
-            let dst_ts: proc_macro2::TokenStream = tts[..idx].into_iter().cloned().collect();
-            let fmt_ts: proc_macro2::TokenStream = tts[idx + 1..].into_iter().cloned().collect();
+            let dst_ts: proc_macro2::TokenStream = tts[..idx].iter().cloned().collect();
+            let fmt_ts: proc_macro2::TokenStream = tts[idx + 1..].iter().cloned().collect();
             quote! {{
                 let mut dst = #dst_ts;
                 std::io::Write::write_fmt(&mut dst, ::rustyfill::try_format_args!(#fmt_ts))

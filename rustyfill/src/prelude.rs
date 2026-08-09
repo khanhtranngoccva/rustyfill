@@ -21,7 +21,7 @@
 pub use crate::recovery::{Resumable, ResumableSource};
 pub use crate::try_clone::TryClone;
 pub use crate::try_default::TryDefault;
-pub use crate::try_fmt::{TryDebug, TryDisplay, TryFmt};
+pub use crate::try_fmt::{TryDebug, TryDisplay, TryLowerHex, TryUpperHex};
 pub use crate::try_random_state::TryRandomState;
 pub use crate::try_to_owned::TryToOwned;
 

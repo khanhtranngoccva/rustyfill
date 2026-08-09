@@ -12,6 +12,11 @@
     feature(io_const_error)
 )]
 
+// Allow the `try_format_args!` proc-macro to reference `::rustyfill::try_fmt::*Wrapper`
+// types from within this crate itself. Without this, `::rustyfill` doesn't resolve
+// during self-compilation since a crate can't refer to itself by name from inside.
+extern crate self as rustyfill;
+
 pub mod alloc;
 pub mod arc;
 pub mod boxed;

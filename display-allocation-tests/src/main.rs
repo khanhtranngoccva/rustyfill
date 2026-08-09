@@ -105,7 +105,7 @@ fn test_references() {
     let x = 42;
     let s = "hello";
     format_on_stack(format_args!("{:p}", &x));
-    format_on_stack(format_args!("{:?}", &s));
+    format_on_stack(format_args!("{:?}", s));
 }
 
 /// Tuple formatting — no allocation expected.
