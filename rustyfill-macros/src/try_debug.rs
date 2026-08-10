@@ -44,7 +44,7 @@ pub(crate) fn derive_try_debug(input: TokenStream) -> TokenStream {
                         }
                     });
                     quote! {
-                        ::rustyfill::try_fmt::helpers::FormatterExt::try_debug_tuple(f)
+                        ::rustyfill::try_fmt::helpers::FormatterExt::try_debug_tuple(f, stringify!(#name))
                             #(#field_calls)*
                             .finish()
                     }
@@ -110,7 +110,7 @@ pub(crate) fn derive_try_debug(input: TokenStream) -> TokenStream {
                         });
                         quote! {
                             Self::#variant_ident (#(#field_names),*) => {
-                                ::rustyfill::try_fmt::helpers::FormatterExt::try_debug_tuple(f)
+                                ::rustyfill::try_fmt::helpers::FormatterExt::try_debug_tuple(f, stringify!(#variant_ident))
                                     #(#field_calls)*
                                     .finish()
                             },
@@ -185,7 +185,7 @@ pub(crate) fn try_debug_tuples(input: TokenStream) -> TokenStream {
             impl<#(#bounds),*> TryDebug for #tuple_pat {
                 #[inline]
                 fn try_fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-                    ::rustyfill::try_fmt::helpers::FormatterExt::try_debug_tuple(f)
+                    ::rustyfill::try_fmt::helpers::FormatterExt::try_debug_tuple(f, "")
                         #(#field_calls)*
                         .finish()
                 }

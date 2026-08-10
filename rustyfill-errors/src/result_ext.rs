@@ -21,7 +21,7 @@ use crate::Report;
 ///     .attach("user_id")
 ///     .change_context_lazy(|_| RuntimeError("failed to process request"))?;
 /// ```
-pub trait ResultExt<T> {
+pub trait ResultExt<T, E> {
     /// Attaches printable data to the head frame if this result is an error.
     ///
     /// The value must implement [`Debug`](core::fmt::Debug) and
@@ -57,6 +57,7 @@ pub trait ResultExt<T> {
     /// All existing peers (including the head) are demoted into children. Oldest
     /// peers are dropped first if allocation fails.
     #[track_caller]
+    #[allow(clippy::result_large_err)]
     fn change_context<U>(self, context: U) -> Result<T, Report<U>>
     where
         U: Error + Send + Sync + 'static;
@@ -64,32 +65,25 @@ pub trait ResultExt<T> {
     /// Lazily evaluates and changes the current context if this result is an
     /// error. The closure receives no arguments and returns the new context.
     #[track_caller]
+    #[allow(clippy::result_large_err)]
     fn change_context_lazy<U, F>(self, f: F) -> Result<T, Report<U>>
     where
         U: Error + Send + Sync + 'static,
         F: FnOnce() -> U;
 
-    /// Changes the current context adaptively if this result is an error.
+    /// Changes the current context using the map_err like syntax if this result is an error.
     ///
-    /// Takes a complete [`Report<U>`] as the replacement. If the result is `Err`,
-    /// the adapter closure is invoked with a mutable reference to the provided
-    /// report so it can customize it before the final demotion occurs. After the
-    /// adapter returns, the original error frames are demoted into children of the
-    /// adapted report via [`change_context`](Report::change_context).
-    ///
-    /// On `Ok`, the provided report is discarded and the value passes through unchanged.
+    /// This function acts similarly to map_err() but retains control of the report building -
+    /// this allows surfacing domain-level concerns from the old topmost error(s) in the new error type.
     #[track_caller]
-    fn change_context_adaptive<U, F>(
-        self,
-        new_report: Report<U>,
-        adapter: F,
-    ) -> Result<T, Report<U>>
+    #[allow(clippy::result_large_err)]
+    fn change_context_adaptive<U, F>(self, f: F) -> Result<T, Report<U>>
     where
         U: Error + Send + Sync + 'static,
-        F: FnOnce(&mut Report<U>);
+        F: FnOnce(&mut Report<E>) -> U;
 }
 
-impl<T, E> ResultExt<T> for Result<T, Report<E>>
+impl<T, E> ResultExt<T, E> for Result<T, Report<E>>
 where
     E: Error + Send + Sync + 'static,
 {
@@ -159,27 +153,16 @@ where
     }
 
     #[track_caller]
-    fn change_context_adaptive<U, F>(
-        self,
-        new_report: Report<U>,
-        adapter: F,
-    ) -> Result<T, Report<U>>
+    fn change_context_adaptive<U, F>(self, f: F) -> Result<T, Report<U>>
     where
         U: Error + Send + Sync + 'static,
-        F: FnOnce(&mut Report<U>),
+        F: FnOnce(&mut Report<E>) -> U,
     {
         match self {
             Ok(val) => Ok(val),
-            Err(original) => {
-                // Extract the context from new_report so we can pass it to
-                // original.change_context(). Then forget new_report since its
-                // context has been moved out.
-                let mut nr = new_report;
-                let new_ctx = nr.extract_context();
-                core::mem::forget(nr);
-
-                let mut report = original.change_context(new_ctx);
-                adapter(&mut report);
+            Err(mut original) => {
+                let new_err = f(&mut original);
+                let report = original.change_context(new_err);
                 Err(report)
             }
         }
@@ -189,6 +172,9 @@ where
 #[cfg(test)]
 mod tests {
     extern crate std;
+
+    use alloc::borrow::Cow;
+    use rustyfill::string::TryStr;
 
     use super::*;
     use crate::Report;
@@ -203,7 +189,7 @@ mod tests {
     impl Error for IoError {}
 
     #[derive(Debug)]
-    struct AppError(&'static str);
+    struct AppError(Cow<'static, str>);
     impl core::fmt::Display for AppError {
         fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
             write!(f, "App: {}", self.0)
@@ -272,7 +258,7 @@ mod tests {
         let result: Result<alloc::string::String, Report<IoError>> =
             Ok(alloc::string::String::from("hello"));
         let result: Result<alloc::string::String, Report<AppError>> =
-            result.change_context(AppError("wrapper"));
+            result.change_context(AppError(Cow::Borrowed("wrapper")));
         assert_eq!(result.unwrap(), "hello");
     }
 
@@ -281,7 +267,7 @@ mod tests {
         let result: Result<i32, Report<IoError>> =
             Err(Report::with_segment(IoError("not found"), "file.read"));
         let result: Result<i32, Report<AppError>> =
-            result.change_context(AppError("resource unavailable"));
+            result.change_context(AppError(Cow::Borrowed("resource unavailable")));
         let report = result.unwrap_err();
         assert_eq!(report.current_context().0, "resource unavailable");
         // Check that frames walker finds a child (demoted original).
@@ -300,7 +286,7 @@ mod tests {
     fn change_context_lazy_on_err() {
         let result: Result<i32, Report<IoError>> = Err(Report::new(IoError("parse failed")));
         let result: Result<i32, Report<AppError>> =
-            result.change_context_lazy(|| AppError("input invalid"));
+            result.change_context_lazy(|| AppError(Cow::Borrowed("input invalid")));
         let report = result.unwrap_err();
         assert_eq!(report.current_context().0, "input invalid");
     }
@@ -308,9 +294,8 @@ mod tests {
     #[test]
     fn change_context_adaptive_on_ok_discards_new_report() {
         let result: Result<i32, Report<IoError>> = Ok(99);
-        let new_report = Report::new(AppError("would be used"));
         let result: Result<i32, Report<AppError>> =
-            result.change_context_adaptive(new_report, |_| {});
+            result.change_context_adaptive(|_| AppError(Cow::Borrowed("would be used")));
         assert_eq!(result.unwrap(), 99);
     }
 
@@ -318,19 +303,22 @@ mod tests {
     fn change_context_adaptive_on_err_calls_adapter() {
         let result: Result<i32, Report<IoError>> =
             Err(Report::with_segment(IoError("original"), "segment.label"));
-        let new_report = Report::new(AppError("replacement"));
+        let mut was_called = false;
+        let result: Result<i32, Report<AppError>> = result.change_context_adaptive(|r| {
+            // Adapter can inspect, modify the old report, and return the new one
+            let duplicated = r
+                .current_context_mut()
+                .0
+                .try_repeat(2)
+                .expect("no OOM in this test");
+            r.current_context_mut().0 = "replacement";
+            was_called = true;
+            AppError(Cow::Owned(duplicated))
+        });
 
-        let was_called = std::cell::Cell::new(false);
-        let result: Result<i32, Report<AppError>> =
-            result.change_context_adaptive(new_report, |r| {
-                was_called.set(true);
-                // Adapter can inspect and modify the new report
-                assert_eq!(r.current_context().0, "replacement");
-            });
-
-        assert!(was_called.get());
+        assert!(was_called);
         let report = result.unwrap_err();
-        assert_eq!(report.current_context().0, "replacement");
+        assert_eq!(report.current_context().0, "originaloriginal");
         // Original should be demoted to children — verify via frames walker.
         let mut count = 0;
         for (_, _) in report.frames() {
@@ -360,7 +348,7 @@ mod tests {
 
         let result: Result<i32, Report<AppError>> = result
             .attach("query: SELECT * FROM users")
-            .change_context(AppError("database unreachable"));
+            .change_context(AppError(Cow::Borrowed("database unreachable")));
 
         let report = result.unwrap_err();
         assert_eq!(report.current_context().0, "database unreachable");

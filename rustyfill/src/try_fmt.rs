@@ -1778,6 +1778,33 @@ mod try_write_tests {
     }
 
     #[test]
+    fn parity_tuple_struct_debug() {
+        #[derive(fmt::Debug, ::rustyfill::TryDebug)]
+        struct Point(i32, i32);
+        let p = Point(3, 4);
+        let mut bs = Cursor::new(Vec::new());
+        let mut bt = Cursor::new(Vec::new());
+        std::write!(&mut bs, "{:?}", p).unwrap();
+        try_write!(&mut bt, "{:?}", &p).unwrap();
+        assert_eq!(bs.into_inner(), bt.into_inner());
+    }
+
+    #[test]
+    fn parity_enum_tuple_variant_debug() {
+        #[derive(fmt::Debug, ::rustyfill::TryDebug)]
+        enum Shape {
+            Circle(f64),
+            Rect(i32, i32),
+        }
+        let s = Shape::Rect(10, 20);
+        let mut bs = Cursor::new(Vec::new());
+        let mut bt = Cursor::new(Vec::new());
+        std::write!(&mut bs, "{:?}", s).unwrap();
+        try_write!(&mut bt, "{:?}", &s).unwrap();
+        assert_eq!(bs.into_inner(), bt.into_inner());
+    }
+
+    #[test]
     fn parity_option_some() {
         let o: Option<String> = Some(String::from("inner"));
         let mut bs = Cursor::new(Vec::new());

@@ -102,23 +102,6 @@ impl<C> Report<C> {
         self.head.context_mut().context_mut()
     }
 
-    /// Takes ownership of the head context out of this report, preventing the
-    /// original value from being dropped. The report must not be used after
-    /// this call except to be dropped immediately.
-    ///
-    /// # Safety contract
-    /// The caller must drop `self` immediately after calling this method.
-    /// The extracted context is the only valid value; the report's head now
-    /// holds uninitialized memory that will be leaked via `forget`.
-    #[must_use]
-    pub(crate) fn extract_context(&mut self) -> C {
-        let ptr = self.head.context_mut().context_mut() as *mut C;
-        let val = unsafe { ptr.read() };
-        // Prevent double-free: we'll forget the whole report.
-        // The caller must forget `self` after extracting.
-        val
-    }
-
     /// Returns the segment label of the current context, if set.
     #[must_use]
     pub fn segment(&self) -> Option<&str> {
@@ -1618,7 +1601,7 @@ mod tests {
 
     fn assert_snapshot(name: &str, actual: &str) {
         match read_snapshot(name) {
-            Some(expected) if expected == actual => {}, // matches
+            Some(expected) if expected == actual => {} // matches
             Some(expected) => {
                 write_snapshot(name, actual);
                 panic!(
@@ -1739,7 +1722,8 @@ mod tests {
     fn display_multilevel_tree_with_segments() {
         let r1 = Report::with_segment(TestError("database connection failed"), "db.connect");
         let r2: Report<OtherError> = r1.change_context(OtherError("query execution failed"));
-        let r3: Report<TestError> = Report::with_segment(TestError("transaction aborted"), "tx.commit");
+        let r3: Report<TestError> =
+            Report::with_segment(TestError("transaction aborted"), "tx.commit");
         let _ = r2;
         let output = alloc::format!("{}", r3);
         assert_snapshot("multilevel_tree_with_segments", &output);

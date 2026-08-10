@@ -59,34 +59,44 @@ pub trait FormatterExt<'f> {
     /// Returns a [`TryDebugStruct`] builder for formatting a struct with the given name.
     fn try_debug_struct(&mut self, name: &'f str) -> TryDebugStruct<'_, 'f>;
 
-    /// Returns a [`TryDebugTuple`] builder for formatting a tuple.
-    fn try_debug_tuple(&mut self) -> TryDebugTuple<'_, 'f>;
+    /// Returns a [`TryDebugTuple`] builder for formatting a tuple or a tuple struct.
+    fn try_debug_tuple(&mut self, name: &'f str) -> TryDebugTuple<'_, 'f>;
 }
 
 impl<'f> FormatterExt<'f> for fmt::Formatter<'f> {
     #[inline]
     fn try_debug_list(&mut self) -> TryDebugList<'_, 'f> {
-        TryDebugList { inner: self.debug_list() }
+        TryDebugList {
+            inner: self.debug_list(),
+        }
     }
 
     #[inline]
     fn try_debug_set(&mut self) -> TryDebugSet<'_, 'f> {
-        TryDebugSet { inner: self.debug_set() }
+        TryDebugSet {
+            inner: self.debug_set(),
+        }
     }
 
     #[inline]
     fn try_debug_map(&mut self) -> TryDebugMap<'_, 'f> {
-        TryDebugMap { inner: self.debug_map() }
+        TryDebugMap {
+            inner: self.debug_map(),
+        }
     }
 
     #[inline]
     fn try_debug_struct(&mut self, name: &'f str) -> TryDebugStruct<'_, 'f> {
-        TryDebugStruct { inner: self.debug_struct(name) }
+        TryDebugStruct {
+            inner: self.debug_struct(name),
+        }
     }
 
     #[inline]
-    fn try_debug_tuple(&mut self) -> TryDebugTuple<'_, 'f> {
-        TryDebugTuple { inner: self.debug_tuple("") }
+    fn try_debug_tuple(&mut self, name: &'f str) -> TryDebugTuple<'_, 'f> {
+        TryDebugTuple {
+            inner: self.debug_tuple(name),
+        }
     }
 }
 
@@ -169,11 +179,7 @@ pub struct TryDebugMap<'b, 'f> {
 impl<'d, 'b, 'f> TryDebugMap<'b, 'f> {
     /// Add a single key-value entry to the map.
     #[inline]
-    pub fn entry<K: TryDebug, V: TryDebug>(
-        &mut self,
-        key: &'d K,
-        value: &'d V,
-    ) -> &mut Self {
+    pub fn entry<K: TryDebug, V: TryDebug>(&mut self, key: &'d K, value: &'d V) -> &mut Self {
         self.inner.entry(&D(key), &D(value));
         self
     }

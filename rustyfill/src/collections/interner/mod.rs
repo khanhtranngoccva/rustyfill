@@ -40,8 +40,10 @@
 use crate::alloc::TryReserveError;
 use crate::arc::TryWeak;
 use crate::collections::chashmap::ConcurrentHashMap;
-use crate::prelude::{TryArc, TryClone};
+use crate::prelude::{TryArc, TryClone, TryDebug};
 use crate::try_clone::TryCloneError;
+use crate::try_default::{TryDefault, TryDefaultError};
+use crate::try_fmt::FormatterExt;
 use crate::try_to_owned::{TryToOwned, TryToOwnedError};
 use core::hash::Hash;
 use std::ffi::{CStr, CString, OsStr, OsString};
@@ -260,13 +262,42 @@ where
 impl<B: InternKind + ?Sized> core::fmt::Debug for Intern<B>
 where
     <B as ToOwned>::Owned: Hash + Eq + PartialEq<B> + TryClone + Debug,
-    B: Debug,
 {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         match self {
             Self::Owned(v) => f.debug_tuple("Owned").field(v).finish(),
             Self::Shared(v) => f.debug_tuple("Shared").field(v).finish(),
         }
+    }
+}
+
+impl<B: InternKind + ?Sized> TryDebug for Intern<B>
+where
+    <B as ToOwned>::Owned: Hash + Eq + PartialEq<B> + TryClone + TryDebug,
+{
+    fn try_fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            Self::Owned(v) => f.try_debug_tuple("Owned").field(v).finish(),
+            Self::Shared(v) => f.try_debug_tuple("Shared").field(v).finish(),
+        }
+    }
+}
+
+impl<B: InternKind + ?Sized> Default for Intern<B>
+where
+    <B as ToOwned>::Owned: Hash + Eq + PartialEq<B> + TryClone + Default,
+{
+    fn default() -> Self {
+        Intern::Owned(Default::default())
+    }
+}
+
+impl<B: InternKind + ?Sized> TryDefault for Intern<B>
+where
+    <B as ToOwned>::Owned: Hash + Eq + PartialEq<B> + TryClone + TryDefault,
+{
+    fn try_default() -> Result<Self, TryDefaultError> {
+        Ok(Intern::Owned(TryDefault::try_default()?))
     }
 }
 
@@ -297,7 +328,7 @@ crate::collections::chashmap::declare_concurrent_hash_map! {
 /// Used to trigger periodic pruning every `PRUNE_INTERVAL` calls.
 static INTERN_CALL_COUNTER: AtomicUsize = AtomicUsize::new(0);
 
-/// Maybe prune unlocked shards across all four interner maps.
+/// Prune unlocked shards across all four interner maps if sufficient interning operations are reached.
 fn maybe_prune_all_maps() {
     let prev_total = INTERN_CALL_COUNTER.fetch_add(1, Ordering::Relaxed);
     if !prev_total.is_multiple_of(PRUNE_INTERVAL) {
@@ -344,27 +375,13 @@ where
 /// Generic intern logic shared by all interner backends.
 ///
 /// Accepts a borrowed value (`&B`). Uses [`TryToOwned::try_to_owned`] to lazily
-/// construct the owned value (only on cache miss), then [`TryArc::try_new_give_back`]
+/// construct the owned value (only on cache miss), then [`TryArc::fallible_new`]
 /// to allocate the `Arc`. All hashing, allocation, locking, and comparison happen
 /// inside this function.
 ///
-/// Strategy:
-/// 1. **Compute hash** from the borrowed value (infallible, no locks).
-/// 2. **Read-lock fast path**: scan for a matching entry (same hash AND same
-///    value). If found and the `Weak` upgrades, return the `Arc` immediately —
-///    no owned value is constructed.
-/// 3. **Construct owned value** via `try_to_owned` (fallible). Only reached on
-///    cache miss. If it fails, no lock has been held and no state is touched.
-/// 4. **Allocate Arc** via `try_new_give_back` (fallible). Returns the owned
-///    value on failure so the caller can still use it.
-/// 5. **Write-lock slow path**: acquire a write lock, reserve space, re-check
-///    for races, then insert `(hash, Weak)` + `()` atomically.
-///
 /// # Return
 /// - `Ok(Arc<Owned>)` on success
-/// - `Err(None, e)` if `try_to_owned` failed (no owned value available)
-/// - `Err(Some(owned), e)` if `try_new_give_back` or `try_reserve` failed
-///   (owned value returned for reuse)
+/// - `Err(e)` if `try_to_owned` failed for any reason
 fn do_intern_with_key<B>(
     map: &ConcurrentHashMap<InternKey<B::Owned>, (), RandomState>,
     borrowed: &B,
