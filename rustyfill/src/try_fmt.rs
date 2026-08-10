@@ -1310,6 +1310,7 @@ mod oom_tests {
     // ── Derived enums via #[derive(TryDebug)] ────────────────────────────────
 
     #[derive(Debug, ::rustyfill::TryDebug)]
+    #[allow(clippy::enum_variant_names)]
     enum SampleEnum {
         UnitVariant,
         TupleVariant(i32, String),
@@ -1389,7 +1390,8 @@ mod oom_tests {
 
     #[test]
     fn try_debug_manually_drop_string_no_alloc() {
-        let md: core::mem::ManuallyDrop<String> = core::mem::ManuallyDrop::new(String::from("wrapped"));
+        let md: core::mem::ManuallyDrop<String> =
+            core::mem::ManuallyDrop::new(String::from("wrapped"));
         assert!(assert_try_debug_no_alloc(&md));
     }
 
@@ -1509,11 +1511,8 @@ mod oom_tests {
 
     #[test]
     fn try_debug_deeply_nested_compound_no_alloc() {
-        let val: Vec<Option<Result<[i32; 2], &'static str>>> = vec![
-            Some(Ok([1, 2])),
-            None,
-            Some(Err("error")),
-        ];
+        let val: Vec<Option<Result<[i32; 2], &'static str>>> =
+            vec![Some(Ok([1, 2])), None, Some(Err("error"))];
         assert!(assert_try_debug_no_alloc(&val));
     }
 }
@@ -2039,6 +2038,7 @@ mod try_write_tests {
     #[test]
     fn parity_enum_tuple_variant_debug() {
         #[derive(fmt::Debug, ::rustyfill::TryDebug)]
+        #[allow(unused)]
         enum Shape {
             Circle(f64),
             Rect(i32, i32),
@@ -2626,6 +2626,7 @@ mod try_write_tests {
     // ── Derived enums via #[derive(TryDebug)] ────────────────────────────────
 
     #[derive(fmt::Debug, ::rustyfill::TryDebug)]
+    #[allow(clippy::enum_variant_names)]
     enum ParitySampleEnum {
         UnitVariant,
         TupleVariant(i32, String),
@@ -2745,7 +2746,8 @@ mod try_write_tests {
 
     #[test]
     fn parity_manually_drop_string_debug() {
-        let md: core::mem::ManuallyDrop<String> = core::mem::ManuallyDrop::new(String::from("wrapped"));
+        let md: core::mem::ManuallyDrop<String> =
+            core::mem::ManuallyDrop::new(String::from("wrapped"));
         let mut bs = Cursor::new(Vec::new());
         let mut bt = Cursor::new(Vec::new());
         std::write!(&mut bs, "{:?}", md).unwrap();
@@ -2933,11 +2935,8 @@ mod try_write_tests {
 
     #[test]
     fn parity_deeply_nested_compound_debug() {
-        let val: Vec<Option<Result<[i32; 2], &'static str>>> = vec![
-            Some(Ok([1, 2])),
-            None,
-            Some(Err("error")),
-        ];
+        let val: Vec<Option<Result<[i32; 2], &'static str>>> =
+            vec![Some(Ok([1, 2])), None, Some(Err("error"))];
         let mut bs = Cursor::new(Vec::new());
         let mut bt = Cursor::new(Vec::new());
         std::write!(&mut bs, "{:?}", val).unwrap();
