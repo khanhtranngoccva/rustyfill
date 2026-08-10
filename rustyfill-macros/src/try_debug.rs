@@ -85,7 +85,7 @@ pub(crate) fn derive_try_debug(input: TokenStream) -> TokenStream {
                         });
                         quote! {
                             Self::#variant_ident { #(#field_patterns),* } => {
-                                ::rustyfill::try_fmt::helpers::FormatterExt::try_debug_struct(f, concat!(stringify!(#name), "::", stringify!(#variant_ident)))
+                                ::rustyfill::try_fmt::helpers::FormatterExt::try_debug_struct(f, stringify!(#variant_ident))
                                     #(#field_calls)*
                                     .finish()
                             },
@@ -94,7 +94,7 @@ pub(crate) fn derive_try_debug(input: TokenStream) -> TokenStream {
                     Fields::Named(_) | Fields::Unit => {
                         quote! {
                             Self::#variant_ident => {
-                                f.write_str(concat!(stringify!(#name), "::", stringify!(#variant_ident)))?;
+                                f.write_str(stringify!(#variant_ident))?;
                                 Ok(())
                             },
                         }

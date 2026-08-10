@@ -33,12 +33,7 @@ pub mod helpers;
 
 // Re-export helper types at the try_fmt module level for convenience.
 pub use helpers::{
-    FormatterExt,
-    TryDebugList,
-    TryDebugMap,
-    TryDebugSet,
-    TryDebugStruct,
-    TryDebugTuple,
+    FormatterExt, TryDebugList, TryDebugMap, TryDebugSet, TryDebugStruct, TryDebugTuple,
 };
 
 // ── Traits ─────────────────────────────────────────────────────────────────────
@@ -666,21 +661,24 @@ impl<T: TryDebug, E: TryDebug> TryDebug for Result<T, E> {
 impl<T> TryDebug for core::marker::PhantomData<T> {
     #[inline]
     fn try_fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str("PhantomData")
+        write!(f, "PhantomData<{}>", core::any::type_name::<T>())
     }
 }
 
 impl<T: TryDebug> TryDebug for core::mem::ManuallyDrop<T> {
     #[inline]
     fn try_fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        (<Self as core::ops::Deref>::deref(self)).try_fmt(f)
+        let inner = <Self as core::ops::Deref>::deref(self);
+        f.write_str("ManuallyDrop { value: MaybeDangling(")?;
+        inner.try_fmt(f)?;
+        f.write_str(") }")
     }
 }
 
 impl<T> TryDebug for core::mem::MaybeUninit<T> {
     #[inline]
     fn try_fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str("MaybeUninit")
+        write!(f, "MaybeUninit<{}>", core::any::type_name::<T>())
     }
 }
 
@@ -711,7 +709,9 @@ impl TryDisplay for &str {
 impl<T: TryDebug> TryDebug for &[T] {
     #[inline]
     fn try_fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        helpers::FormatterExt::try_debug_list(f).entries(self.iter()).finish()
+        helpers::FormatterExt::try_debug_list(f)
+            .entries(self.iter())
+            .finish()
     }
 }
 
@@ -724,7 +724,9 @@ rustyfill_macros::try_debug_tuples!(12);
 impl<T: TryDebug, const N: usize> TryDebug for [T; N] {
     #[inline]
     fn try_fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        helpers::FormatterExt::try_debug_list(f).entries(self.iter()).finish()
+        helpers::FormatterExt::try_debug_list(f)
+            .entries(self.iter())
+            .finish()
     }
 }
 
@@ -1269,12 +1271,257 @@ mod oom_tests {
             fmt::write(&mut w, format_args!("{:?}", TryDebugWrapper(display))).is_ok()
         }));
     }
+
+    // ── Derived structs via #[derive(TryDebug)] ─────────────────────────────
+
+    #[derive(Debug, ::rustyfill::TryDebug)]
+    struct NamedStruct {
+        x: i32,
+        y: String,
+    }
+
+    #[derive(Debug, ::rustyfill::TryDebug)]
+    struct TupleStruct(i32, String);
+
+    #[derive(Debug, ::rustyfill::TryDebug)]
+    struct UnitStruct;
+
+    #[test]
+    fn try_debug_derived_named_struct_no_alloc() {
+        let s = NamedStruct {
+            x: 42,
+            y: String::from("hello"),
+        };
+        assert!(assert_try_debug_no_alloc(&s));
+    }
+
+    #[test]
+    fn try_debug_derived_tuple_struct_no_alloc() {
+        let s = TupleStruct(42, String::from("world"));
+        assert!(assert_try_debug_no_alloc(&s));
+    }
+
+    #[test]
+    fn try_debug_derived_unit_struct_no_alloc() {
+        let s = UnitStruct;
+        assert!(assert_try_debug_no_alloc(&s));
+    }
+
+    // ── Derived enums via #[derive(TryDebug)] ────────────────────────────────
+
+    #[derive(Debug, ::rustyfill::TryDebug)]
+    enum SampleEnum {
+        UnitVariant,
+        TupleVariant(i32, String),
+        NamedVariant { a: i32, b: String },
+    }
+
+    #[test]
+    fn try_debug_enum_unit_variant_no_alloc() {
+        let e = SampleEnum::UnitVariant;
+        assert!(assert_try_debug_no_alloc(&e));
+    }
+
+    #[test]
+    fn try_debug_enum_tuple_variant_no_alloc() {
+        let e = SampleEnum::TupleVariant(42, String::from("data"));
+        assert!(assert_try_debug_no_alloc(&e));
+    }
+
+    #[test]
+    fn try_debug_enum_named_variant_no_alloc() {
+        let e = SampleEnum::NamedVariant {
+            a: 1,
+            b: String::from("val"),
+        };
+        assert!(assert_try_debug_no_alloc(&e));
+    }
+
+    // ── Raw pointers ────────────────────────────────────────────────────────
+
+    #[test]
+    fn try_debug_raw_ptr_const_no_alloc() {
+        let val: i32 = 42;
+        let ptr: *const i32 = &val;
+        assert!(assert_try_debug_no_alloc(&ptr));
+    }
+
+    #[test]
+    fn try_debug_raw_ptr_mut_no_alloc() {
+        let val: i32 = 42;
+        let ptr: *mut i32 = &val as *const i32 as *mut i32;
+        assert!(assert_try_debug_no_alloc(&ptr));
+    }
+
+    #[test]
+    fn try_debug_null_ptr_no_alloc() {
+        let ptr: *const u8 = std::ptr::null();
+        assert!(assert_try_debug_no_alloc(&ptr));
+    }
+
+    // ── Marker types ────────────────────────────────────────────────────────
+
+    #[test]
+    fn try_debug_phantom_data_no_alloc() {
+        let pd: core::marker::PhantomData<String> = core::marker::PhantomData;
+        assert!(assert_try_debug_no_alloc(&pd));
+    }
+
+    #[test]
+    fn try_debug_maybe_uninit_no_alloc() {
+        let mu: core::mem::MaybeUninit<i32> = core::mem::MaybeUninit::uninit();
+        assert!(assert_try_debug_no_alloc(&mu));
+    }
+
+    #[test]
+    fn try_debug_phantom_pinned_no_alloc() {
+        let pp: core::marker::PhantomPinned = core::marker::PhantomPinned;
+        assert!(assert_try_debug_no_alloc(&pp));
+    }
+
+    // ── ManuallyDrop ────────────────────────────────────────────────────────
+
+    #[test]
+    fn try_debug_manually_drop_primitive_no_alloc() {
+        let md: core::mem::ManuallyDrop<i32> = core::mem::ManuallyDrop::new(42);
+        assert!(assert_try_debug_no_alloc(&md));
+    }
+
+    #[test]
+    fn try_debug_manually_drop_string_no_alloc() {
+        let md: core::mem::ManuallyDrop<String> = core::mem::ManuallyDrop::new(String::from("wrapped"));
+        assert!(assert_try_debug_no_alloc(&md));
+    }
+
+    // ── Ranges ──────────────────────────────────────────────────────────────
+
+    #[test]
+    fn try_debug_range_usize_no_alloc() {
+        let r: core::ops::Range<usize> = 0..10;
+        assert!(assert_try_debug_no_alloc(&r));
+    }
+
+    #[test]
+    fn try_debug_range_i32_no_alloc() {
+        let r: core::ops::Range<i32> = -5..5;
+        assert!(assert_try_debug_no_alloc(&r));
+    }
+
+    #[test]
+    fn try_debug_range_from_no_alloc() {
+        let r: core::ops::RangeFrom<usize> = 10..;
+        assert!(assert_try_debug_no_alloc(&r));
+    }
+
+    #[test]
+    fn try_debug_range_to_no_alloc() {
+        let r: core::ops::RangeTo<usize> = ..10;
+        assert!(assert_try_debug_no_alloc(&r));
+    }
+
+    #[test]
+    fn try_debug_range_full_no_alloc() {
+        let r = ..;
+        assert!(assert_try_debug_no_alloc(&r));
+    }
+
+    // ── Tuples of varying arity ─────────────────────────────────────────────
+
+    #[test]
+    fn try_debug_one_element_tuple_no_alloc() {
+        let t = (42,);
+        assert!(assert_try_debug_no_alloc(&t));
+    }
+
+    #[test]
+    fn try_debug_two_element_tuple_no_alloc() {
+        let t = (1, "two");
+        assert!(assert_try_debug_no_alloc(&t));
+    }
+
+    #[test]
+    fn try_debug_five_element_tuple_no_alloc() {
+        let t = (1, 2u32, true, 'x', String::from("five"));
+        assert!(assert_try_debug_no_alloc(&t));
+    }
+
+    // ── Empty and larger arrays ─────────────────────────────────────────────
+
+    #[test]
+    fn try_debug_empty_array_no_alloc() {
+        let a: [i32; 0] = [];
+        assert!(assert_try_debug_no_alloc(&a));
+    }
+
+    #[test]
+    fn try_debug_large_array_no_alloc() {
+        let a: [u8; 16] = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15];
+        assert!(assert_try_debug_no_alloc(&a));
+    }
+
+    // ── Byte slices and byte arrays ─────────────────────────────────────────
+
+    #[test]
+    fn try_debug_byte_slice_no_alloc() {
+        let bytes: &[u8] = &[0xDE, 0xAD, 0xBE, 0xEF];
+        assert!(assert_try_debug_no_alloc(&bytes));
+    }
+
+    #[test]
+    fn try_debug_byte_array_no_alloc() {
+        let bytes: [u8; 4] = [0xDE, 0xAD, 0xBE, 0xEF];
+        assert!(assert_try_debug_no_alloc(&bytes));
+    }
+
+    // ── Nested references ───────────────────────────────────────────────────
+
+    #[test]
+    fn try_debug_double_ref_no_alloc() {
+        let val: i32 = 42;
+        let r: &&i32 = &&val;
+        assert!(assert_try_debug_no_alloc(&r));
+    }
+
+    #[test]
+    fn try_debug_triple_ref_no_alloc() {
+        let val: i32 = 42;
+        let r: &&&i32 = &&&val;
+        assert!(assert_try_debug_no_alloc(&r));
+    }
+
+    // ── Option wrapping collections ─────────────────────────────────────────
+
+    #[test]
+    fn try_debug_option_some_vec_no_alloc() {
+        let o: Option<Vec<i32>> = Some(vec![1, 2, 3]);
+        assert!(assert_try_debug_no_alloc(&o));
+    }
+
+    // ── Result wrapping collections ─────────────────────────────────────────
+
+    #[test]
+    fn try_debug_result_ok_vec_no_alloc() {
+        let r: Result<Vec<String>, &str> = Ok(vec![String::from("ok")]);
+        assert!(assert_try_debug_no_alloc(&r));
+    }
+
+    // ── Deeply nested compounds ─────────────────────────────────────────────
+
+    #[test]
+    fn try_debug_deeply_nested_compound_no_alloc() {
+        let val: Vec<Option<Result<[i32; 2], &'static str>>> = vec![
+            Some(Ok([1, 2])),
+            None,
+            Some(Err("error")),
+        ];
+        assert!(assert_try_debug_no_alloc(&val));
+    }
 }
 
 // ── try_write! / try_format_args! parity tests ─────────────────────────────────
 // [autogenerated by LLM] Exhaustive tests verifying that try_write! produces the
 // same output as write!, and that the appropriate *Wrapper type is constructed
-// for display/debug/hex arguments but NOT for measure-only (width/precision) arguments.
+// for display/debug/hex arguments.
 
 #[cfg(test)]
 #[allow(clippy::needless_borrows_for_generic_args)]
@@ -2329,6 +2576,375 @@ mod try_write_tests {
         assert_eq!(bs.into_inner(), bt.into_inner());
     }
 
+    // ── Derived structs via #[derive(TryDebug)] ────────────────────────────
+
+    #[derive(fmt::Debug, ::rustyfill::TryDebug)]
+    struct ParityNamedStruct {
+        x: i32,
+        y: String,
+    }
+
+    #[derive(fmt::Debug, ::rustyfill::TryDebug)]
+    struct ParityTupleStruct(i32, String);
+
+    #[derive(fmt::Debug, ::rustyfill::TryDebug)]
+    struct ParityUnitStruct;
+
+    #[test]
+    fn parity_derived_named_struct_debug() {
+        let s = ParityNamedStruct {
+            x: 42,
+            y: String::from("hello"),
+        };
+        let mut bs = Cursor::new(Vec::new());
+        let mut bt = Cursor::new(Vec::new());
+        std::write!(&mut bs, "{:?}", s).unwrap();
+        try_write!(&mut bt, "{:?}", &s).unwrap();
+        assert_eq!(bs.into_inner(), bt.into_inner());
+    }
+
+    #[test]
+    fn parity_derived_tuple_struct_debug() {
+        let s = ParityTupleStruct(42, String::from("world"));
+        let mut bs = Cursor::new(Vec::new());
+        let mut bt = Cursor::new(Vec::new());
+        std::write!(&mut bs, "{:?}", s).unwrap();
+        try_write!(&mut bt, "{:?}", &s).unwrap();
+        assert_eq!(bs.into_inner(), bt.into_inner());
+    }
+
+    #[test]
+    fn parity_derived_unit_struct_debug() {
+        let s = ParityUnitStruct;
+        let mut bs = Cursor::new(Vec::new());
+        let mut bt = Cursor::new(Vec::new());
+        std::write!(&mut bs, "{:?}", s).unwrap();
+        try_write!(&mut bt, "{:?}", &s).unwrap();
+        assert_eq!(bs.into_inner(), bt.into_inner());
+    }
+
+    // ── Derived enums via #[derive(TryDebug)] ────────────────────────────────
+
+    #[derive(fmt::Debug, ::rustyfill::TryDebug)]
+    enum ParitySampleEnum {
+        UnitVariant,
+        TupleVariant(i32, String),
+        NamedVariant { a: i32, b: String },
+    }
+
+    #[test]
+    fn parity_sample_enum_tuple_variant_debug() {
+        let e = ParitySampleEnum::TupleVariant(42, String::from("data"));
+        let mut bs = Cursor::new(Vec::new());
+        let mut bt = Cursor::new(Vec::new());
+        std::write!(&mut bs, "{:?}", e).unwrap();
+        try_write!(&mut bt, "{:?}", &e).unwrap();
+        assert_eq!(bs.into_inner(), bt.into_inner());
+    }
+
+    #[test]
+    fn parity_sample_enum_unit_variant_debug() {
+        let e = ParitySampleEnum::UnitVariant;
+        let mut bs = Cursor::new(Vec::new());
+        let mut bt = Cursor::new(Vec::new());
+        std::write!(&mut bs, "{:?}", e).unwrap();
+        try_write!(&mut bt, "{:?}", &e).unwrap();
+        assert_eq!(bs.into_inner(), bt.into_inner());
+    }
+
+    #[test]
+    fn parity_sample_enum_named_variant_debug() {
+        let e = ParitySampleEnum::NamedVariant {
+            a: 1,
+            b: String::from("val"),
+        };
+        let mut bs = Cursor::new(Vec::new());
+        let mut bt = Cursor::new(Vec::new());
+        std::write!(&mut bs, "{:?}", e).unwrap();
+        try_write!(&mut bt, "{:?}", &e).unwrap();
+        assert_eq!(bs.into_inner(), bt.into_inner());
+    }
+
+    // ── Raw pointers ─────────────────────────────────────────────────────────
+
+    #[test]
+    fn parity_raw_ptr_const_debug() {
+        let val: i32 = 42;
+        let ptr: *const i32 = &val;
+        let mut bs = Cursor::new(Vec::new());
+        let mut bt = Cursor::new(Vec::new());
+        std::write!(&mut bs, "{:?}", ptr).unwrap();
+        try_write!(&mut bt, "{:?}", &ptr).unwrap();
+        assert_eq!(bs.into_inner(), bt.into_inner());
+    }
+
+    #[test]
+    fn parity_raw_ptr_mut_debug() {
+        let val: i32 = 42;
+        let ptr: *mut i32 = &val as *const i32 as *mut i32;
+        let mut bs = Cursor::new(Vec::new());
+        let mut bt = Cursor::new(Vec::new());
+        std::write!(&mut bs, "{:?}", ptr).unwrap();
+        try_write!(&mut bt, "{:?}", &ptr).unwrap();
+        assert_eq!(bs.into_inner(), bt.into_inner());
+    }
+
+    #[test]
+    fn parity_null_ptr_debug() {
+        let ptr: *const u8 = std::ptr::null();
+        let mut bs = Cursor::new(Vec::new());
+        let mut bt = Cursor::new(Vec::new());
+        std::write!(&mut bs, "{:?}", ptr).unwrap();
+        try_write!(&mut bt, "{:?}", &ptr).unwrap();
+        assert_eq!(bs.into_inner(), bt.into_inner());
+    }
+
+    // ── Marker types ─────────────────────────────────────────────────────────
+
+    #[test]
+    fn parity_phantom_data_debug() {
+        let pd: core::marker::PhantomData<String> = core::marker::PhantomData;
+        let mut bs = Cursor::new(Vec::new());
+        let mut bt = Cursor::new(Vec::new());
+        std::write!(&mut bs, "{:?}", pd).unwrap();
+        try_write!(&mut bt, "{:?}", &pd).unwrap();
+        assert_eq!(bs.into_inner(), bt.into_inner());
+    }
+
+    #[test]
+    fn parity_maybe_uninit_debug() {
+        let mu: core::mem::MaybeUninit<i32> = core::mem::MaybeUninit::uninit();
+        let mut bs = Cursor::new(Vec::new());
+        let mut bt = Cursor::new(Vec::new());
+        std::write!(&mut bs, "{:?}", mu).unwrap();
+        try_write!(&mut bt, "{:?}", &mu).unwrap();
+        assert_eq!(bs.into_inner(), bt.into_inner());
+    }
+
+    #[test]
+    fn parity_phantom_pinned_debug() {
+        let pp: core::marker::PhantomPinned = core::marker::PhantomPinned;
+        let mut bs = Cursor::new(Vec::new());
+        let mut bt = Cursor::new(Vec::new());
+        std::write!(&mut bs, "{:?}", pp).unwrap();
+        try_write!(&mut bt, "{:?}", &pp).unwrap();
+        assert_eq!(bs.into_inner(), bt.into_inner());
+    }
+
+    // ── ManuallyDrop ─────────────────────────────────────────────────────────
+
+    #[test]
+    fn parity_manually_drop_primitive_debug() {
+        let md: core::mem::ManuallyDrop<i32> = core::mem::ManuallyDrop::new(42);
+        let mut bs = Cursor::new(Vec::new());
+        let mut bt = Cursor::new(Vec::new());
+        std::write!(&mut bs, "{:?}", md).unwrap();
+        try_write!(&mut bt, "{:?}", &md).unwrap();
+        assert_eq!(bs.into_inner(), bt.into_inner());
+    }
+
+    #[test]
+    fn parity_manually_drop_string_debug() {
+        let md: core::mem::ManuallyDrop<String> = core::mem::ManuallyDrop::new(String::from("wrapped"));
+        let mut bs = Cursor::new(Vec::new());
+        let mut bt = Cursor::new(Vec::new());
+        std::write!(&mut bs, "{:?}", md).unwrap();
+        try_write!(&mut bt, "{:?}", &md).unwrap();
+        assert_eq!(bs.into_inner(), bt.into_inner());
+    }
+
+    // ── Ranges ───────────────────────────────────────────────────────────────
+
+    #[test]
+    fn parity_range_usize_debug() {
+        let r: core::ops::Range<usize> = 0..10;
+        let mut bs = Cursor::new(Vec::new());
+        let mut bt = Cursor::new(Vec::new());
+        std::write!(&mut bs, "{:?}", r).unwrap();
+        try_write!(&mut bt, "{:?}", &r).unwrap();
+        assert_eq!(bs.into_inner(), bt.into_inner());
+    }
+
+    #[test]
+    fn parity_range_i32_debug() {
+        let r: core::ops::Range<i32> = -5..5;
+        let mut bs = Cursor::new(Vec::new());
+        let mut bt = Cursor::new(Vec::new());
+        std::write!(&mut bs, "{:?}", r).unwrap();
+        try_write!(&mut bt, "{:?}", &r).unwrap();
+        assert_eq!(bs.into_inner(), bt.into_inner());
+    }
+
+    #[test]
+    fn parity_range_from_debug() {
+        let r: core::ops::RangeFrom<usize> = 10..;
+        let mut bs = Cursor::new(Vec::new());
+        let mut bt = Cursor::new(Vec::new());
+        std::write!(&mut bs, "{:?}", r).unwrap();
+        try_write!(&mut bt, "{:?}", &r).unwrap();
+        assert_eq!(bs.into_inner(), bt.into_inner());
+    }
+
+    #[test]
+    fn parity_range_to_debug() {
+        let r: core::ops::RangeTo<usize> = ..10;
+        let mut bs = Cursor::new(Vec::new());
+        let mut bt = Cursor::new(Vec::new());
+        std::write!(&mut bs, "{:?}", r).unwrap();
+        try_write!(&mut bt, "{:?}", &r).unwrap();
+        assert_eq!(bs.into_inner(), bt.into_inner());
+    }
+
+    #[test]
+    fn parity_range_full_debug() {
+        let r = ..;
+        let mut bs = Cursor::new(Vec::new());
+        let mut bt = Cursor::new(Vec::new());
+        std::write!(&mut bs, "{:?}", r).unwrap();
+        try_write!(&mut bt, "{:?}", &r).unwrap();
+        assert_eq!(bs.into_inner(), bt.into_inner());
+    }
+
+    // ── Tuples of varying arity ──────────────────────────────────────────────
+
+    #[test]
+    fn parity_one_element_tuple_debug() {
+        let t = (42,);
+        let mut bs = Cursor::new(Vec::new());
+        let mut bt = Cursor::new(Vec::new());
+        std::write!(&mut bs, "{:?}", t).unwrap();
+        try_write!(&mut bt, "{:?}", &t).unwrap();
+        assert_eq!(bs.into_inner(), bt.into_inner());
+    }
+
+    #[test]
+    fn parity_two_element_tuple_debug() {
+        let t = (1, "two");
+        let mut bs = Cursor::new(Vec::new());
+        let mut bt = Cursor::new(Vec::new());
+        std::write!(&mut bs, "{:?}", t).unwrap();
+        try_write!(&mut bt, "{:?}", &t).unwrap();
+        assert_eq!(bs.into_inner(), bt.into_inner());
+    }
+
+    #[test]
+    fn parity_five_element_tuple_debug() {
+        let t = (1, 2u32, true, 'x', String::from("five"));
+        let mut bs = Cursor::new(Vec::new());
+        let mut bt = Cursor::new(Vec::new());
+        std::write!(&mut bs, "{:?}", t).unwrap();
+        try_write!(&mut bt, "{:?}", &t).unwrap();
+        assert_eq!(bs.into_inner(), bt.into_inner());
+    }
+
+    // ── Empty and larger arrays ──────────────────────────────────────────────
+
+    #[test]
+    fn parity_empty_array_debug() {
+        let a: [i32; 0] = [];
+        let mut bs = Cursor::new(Vec::new());
+        let mut bt = Cursor::new(Vec::new());
+        std::write!(&mut bs, "{:?}", a).unwrap();
+        try_write!(&mut bt, "{:?}", &a).unwrap();
+        assert_eq!(bs.into_inner(), bt.into_inner());
+    }
+
+    #[test]
+    fn parity_large_array_debug() {
+        let a: [u8; 16] = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15];
+        let mut bs = Cursor::new(Vec::new());
+        let mut bt = Cursor::new(Vec::new());
+        std::write!(&mut bs, "{:?}", a).unwrap();
+        try_write!(&mut bt, "{:?}", &a).unwrap();
+        assert_eq!(bs.into_inner(), bt.into_inner());
+    }
+
+    // ── Byte slices and byte arrays ──────────────────────────────────────────
+
+    #[test]
+    fn parity_byte_slice_debug() {
+        let bytes: &[u8] = &[0xDE, 0xAD, 0xBE, 0xEF];
+        let mut bs = Cursor::new(Vec::new());
+        let mut bt = Cursor::new(Vec::new());
+        std::write!(&mut bs, "{:?}", bytes).unwrap();
+        try_write!(&mut bt, "{:?}", bytes).unwrap();
+        assert_eq!(bs.into_inner(), bt.into_inner());
+    }
+
+    #[test]
+    fn parity_byte_array_debug() {
+        let bytes: [u8; 4] = [0xDE, 0xAD, 0xBE, 0xEF];
+        let mut bs = Cursor::new(Vec::new());
+        let mut bt = Cursor::new(Vec::new());
+        std::write!(&mut bs, "{:?}", bytes).unwrap();
+        try_write!(&mut bt, "{:?}", &bytes).unwrap();
+        assert_eq!(bs.into_inner(), bt.into_inner());
+    }
+
+    // ── Nested references ────────────────────────────────────────────────────
+
+    #[test]
+    fn parity_double_ref_debug() {
+        let val: i32 = 42;
+        let r: &&i32 = &&val;
+        let mut bs = Cursor::new(Vec::new());
+        let mut bt = Cursor::new(Vec::new());
+        std::write!(&mut bs, "{:?}", r).unwrap();
+        try_write!(&mut bt, "{:?}", &r).unwrap();
+        assert_eq!(bs.into_inner(), bt.into_inner());
+    }
+
+    #[test]
+    fn parity_triple_ref_debug() {
+        let val: i32 = 42;
+        let r: &&&i32 = &&&val;
+        let mut bs = Cursor::new(Vec::new());
+        let mut bt = Cursor::new(Vec::new());
+        std::write!(&mut bs, "{:?}", r).unwrap();
+        try_write!(&mut bt, "{:?}", &r).unwrap();
+        assert_eq!(bs.into_inner(), bt.into_inner());
+    }
+
+    // ── Option wrapping collections ──────────────────────────────────────────
+
+    #[test]
+    fn parity_option_some_vec_debug() {
+        let o: Option<Vec<i32>> = Some(vec![1, 2, 3]);
+        let mut bs = Cursor::new(Vec::new());
+        let mut bt = Cursor::new(Vec::new());
+        std::write!(&mut bs, "{:?}", o).unwrap();
+        try_write!(&mut bt, "{:?}", &o).unwrap();
+        assert_eq!(bs.into_inner(), bt.into_inner());
+    }
+
+    // ── Result wrapping collections ──────────────────────────────────────────
+
+    #[test]
+    fn parity_result_ok_vec_debug() {
+        let r: Result<Vec<String>, &str> = Ok(vec![String::from("ok")]);
+        let mut bs = Cursor::new(Vec::new());
+        let mut bt = Cursor::new(Vec::new());
+        std::write!(&mut bs, "{:?}", r).unwrap();
+        try_write!(&mut bt, "{:?}", &r).unwrap();
+        assert_eq!(bs.into_inner(), bt.into_inner());
+    }
+
+    // ── Deeply nested compounds ──────────────────────────────────────────────
+
+    #[test]
+    fn parity_deeply_nested_compound_debug() {
+        let val: Vec<Option<Result<[i32; 2], &'static str>>> = vec![
+            Some(Ok([1, 2])),
+            None,
+            Some(Err("error")),
+        ];
+        let mut bs = Cursor::new(Vec::new());
+        let mut bt = Cursor::new(Vec::new());
+        std::write!(&mut bs, "{:?}", val).unwrap();
+        try_write!(&mut bt, "{:?}", &val).unwrap();
+        assert_eq!(bs.into_inner(), bt.into_inner());
+    }
+
     // ── LowerExp / UpperExp wrapper construction verification ──────────────
 
     #[test]
@@ -2445,7 +3061,7 @@ mod try_write_tests {
     }
 }
 
-/// [autogenerated by LLM] Verify that `extern crate self as rustyfill` allows
+/// Verify that `extern crate self as rustyfill` allows
 /// the `::rustyfill` path to resolve from within the crate itself.
 #[cfg(test)]
 mod quick_path_test {

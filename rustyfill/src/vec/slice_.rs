@@ -5,6 +5,7 @@
 //! gracefully. Uses [`TryClone`](crate::try_clone::TryClone) for each element
 //! copy so that clone-time allocation failures are also caught.
 
+use super::vec_::TryVecError;
 use crate::alloc::AllocError;
 use crate::try_clone::{TryClone, TryCloneError};
 use crate::try_default::{TryDefault, TryDefaultError};
@@ -12,7 +13,6 @@ use crate::try_to_owned::{TryToOwned, TryToOwnedError};
 use core::alloc::Layout;
 use core::mem::{self, MaybeUninit};
 use core::ptr::{self, NonNull};
-use super::vec_::TryVecError;
 
 /// A trait for fallibly converting a slice into a [`Vec`].
 ///
@@ -77,7 +77,8 @@ impl<T> TrySlice<T> for [T] {
     {
         let mut out = Vec::<T>::new();
         if !self.is_empty() {
-            out.try_reserve(self.len()).map_err(|e| TryVecError::Reserve(e.into()))?;
+            out.try_reserve(self.len())
+                .map_err(|e| TryVecError::Reserve(e.into()))?;
         }
         for elem in self.iter() {
             out.push(elem.try_clone().map_err(TryVecError::Clone)?);
@@ -93,11 +94,10 @@ impl<T> TrySlice<T> for [T] {
         if len == 0 || n == 0 {
             return Ok(Vec::new());
         }
-        let total_len = len
-            .checked_mul(n)
-            .ok_or(TryVecError::Overflow)?;
+        let total_len = len.checked_mul(n).ok_or(TryVecError::Overflow)?;
         let mut out = Vec::<T>::new();
-        out.try_reserve(total_len).map_err(|e| TryVecError::Reserve(e.into()))?;
+        out.try_reserve(total_len)
+            .map_err(|e| TryVecError::Reserve(e.into()))?;
         for _ in 0..n {
             for elem in self.iter() {
                 out.push(elem.try_clone().map_err(TryVecError::Clone)?);
@@ -139,19 +139,19 @@ where
 
 /// Panic-safe guard that drops any initialized elements in a `MaybeUninit` slice
 /// if dropped before `forget()` is called (e.g. on panic or early return).
-struct SliceInitGuard<'a, T> {
-    slots: &'a mut [MaybeUninit<T>],
-    count: usize,
+pub(crate) struct SliceInitGuard<'a, T> {
+    pub(crate) slots: &'a mut [MaybeUninit<T>],
+    pub(crate) count: usize,
 }
 
 impl<'a, T> SliceInitGuard<'a, T> {
-    fn new(slots: &'a mut [MaybeUninit<T>]) -> Self {
+    pub(crate) fn new(slots: &'a mut [MaybeUninit<T>]) -> Self {
         Self { slots, count: 0 }
     }
 
     /// Disable the guard's Drop so that it no longer cleans up on scope exit.
     /// Call this only after all slots have been successfully initialized.
-    fn forget(mut self) {
+    pub(crate) fn forget(mut self) {
         self.count = 0;
         mem::forget(self);
     }
@@ -391,60 +391,48 @@ mod tests {
     #[test]
     fn slice_try_to_vec_fails_on_oom() {
         let s: &[u32] = &[1, 2, 3];
-        let r: Result<Vec<u32>, TryVecError> = with_policy(
-            FailPolicy::fail_next_alloc(),
-            || s.try_to_vec(),
-        );
+        let r: Result<Vec<u32>, TryVecError> =
+            with_policy(FailPolicy::fail_next_alloc(), || s.try_to_vec());
         assert!(r.is_err());
     }
 
     #[test]
     fn slice_try_to_vec_empty_succeeds_under_oom() {
         let s: &[u32] = &[];
-        let r: Result<Vec<u32>, TryVecError> = with_policy(
-            FailPolicy::fail_next_alloc(),
-            || s.try_to_vec(),
-        );
+        let r: Result<Vec<u32>, TryVecError> =
+            with_policy(FailPolicy::fail_next_alloc(), || s.try_to_vec());
         assert!(r.is_ok());
     }
 
     #[test]
     fn slice_try_to_owned_fails_on_oom() {
         let s: &[u32] = &[1, 2];
-        let r: Result<Vec<u32>, TryToOwnedError> = with_policy(
-            FailPolicy::fail_next_alloc(),
-            || s.try_to_owned(),
-        );
+        let r: Result<Vec<u32>, TryToOwnedError> =
+            with_policy(FailPolicy::fail_next_alloc(), || s.try_to_owned());
         assert!(r.is_err());
     }
 
     #[test]
     fn slice_try_to_owned_empty_succeeds_under_oom() {
         let s: &[u32] = &[];
-        let r: Result<Vec<u32>, TryToOwnedError> = with_policy(
-            FailPolicy::fail_next_alloc(),
-            || s.try_to_owned(),
-        );
+        let r: Result<Vec<u32>, TryToOwnedError> =
+            with_policy(FailPolicy::fail_next_alloc(), || s.try_to_owned());
         assert!(r.is_ok());
     }
 
     #[test]
     fn slice_try_repeat_clone_fails_on_oom() {
         let s: &[u8] = &[1, 2];
-        let r: Result<Vec<u8>, TryVecError> = with_policy(
-            FailPolicy::fail_next_alloc(),
-            || s.try_repeat_clone(3),
-        );
+        let r: Result<Vec<u8>, TryVecError> =
+            with_policy(FailPolicy::fail_next_alloc(), || s.try_repeat_clone(3));
         assert!(r.is_err());
     }
 
     #[test]
     fn slice_try_repeat_clone_zero_times_succeeds_under_oom() {
         let s: &[u8] = &[1, 2];
-        let r: Result<Vec<u8>, TryVecError> = with_policy(
-            FailPolicy::fail_next_alloc(),
-            || s.try_repeat_clone(0),
-        );
+        let r: Result<Vec<u8>, TryVecError> =
+            with_policy(FailPolicy::fail_next_alloc(), || s.try_repeat_clone(0));
         assert!(r.is_ok());
     }
 

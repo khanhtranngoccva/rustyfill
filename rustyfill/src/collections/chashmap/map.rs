@@ -4,8 +4,10 @@ use crate::alloc::{AllocError, TryReserveError};
 use crate::try_clone::{TryClone, TryCloneError};
 use crate::try_default::{TryDefault, TryDefaultError};
 use crate::try_fmt::TryDebug;
+use crate::vec::SliceInitGuard;
 use core::borrow::Borrow;
 use core::hash::{BuildHasher, Hash};
+use core::mem::{self, MaybeUninit};
 use std::hash::RandomState;
 
 use super::entry::{Entry, OccupiedEntry, VacantEntry};
@@ -249,18 +251,34 @@ impl<K: Eq + Hash, V, S: BuildHasher> ConcurrentHashMap<K, V, S> {
         let shift = usize::BITS - shard_count.trailing_zeros();
         let layout = core::alloc::Layout::array::<Shard<K, V>>(shard_count)
             .map_err(|_| ConcurrentHashMapError::Overflow)?;
-        let ptr = unsafe { std::alloc::alloc_zeroed(layout) };
+        let ptr = unsafe { std::alloc::alloc(layout) };
         if ptr.is_null() {
             return Err(ConcurrentHashMapError::Alloc(AllocError { layout }));
         }
-        let shard_ptr = ptr as *mut Shard<K, V>;
-        for i in 0..shard_count {
+
+        // Wrap immediately in a Box so Drop cleans up the allocation on panic.
+        // SAFETY: layout matches `shard_count` elements of MaybeUninit<Shard<K,V>>,
+        // which has the same size and alignment as Shard<K,V>.
+        let mut uninit_shards: Box<[MaybeUninit<Shard<K, V>>]> = unsafe {
+            Box::from_raw(core::ptr::slice_from_raw_parts_mut(ptr.cast(), shard_count))
+        };
+        let mut guard = SliceInitGuard::new(&mut uninit_shards);
+
+        for slot in guard.slots.iter_mut() {
             unsafe {
-                core::ptr::write(shard_ptr.add(i), Shard::<K, V>::new());
+                core::ptr::write(slot.as_mut_ptr(), Shard::<K, V>::new());
             }
+            guard.count += 1;
         }
-        let boxed: Box<[Shard<K, V>]> =
-            unsafe { Box::from_raw(core::ptr::slice_from_raw_parts_mut(shard_ptr, shard_count)) };
+
+        guard.forget();
+
+        // SAFETY: all `shard_count` slots were written successfully above.
+        // Box<[MaybeUninit<Shard<K,V>>]> and Box<[Shard<K,V>]> have identical layouts.
+        let boxed: Box<[Shard<K, V>]> = unsafe {
+            mem::transmute(uninit_shards)
+        };
+
         let map = Self {
             shards: ShardsStorage::Heap(boxed),
             hasher,

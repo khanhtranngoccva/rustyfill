@@ -6,9 +6,9 @@
 //! Formatting is done into a fixed-size stack buffer (via [`StackBuffer`])
 //! so that only the `Display`/`Debug` impl itself is exercised.
 //!
-//! If the formatting code attempts to allocate during the Display/Debug invocation,
-//! the process aborts due to allocation failure and the test is marked as `ALLOCATES`.
-//! If the process exits cleanly, the test is marked as `SAFE` — no allocations occurred.
+//! If the formatting code attempts to implicitly allocate during the Display/Debug invocation,
+//! the process aborts due to allocation failure and the test is marked as `IMPLICITLY ALLOCATES`.
+//! If the process exits cleanly, the test is marked as `SAFE` — no implicit allocations occurred.
 //!
 //! Because tests may abort the process, they must run in separate child
 //! processes rather than in the same process (a-la cargo test).
@@ -527,7 +527,7 @@ enum TestResult {
     /// Process exited cleanly — no allocations detected.
     Safe,
     /// Process aborted — an allocation was attempted.
-    Allocates,
+    ImplicitlyAllocates,
     /// Something unexpected happened (e.g., binary not found).
     Error(String),
 }
@@ -547,7 +547,7 @@ fn run_in_child(test_id: &str) -> TestResult {
 
     match output {
         Ok(o) if o.status.success() => TestResult::Safe,
-        Ok(_) => TestResult::Allocates,
+        Ok(_) => TestResult::ImplicitlyAllocates,
         Err(e) => TestResult::Error(e.to_string()),
     }
 }
@@ -572,7 +572,7 @@ fn main() {
         results.push((test.id, test.name, result.clone()));
         match &result {
             TestResult::Safe => println!("\u{2714} SAFE"),
-            TestResult::Allocates => println!("\u{2716} ALLOCATES"),
+            TestResult::ImplicitlyAllocates => println!("\u{2716} IMPLICITLY ALLOCATES"),
             TestResult::Error(e) => println!("\u{26A0} ERROR: {}", e),
         }
     }
@@ -588,7 +588,7 @@ fn main() {
         .count();
     let allocates: usize = results
         .iter()
-        .filter(|(_, _, r)| *r == TestResult::Allocates)
+        .filter(|(_, _, r)| *r == TestResult::ImplicitlyAllocates)
         .count();
     let errors: usize = results
         .iter()
@@ -598,12 +598,12 @@ fn main() {
     for (id, name, result) in &results {
         let icon = match result {
             TestResult::Safe => "\u{2714}",
-            TestResult::Allocates => "\u{2716}",
+            TestResult::ImplicitlyAllocates => "\u{2716}",
             TestResult::Error(_) => "\u{26A0}",
         };
         let label = match result {
             TestResult::Safe => "SAFE",
-            TestResult::Allocates => "ALLOCATES",
+            TestResult::ImplicitlyAllocates => "IMPLICITLY ALLOCATES",
             TestResult::Error(e) => &format!("ERROR ({})", e),
         };
         println!("[{:<25}] {} {:<45} {}", id, icon, name, label);

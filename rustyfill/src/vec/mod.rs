@@ -7,5 +7,6 @@ pub(crate) mod raw_manipulation;
 mod slice_;
 mod vec_;
 
+pub(crate) use slice_::SliceInitGuard;
 pub use slice_::TrySlice;
 pub use vec_::{TryVec, TryVecError};
