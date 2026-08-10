@@ -223,28 +223,29 @@ impl TryFormatArgsInput {
             ));
         }
 
-        let (format_string, format_literal) = if let proc_macro2::TokenTree::Literal(ref lit) = tts[pos] {
-            let lit_str: syn::LitStr = syn::parse2(lit.to_token_stream()).map_err(|_| {
-                syn::Error::new_spanned(lit.to_token_stream(), "expected a string literal")
-            })?;
-            pos += 1;
-            (lit_str.value(), tts[pos - 1].clone())
-        } else {
-            return Err(syn::Error::new_spanned(
-                tts[pos].to_token_stream(),
-                "expected a string literal",
-            ));
-        };
+        let (format_string, format_literal) =
+            if let proc_macro2::TokenTree::Literal(ref lit) = tts[pos] {
+                let lit_str: syn::LitStr = syn::parse2(lit.to_token_stream()).map_err(|_| {
+                    syn::Error::new_spanned(lit.to_token_stream(), "expected a string literal")
+                })?;
+                pos += 1;
+                (lit_str.value(), tts[pos - 1].clone())
+            } else {
+                return Err(syn::Error::new_spanned(
+                    tts[pos].to_token_stream(),
+                    "expected a string literal",
+                ));
+            };
 
         let mut args = Vec::new();
 
         while pos < tts.len() {
             // Skip commas
-            if let proc_macro2::TokenTree::Punct(ref p) = tts[pos] {
-                if p.as_char() == ',' {
-                    pos += 1;
-                    continue;
-                }
+            if let proc_macro2::TokenTree::Punct(ref p) = tts[pos]
+                && p.as_char() == ','
+            {
+                pos += 1;
+                continue;
             }
 
             if pos >= tts.len() {
@@ -327,7 +328,9 @@ impl TryFormatArgsInput {
             };
 
             let wrapper_call = kind.map(|k| match k {
-                WrapKind::Debug => quote! { ::rustyfill::try_fmt::TryDebugWrapper::new(&(#expr_ts)) },
+                WrapKind::Debug => {
+                    quote! { ::rustyfill::try_fmt::TryDebugWrapper::new(&(#expr_ts)) }
+                }
                 WrapKind::Display | WrapKind::Multi => {
                     quote! { ::rustyfill::try_fmt::TryDisplayWrapper::new(&(#expr_ts)) }
                 }
@@ -458,12 +461,10 @@ fn parse_arg(
         }
     }
 
-    if eq_pos_found {
-        if let Some(ident) = first_ident {
-            let name = ident.to_string();
-            let expr_tokens = split_after_eq(tokens);
-            return Ok((Some(name), expr_tokens));
-        }
+    if eq_pos_found && let Some(ident) = first_ident {
+        let name = ident.to_string();
+        let expr_tokens = split_after_eq(tokens);
+        return Ok((Some(name), expr_tokens));
     }
 
     Ok((None, tokens.clone()))

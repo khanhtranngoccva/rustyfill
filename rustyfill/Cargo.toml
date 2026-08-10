@@ -9,6 +9,8 @@ rustyfill-macros = { workspace = true }
 hashbrown = { workspace = true }
 libc = { workspace = true }
 once_cell = { workspace = true }
+parking_lot = { workspace = true }
+crossbeam-utils = { workspace = true }
 rustversion = { workspace = true }
 
 [target.'cfg(target_os = "motor")'.dependencies]

@@ -207,3 +207,86 @@ pub fn try_format(input: TokenStream) -> TokenStream {
     }}
     .into()
 }
+
+/// Fallibly format arguments into a newly allocated `String`, returning a
+/// fallback value if formatting fails due to allocation pressure.
+///
+/// Syntax: `try_format_or!(format_string, arg1, arg2, ..., fallback_expr)`
+///
+/// The last top-level comma-separated token sequence is treated as the fallback
+/// expression. All preceding tokens are passed to [`try_format_args!`] for
+/// fallible formatting.
+///
+/// Returns [`std::borrow::Cow`]: on success the formatted string
+/// is wrapped in [`Cow::Owned`](std::borrow::Cow::Owned), on failure the fallback
+/// (which must be a `&'static str`) is wrapped in
+/// [`Cow::Borrowed`](std::borrow::Cow::Borrowed).
+///
+/// This means the fallback can be a string literal, a `&'static str` constant,
+/// or any expression that yields
+/// `&'static str`.
+///
+/// # Example
+///
+/// ```ignore
+/// static FALLBACK: &str = "<default>";
+/// let msg = rustyfill_macros::try_format_or!("Hello, {}!", name, FALLBACK);
+/// // msg has type Cow<'static, str>
+/// ```
+#[proc_macro]
+pub fn try_format_or(input: TokenStream) -> TokenStream {
+    let tokens: proc_macro2::TokenStream = input.into();
+    let tts: Vec<proc_macro2::TokenTree> = tokens.into_iter().collect();
+
+    // Find the last top-level comma to split format args from the fallback expr.
+    // In proc_macro2, parenthesized/bracketed/braced groups are atomic Group tokens,
+    // so we only need to track bare ( [ ] ) puncts that appear outside groups.
+    let mut depth = 0i32;
+    let mut last_top_level_comma = None;
+    for (i, tt) in tts.iter().enumerate() {
+        match tt {
+            proc_macro2::TokenTree::Group(_) => {}
+            proc_macro2::TokenTree::Punct(p) => {
+                let ch = p.as_char();
+                if ch == '(' || ch == '[' {
+                    depth += 1;
+                } else if (ch == ')' || ch == ']') && depth > 0 {
+                    depth -= 1;
+                } else if ch == ',' && depth == 0 {
+                    last_top_level_comma = Some(i);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    match last_top_level_comma {
+        None => {
+            // No comma — treat entire input as format args with empty-string fallback
+            let fmt_ts: proc_macro2::TokenStream = tts.into_iter().collect();
+            quote! {{
+                let mut buf = String::new();
+                ::rustyfill::string::TryString::try_write_fmt(
+                    &mut buf,
+                    ::rustyfill::try_format_args!(#fmt_ts),
+                ).map(|()| std::borrow::Cow::Owned(buf))
+                 .unwrap_or(std::borrow::Cow::Borrowed(""))
+            }}
+            .into()
+        }
+        Some(comma_idx) => {
+            let fmt_part: proc_macro2::TokenStream = tts[..comma_idx].iter().cloned().collect();
+            let fb_part: proc_macro2::TokenStream = tts[comma_idx + 1..].iter().cloned().collect();
+
+            quote! {{
+                let mut buf = String::new();
+                ::rustyfill::string::TryString::try_write_fmt(
+                    &mut buf,
+                    ::rustyfill::try_format_args!(#fmt_part),
+                ).map(|()| std::borrow::Cow::Owned(buf))
+                 .unwrap_or(std::borrow::Cow::Borrowed(#fb_part))
+            }}
+            .into()
+        }
+    }
+}

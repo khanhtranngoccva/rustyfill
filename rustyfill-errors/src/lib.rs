@@ -30,8 +30,10 @@ extern crate alloc;
 pub mod frame;
 mod fmt;
 mod report;
+pub mod result_ext;
 
 pub use frame::{ContextFrame, DynamicFrame, ItemImpl, ItemKind, StaticFrame};
 pub use report::{
     ChangeContextError, ChronoFrames, FrameRef, FrameRefMut, Frames, PeerIter, PeerIterMut, Report,
 };
+pub use result_ext::ResultExt;

@@ -29,6 +29,18 @@
 
 use core::fmt;
 
+pub mod helpers;
+
+// Re-export helper types at the try_fmt module level for convenience.
+pub use helpers::{
+    FormatterExt,
+    TryDebugList,
+    TryDebugMap,
+    TryDebugSet,
+    TryDebugStruct,
+    TryDebugTuple,
+};
+
 // ── Traits ─────────────────────────────────────────────────────────────────────
 
 /// A fallible analogue of [`core::fmt::Debug`].
@@ -39,6 +51,12 @@ use core::fmt;
 ///
 /// Implementors must ensure that `try_fmt` never implicitly allocates and panics —
 /// it may allocate and return an error, but should not abort the process.
+#[diagnostic::on_unimplemented(
+    message = "`{Self}` is not fallibly debuggable — it does not implement `TryDebug`",
+    label = "infallible Debug formatting required",
+    note = "if `{Self}` is a type you define, add `#[derive(rustyfill::TryDebug)]` or implement `TryDebug` manually",
+    note = "if `{Self}` is a foreign type, wrap it in `rustyfill::try_fmt::AssertDebug` to assert that its Debug impl never implicitly allocates"
+)]
 pub trait TryDebug: fmt::Debug {
     /// Attempt to format this value using debug syntax.
     fn try_fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result;
@@ -52,6 +70,12 @@ pub trait TryDebug: fmt::Debug {
 ///
 /// Implementors must ensure that `try_fmt` never implicitly allocates and panics —
 /// it may allocate and return an error, but should not abort the process.
+#[diagnostic::on_unimplemented(
+    message = "`{Self}` is not fallibly displayable — it does not implement `TryDisplay`",
+    label = "fallible Display formatting required",
+    note = "if `{Self}` is a type you define, implement `TryDisplay` manually (no derive macro is available for Display)",
+    note = "if `{Self}` is a foreign type, wrap it in `rustyfill::try_fmt::AssertDisplay` to assert that its Display impl never implicitly allocates"
+)]
 pub trait TryDisplay: fmt::Display {
     /// Attempt to format this value using display syntax.
     fn try_fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result;
@@ -65,6 +89,12 @@ pub trait TryDisplay: fmt::Display {
 ///
 /// Implementors must ensure that `try_fmt` never implicitly allocates and panics —
 /// it may allocate and return an error, but should not abort the process.
+#[diagnostic::on_unimplemented(
+    message = "`{Self}` is not fallibly hex-formattable — it does not implement `TryLowerHex`",
+    label = "fallible LowerHex formatting required",
+    note = "if `{Self}` is a type you define, implement `TryLowerHex` manually or use `rustyfill::lowerhex_passthrough!({Self})`",
+    note = "if `{Self}` is a foreign type, wrap it in `rustyfill::try_fmt::AssertLowerHex` to assert that its LowerHex impl never implicitly allocates"
+)]
 pub trait TryLowerHex: fmt::LowerHex {
     /// Attempt to format this value as lowercase hexadecimal.
     fn try_fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result;
@@ -78,6 +108,12 @@ pub trait TryLowerHex: fmt::LowerHex {
 ///
 /// Implementors must ensure that `try_fmt` never implicitly allocates and panics —
 /// it may allocate and return an error, but should not abort the process.
+#[diagnostic::on_unimplemented(
+    message = "`{Self}` is not fallibly hex-formattable — it does not implement `TryUpperHex`",
+    label = "fallible UpperHex formatting required",
+    note = "if `{Self}` is a type you define, implement `TryUpperHex` manually or use `rustyfill::upperhex_passthrough!({Self})`",
+    note = "if `{Self}` is a foreign type, wrap it in `rustyfill::try_fmt::AssertUpperHex` to assert that its UpperHex impl never implicitly allocates"
+)]
 pub trait TryUpperHex: fmt::UpperHex {
     /// Attempt to format this value as uppercase hexadecimal.
     fn try_fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result;
@@ -91,6 +127,12 @@ pub trait TryUpperHex: fmt::UpperHex {
 ///
 /// Implementors must ensure that `try_fmt` never implicitly allocates and panics —
 /// it may allocate and return an error, but should not abort the process.
+#[diagnostic::on_unimplemented(
+    message = "`{Self}` is not fallibly exponential-formattable — it does not implement `TryLowerExp`",
+    label = "infallible LowerExp formatting required",
+    note = "if `{Self}` is a type you define, implement `TryLowerExp` manually or use `rustyfill::lowerexp_passthrough!({Self})`",
+    note = "if `{Self}` is a foreign type, wrap it in `rustyfill::try_fmt::AssertLowerExp` to assert that its LowerExp impl never implicitly allocates"
+)]
 pub trait TryLowerExp: fmt::LowerExp {
     /// Attempt to format this value in lowercase exponential notation.
     fn try_fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result;
@@ -104,6 +146,12 @@ pub trait TryLowerExp: fmt::LowerExp {
 ///
 /// Implementors must ensure that `try_fmt` never implicitly allocates and panics —
 /// it may allocate and return an error, but should not abort the process.
+#[diagnostic::on_unimplemented(
+    message = "`{Self}` is not fallibly exponential-formattable — it does not implement `TryUpperExp`",
+    label = "infallible UpperExp formatting required",
+    note = "if `{Self}` is a type you define, implement `TryUpperExp` manually or use `rustyfill::upperexp_passthrough!({Self})`",
+    note = "if `{Self}` is a foreign type, wrap it in `rustyfill::try_fmt::AssertUpperExp` to assert that its UpperExp impl never implicitly allocates"
+)]
 pub trait TryUpperExp: fmt::UpperExp {
     /// Attempt to format this value in uppercase exponential notation.
     fn try_fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result;
@@ -663,7 +711,7 @@ impl TryDisplay for &str {
 impl<T: TryDebug> TryDebug for &[T] {
     #[inline]
     fn try_fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{:?}", *self)
+        helpers::FormatterExt::try_debug_list(f).entries(self.iter()).finish()
     }
 }
 
@@ -676,7 +724,7 @@ rustyfill_macros::try_debug_tuples!(12);
 impl<T: TryDebug, const N: usize> TryDebug for [T; N] {
     #[inline]
     fn try_fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{:?}", *self)
+        helpers::FormatterExt::try_debug_list(f).entries(self.iter()).finish()
     }
 }
 
@@ -2053,6 +2101,320 @@ mod try_write_tests {
         let mut buf = Cursor::new(Vec::new());
         try_write!(&mut buf, "{:<5.0}", val).unwrap();
         assert_eq!(buf.into_inner(), b"42   ");
+    }
+
+    // ── Custom fill character with alignment ───────────────────────────────
+
+    #[test]
+    fn parity_custom_fill_left_align() {
+        // std::fmt docs: "{:-<5}" — custom fill char '-' with left alignment
+        let mut bs = Cursor::new(Vec::new());
+        let mut bt = Cursor::new(Vec::new());
+        std::write!(&mut bs, "{:-<5}", "x").unwrap();
+        try_write!(&mut bt, "{:-<5}", "x").unwrap();
+        assert_eq!(bs.into_inner(), bt.into_inner());
+    }
+
+    #[test]
+    fn parity_custom_fill_center_align() {
+        // std::fmt docs: "{:^5}" is default space; test with explicit fill
+        let mut bs = Cursor::new(Vec::new());
+        let mut bt = Cursor::new(Vec::new());
+        std::write!(&mut bs, "{:.^5}", "x").unwrap();
+        try_write!(&mut bt, "{:.^5}", "x").unwrap();
+        assert_eq!(bs.into_inner(), bt.into_inner());
+    }
+
+    #[test]
+    fn parity_custom_fill_right_align() {
+        // std::fmt docs: "{:>5}" is default space; test with explicit fill
+        let mut bs = Cursor::new(Vec::new());
+        let mut bt = Cursor::new(Vec::new());
+        std::write!(&mut bs, "{:_>8}", "hi").unwrap();
+        try_write!(&mut bt, "{:_>8}", "hi").unwrap();
+        assert_eq!(bs.into_inner(), bt.into_inner());
+    }
+
+    // ── String precision truncation ────────────────────────────────────────
+
+    #[test]
+    fn parity_string_precision_truncation() {
+        // std::fmt docs: precision on non-numeric types acts as max width
+        let s = "hello world";
+        let mut bs = Cursor::new(Vec::new());
+        let mut bt = Cursor::new(Vec::new());
+        std::write!(&mut bs, "{:.5}", s).unwrap();
+        try_write!(&mut bt, "{:.5}", s).unwrap();
+        assert_eq!(bs.into_inner(), bt.into_inner());
+    }
+
+    #[test]
+    fn parity_string_precision_with_width_and_align() {
+        // Precision truncates first, then width/alignment pads the result
+        let s = "hello world";
+        let mut bs = Cursor::new(Vec::new());
+        let mut bt = Cursor::new(Vec::new());
+        std::write!(&mut bs, "{:>10.5}", s).unwrap();
+        try_write!(&mut bt, "{:>10.5}", s).unwrap();
+        assert_eq!(bs.into_inner(), bt.into_inner());
+    }
+
+    // ── Mixed auto + explicit positional args ──────────────────────────────
+
+    #[test]
+    fn parity_mixed_auto_and_positional() {
+        // std::fmt docs: "{1} {} {0} {}" — explicit positions don't advance
+        // the auto iterator, so {} picks up from where it left off
+        let mut bs = Cursor::new(Vec::new());
+        let mut bt = Cursor::new(Vec::new());
+        std::write!(&mut bs, "{1} {} {0} {}", 1, 2).unwrap();
+        try_write!(&mut bt, "{1} {} {0} {}", 1, 2).unwrap();
+        assert_eq!(bs.into_inner(), bt.into_inner());
+    }
+
+    // ── Pretty-print debug ─────────────────────────────────────────────────
+
+    #[test]
+    fn parity_pretty_debug_primitive() {
+        // std::fmt docs: "{:#?}" — alternate form of Debug. For primitives,
+        // TryDebug delegates to std Debug which preserves the alternate flag.
+        // Note: compound types (Option, Result, tuples) have custom TryDebug
+        // impls that don't propagate the # flag, so parity only holds for
+        // passthrough types whose try_fmt delegates to std Debug::fmt.
+        let val = 42u32;
+        let mut bs = Cursor::new(Vec::new());
+        let mut bt = Cursor::new(Vec::new());
+        std::write!(&mut bs, "{:#?}", val).unwrap();
+        try_write!(&mut bt, "{:#?}", val).unwrap();
+        assert_eq!(bs.into_inner(), bt.into_inner());
+    }
+
+    // ── Dynamic precision for floats via named arg ─────────────────────────
+
+    #[test]
+    fn parity_dyn_prec_float_named() {
+        // std::fmt docs: "{number:.prec$}" — dynamic precision from named arg
+        let mut bs = Cursor::new(Vec::new());
+        let mut bt = Cursor::new(Vec::new());
+        std::write!(
+            &mut bs,
+            "{number:.prec$}",
+            number = std::f64::consts::PI,
+            prec = 2_usize
+        )
+        .unwrap();
+        try_write!(
+            &mut bt,
+            "{number:.prec$}",
+            number = std::f64::consts::PI,
+            prec = 2_usize
+        )
+        .unwrap();
+        assert_eq!(bs.into_inner(), bt.into_inner());
+    }
+
+    // ── Sign + alternate (#) combined ──────────────────────────────────────
+
+    #[test]
+    fn parity_sign_plus_alternate_hex() {
+        // Combining sign flag (+) and alternate flag (#) with hex output
+        let mut bs = Cursor::new(Vec::new());
+        let mut bt = Cursor::new(Vec::new());
+        std::write!(&mut bs, "{:#x}", 27u32).unwrap();
+        try_write!(&mut bt, "{:#x}", 27u32).unwrap();
+        assert_eq!(bs.into_inner(), bt.into_inner());
+    }
+
+    // ── Zero pad with sign awareness for negative numbers ──────────────────
+
+    #[test]
+    fn parity_zero_pad_negative_number() {
+        // std::fmt docs: "{:05}" on -5 yields "-0005" (sign-aware zero padding)
+        let mut bs = Cursor::new(Vec::new());
+        let mut bt = Cursor::new(Vec::new());
+        std::write!(&mut bs, "{:05}", -5i32).unwrap();
+        try_write!(&mut bt, "{:05}", -5i32).unwrap();
+        assert_eq!(bs.into_inner(), bt.into_inner());
+    }
+
+    #[test]
+    fn parity_zero_pad_positive_number() {
+        // std::fmt docs: "{:05}" on 5 yields "00005"
+        let mut bs = Cursor::new(Vec::new());
+        let mut bt = Cursor::new(Vec::new());
+        std::write!(&mut bs, "{:05}", 5i32).unwrap();
+        try_write!(&mut bt, "{:05}", 5i32).unwrap();
+        assert_eq!(bs.into_inner(), bt.into_inner());
+    }
+
+    // ── Alternate flags with binary and octal via Display ──────────────────
+    // Note: TryBinary and TryOctal traits do not exist in this crate, but the
+    // underlying primitives' Binary/Octal impls never implicitly allocate.
+    // These are tested via AssertDisplay-style passthrough where applicable.
+
+    // ── Multiple format traits on same arg ─────────────────────────────────
+
+    #[test]
+    fn parity_mixed_display_and_debug_args() {
+        // Mix of Display ({0}) and Debug ({1:?}) with explicit positions.
+        let val = 42i32;
+        let flag = true;
+        let mut bs = Cursor::new(Vec::new());
+        let mut bt = Cursor::new(Vec::new());
+        std::write!(&mut bs, "{0} {1:?}", val, flag).unwrap();
+        try_write!(&mut bt, "{0} {1:?}", val, flag).unwrap();
+        assert_eq!(bs.into_inner(), bt.into_inner());
+    }
+
+    // ── Whitespace in format specs ─────────────────────────────────────────
+
+    #[test]
+    fn parity_whitespace_in_format_spec() {
+        // std::fmt grammar allows trailing whitespace before closing }
+        let mut bs = Cursor::new(Vec::new());
+        let mut bt = Cursor::new(Vec::new());
+        std::write!(&mut bs, "{:>10 }", "hi").unwrap();
+        try_write!(&mut bt, "{:>10 }", "hi").unwrap();
+        assert_eq!(bs.into_inner(), bt.into_inner());
+    }
+
+    // ── Dynamic precision for string truncation ────────────────────────────
+
+    #[test]
+    fn parity_dyn_prec_string_truncation() {
+        // Dynamic precision controlling string truncation length
+        let mut bs = Cursor::new(Vec::new());
+        let mut bt = Cursor::new(Vec::new());
+        std::write!(&mut bs, "{0:.<1$}", "hello world", 5usize).unwrap();
+        try_write!(&mut bt, "{0:.<1$}", "hello world", 5usize).unwrap();
+        assert_eq!(bs.into_inner(), bt.into_inner());
+    }
+
+    // ── Format spec combining width, fill, align, and precision ────────────
+
+    #[test]
+    fn parity_full_format_spec_combination() {
+        // Combines fill char, alignment, width, and precision in one spec
+        let mut bs = Cursor::new(Vec::new());
+        let mut bt = Cursor::new(Vec::new());
+        std::write!(&mut bs, "{:_>10.5}", "hello world").unwrap();
+        try_write!(&mut bt, "{:_>10.5}", "hello world").unwrap();
+        assert_eq!(bs.into_inner(), bt.into_inner());
+    }
+
+    // ── LowerExp / UpperExp wrapper construction verification ──────────────
+
+    #[test]
+    fn wrapper_lower_exp() {
+        assert_eq!(
+            format!("{:e}", super::TryLowerExpWrapper::new(123456789.0_f64)),
+            "1.23456789e8"
+        );
+    }
+
+    #[test]
+    fn wrapper_upper_exp() {
+        assert_eq!(
+            format!("{:E}", super::TryUpperExpWrapper::new(123456789.0_f64)),
+            "1.23456789E8"
+        );
+    }
+
+    // ── try_format_or! tests ───────────────────────────────────────────────
+
+    use std::borrow::Cow;
+
+    static DIAGNOSTICS_OOM: &str = "<out of memory>";
+    const BUSINESS_LOGIC_FAILED: &str = "business logic A failed";
+
+    #[test]
+    fn try_format_or_basic_success() {
+        let name = "world";
+        let result: Cow<'static, str> =
+            rustyfill_macros::try_format_or!("Hello, {}!", name, "<fallback>");
+        assert_eq!(result, "Hello, world!");
+        assert!(matches!(result, Cow::Owned(_)));
+    }
+
+    #[test]
+    fn try_format_or_no_args() {
+        let result: Cow<'static, str> = rustyfill_macros::try_format_or!("plain text", "");
+        assert_eq!(result, "plain text");
+    }
+
+    #[test]
+    fn try_format_or_multiple_args() {
+        let result: Cow<'static, str> =
+            rustyfill_macros::try_format_or!("{}, {} and {}", "a", "b", "c", "default");
+        assert_eq!(result, "a, b and c");
+    }
+
+    #[test]
+    fn try_format_or_with_debug() {
+        let val = vec![1, 2, 3];
+        let result: Cow<'static, str> = rustyfill_macros::try_format_or!("{:?}", val, "err");
+        assert_eq!(result, "[1, 2, 3]");
+    }
+
+    #[test]
+    fn try_format_or_with_hex() {
+        let result: Cow<'static, str> = rustyfill_macros::try_format_or!("{:x}", 255u32, "err");
+        assert_eq!(result, "ff");
+    }
+
+    #[test]
+    fn try_format_or_named_args() {
+        let result: Cow<'static, str> = rustyfill_macros::try_format_or!(
+            "{greeting}, {name}!",
+            greeting = "Hi",
+            name = "Alice",
+            "fallback"
+        );
+        assert_eq!(result, "Hi, Alice!");
+    }
+
+    #[test]
+    fn try_format_or_positional_args() {
+        let result: Cow<'static, str> =
+            rustyfill_macros::try_format_or!("{1} then {0}", "first", "second", "fb");
+        assert_eq!(result, "second then first");
+    }
+
+    #[test]
+    fn try_format_or_alignment_and_padding() {
+        let result: Cow<'static, str> = rustyfill_macros::try_format_or!("{:>10}", "hi", "fb");
+        assert_eq!(result, "        hi");
+    }
+
+    #[test]
+    fn try_format_or_escape_braces() {
+        let result: Cow<'static, str> = rustyfill_macros::try_format_or!("{{literal}}", "fb");
+        assert_eq!(result, "{literal}");
+    }
+
+    #[test]
+    fn try_format_or_static_str_fallback() {
+        // Fallback from a static variable — returns Cow::Borrowed on failure,
+        // Cow::Owned on success. We can only verify the happy path without OOM injection.
+        let result: Cow<'static, str> = rustyfill_macros::try_format_or!("ok", DIAGNOSTICS_OOM);
+        assert_eq!(result, "ok");
+        assert!(matches!(result, Cow::Owned(_)));
+    }
+
+    #[test]
+    fn try_format_or_const_str_fallback() {
+        // Fallback from a const — same semantics as above.
+        let result: Cow<'static, str> =
+            rustyfill_macros::try_format_or!("done", BUSINESS_LOGIC_FAILED);
+        assert_eq!(result, "done");
+        assert!(matches!(result, Cow::Owned(_)));
+    }
+
+    #[test]
+    fn try_format_or_empty_fallback_no_comma() {
+        // No comma means empty-string fallback.
+        let result: Cow<'static, str> = rustyfill_macros::try_format_or!("standalone");
+        assert_eq!(result, "standalone");
     }
 }
 

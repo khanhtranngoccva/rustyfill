@@ -36,6 +36,7 @@ mod sys;
 pub mod try_clone;
 pub mod try_default;
 pub mod try_fmt;
+pub mod collections;
 pub mod try_random_state;
 pub mod try_to_owned;
 pub mod vec;

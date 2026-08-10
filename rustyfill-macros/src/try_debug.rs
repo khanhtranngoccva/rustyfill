@@ -16,19 +16,17 @@ pub(crate) fn derive_try_debug(input: TokenStream) -> TokenStream {
                         Ok(())
                     }
                 } else {
-                    let field_fmts = fields.named.iter().map(|field| {
+                    let field_calls = fields.named.iter().map(|field| {
                         let ident = &field.ident;
                         let field_name = ident.as_ref().map(|i| i.to_string()).unwrap_or_default();
                         quote! {
-                            f.write_str(concat!(" ", #field_name, ": "))?;
-                            ::rustyfill::try_fmt::TryDebug::try_fmt(&self.#ident, f)?;
+                            .field(#field_name, &self.#ident)
                         }
                     });
                     quote! {
-                        f.write_str(concat!(stringify!(#name), "{"))?;
-                        #(#field_fmts)*
-                        f.write_str("}")?;
-                        Ok(())
+                        ::rustyfill::try_fmt::helpers::FormatterExt::try_debug_struct(f, stringify!(#name))
+                            #(#field_calls)*
+                            .finish()
                     }
                 }
             }
@@ -39,18 +37,16 @@ pub(crate) fn derive_try_debug(input: TokenStream) -> TokenStream {
                         Ok(())
                     }
                 } else {
-                    let field_fmts = (0..fields.unnamed.len()).map(|i| {
+                    let field_calls = (0..fields.unnamed.len()).map(|i| {
                         let idx = syn::Index::from(i);
                         quote! {
-                            if #i > 0 { f.write_str(", ")?; }
-                            ::rustyfill::try_fmt::TryDebug::try_fmt(&self.#idx, f)?;
+                            .field(&self.#idx)
                         }
                     });
                     quote! {
-                        f.write_str(concat!(stringify!(#name), "("))?;
-                        #(#field_fmts)*
-                        f.write_str(")")?;
-                        Ok(())
+                        ::rustyfill::try_fmt::helpers::FormatterExt::try_debug_tuple(f)
+                            #(#field_calls)*
+                            .finish()
                     }
                 }
             }
@@ -81,19 +77,17 @@ pub(crate) fn derive_try_debug(input: TokenStream) -> TokenStream {
                             .collect();
                         let field_patterns: Vec<_> =
                             field_idents.iter().map(|id| quote!(#id)).collect();
-                        let field_fmts = field_idents.iter().map(|id| {
+                        let field_calls = field_idents.iter().map(|id| {
                             let fname = id.to_string();
                             quote! {
-                                f.write_str(concat!(" ", #fname, ": "))?;
-                                ::rustyfill::try_fmt::TryDebug::try_fmt(#id, f)?;
+                                .field(#fname, #id)
                             }
                         });
                         quote! {
                             Self::#variant_ident { #(#field_patterns),* } => {
-                                f.write_str(concat!(stringify!(#name), "::", stringify!(#variant_ident), "{"))?;
-                                #(#field_fmts)*
-                                f.write_str("}")?;
-                                Ok(())
+                                ::rustyfill::try_fmt::helpers::FormatterExt::try_debug_struct(f, concat!(stringify!(#name), "::", stringify!(#variant_ident)))
+                                    #(#field_calls)*
+                                    .finish()
                             },
                         }
                     }
@@ -109,18 +103,16 @@ pub(crate) fn derive_try_debug(input: TokenStream) -> TokenStream {
                         let field_names: Vec<_> = (0..fields.unnamed.len())
                             .map(|i| quote::format_ident!("f{i}"))
                             .collect();
-                        let field_fmts = field_names.iter().enumerate().map(|(i, fn_)| {
+                        let field_calls = field_names.iter().map(|fn_| {
                             quote! {
-                                if #i > 0 { f.write_str(", ")?; }
-                                ::rustyfill::try_fmt::TryDebug::try_fmt(#fn_, f)?;
+                                .field(#fn_)
                             }
                         });
                         quote! {
                             Self::#variant_ident (#(#field_names),*) => {
-                                f.write_str(concat!(stringify!(#name), "::", stringify!(#variant_ident), "("))?;
-                                #(#field_fmts)*
-                                f.write_str(")")?;
-                                Ok(())
+                                ::rustyfill::try_fmt::helpers::FormatterExt::try_debug_tuple(f)
+                                    #(#field_calls)*
+                                    .finish()
                             },
                         }
                     }
@@ -180,26 +172,22 @@ pub(crate) fn try_debug_tuples(input: TokenStream) -> TokenStream {
             quote!((#types_joined))
         };
 
-        let body_lines: Vec<_> = (0..arity)
+        let field_calls: Vec<_> = (0..arity)
             .map(|i| {
                 let idx = syn::Index::from(i);
                 quote! {
-                    if #i > 0 { f.write_str(", ")?; }
-                    TryDebug::try_fmt(&self.#idx, f)?;
+                    .field(&self.#idx)
                 }
             })
             .collect();
-
-        let close_paren = if arity == 1 { ",)" } else { ")" };
 
         output.push(quote! {
             impl<#(#bounds),*> TryDebug for #tuple_pat {
                 #[inline]
                 fn try_fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-                    f.write_str("(")?;
-                    #(#body_lines)*
-                    f.write_str(#close_paren)?;
-                    Ok(())
+                    ::rustyfill::try_fmt::helpers::FormatterExt::try_debug_tuple(f)
+                        #(#field_calls)*
+                        .finish()
                 }
             }
         });
