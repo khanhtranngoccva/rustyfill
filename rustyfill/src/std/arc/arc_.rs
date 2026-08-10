@@ -44,21 +44,30 @@ pub trait TryArc<T>: Sized {
     ///
     /// **Deprecated:** This method name conflicts with the unstable inherent
     /// [`Arc::try_new`]. Use [`Self::fallible_new`] instead.
-    #[deprecated(since = "0.1.0", note = "conflicts with unstable Arc::try_new; use fallible_new")]
+    #[deprecated(
+        since = "0.1.0",
+        note = "conflicts with unstable Arc::try_new; use fallible_new"
+    )]
     fn try_new(value: T) -> Result<Self, AllocError>;
 
     /// Fallibly allocate an uninitialised `Arc<MaybeUninit<T>>`.
     ///
     /// **Deprecated:** This method name conflicts with the unstable inherent
     /// [`Arc::try_new_uninit`]. Use [`Self::fallible_new_uninit`] instead.
-    #[deprecated(since = "0.1.0", note = "conflicts with unstable Arc::try_new_uninit; use fallible_new_uninit")]
+    #[deprecated(
+        since = "0.1.0",
+        note = "conflicts with unstable Arc::try_new_uninit; use fallible_new_uninit"
+    )]
     fn try_new_uninit() -> Result<Self::Uninit, AllocError>;
 
     /// Fallibly allocate zero-initialised memory as an `Arc<MaybeUninit<T>>`.
     ///
     /// **Deprecated:** This method name conflicts with the unstable inherent
     /// [`Arc::try_new_zeroed`]. Use [`Self::fallible_new_zeroed`] instead.
-    #[deprecated(since = "0.1.0", note = "conflicts with unstable Arc::try_new_zeroed; use fallible_new_zeroed")]
+    #[deprecated(
+        since = "0.1.0",
+        note = "conflicts with unstable Arc::try_new_zeroed; use fallible_new_zeroed"
+    )]
     fn try_new_zeroed() -> Result<Self::Uninit, AllocError>;
 
     /// Like [`Self::try_new`] but returns ownership of `value` back on failure.
@@ -86,7 +95,10 @@ pub trait TryArc<T>: Sized {
     ///
     /// **Deprecated:** This method name conflicts with the unstable inherent
     /// [`Arc::try_pin`]. Use [`Self::fallible_pin`] instead.
-    #[deprecated(since = "0.1.0", note = "conflicts with unstable Arc::try_pin; use fallible_pin")]
+    #[deprecated(
+        since = "0.1.0",
+        note = "conflicts with unstable Arc::try_pin; use fallible_pin"
+    )]
     fn try_pin(value: T) -> Result<Pin<Self>, AllocError>;
 
     /// Like [`Self::try_pin`] but returns ownership of `value` back on failure.
@@ -911,7 +923,7 @@ mod tests {
 
     #[test]
     fn weak_try_upgrade_multiple_roundtrip() {
-        use crate::arc::TryWeak;
+        use crate::std::arc::TryWeak;
         let arc = <Arc<String> as TryArc<String>>::try_new("hello".into()).unwrap();
         let weak = Arc::downgrade(&arc);
         for _ in 0..50 {
@@ -1156,19 +1168,18 @@ mod tests {
 
     #[test]
     fn arc_fallible_new_fails_on_oom() {
-        let r: Result<Arc<i32>, AllocError> = with_policy(
-            FailPolicy::fail_next_alloc(),
-            || <Arc<i32> as TryArc<i32>>::fallible_new(42),
-        );
+        let r: Result<Arc<i32>, AllocError> = with_policy(FailPolicy::fail_next_alloc(), || {
+            <Arc<i32> as TryArc<i32>>::fallible_new(42)
+        });
         assert!(r.is_err());
     }
 
     #[test]
     fn arc_fallible_new_give_back_returns_value_on_oom() {
-        let r: Result<Arc<i32>, (i32, AllocError)> = with_policy(
-            FailPolicy::fail_next_alloc(),
-            || <Arc<i32> as TryArc<i32>>::try_new_give_back(99),
-        );
+        let r: Result<Arc<i32>, (i32, AllocError)> =
+            with_policy(FailPolicy::fail_next_alloc(), || {
+                <Arc<i32> as TryArc<i32>>::try_new_give_back(99)
+            });
         assert!(r.is_err());
         if let Err((returned, _err)) = r {
             assert_eq!(returned, 99);
@@ -1195,19 +1206,19 @@ mod tests {
 
     #[test]
     fn arc_fallible_pin_fails_on_oom() {
-        let r: Result<Pin<Arc<i32>>, AllocError> = with_policy(
-            FailPolicy::fail_next_alloc(),
-            || <Arc<i32> as TryArc<i32>>::fallible_pin(42),
-        );
+        let r: Result<Pin<Arc<i32>>, AllocError> =
+            with_policy(FailPolicy::fail_next_alloc(), || {
+                <Arc<i32> as TryArc<i32>>::fallible_pin(42)
+            });
         assert!(r.is_err());
     }
 
     #[test]
     fn arc_fallible_pin_give_back_returns_value_on_oom() {
-        let r: Result<Pin<Arc<i64>>, (i64, AllocError)> = with_policy(
-            FailPolicy::fail_next_alloc(),
-            || <Arc<i64> as TryArc<i64>>::try_pin_give_back(99),
-        );
+        let r: Result<Pin<Arc<i64>>, (i64, AllocError)> =
+            with_policy(FailPolicy::fail_next_alloc(), || {
+                <Arc<i64> as TryArc<i64>>::try_pin_give_back(99)
+            });
         assert!(r.is_err());
         if let Err((returned, _err)) = r {
             assert_eq!(returned, 99);
@@ -1227,10 +1238,8 @@ mod tests {
     fn arc_try_clone_succeeds_under_oom() {
         // Arc::try_clone only increments atomic refcounts, no heap allocation.
         let arc = Arc::<i32>::new(42);
-        let r: Result<Arc<i32>, TryCloneError> = with_policy(
-            FailPolicy::fail_next_alloc(),
-            || arc.try_clone(),
-        );
+        let r: Result<Arc<i32>, TryCloneError> =
+            with_policy(FailPolicy::fail_next_alloc(), || arc.try_clone());
         assert!(r.is_ok());
     }
 
@@ -1249,10 +1258,9 @@ mod tests {
 
     #[test]
     fn arc_oom_restores_allocation_afterwards() {
-        let r: Result<Arc<i32>, AllocError> = with_policy(
-            FailPolicy::fail_next_alloc(),
-            || <Arc<i32> as TryArc<i32>>::fallible_new(42),
-        );
+        let r: Result<Arc<i32>, AllocError> = with_policy(FailPolicy::fail_next_alloc(), || {
+            <Arc<i32> as TryArc<i32>>::fallible_new(42)
+        });
         assert!(r.is_err());
         let r: Result<Arc<i32>, AllocError> = <Arc<i32> as TryArc<i32>>::fallible_new(42);
         assert!(r.is_ok());

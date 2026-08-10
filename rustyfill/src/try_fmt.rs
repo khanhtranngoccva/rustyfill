@@ -1089,6 +1089,70 @@ mod oom_tests {
         assert!(assert_try_debug_no_alloc(&a));
     }
 
+    // ── Mutex (TryDebug delegates to std Debug) ──────────────────────────────
+
+    #[test]
+    fn try_debug_mutex_primitive_no_alloc() {
+        let m: std::sync::Mutex<i32> = std::sync::Mutex::new(42);
+        assert!(assert_try_debug_no_alloc(&m));
+    }
+
+    #[test]
+    fn try_debug_mutex_string_no_alloc() {
+        let m: std::sync::Mutex<String> = std::sync::Mutex::new(String::from("mutex string"));
+        assert!(assert_try_debug_no_alloc(&m));
+    }
+
+    #[test]
+    fn try_debug_mutex_vec_no_alloc() {
+        let m: std::sync::Mutex<Vec<u8>> = std::sync::Mutex::new(vec![1, 2, 3]);
+        assert!(assert_try_debug_no_alloc(&m));
+    }
+
+    #[test]
+    fn try_debug_mutex_locked_no_alloc() {
+        let m: std::sync::Mutex<i32> = std::sync::Mutex::new(42);
+        let _guard = m.lock().unwrap();
+        assert!(assert_try_debug_no_alloc(&m));
+    }
+
+    // ── RwLock (TryDebug delegates to std Debug) ─────────────────────────────
+
+    #[test]
+    fn try_debug_rwlock_primitive_no_alloc() {
+        let rw: std::sync::RwLock<i32> = std::sync::RwLock::new(42);
+        assert!(assert_try_debug_no_alloc(&rw));
+    }
+
+    #[test]
+    fn try_debug_rwlock_string_no_alloc() {
+        let rw: std::sync::RwLock<String> = std::sync::RwLock::new(String::from("rwlock string"));
+        assert!(assert_try_debug_no_alloc(&rw));
+    }
+
+    #[test]
+    fn try_debug_rwlock_vec_no_alloc() {
+        let rw: std::sync::RwLock<Vec<u8>> = std::sync::RwLock::new(vec![1, 2, 3]);
+        assert!(assert_try_debug_no_alloc(&rw));
+    }
+
+    // ── Baseline: verify std Debug itself is allocation-free ──────────────────
+    // If these fail, std's Debug impl changed and our TryDebug passthrough will too.
+
+    #[test]
+    fn std_debug_mutex_primitive_no_alloc() {
+        use super::AssertDebug;
+        let m: std::sync::Mutex<i32> = std::sync::Mutex::new(42);
+        assert!(assert_try_debug_no_alloc(AssertDebug(&m)));
+    }
+
+    #[test]
+    fn std_debug_rwlock_primitive_no_alloc() {
+        use super::AssertDebug;
+        let rw: std::sync::RwLock<i32> = std::sync::RwLock::new(42);
+        assert!(assert_try_debug_no_alloc(AssertDebug(&rw)));
+    }
+
     // ── PathBuf (sized — uses generic helper) ──────────────────────────────
 
     #[test]
@@ -1390,9 +1454,10 @@ mod oom_tests {
 
     #[test]
     fn try_debug_manually_drop_string_no_alloc() {
-        let md: core::mem::ManuallyDrop<String> =
+        let mut md: core::mem::ManuallyDrop<String> =
             core::mem::ManuallyDrop::new(String::from("wrapped"));
         assert!(assert_try_debug_no_alloc(&md));
+        unsafe { core::mem::ManuallyDrop::drop(&mut md); }
     }
 
     // ── Ranges ──────────────────────────────────────────────────────────────
@@ -2746,13 +2811,14 @@ mod try_write_tests {
 
     #[test]
     fn parity_manually_drop_string_debug() {
-        let md: core::mem::ManuallyDrop<String> =
+        let mut md: core::mem::ManuallyDrop<String> =
             core::mem::ManuallyDrop::new(String::from("wrapped"));
         let mut bs = Cursor::new(Vec::new());
         let mut bt = Cursor::new(Vec::new());
         std::write!(&mut bs, "{:?}", md).unwrap();
         try_write!(&mut bt, "{:?}", &md).unwrap();
         assert_eq!(bs.into_inner(), bt.into_inner());
+        unsafe { core::mem::ManuallyDrop::drop(&mut md); }
     }
 
     // ── Ranges ───────────────────────────────────────────────────────────────

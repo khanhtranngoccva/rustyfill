@@ -46,9 +46,13 @@ pub use crate::vecdeque::TryVecDeque;
 
 pub use crate::string::{TryStr, TryString};
 
-// ── Arc & Weak ───────────────────────────────────────────────────────────────
+// ── Arc & Weak (multi-threaded) ──────────────────────────────────────────────
 
-pub use crate::arc::{TryArc, TryWeak};
+pub use crate::arc::{TryArc, TryWeak as TryArcWeak};
+
+// ── Rc & Weak (single-threaded) ──────────────────────────────────────────────
+
+pub use crate::rc::{TryRc, TryWeak as TryRcWeak};
 
 // ── FFI strings ──────────────────────────────────────────────────────────────
 
@@ -68,3 +72,11 @@ pub use crate::dashmap::{TryDashMap, TryDashSet};
 #[cfg(feature = "panic")]
 #[allow(deprecated)]
 pub use crate::btrees::{TryBTreeMap, TryBTreeSet};
+
+// ── RefCell ───────────────────────────────────────────────────────────────────
+
+pub use crate::cell::TryRefCell;
+
+// ── RwLock & Mutex ────────────────────────────────────────────────────────────
+// TryDebug impls delegate to std Debug (allocation-free, verified by OOM tests).
+// See rustyfill::sync for the implementations.

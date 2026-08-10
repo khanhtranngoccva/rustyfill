@@ -1572,7 +1572,9 @@ mod tests {
     // Snapshots are written to the build target directory and overwritten on
     // each run to avoid excessive disk consumption. Tests compare the current
     // Report Display output against the saved snapshot file.
+    // Skipped under Miri which does not support filesystem access in isolation mode.
 
+    #[cfg(not(miri))]
     fn get_snapshot_dir() -> std::path::PathBuf {
         std::env::var("CARGO_TARGET_DIR")
             .ok()
@@ -1587,6 +1589,7 @@ mod tests {
             .join("snapshots")
     }
 
+    #[cfg(not(miri))]
     fn write_snapshot(name: &str, content: &str) {
         let dir = get_snapshot_dir();
         std::fs::create_dir_all(&dir).expect("failed to create snapshot directory");
@@ -1594,11 +1597,13 @@ mod tests {
         std::fs::write(&path, content).expect("failed to write snapshot");
     }
 
+    #[cfg(not(miri))]
     fn read_snapshot(name: &str) -> Option<alloc::string::String> {
         let path = get_snapshot_dir().join(alloc::format!("{name}.snap"));
         std::fs::read_to_string(path).ok()
     }
 
+    #[cfg(not(miri))]
     fn assert_snapshot(name: &str, actual: &str) {
         match read_snapshot(name) {
             Some(expected) if expected == actual => {} // matches
@@ -1619,6 +1624,7 @@ mod tests {
         }
     }
 
+    #[cfg(not(miri))]
     #[test]
     fn display_single_frame() {
         let report = Report::new(TestError("something went wrong"));
@@ -1626,6 +1632,7 @@ mod tests {
         assert_snapshot("single_frame", &output);
     }
 
+    #[cfg(not(miri))]
     #[test]
     fn display_single_frame_with_segment() {
         let report = Report::with_segment(TestError("parse failed"), "parsing config");
@@ -1633,6 +1640,7 @@ mod tests {
         assert_snapshot("single_frame_with_segment", &output);
     }
 
+    #[cfg(not(miri))]
     #[test]
     fn display_with_attachment() {
         let report = Report::new(TestError("root error")).attach("extra context");
@@ -1640,6 +1648,7 @@ mod tests {
         assert_snapshot("with_attachment", &output);
     }
 
+    #[cfg(not(miri))]
     #[test]
     fn display_with_multiple_attachments() {
         let report = Report::new(TestError("root error"))
@@ -1649,6 +1658,7 @@ mod tests {
         assert_snapshot("with_multiple_attachments", &output);
     }
 
+    #[cfg(not(miri))]
     #[test]
     fn display_with_peers() {
         let report = Report::new(TestError("first"))
@@ -1658,6 +1668,7 @@ mod tests {
         assert_snapshot("with_peers", &output);
     }
 
+    #[cfg(not(miri))]
     #[test]
     fn display_after_change_context() {
         let report: Report<OtherError> =
@@ -1666,6 +1677,7 @@ mod tests {
         assert_snapshot("after_change_context", &output);
     }
 
+    #[cfg(not(miri))]
     #[test]
     fn display_deeply_nested_change_context() {
         let r1 = Report::new(TestError("level 1"));
@@ -1675,6 +1687,7 @@ mod tests {
         assert_snapshot("deeply_nested_change_context", &output);
     }
 
+    #[cfg(not(miri))]
     #[test]
     fn display_change_context_with_attachments() {
         let inner = Report::new(TestError("inner")).attach("inner-attach");
@@ -1683,6 +1696,7 @@ mod tests {
         assert_snapshot("change_context_with_attachments", &output);
     }
 
+    #[cfg(not(miri))]
     #[test]
     fn display_peers_then_change_context() {
         let report: Report<OtherError> = Report::new(TestError("base"))
@@ -1692,6 +1706,7 @@ mod tests {
         assert_snapshot("peers_then_change_context", &output);
     }
 
+    #[cfg(not(miri))]
     #[test]
     fn display_with_capacity_eviction() {
         let report = Report::new(TestError("first"))
@@ -1702,6 +1717,7 @@ mod tests {
         assert_snapshot("with_capacity_eviction", &output);
     }
 
+    #[cfg(not(miri))]
     #[test]
     fn display_minimal_report() {
         let report = Report::new(TestError("minimal"));
@@ -1710,6 +1726,7 @@ mod tests {
         assert_snapshot("minimal_report", &output);
     }
 
+    #[cfg(not(miri))]
     #[test]
     fn display_debug_delegates_to_display() {
         let report = Report::with_segment(TestError("debug test"), "checking debug");
@@ -1718,6 +1735,7 @@ mod tests {
         assert_eq!(display_output, debug_output);
     }
 
+    #[cfg(not(miri))]
     #[test]
     fn display_multilevel_tree_with_segments() {
         let r1 = Report::with_segment(TestError("database connection failed"), "db.connect");
@@ -1729,6 +1747,7 @@ mod tests {
         assert_snapshot("multilevel_tree_with_segments", &output);
     }
 
+    #[cfg(not(miri))]
     #[test]
     fn display_mixed_error_types_in_tree() {
         let r1 = Report::new(TestError("io error"));

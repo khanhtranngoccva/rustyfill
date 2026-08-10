@@ -18,37 +18,38 @@
 extern crate self as rustyfill;
 
 pub mod alloc;
-pub mod arc;
-pub mod boxed;
-#[cfg(feature = "panic")]
-pub mod btrees;
+pub mod collections;
 #[cfg(feature = "unstable")]
 pub mod dashmap;
-pub mod ffi;
 pub mod hashers;
-pub mod hashmap;
-pub mod hashset;
-pub mod path;
 pub mod prelude;
 pub mod recovery;
-pub mod string;
+pub mod std;
 mod sys;
 pub mod try_clone;
 pub mod try_default;
 pub mod try_fmt;
-pub mod collections;
 pub mod try_random_state;
 pub mod try_to_owned;
-pub mod vec;
-pub mod vecdeque;
+
+// Re-export std submodules at crate root for backward compatibility
+pub use std::arc;
+pub use std::boxed;
+pub use std::cell;
+pub use std::rc;
+#[cfg(feature = "panic")]
+pub use std::btrees;
+pub use std::ffi;
+pub use std::hashmap;
+pub use std::hashset;
+pub use std::path;
+pub use std::string;
+pub use std::sync;
+pub use std::vec;
+pub use std::vecdeque;
 
 pub use rustyfill_macros::{TryClone, TryDebug, TryDefault};
 pub use rustyfill_macros::{
-    try_format_args,
-    try_println,
-    try_print,
-    try_write,
-    try_writeln,
-    try_format,
+    try_format, try_format_args, try_print, try_println, try_write, try_writeln,
 };
 pub use try_random_state::TryRandomState;
