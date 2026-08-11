@@ -18,6 +18,7 @@
 //! which requires every field to also implement `TryClone`.
 
 use crate::alloc::{AllocError, TryReserveError};
+use crate::try_fmt::{TryDebug, helpers::FormatterExt};
 use core::clone::Clone;
 use core::fmt;
 
@@ -41,6 +42,23 @@ impl fmt::Display for TryCloneError {
             Self::Reserve(e) => write!(f, "clone failed: {}", e),
             Self::Overflow => write!(f, "clone failed: capacity calculation overflowed"),
             Self::Other(msg) => write!(f, "clone failed: {}", msg),
+        }
+    }
+}
+
+impl TryDebug for TryCloneError {
+    fn try_fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Alloc(e) => f.try_debug_struct("TryCloneError::Alloc")
+                .field("0", e)
+                .finish(),
+            Self::Reserve(e) => f.try_debug_struct("TryCloneError::Reserve")
+                .field("0", e)
+                .finish(),
+            Self::Overflow => f.write_str("TryCloneError::Overflow"),
+            Self::Other(msg) => f.try_debug_struct("TryCloneError::Other")
+                .field("0", msg)
+                .finish(),
         }
     }
 }
@@ -294,16 +312,16 @@ mod tests {
     #[test]
     fn f32_try_clone() {
         assert_eq!(
-            (std::f32::consts::E).try_clone().unwrap(),
-            std::f32::consts::E
+            (::lang_std::f32::consts::E).try_clone().unwrap(),
+            ::lang_std::f32::consts::E
         );
     }
 
     #[test]
     fn f64_try_clone() {
         assert_eq!(
-            (std::f64::consts::PI).try_clone().unwrap(),
-            std::f64::consts::PI
+            (::lang_std::f64::consts::PI).try_clone().unwrap(),
+            ::lang_std::f64::consts::PI
         );
     }
 

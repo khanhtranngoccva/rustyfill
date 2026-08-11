@@ -36,6 +36,7 @@ pub(super) const SEP_CHAR: &str = "\u{2502}";
 /// is a no-op.
 pub(super) fn extend_continuing(continuing: &mut Vec<bool>, depth: usize) {
     let needed = depth.saturating_sub(1);
+    // FIXME: implicitly allocates
     while continuing.len() <= needed {
         continuing.push(true);
     }

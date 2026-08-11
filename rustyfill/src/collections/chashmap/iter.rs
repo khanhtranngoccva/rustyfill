@@ -9,7 +9,7 @@
 //! items) are fallible, iteration returns [`Result`] items.
 
 use core::hash::{BuildHasher, Hash};
-use std::sync::Arc;
+use crate::lang_std::sync::Arc;
 
 use hashbrown::raw::{RawIter, RawTable};
 use parking_lot::{RwLockReadGuard, RwLockWriteGuard};
@@ -17,6 +17,7 @@ use parking_lot::{RwLockReadGuard, RwLockWriteGuard};
 use crate::alloc::AllocError;
 use crate::arc::TryArc;
 use crate::try_clone::{TryClone, TryCloneError};
+use crate::try_fmt::{TryDebug, helpers::FormatterExt};
 
 use super::map::ConcurrentHashMap;
 use super::refs::{RefMulti, RefMutMulti};
@@ -41,6 +42,19 @@ impl core::fmt::Display for IterError {
     }
 }
 
+impl TryDebug for IterError {
+    fn try_fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            Self::Alloc(e) => f.try_debug_struct("IterError::Alloc")
+                .field("0", e)
+                .finish(),
+            Self::Clone(e) => f.try_debug_struct("IterError::Clone")
+                .field("0", e)
+                .finish(),
+        }
+    }
+}
+
 struct LockedIter<'a, K, V>(Arc<RwLockReadGuard<'a, RawTable<(K, V)>>>, RawIter<(K, V)>);
 struct LockedIterMut<'a, K, V>(Arc<RwLockWriteGuard<'a, RawTable<(K, V)>>>, RawIter<(K, V)>);
 
@@ -51,7 +65,7 @@ struct LockedIterMut<'a, K, V>(Arc<RwLockWriteGuard<'a, RawTable<(K, V)>>>, RawI
 /// Produced by [`ConcurrentHashMap::iter`]. Lazily acquires a read lock per
 /// shard via an `Arc`, then streams through buckets cloning the Arc into each
 /// yielded [`RefMulti`].
-pub struct Iter<'a, K, V, S = std::hash::RandomState> {
+pub struct Iter<'a, K, V, S = ::lang_std::hash::RandomState> {
     map: &'a ConcurrentHashMap<K, V, S>,
     /// Index of the shard we are currently draining.
     shard_idx: usize,
@@ -134,7 +148,7 @@ where
 /// Produced by [`ConcurrentHashMap::iter_mut`]. Lazily acquires a write lock
 /// per shard via an `Arc`, then streams through buckets cloning the Arc into
 /// each yielded [`RefMutMulti`].
-pub struct IterMut<'a, K, V, S = std::hash::RandomState> {
+pub struct IterMut<'a, K, V, S = ::lang_std::hash::RandomState> {
     map: &'a ConcurrentHashMap<K, V, S>,
     /// Index of the shard we are currently draining.
     shard_idx: usize,

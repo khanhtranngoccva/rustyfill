@@ -2,7 +2,7 @@
 //!
 //! Provides the [`TryHashMap`] trait with methods that mirror common `HashMap`
 //! constructors and mutating operations but return [`Result`] to handle allocation
-//! failures gracefully, using [`std::collections::TryReserveError`] as the primary
+//! failures gracefully, using [`::lang_std::collections::TryReserveError`] as the primary
 //! error type.
 //!
 //! # Design
@@ -19,10 +19,11 @@ use crate::alloc::AllocError;
 use crate::alloc::TryReserveError;
 use crate::try_clone::{TryClone, TryCloneError};
 use crate::try_default::{TryDefault, TryDefaultError};
+use crate::try_fmt::{TryDebug, helpers::FormatterExt};
+use crate::lang_std::cmp::Eq;
+use crate::lang_std::collections::HashMap;
+use crate::lang_std::hash::{BuildHasher, Hash, RandomState};
 use core::fmt;
-use std::cmp::Eq;
-use std::collections::HashMap;
-use std::hash::{BuildHasher, Hash, RandomState};
 
 // ── Error type ────────────────────────────────────────────────────────────────
 
@@ -79,6 +80,30 @@ impl From<TryCloneError> for TryHashMapError {
     }
 }
 
+impl TryDebug for TryHashMapError {
+    fn try_fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Alloc(e) => f
+                .try_debug_struct("TryHashMapError::Alloc")
+                .field("0", e)
+                .finish(),
+            Self::Reserve(e) => f
+                .try_debug_struct("TryHashMapError::Reserve")
+                .field("0", e)
+                .finish(),
+            Self::Clone(e) => f
+                .try_debug_struct("TryHashMapError::Clone")
+                .field("0", e)
+                .finish(),
+            Self::Overflow => f.write_str("TryHashMapError::Overflow"),
+            Self::Other(msg) => f
+                .try_debug_struct("TryHashMapError::Other")
+                .field("0", msg)
+                .finish(),
+        }
+    }
+}
+
 impl From<TryDefaultError> for TryHashMapError {
     fn from(err: TryDefaultError) -> Self {
         match err {
@@ -90,8 +115,8 @@ impl From<TryDefaultError> for TryHashMapError {
     }
 }
 
-impl From<std::collections::TryReserveError> for TryHashMapError {
-    fn from(e: std::collections::TryReserveError) -> Self {
+impl From<::lang_std::collections::TryReserveError> for TryHashMapError {
+    fn from(e: ::lang_std::collections::TryReserveError) -> Self {
         Self::Reserve(TryReserveError::from(e))
     }
 }
@@ -106,7 +131,7 @@ impl From<std::collections::TryReserveError> for TryHashMapError {
 ///
 /// # Note on `try_insert`
 ///
-/// The inherent [`HashMap::try_insert`](std::collections::HashMap::try_insert) on
+/// The inherent [`HashMap::try_insert`](::std::collections::HashMap::try_insert) on
 /// stable Rust returns `Err(old_value)` when a key already exists, but may *panic*
 /// on allocation failure. Our [`Self::try_insert`] reserves capacity first so it
 /// never panics on OOM — it returns [`TryHashMapError::Reserve`] instead, but it
@@ -211,13 +236,13 @@ pub trait TryHashMap<K, V, S = RandomState>: Sized {
     /// Unlike the inherent [`HashMap::entry`], this method guarantees that
     /// inserting through the entry will not allocate again.
     ///
-    /// [`Entry`]: std::collections::hash_map::Entry
-    /// [`Entry::or_insert`]: std::collections::hash_map::Entry::or_insert
-    /// [`Entry::and_modify`]: std::collections::hash_map::Entry::and_modify
+    /// [`Entry`]: ::std::collections::hash_map::Entry
+    /// [`Entry::or_insert`]: ::std::collections::hash_map::Entry::or_insert
+    /// [`Entry::and_modify`]: ::std::collections::hash_map::Entry::and_modify
     fn try_entry<'a>(
         &'a mut self,
         key: K,
-    ) -> Result<std::collections::hash_map::Entry<'a, K, V>, TryHashMapError>
+    ) -> Result<::lang_std::collections::hash_map::Entry<'a, K, V>, TryHashMapError>
     where
         K: Eq + Hash;
 
@@ -296,7 +321,7 @@ pub trait TryHashMap<K, V, S = RandomState>: Sized {
     fn fallible_entry<'a>(
         &'a mut self,
         key: K,
-    ) -> Result<std::collections::hash_map::Entry<'a, K, V>, TryHashMapError>
+    ) -> Result<::lang_std::collections::hash_map::Entry<'a, K, V>, TryHashMapError>
     where
         K: Eq + Hash,
     {
@@ -507,7 +532,7 @@ impl<K: Eq + Hash, V, S: BuildHasher> TryHashMap<K, V, S> for HashMap<K, V, S> {
     fn try_entry<'a>(
         &'a mut self,
         key: K,
-    ) -> Result<std::collections::hash_map::Entry<'a, K, V>, TryHashMapError>
+    ) -> Result<::lang_std::collections::hash_map::Entry<'a, K, V>, TryHashMapError>
     where
         K: Eq + Hash,
     {
@@ -714,7 +739,11 @@ impl<K: crate::try_fmt::TryDebug, V: crate::try_fmt::TryDebug, S> crate::try_fmt
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::collections::hash_map::RandomState;
+    use crate::lang_alloc::string::String;
+    use crate::lang_alloc::string::ToString;
+    use crate::lang_alloc::vec;
+    use crate::lang_alloc::vec::Vec;
+    use crate::lang_std::collections::hash_map::RandomState;
 
     // ── Construction ─────────────────────────────────────────────────────────
 
@@ -733,8 +762,8 @@ mod tests {
 
     #[test]
     fn try_with_capacity_and_hasher() {
-        use std::collections::hash_map::DefaultHasher;
-        use std::hash::BuildHasherDefault;
+        use crate::lang_std::collections::hash_map::DefaultHasher;
+        use crate::lang_std::hash::BuildHasherDefault;
 
         let hasher = BuildHasherDefault::<DefaultHasher>::default();
         let map: HashMap<&str, i32, _> = HashMap::try_with_capacity_and_hasher(5, hasher).unwrap();
@@ -824,7 +853,8 @@ mod tests {
     #[test]
     fn try_extend_empty() {
         let mut map: HashMap<i32, i32> = HashMap::new();
-        map.try_extend(std::iter::empty::<(i32, i32)>()).unwrap();
+        map.try_extend(::lang_std::iter::empty::<(i32, i32)>())
+            .unwrap();
         assert!(map.is_empty());
     }
 
@@ -915,10 +945,9 @@ mod tests {
     #[test]
     fn try_collect_empty() {
         let map: HashMap<i32, i32> =
-            <HashMap<i32, i32> as TryHashMap<_, _, RandomState>>::try_collect(std::iter::empty::<(
-                i32,
-                i32,
-            )>())
+            <HashMap<i32, i32> as TryHashMap<_, _, RandomState>>::try_collect(
+                ::lang_std::iter::empty::<(i32, i32)>(),
+            )
             .unwrap();
         assert!(map.is_empty());
     }
@@ -934,8 +963,8 @@ mod tests {
 
     #[test]
     fn try_collect_with_hasher() {
-        use std::collections::hash_map::DefaultHasher;
-        use std::hash::BuildHasherDefault;
+        use crate::lang_std::collections::hash_map::DefaultHasher;
+        use crate::lang_std::hash::BuildHasherDefault;
 
         let hasher = BuildHasherDefault::<DefaultHasher>::default();
         let map: HashMap<i32, i32, _> =
@@ -1051,8 +1080,8 @@ mod tests {
 
     #[test]
     fn try_default_map_with_custom_hasher() {
-        use std::collections::hash_map::DefaultHasher;
-        use std::hash::BuildHasherDefault;
+        use crate::lang_std::collections::hash_map::DefaultHasher;
+        use crate::lang_std::hash::BuildHasherDefault;
 
         let map: HashMap<i32, i32, BuildHasherDefault<DefaultHasher>> =
             HashMap::try_default().unwrap();

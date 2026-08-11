@@ -2,7 +2,7 @@
 //!
 //! Provides the [`TryVec`] trait with methods that mirror common `Vec` constructors
 //! and mutating operations but return [`Result`] to handle allocation failures
-//! gracefully, using [`std::collections::TryReserveError`] as the primary error type.
+//! gracefully, using [`::lang_std::collections::TryReserveError`] as the primary error type.
 //!
 //! # Design
 //!
@@ -16,11 +16,13 @@
 
 use crate::alloc::AllocError;
 use crate::alloc::TryReserveError;
+use crate::lang_alloc::vec::Vec;
 use crate::try_clone::{TryClone, TryCloneError};
 use crate::try_default::{TryDefault, TryDefaultError};
+use crate::try_fmt::{TryDebug, helpers::FormatterExt};
 use crate::vec::raw_manipulation::RawVecInnerView;
+use core::alloc::Layout;
 use core::fmt;
-use std::alloc::Layout;
 
 /// Panic-safe guard that truncates a `Vec` back to its original length on drop
 /// unless disarmed via `forget()`. Used by fallible extend methods so that if
@@ -101,6 +103,30 @@ impl From<TryReserveError> for TryVecError {
 impl From<TryCloneError> for TryVecError {
     fn from(err: TryCloneError) -> Self {
         Self::Clone(err)
+    }
+}
+
+impl TryDebug for TryVecError {
+    fn try_fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Alloc(e) => f
+                .try_debug_struct("TryVecError::Alloc")
+                .field("0", e)
+                .finish(),
+            Self::Reserve(e) => f
+                .try_debug_struct("TryVecError::Reserve")
+                .field("0", e)
+                .finish(),
+            Self::Clone(e) => f
+                .try_debug_struct("TryVecError::Clone")
+                .field("0", e)
+                .finish(),
+            Self::Overflow => f.write_str("TryVecError::Overflow"),
+            Self::Other(msg) => f
+                .try_debug_struct("TryVecError::Other")
+                .field("0", msg)
+                .finish(),
+        }
     }
 }
 
@@ -202,7 +228,7 @@ pub trait TryVec<T>: Sized {
     /// pre-call state.
     ///
     /// Returns [`TryVecError::Other`] if the range is out of bounds.
-    fn try_extend_from_within<R: std::ops::RangeBounds<usize>>(
+    fn try_extend_from_within<R: ::lang_std::ops::RangeBounds<usize>>(
         &mut self,
         range: R,
     ) -> Result<(), TryVecError>
@@ -321,7 +347,7 @@ pub trait TryVec<T>: Sized {
     }
 
     /// Alias for [`Self::try_extend_from_within`].
-    fn fallible_extend_from_within<R: std::ops::RangeBounds<usize>>(
+    fn fallible_extend_from_within<R: ::lang_std::ops::RangeBounds<usize>>(
         &mut self,
         range: R,
     ) -> Result<(), TryVecError>
@@ -552,14 +578,14 @@ impl<T> TryVec<T> for Vec<T> {
         Ok(())
     }
 
-    fn try_extend_from_within<R: std::ops::RangeBounds<usize>>(
+    fn try_extend_from_within<R: ::lang_std::ops::RangeBounds<usize>>(
         &mut self,
         range: R,
     ) -> Result<(), TryVecError>
     where
         T: TryClone,
     {
-        use std::ops::Bound;
+        use crate::lang_std::ops::Bound;
 
         let start = match range.start_bound() {
             Bound::Included(&i) => i,
@@ -656,7 +682,7 @@ impl<T> TryVec<T> for Vec<T> {
         if self.capacity() <= target {
             return Ok(());
         }
-        let (mut current_raw, current_len) = RawVecInnerView::from_vec(std::mem::take(self));
+        let (mut current_raw, current_len) = RawVecInnerView::from_vec(::lang_std::mem::take(self));
         // SAFETY: target < self.capacity() (guaranteed by the early-return guard
         // above), and elem_layout matches the type T that was used to allocate the original buffer.
         // Should not panic here - the shrink_unchecked does not invoke user code.
@@ -757,6 +783,9 @@ impl<T: crate::try_fmt::TryDebug> crate::try_fmt::TryDebug for Vec<T> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::lang_alloc::string::String;
+    use crate::lang_alloc::string::ToString;
+    use crate::lang_alloc::vec;
 
     // ── Construction ─────────────────────────────────────────────────────────
 
@@ -844,7 +873,7 @@ mod tests {
     #[test]
     fn try_extend_empty() {
         let mut v: Vec<i32> = Vec::new();
-        v.try_extend(std::iter::empty::<i32>()).unwrap();
+        v.try_extend(core::iter::empty::<i32>()).unwrap();
         assert!(v.is_empty());
     }
 
@@ -1032,7 +1061,7 @@ mod tests {
 
     #[test]
     fn try_collect_empty() {
-        let v: Vec<i32> = Vec::try_collect(std::iter::empty::<i32>()).unwrap();
+        let v: Vec<i32> = Vec::try_collect(core::iter::empty::<i32>()).unwrap();
         assert!(v.is_empty());
     }
 

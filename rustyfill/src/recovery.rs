@@ -36,6 +36,7 @@
 //!    inserted. The [`Resumable`] holds that stranded element as the head,
 //!    plus the unconsumed remainder.
 
+use crate::try_fmt::{TryDebug, helpers::FormatterExt};
 use core::fmt;
 
 /// A source of items that decomposes into an optional leading element and an
@@ -183,9 +184,25 @@ where
     }
 }
 
+impl<I> TryDebug for Resumable<I>
+where
+    I: Iterator + TryDebug,
+    I::Item: TryDebug,
+{
+    fn try_fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.try_debug_struct("Resumable")
+            .field("head", &self.head)
+            .field("remainder", &self.remainder)
+            .finish()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::lang_alloc::vec;
+    use crate::lang_alloc::vec::Vec;
+    use crate::lang_std::format;
 
     #[test]
     fn retryable_with_head() {
@@ -219,14 +236,16 @@ mod tests {
         let r = Resumable::from_remainder(0..4);
         let (head, iter) = r.safe_into_iter();
         assert!(head.is_none());
-        assert_eq!(iter.collect::<Vec<_>>(), vec![0, 1, 2, 3]);
+        let expected: Vec<i32> = [0, 1, 2, 3].into_iter().collect();
+        assert_eq!(iter.collect::<Vec<_>>(), expected);
     }
 
     #[test]
     fn into_remainder_drops_head() {
         let r = Resumable::new(7, 1..4);
         let rem = r.into_remainder();
-        assert_eq!(rem.collect::<Vec<_>>(), vec![1, 2, 3]);
+        let expected: Vec<i32> = [1, 2, 3].into_iter().collect();
+        assert_eq!(rem.collect::<Vec<_>>(), expected);
     }
 
     #[test]
@@ -234,12 +253,13 @@ mod tests {
         let r = Resumable::new(99, 10..12);
         let (h, i) = r.into_parts();
         assert_eq!(h, Some(99));
-        assert_eq!(i.collect::<Vec<_>>(), vec![10, 11]);
+        let expected: Vec<i32> = [10, 11].into_iter().collect();
+        assert_eq!(i.collect::<Vec<_>>(), expected);
     }
 
     #[test]
     fn stable_type_across_retries() {
-        type Base = std::ops::Range<i32>;
+        type Base = core::ops::Range<i32>;
 
         // Simulate first failure producing Resumable<Base>.
         let r1: Resumable<Base> = Resumable::new(0, 1..4);
@@ -258,7 +278,8 @@ mod tests {
         let range = 10..13;
         let (head, inner): (Option<i32>, _) = range.safe_into_iter();
         assert!(head.is_none());
-        assert_eq!(inner.collect::<Vec<_>>(), vec![10, 11, 12]);
+        let expected: Vec<i32> = [10, 11, 12].into_iter().collect();
+        assert_eq!(inner.collect::<Vec<_>>(), expected);
     }
 
     #[test]

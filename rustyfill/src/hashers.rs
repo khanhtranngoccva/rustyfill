@@ -24,13 +24,13 @@
 //! # `ArbitraryHasherFactory` — ergonomic, best-effort safety nets
 //!
 //! [`ArbitraryHasherFactory<H>`] accepts *any* [`BuildHasher`], including those
-//! that allocate internally (e.g. [`RandomState`](std::hash::RandomState)). It
+//! that allocate internally (e.g. [`RandomState`](::lang_std::hash::RandomState)). It
 //! automatically implements [`TryClone`] when `H: Clone` and [`TryDefault`] when
 //! `H: Default`.
 //!
 //! Because cloning or defaulting an arbitrary hasher may panic (e.g. on OOM
 //! during internal allocation), these implementations use
-//! [`std::panic::catch_unwind`] as a best-effort safety net: if `clone()` or
+//! [`::lang_std::panic::catch_unwind`] as a best-effort safety net: if `clone()` or
 //! [`Default::default()`] panics, the panic is caught and returned as an error
 //! rather than unwinding through the caller. This means fallible collection
 //! operations remain non-panicking even with allocating hashers.
@@ -40,8 +40,11 @@
 use crate::{
     try_clone::{TryClone, TryCloneError},
     try_default::{TryDefault, TryDefaultError},
+    try_fmt::{TryDebug, helpers::FormatterExt},
 };
-use std::hash::BuildHasher;
+#[cfg(feature = "std")]
+use crate::lang_std::thread_local;
+use core::hash::BuildHasher;
 
 /// Marker trait for hasher factories that are safely duplicatable via a bitwise
 /// copy.
@@ -93,24 +96,27 @@ impl<H> CopyBuildHasher for H where H: BuildHasher + Copy {}
 
 // ── TryClone and TryDefault implementations ────────────────────────────────────────────────
 
+#[cfg(feature = "std")]
 /// `RandomState` is the default hasher and it stores two u64 values.
-impl TryClone for std::hash::RandomState {
+impl TryClone for ::lang_std::hash::RandomState {
     #[inline]
     fn try_clone(&self) -> Result<Self, TryCloneError> {
         Ok(self.clone())
     }
 }
 
+#[cfg(feature = "std")]
 // Thread-local cache of a RandomState so that repeated `try_default()` calls
 // avoid re-invoking the platform random source. Each thread gets its own
 // cached instance after the first (potentially expensive) generation.
 thread_local! {
-    static CACHED_RANDOM_STATE: once_cell::unsync::OnceCell<std::hash::RandomState>
+    static CACHED_RANDOM_STATE: once_cell::unsync::OnceCell<::lang_std::hash::RandomState>
         = const { once_cell::unsync::OnceCell::new() };
 }
 
+#[cfg(feature = "std")]
 /// Implementation glue to support `HashMap::try_new`/`HashSet::try_new`/`DashMap::try_new`/`DashSet::try_new`
-impl TryDefault for std::hash::RandomState {
+impl TryDefault for ::lang_std::hash::RandomState {
     #[inline]
     fn try_default() -> Result<Self, TryDefaultError> {
         CACHED_RANDOM_STATE.with(|cell| {
@@ -125,8 +131,9 @@ impl TryDefault for std::hash::RandomState {
             // SAFETY: RandomState's internal representation is two u64 values.
             // We construct it directly from our randomly generated keys, avoiding
             // the panic-prone Default::default() path entirely.
-            let rs =
-                unsafe { core::mem::transmute::<(u64, u64), std::hash::RandomState>((k1, k2)) };
+            let rs = unsafe {
+                core::mem::transmute::<(u64, u64), ::lang_std::hash::RandomState>((k1, k2))
+            };
             let rs_clone = rs.clone();
             cell.set(rs).ok();
             Ok(rs_clone)
@@ -134,18 +141,20 @@ impl TryDefault for std::hash::RandomState {
     }
 }
 
+#[cfg(feature = "std")]
 /// `BuildHasherDefault<H>` is a zero-sized wrapper around `PhantomData<H>`.
 /// Its `clone()` cannot panic (no-op).
-impl<H> TryClone for std::hash::BuildHasherDefault<H> {
+impl<H> TryClone for ::lang_std::hash::BuildHasherDefault<H> {
     #[inline]
     fn try_clone(&self) -> Result<Self, TryCloneError> {
         Ok(self.clone())
     }
 }
 
+#[cfg(feature = "std")]
 /// `BuildHasherDefault<H>` is a zero-sized wrapper around `PhantomData<H>`.
 /// Its `default()` cannot panic (no-op).
-impl<H> TryDefault for std::hash::BuildHasherDefault<H> {
+impl<H> TryDefault for ::lang_std::hash::BuildHasherDefault<H> {
     #[inline]
     fn try_default() -> Result<Self, TryDefaultError> {
         Ok(Default::default())
@@ -204,14 +213,14 @@ where
 /// Popular third-party hashers like `ahash::RandomState`, FxHash, FNV, DJB2, and
 /// similar integer-only builders typically satisfy this bound.
 ///
-/// For hashers that allocate internally (e.g. [`RandomState`](std::hash::RandomState)),
+/// For hashers that allocate internally (e.g. [`RandomState`](::std::hash::RandomState)),
 /// use [`ArbitraryHasherFactory`] instead.
 ///
 /// # Example
 ///
 /// ```
 /// use rustyfill::hashers::CopyHasherFactory;
-/// use std::hash::{BuildHasher, Hasher};
+/// use ::std::hash::{BuildHasher, Hasher};
 ///
 /// #[derive(Clone, Copy, Default)]
 /// struct MyHasher;
@@ -280,6 +289,14 @@ impl<H: CopyBuildHasher + core::fmt::Debug> core::fmt::Debug for CopyHasherFacto
     }
 }
 
+impl<H: CopyBuildHasher + TryDebug> TryDebug for CopyHasherFactory<H> {
+    fn try_fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.try_debug_struct("CopyHasherFactory")
+            .field("inner", &self.inner)
+            .finish()
+    }
+}
+
 impl<H: CopyBuildHasher + PartialEq> PartialEq for CopyHasherFactory<H> {
     fn eq(&self, other: &Self) -> bool {
         self.inner == other.inner
@@ -296,7 +313,7 @@ impl<H: CopyBuildHasher + Eq> Eq for CopyHasherFactory<H> {}
 /// Unlike [`CopyHasherFactory`], which requires the inner hasher to be [`Copy`],
 /// `ArbitraryHasherFactory<H>` only requires `H: BuildHasher`. This makes it
 /// compatible with any hasher factory, including those that allocate or open system
-/// resources internally (e.g. [`RandomState`](std::hash::RandomState) opens a file in
+/// resources internally (e.g. [`RandomState`](::std::hash::RandomState) opens a file in
 /// the kernel for every thread and panics if it fails).
 ///
 /// # Ergonomic integration with fallible collections
@@ -310,7 +327,7 @@ impl<H: CopyBuildHasher + Eq> Eq for CopyHasherFactory<H> {}
 ///
 /// Because cloning or defaulting an arbitrary hasher may panic (e.g. on OOM
 /// during internal allocation), these implementations wrap the call in
-/// [`std::panic::catch_unwind`] as a best-effort safety net. If `clone()` or
+/// [`::std::panic::catch_unwind`] as a best-effort safety net. If `clone()` or
 /// [`Default::default()`] panics, the panic is caught and returned as an error
 /// rather than unwinding through the caller. This keeps fallible collection
 /// operations non-panicking even with allocating hashers.
@@ -336,7 +353,7 @@ impl<H: CopyBuildHasher + Eq> Eq for CopyHasherFactory<H> {}
 /// # When to use
 ///
 /// Use `ArbitraryHasherFactory` when your hasher doesn't satisfy [`Copy`] (most
-/// notably [`RandomState`](std::hash::RandomState)) but you still want fallible
+/// notably [`RandomState`](::std::hash::RandomState)) but you still want fallible
 /// collection operations. Prefer [`CopyHasherFactory`] when the hasher is
 /// stack-only, since it avoids allocation entirely and provides stronger compile-time
 /// guarantees.
@@ -345,8 +362,8 @@ impl<H: CopyBuildHasher + Eq> Eq for CopyHasherFactory<H> {}
 ///
 /// ```
 /// use rustyfill::hashers::ArbitraryHasherFactory;
-/// use std::collections::HashMap;
-/// use std::hash::RandomState;
+/// use ::std::collections::HashMap;
+/// use ::std::hash::RandomState;
 ///
 /// // RandomState is not Copy, so CopyHasherFactory won't work.
 /// // ArbitraryHasherFactory accepts it behind an unsafe constructor.
@@ -369,7 +386,7 @@ impl<H: BuildHasher> ArbitraryHasherFactory<H> {
     ///
     /// - Cloning the inner hasher may panic at runtime (e.g. on OOM during
     ///   internal allocation). The [`TryClone`] implementation uses
-    ///   [`std::panic::catch_unwind`] to catch such panics and return them as
+    ///   [`::std::panic::catch_unwind`] to catch such panics and return them as
     ///   errors, so fallible collection operations remain non-panicking.
     /// - Default construction may panic similarly; [`TryDefault`] applies the
     ///   same best-effort panic-catching strategy.
@@ -424,10 +441,11 @@ impl<H: BuildHasher + Clone> Clone for ArbitraryHasherFactory<H> {
 
 /// TryClone wraps `H::clone()` in `catch_unwind` so that panics during cloning
 /// (e.g. OOM in the hasher's internal allocation) are caught and returned as errors.
+#[cfg(feature = "std")]
 impl<H: BuildHasher + Clone> TryClone for ArbitraryHasherFactory<H> {
     #[inline]
     fn try_clone(&self) -> Result<Self, TryCloneError> {
-        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| self.inner.clone()))
+        ::lang_std::panic::catch_unwind(::lang_std::panic::AssertUnwindSafe(|| self.inner.clone()))
             .map(|inner| Self { inner })
             .map_err(|_| TryCloneError::Other("hasher factory panicked during clone"))
     }
@@ -436,10 +454,11 @@ impl<H: BuildHasher + Clone> TryClone for ArbitraryHasherFactory<H> {
 /// TryDefault wraps `H::default()` in `catch_unwind` so that panics during
 /// default construction (e.g. OOM in the hasher's internal allocation) are
 /// caught and returned as errors.
+#[cfg(feature = "std")]
 impl<H: BuildHasher + Default> TryDefault for ArbitraryHasherFactory<H> {
     #[inline]
     fn try_default() -> Result<Self, TryDefaultError> {
-        std::panic::catch_unwind(std::panic::AssertUnwindSafe(H::default))
+        ::lang_std::panic::catch_unwind(::lang_std::panic::AssertUnwindSafe(H::default))
             .map(|inner| Self { inner })
             .map_err(|_| TryDefaultError::Other("hasher factory panicked during default"))
     }
@@ -448,6 +467,14 @@ impl<H: BuildHasher + Default> TryDefault for ArbitraryHasherFactory<H> {
 impl<H: BuildHasher + core::fmt::Debug> core::fmt::Debug for ArbitraryHasherFactory<H> {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.debug_struct("ArbitraryHasherFactory")
+            .field("inner", &self.inner)
+            .finish()
+    }
+}
+
+impl<H: BuildHasher + TryDebug> TryDebug for ArbitraryHasherFactory<H> {
+    fn try_fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.try_debug_struct("ArbitraryHasherFactory")
             .field("inner", &self.inner)
             .finish()
     }
@@ -464,7 +491,9 @@ impl<H: BuildHasher + Eq> Eq for ArbitraryHasherFactory<H> {}
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::hash::Hasher;
+    use crate::lang_alloc::format;
+    use crate::lang_alloc::vec::Vec;
+    use crate::lang_std::hash::Hasher;
 
     // ── Custom trivially-copyable hashers ─────────────────────────────────────
 
@@ -740,7 +769,7 @@ mod tests {
     #[test]
     fn factory_works_in_hashmap_signature() {
         // Prove that CopyHasherFactory satisfies the bounds needed for HashMap.
-        use std::collections::HashMap;
+        use crate::lang_std::collections::HashMap;
         let factory = CopyHasherFactory::new(Fnv1aBuilder);
         let mut map: HashMap<&str, i32, _> = HashMap::with_hasher(factory);
         map.insert("key", 42);
@@ -758,14 +787,14 @@ mod tests {
 
     #[test]
     fn random_state_try_clone_succeeds() {
-        let rs = std::hash::RandomState::new();
+        let rs = ::lang_std::hash::RandomState::new();
         let cloned = rs.try_clone().unwrap();
         assert_eq!(rs.hash_one(99u64), cloned.hash_one(99u64));
     }
 
     #[test]
     fn build_hasher_default_try_clone_succeeds() {
-        use std::hash::{BuildHasherDefault, DefaultHasher};
+        use crate::lang_std::hash::{BuildHasherDefault, DefaultHasher};
         let h: BuildHasherDefault<DefaultHasher> = BuildHasherDefault::default();
         let cloned = h.try_clone().unwrap();
         assert_eq!(h.hash_one("x"), cloned.hash_one("x"));
@@ -784,7 +813,7 @@ mod tests {
 
     #[test]
     fn arbitrary_factory_constructs_and_delegates() {
-        let factory = unsafe { ArbitraryHasherFactory::new(std::hash::RandomState::new()) };
+        let factory = unsafe { ArbitraryHasherFactory::new(::lang_std::hash::RandomState::new()) };
         let hash = factory.hash_one("hello");
         assert_ne!(hash, 0);
     }
@@ -813,7 +842,7 @@ mod tests {
 
     #[test]
     fn arbitrary_factory_try_clone_random_state() {
-        let factory = unsafe { ArbitraryHasherFactory::new(std::hash::RandomState::new()) };
+        let factory = unsafe { ArbitraryHasherFactory::new(::lang_std::hash::RandomState::new()) };
         let cloned = factory.try_clone().unwrap();
         assert_eq!(factory.hash_one(42u64), cloned.hash_one(42u64));
     }
@@ -827,7 +856,8 @@ mod tests {
 
     #[test]
     fn arbitrary_factory_try_default_random_state() {
-        let factory = <ArbitraryHasherFactory<std::hash::RandomState>>::try_default().unwrap();
+        let factory =
+            <ArbitraryHasherFactory<::lang_std::hash::RandomState>>::try_default().unwrap();
         let hash = factory.hash_one("world");
         assert_ne!(hash, 0);
     }
@@ -841,8 +871,8 @@ mod tests {
 
     #[test]
     fn arbitrary_factory_works_in_hashmap() {
-        use std::collections::HashMap;
-        let factory = unsafe { ArbitraryHasherFactory::new(std::hash::RandomState::new()) };
+        use crate::lang_std::collections::HashMap;
+        let factory = unsafe { ArbitraryHasherFactory::new(::lang_std::hash::RandomState::new()) };
         let mut map: HashMap<&str, i32, _> = HashMap::with_hasher(factory);
         map.insert("key", 42);
         assert_eq!(map["key"], 42);
@@ -868,7 +898,7 @@ mod tests {
     fn arbitrary_factory_not_copy() {
         // Verify that ArbitraryHasherFactory does not require Copy by
         // confirming Clone works (since RandomState is Clone but not Copy).
-        let factory = unsafe { ArbitraryHasherFactory::new(std::hash::RandomState::new()) };
+        let factory = unsafe { ArbitraryHasherFactory::new(::lang_std::hash::RandomState::new()) };
         // This compiles because TryClone is implemented (RandomState: Clone):
         let _cloned = factory.try_clone().unwrap();
     }

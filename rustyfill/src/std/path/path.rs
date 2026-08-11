@@ -20,10 +20,11 @@ use crate::alloc::AllocError;
 use crate::alloc::TryReserveError;
 use crate::path::path_buf::inner_push;
 use crate::try_clone::{TryClone, TryCloneError};
+use crate::try_fmt::{TryDebug, helpers::FormatterExt};
 use crate::try_to_owned::{TryToOwned, TryToOwnedError};
+use crate::lang_std::ffi::OsStr;
+use crate::lang_std::path::{Path, PathBuf};
 use core::fmt;
-use std::ffi::OsStr;
-use std::path::{Path, PathBuf};
 
 /// Error returned by [`TryPath`] operations.
 #[derive(Debug)]
@@ -60,6 +61,26 @@ impl From<AllocError> for TryPathError {
 impl From<TryReserveError> for TryPathError {
     fn from(err: TryReserveError) -> Self {
         Self::Reserve(err)
+    }
+}
+
+impl TryDebug for TryPathError {
+    fn try_fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Alloc(e) => f
+                .try_debug_struct("TryPathError::Alloc")
+                .field("0", e)
+                .finish(),
+            Self::Reserve(e) => f
+                .try_debug_struct("TryPathError::Reserve")
+                .field("0", e)
+                .finish(),
+            Self::Overflow => f.write_str("TryPathError::Overflow"),
+            Self::Other(msg) => f
+                .try_debug_struct("TryPathError::Other")
+                .field("0", msg)
+                .finish(),
+        }
     }
 }
 
@@ -216,18 +237,18 @@ impl crate::try_fmt::TryDebug for PathBuf {
 }
 
 // ---------------------------------------------------------------------------
-// TryDebug + TryDisplay for std::path::Display<'_>
+// TryDebug + TryDisplay for ::lang_std::path::Display<'_>
 // ---------------------------------------------------------------------------
-// std::path::Display's canonical Debug and Display impls write the path to the
+// ::lang_std::path::Display's canonical Debug and Display impls write the path to the
 // formatter without allocating. Safe to passthrough.
 
-impl crate::try_fmt::TryDebug for std::path::Display<'_> {
+impl crate::try_fmt::TryDebug for ::lang_std::path::Display<'_> {
     fn try_fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         fmt::Debug::fmt(self, f)
     }
 }
 
-impl crate::try_fmt::TryDisplay for std::path::Display<'_> {
+impl crate::try_fmt::TryDisplay for ::lang_std::path::Display<'_> {
     fn try_fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         fmt::Display::fmt(self, f)
     }
@@ -236,6 +257,8 @@ impl crate::try_fmt::TryDisplay for std::path::Display<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::lang_alloc::vec::Vec;
+    use crate::lang_std::format;
     use crate::path::TryPathBuf;
 
     /// Assert that `try_join(base, child)` produces the same result as
@@ -375,7 +398,7 @@ mod tests {
     #[test]
     fn try_to_owned_implies_to_owned_bound() {
         let p = Path::new("/test");
-        let owned: PathBuf = <Path as std::borrow::ToOwned>::to_owned(p);
+        let owned: PathBuf = <Path as ::lang_std::borrow::ToOwned>::to_owned(p);
         assert_eq!(owned, Path::new("/test"));
     }
 

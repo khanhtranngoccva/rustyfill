@@ -6,7 +6,7 @@
 //!
 //! # Design
 //!
-//! `PathBuf` wraps an [`OsString`](std::ffi::OsString) internally, so its fallible
+//! `PathBuf` wraps an [`OsString`](::lang_std::ffi::OsString) internally, so its fallible
 //! operations delegate to the same reserve-before-mutate pattern used by
 //! [`TryOsString`](crate::ffi::TryOsString). Methods that may grow internal capacity
 //! (`push`, etc.) call `try_reserve` first so that allocation failures surface as
@@ -20,10 +20,12 @@ use crate::alloc::TryReserveError;
 use crate::ffi::TryOsString;
 use crate::try_clone::{TryClone, TryCloneError};
 use crate::try_default::{TryDefault, TryDefaultError};
+use crate::try_fmt::{TryDebug, helpers::FormatterExt};
 use crate::vec::TryVec;
+use crate::lang_alloc::vec::Vec;
+use crate::lang_std::ffi::{OsStr, OsString};
+use crate::lang_std::path::{Component, MAIN_SEPARATOR_STR, Path, PathBuf, Prefix, is_separator};
 use core::fmt;
-use std::ffi::{OsStr, OsString};
-use std::path::{Component, MAIN_SEPARATOR_STR, Path, PathBuf, Prefix, is_separator};
 
 /// Error returned by [`TryPathBuf`] operations.
 ///
@@ -67,6 +69,26 @@ impl From<AllocError> for TryPathBufError {
 impl From<TryReserveError> for TryPathBufError {
     fn from(err: TryReserveError) -> Self {
         Self::Reserve(err)
+    }
+}
+
+impl TryDebug for TryPathBufError {
+    fn try_fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Alloc(e) => f
+                .try_debug_struct("TryPathBufError::Alloc")
+                .field("0", e)
+                .finish(),
+            Self::Reserve(e) => f
+                .try_debug_struct("TryPathBufError::Reserve")
+                .field("0", e)
+                .finish(),
+            Self::Overflow => f.write_str("TryPathBufError::Overflow"),
+            Self::Other(msg) => f
+                .try_debug_struct("TryPathBufError::Other")
+                .field("0", msg)
+                .finish(),
+        }
     }
 }
 
@@ -288,7 +310,7 @@ pub(crate) fn inner_push(target: &mut PathBuf, path: &Path) -> Result<(), TryRes
     // `path` has a root but no prefix, e.g., `\windows` (Windows only)
     } else if path.has_root() {
         let prefix_len: usize = prefix.as_ref().map(prefix_len).unwrap_or(0);
-        let current = std::mem::take(target.as_mut_os_string());
+        let current = ::lang_std::mem::take(target.as_mut_os_string());
         // Swap out the string to enable internal access
         let mut current_bytes = current.into_encoded_bytes();
         // The prefix_bytes is always valid
@@ -404,7 +426,7 @@ impl TryPathBuf for PathBuf {
         // OsString::truncate is unstable, so we swap out the bytes, truncate
         // the owned buffer, and reconstruct. At this point reservation has
         // already succeeded, so the following pushes are infallible.
-        let current = std::mem::take(self.as_mut_os_string());
+        let current = ::lang_std::mem::take(self.as_mut_os_string());
         let mut current_bytes = current.into_encoded_bytes();
         current_bytes.truncate(fname_end_offset);
         *self.as_mut_os_string() = unsafe { OsString::from_encoded_bytes_unchecked(current_bytes) };
@@ -446,6 +468,8 @@ impl TryDefault for PathBuf {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::lang_alloc::string::ToString;
+    use crate::lang_std::format;
     use crate::path::TryPath;
 
     // ── Helpers ────────────────────────────────────────────────────────────────

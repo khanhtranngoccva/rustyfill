@@ -224,7 +224,7 @@ impl<'d, 'b, 'f> TryDebugStruct<'b, 'f> {
         self.inner.field(name, &WO(value));
         self
     }
-
+    
     /// Finish building and write the struct to the formatter.
     pub fn finish(&mut self) -> fmt::Result {
         self.inner.finish()

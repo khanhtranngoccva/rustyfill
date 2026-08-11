@@ -6,6 +6,7 @@
 use crate::alloc::AllocError;
 use crate::try_clone::{TryClone, TryCloneError};
 use crate::try_default::{TryDefault, TryDefaultError};
+use crate::lang_alloc::boxed::Box;
 use core::alloc::Layout;
 use core::fmt;
 use core::mem::{self, MaybeUninit};
@@ -148,7 +149,7 @@ mod alloc_inner {
 
         let layout = Layout::new::<T>();
         let ptr = unsafe {
-            let raw = std::alloc::alloc(layout);
+            let raw = ::lang_alloc::alloc::alloc(layout);
             if raw.is_null() {
                 return Err(AllocError { layout });
             }
@@ -164,7 +165,7 @@ mod alloc_inner {
 
         let layout = Layout::new::<T>();
         let ptr = unsafe {
-            let raw = std::alloc::alloc_zeroed(layout);
+            let raw = ::lang_alloc::alloc::alloc_zeroed(layout);
             if raw.is_null() {
                 return Err(AllocError { layout });
             }
@@ -260,6 +261,10 @@ impl<T: crate::try_fmt::TryDebug> crate::try_fmt::TryDebug for Box<T> {
 #[allow(deprecated)]
 mod tests {
     use super::*;
+    use crate::lang_alloc::string::String;
+    use crate::lang_alloc::string::ToString;
+    use crate::lang_alloc::vec;
+    use crate::lang_alloc::vec::Vec;
 
     type PinBoxResult<T> = Result<Pin<Box<T>>, (T, AllocError)>;
 

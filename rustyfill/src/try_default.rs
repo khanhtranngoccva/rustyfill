@@ -18,6 +18,7 @@
 //! proc macro, which requires every field in every variant to also implement `TryDefault`.
 
 use crate::alloc::{AllocError, TryReserveError};
+use crate::try_fmt::{TryDebug, helpers::FormatterExt};
 use core::fmt;
 
 /// Returned when a fallible default construction fails.
@@ -40,6 +41,23 @@ impl fmt::Display for TryDefaultError {
             Self::Reserve(e) => write!(f, "default failed: {}", e),
             Self::Overflow => write!(f, "default failed: capacity calculation overflowed"),
             Self::Other(msg) => write!(f, "default failed: {}", msg),
+        }
+    }
+}
+
+impl TryDebug for TryDefaultError {
+    fn try_fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Alloc(e) => f.try_debug_struct("TryDefaultError::Alloc")
+                .field("0", e)
+                .finish(),
+            Self::Reserve(e) => f.try_debug_struct("TryDefaultError::Reserve")
+                .field("0", e)
+                .finish(),
+            Self::Overflow => f.write_str("TryDefaultError::Overflow"),
+            Self::Other(msg) => f.try_debug_struct("TryDefaultError::Other")
+                .field("0", msg)
+                .finish(),
         }
     }
 }

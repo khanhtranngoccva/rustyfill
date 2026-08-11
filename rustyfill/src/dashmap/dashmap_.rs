@@ -21,9 +21,10 @@ use hashbrown::raw::RawTable;
 use crate::alloc::{AllocError, TryReserveError};
 use crate::prelude::TryDefault;
 use crate::try_clone::{TryClone, TryCloneError};
+use crate::try_fmt::{TryDebug, helpers::FormatterExt};
+use crate::lang_std::cmp::Eq;
+use crate::lang_std::hash::{BuildHasher, Hash, RandomState};
 use core::fmt;
-use std::cmp::Eq;
-use std::hash::{BuildHasher, Hash, RandomState};
 
 type DashMap<K, V, S = RandomState> = dashmap::DashMap<K, V, S>;
 
@@ -96,6 +97,30 @@ impl From<crate::try_default::TryDefaultError> for TryDashMapError {
     }
 }
 
+impl TryDebug for TryDashMapError {
+    fn try_fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Alloc(e) => f
+                .try_debug_struct("TryDashMapError::Alloc")
+                .field("0", e)
+                .finish(),
+            Self::Reserve(e) => f
+                .try_debug_struct("TryDashMapError::Reserve")
+                .field("0", e)
+                .finish(),
+            Self::Clone(e) => f
+                .try_debug_struct("TryDashMapError::Clone")
+                .field("0", e)
+                .finish(),
+            Self::Overflow => f.write_str("TryDashMapError::Overflow"),
+            Self::Other(msg) => f
+                .try_debug_struct("TryDashMapError::Other")
+                .field("0", msg)
+                .finish(),
+        }
+    }
+}
+
 /// Error returned by non-blocking [`TryDashMap`] operations.
 ///
 /// Extends [`TryDashMapError`] with a [`Locked`](Self::Locked) variant for when
@@ -146,6 +171,31 @@ impl From<TryDashMapError> for TryDashMapNonblockError {
     }
 }
 
+impl TryDebug for TryDashMapNonblockError {
+    fn try_fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Alloc(e) => f
+                .try_debug_struct("TryDashMapNonblockError::Alloc")
+                .field("0", e)
+                .finish(),
+            Self::Reserve(e) => f
+                .try_debug_struct("TryDashMapNonblockError::Reserve")
+                .field("0", e)
+                .finish(),
+            Self::Clone(e) => f
+                .try_debug_struct("TryDashMapNonblockError::Clone")
+                .field("0", e)
+                .finish(),
+            Self::Overflow => f.write_str("TryDashMapNonblockError::Overflow"),
+            Self::Other(msg) => f
+                .try_debug_struct("TryDashMapNonblockError::Other")
+                .field("0", msg)
+                .finish(),
+            Self::Locked => f.write_str("TryDashMapNonblockError::Locked"),
+        }
+    }
+}
+
 // ── Trait ─────────────────────────────────────────────────────────────────────
 
 /// A trait for fallible DashMap operations.
@@ -154,7 +204,7 @@ impl From<TryDashMapError> for TryDashMapNonblockError {
 /// `DashMap` methods that can fail due to allocation pressure, returning
 /// [`Result`] values that propagate [`TryDashMapError`] on failure.
 ///
-/// Unlike [`std::collections::HashMap`], `DashMap` is concurrent: mutation
+/// Unlike [`::std::collections::HashMap`], `DashMap` is concurrent: mutation
 /// methods take `&self` and lock individual shards at runtime. These fallible
 /// wrappers pre-reserve capacity on the relevant shard(s) so that the actual
 /// insert does not panic on OOM.
@@ -946,16 +996,16 @@ impl<K: Eq + Hash, V, S: BuildHasher + TryClone> TryDashMap<K, V, S> for DashMap
 
             // Hydrate the new table into the shard slot.
             let old_table = core::mem::replace(&mut *shard, unsafe {
-                std::mem::transmute::<
-                    RawTable<std::mem::ManuallyDrop<ShardEntry<K, V>>>,
+                ::lang_std::mem::transmute::<
+                    RawTable<::lang_std::mem::ManuallyDrop<ShardEntry<K, V>>>,
                     RawTable<ShardEntry<K, V>>,
                 >(new_table)
             });
             // Values were moved out of the old table above, so we need to dehydrate the table.
             let _dehydrated_table = unsafe {
-                std::mem::transmute::<
+                ::lang_std::mem::transmute::<
                     RawTable<ShardEntry<K, V>>,
-                    RawTable<std::mem::ManuallyDrop<ShardEntry<K, V>>>,
+                    RawTable<::lang_std::mem::ManuallyDrop<ShardEntry<K, V>>>,
                 >(old_table)
             };
         }
@@ -1065,6 +1115,10 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::lang_alloc::string::String;
+    use crate::lang_alloc::string::ToString;
+    use crate::lang_alloc::vec;
+    use crate::lang_alloc::vec::Vec;
     use crate::try_default::TryDefault as _;
 
     // ── Construction ─────────────────────────────────────────────────────────
@@ -1084,8 +1138,8 @@ mod tests {
 
     #[test]
     fn try_with_capacity_and_hasher() {
-        use std::collections::hash_map::DefaultHasher;
-        use std::hash::BuildHasherDefault;
+        use crate::lang_std::collections::hash_map::DefaultHasher;
+        use crate::lang_std::hash::BuildHasherDefault;
 
         let hasher = BuildHasherDefault::<DefaultHasher>::default();
         let map: DashMap<&str, i32, _> = DashMap::try_with_capacity_and_hasher(5, hasher).unwrap();
@@ -1578,7 +1632,8 @@ mod tests {
     #[test]
     fn try_extend_empty() {
         let map: DashMap<i32, i32> = DashMap::new();
-        map.try_extend(std::iter::empty::<(i32, i32)>()).unwrap();
+        map.try_extend(::lang_std::iter::empty::<(i32, i32)>())
+            .unwrap();
         assert!(map.is_empty());
     }
 
@@ -1618,18 +1673,17 @@ mod tests {
     #[test]
     fn try_collect_empty() {
         let map: DashMap<i32, i32> =
-            <DashMap<i32, i32> as TryDashMap<_, _, RandomState>>::try_collect(std::iter::empty::<(
-                i32,
-                i32,
-            )>())
+            <DashMap<i32, i32> as TryDashMap<_, _, RandomState>>::try_collect(
+                ::lang_std::iter::empty::<(i32, i32)>(),
+            )
             .unwrap();
         assert!(map.is_empty());
     }
 
     #[test]
     fn try_collect_with_hasher() {
-        use std::collections::hash_map::DefaultHasher;
-        use std::hash::BuildHasherDefault;
+        use crate::lang_std::collections::hash_map::DefaultHasher;
+        use crate::lang_std::hash::BuildHasherDefault;
 
         let hasher = BuildHasherDefault::<DefaultHasher>::default();
         let map: DashMap<i32, i32, _> =

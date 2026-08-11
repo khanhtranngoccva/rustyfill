@@ -20,8 +20,11 @@ use crate::alloc::AllocError;
 use crate::alloc::TryReserveError;
 use crate::try_clone::{TryClone, TryCloneError};
 use crate::try_default::{TryDefault, TryDefaultError};
+use crate::try_fmt::{TryDebug, helpers::FormatterExt};
+use crate::lang_alloc::string::String;
+use crate::lang_alloc::vec::Vec;
+use crate::lang_std::ffi::{OsStr, OsString};
 use core::fmt;
-use std::ffi::{OsStr, OsString};
 
 /// Error returned by [`TryOsString`] operations.
 ///
@@ -65,6 +68,26 @@ impl From<AllocError> for TryOsStringError {
 impl From<TryReserveError> for TryOsStringError {
     fn from(err: TryReserveError) -> Self {
         Self::Reserve(err)
+    }
+}
+
+impl TryDebug for TryOsStringError {
+    fn try_fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Alloc(e) => f
+                .try_debug_struct("TryOsStringError::Alloc")
+                .field("0", e)
+                .finish(),
+            Self::Reserve(e) => f
+                .try_debug_struct("TryOsStringError::Reserve")
+                .field("0", e)
+                .finish(),
+            Self::Overflow => f.write_str("TryOsStringError::Overflow"),
+            Self::Other(msg) => f
+                .try_debug_struct("TryOsStringError::Other")
+                .field("0", msg)
+                .finish(),
+        }
     }
 }
 
@@ -228,7 +251,7 @@ impl TryOsString for OsString {
         // Convert to encoded bytes (Vec<u8>), shrink via TryVec, then convert
         // back. Only the spare capacity portion is reallocated — the OS string
         // data bytes are never copied or revalidated.
-        let mut v = std::mem::replace(self, OsString::new()).into_encoded_bytes();
+        let mut v = ::lang_std::mem::replace(self, OsString::new()).into_encoded_bytes();
         let result = <Vec<u8> as crate::vec::TryVec<u8>>::fallible_shrink_to(&mut v, min_capacity);
         // SAFETY: the bytes originated from a valid OsString via into_encoded_bytes.
         *self = unsafe { OsString::from_encoded_bytes_unchecked(v) };
@@ -280,6 +303,8 @@ impl crate::try_fmt::TryDebug for OsString {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::lang_alloc::string::String;
+    use crate::lang_alloc::vec;
 
     // ── Construction ─────────────────────────────────────────────────────────
 
@@ -415,7 +440,7 @@ mod tests {
         // On Unix, OsString can hold arbitrary bytes.
         #[cfg(unix)]
         {
-            use std::os::unix::ffi::OsStringExt;
+            use crate::lang_std::os::unix::ffi::OsStringExt;
             let s = OsString::from_vec(vec![0xFF, 0xFE]);
             let result = s.try_into_string();
             assert!(result.is_err());

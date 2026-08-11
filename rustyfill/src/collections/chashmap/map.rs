@@ -3,12 +3,13 @@
 use crate::alloc::{AllocError, TryReserveError};
 use crate::try_clone::{TryClone, TryCloneError};
 use crate::try_default::{TryDefault, TryDefaultError};
-use crate::try_fmt::TryDebug;
+use crate::try_fmt::{TryDebug, helpers::FormatterExt};
 use crate::vec::SliceInitGuard;
+use crate::lang_alloc::boxed::Box;
+use crate::lang_std::hash::RandomState;
 use core::borrow::Borrow;
 use core::hash::{BuildHasher, Hash};
 use core::mem::{self, MaybeUninit};
-use std::hash::RandomState;
 
 use super::entry::{Entry, OccupiedEntry, VacantEntry};
 use super::refs::{Ref, RefMut};
@@ -101,6 +102,30 @@ impl From<TryDefaultError> for ConcurrentHashMapError {
     }
 }
 
+impl TryDebug for ConcurrentHashMapError {
+    fn try_fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            Self::Alloc(e) => f
+                .try_debug_struct("ConcurrentHashMapError::Alloc")
+                .field("0", e)
+                .finish(),
+            Self::Reserve(e) => f
+                .try_debug_struct("ConcurrentHashMapError::Reserve")
+                .field("0", e)
+                .finish(),
+            Self::Clone(e) => f
+                .try_debug_struct("ConcurrentHashMapError::Clone")
+                .field("0", e)
+                .finish(),
+            Self::Overflow => f.write_str("ConcurrentHashMapError::Overflow"),
+            Self::Other(msg) => f
+                .try_debug_struct("ConcurrentHashMapError::Other")
+                .field("0", msg)
+                .finish(),
+        }
+    }
+}
+
 /// Error returned by non-blocking [`ConcurrentHashMap`] operations.
 #[derive(Debug)]
 pub enum ConcurrentHashMapNonblockError {
@@ -139,6 +164,31 @@ impl From<ConcurrentHashMapError> for ConcurrentHashMapNonblockError {
             ConcurrentHashMapError::Clone(c) => Self::Clone(c),
             ConcurrentHashMapError::Overflow => Self::Overflow,
             ConcurrentHashMapError::Other(m) => Self::Other(m),
+        }
+    }
+}
+
+impl TryDebug for ConcurrentHashMapNonblockError {
+    fn try_fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            Self::Alloc(e) => f
+                .try_debug_struct("ConcurrentHashMapNonblockError::Alloc")
+                .field("0", e)
+                .finish(),
+            Self::Reserve(e) => f
+                .try_debug_struct("ConcurrentHashMapNonblockError::Reserve")
+                .field("0", e)
+                .finish(),
+            Self::Clone(e) => f
+                .try_debug_struct("ConcurrentHashMapNonblockError::Clone")
+                .field("0", e)
+                .finish(),
+            Self::Overflow => f.write_str("ConcurrentHashMapNonblockError::Overflow"),
+            Self::Other(msg) => f
+                .try_debug_struct("ConcurrentHashMapNonblockError::Other")
+                .field("0", msg)
+                .finish(),
+            Self::Locked => f.write_str("ConcurrentHashMapNonblockError::Locked"),
         }
     }
 }
@@ -251,7 +301,7 @@ impl<K: Eq + Hash, V, S: BuildHasher> ConcurrentHashMap<K, V, S> {
         let shift = usize::BITS - shard_count.trailing_zeros();
         let layout = core::alloc::Layout::array::<Shard<K, V>>(shard_count)
             .map_err(|_| ConcurrentHashMapError::Overflow)?;
-        let ptr = unsafe { std::alloc::alloc(layout) };
+        let ptr = unsafe { ::lang_alloc::alloc::alloc(layout) };
         if ptr.is_null() {
             return Err(ConcurrentHashMapError::Alloc(AllocError { layout }));
         }
@@ -300,7 +350,7 @@ impl<K: Eq + Hash, V, S: BuildHasher> ConcurrentHashMap<K, V, S> {
     /// to the shard array. A typical pattern is to wrap this in an `OnceLock`:
     ///
     /// ```ignore
-    /// use std::sync::OnceLock;
+    /// use ::std::sync::OnceLock;
     /// static MAP: OnceLock<ConcurrentHashMap<Key, Val>> = OnceLock::new();
     ///
     /// MAP.get_or_init(|| unsafe {
@@ -323,7 +373,7 @@ impl<K: Eq + Hash, V, S: BuildHasher> ConcurrentHashMap<K, V, S> {
         let ptr = shards.as_mut_ptr();
         let len = shards.len();
         Self {
-            shards: ShardsStorage::Static(std::ptr::slice_from_raw_parts_mut(ptr, len)),
+            shards: ShardsStorage::Static(::lang_std::ptr::slice_from_raw_parts_mut(ptr, len)),
             hasher,
             shift,
         }
@@ -845,8 +895,12 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::Arc;
-    use std::thread;
+    use crate::lang_alloc::string::String;
+    use crate::lang_alloc::string::ToString;
+    use crate::lang_alloc::vec::Vec;
+    use crate::lang_alloc::vec;
+    use crate::lang_std::sync::Arc;
+    use crate::lang_std::thread;
 
     #[test]
     fn try_new_creates_map() {
@@ -951,7 +1005,7 @@ mod tests {
     #[test]
     fn entry_or_insert_with() {
         let map: ConcurrentHashMap<&str, usize> = ConcurrentHashMap::try_new().unwrap();
-        let called = std::cell::Cell::new(false);
+        let called = ::lang_std::cell::Cell::new(false);
         {
             map.try_entry("b").unwrap().or_insert_with(|| {
                 called.set(true);
@@ -1197,8 +1251,8 @@ mod tests {
 
     #[test]
     fn with_hasher_api() {
-        use std::collections::hash_map::DefaultHasher;
-        use std::hash::BuildHasherDefault;
+        use crate::lang_std::collections::hash_map::DefaultHasher;
+        use crate::lang_std::hash::BuildHasherDefault;
         let hasher = BuildHasherDefault::<DefaultHasher>::default();
         let map: ConcurrentHashMap<&str, i32, _> =
             ConcurrentHashMap::try_with_hasher(hasher).unwrap();
@@ -1208,8 +1262,8 @@ mod tests {
 
     #[test]
     fn with_capacity_and_hasher_api() {
-        use std::collections::hash_map::DefaultHasher;
-        use std::hash::BuildHasherDefault;
+        use crate::lang_std::collections::hash_map::DefaultHasher;
+        use crate::lang_std::hash::BuildHasherDefault;
         let hasher = BuildHasherDefault::<DefaultHasher>::default();
         let map: ConcurrentHashMap<&str, i32, _> =
             ConcurrentHashMap::try_with_capacity_and_hasher(50, hasher).unwrap();

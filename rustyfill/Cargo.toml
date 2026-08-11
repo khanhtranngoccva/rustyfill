@@ -7,44 +7,65 @@ edition = "2024"
 dashmap = { workspace = true, optional = true }
 rustyfill-macros = { workspace = true }
 hashbrown = { workspace = true }
-libc = { workspace = true }
+libc = { workspace = true, optional = true }
 once_cell = { workspace = true }
 parking_lot = { workspace = true }
 crossbeam-utils = { workspace = true }
 rustversion = { workspace = true }
 
+[target.'cfg(not(target_os = "hermit"))'.dependencies]
+getrandom = { workspace = true, optional = true }
+
 [target.'cfg(target_os = "motor")'.dependencies]
-moto-rt = { workspace = true }
+moto-rt = { workspace = true, optional = true }
 
 [target.'cfg(target_os = "hermit")'.dependencies]
-hermit-abi = { workspace = true }
+hermit-abi = { workspace = true, optional = true }
 
 [target.'cfg(all(target_os = "wasi", target_env = "p1"))'.dependencies]
-wasip1 = { workspace = true }
+wasip1 = { workspace = true, optional = true }
 
 [target.'cfg(all(target_os = "wasi", target_env = "p2"))'.dependencies]
-wasip2 = { workspace = true }
+wasip2 = { workspace = true, optional = true }
 
 [target.'cfg(all(target_os = "wasi", target_env = "p3"))'.dependencies]
-wasip3 = { workspace = true }
+wasip3 = { workspace = true, optional = true }
 
 [target.'cfg(target_os = "uefi")'.dependencies]
-r-efi = { workspace = true }
-r-efi-alloc = { workspace = true }
+r-efi = { workspace = true, optional = true }
+r-efi-alloc = { workspace = true, optional = true }
 
 [features]
+default = ["std"]
+# Enables `std` support. When disabled, the crate is `no_std` (with `alloc`).
+# Gates access to `std::collections::TryReserveError`, `std::hash::RandomState`,
+# `std::io` error types, path/FFI string wrappers, and other std-dependent APIs.
+std = [
+    "dep:getrandom",
+    "dep:libc",
+    "dep:moto-rt",
+    "dep:hermit-abi",
+    "dep:wasip1",
+    "dep:wasip2",
+    "dep:wasip3",
+    "dep:r-efi",
+    "dep:r-efi-alloc",
+    "once_cell/default",
+    "parking_lot/default",
+    "crossbeam-utils/default",
+]
 # Deprecated: enables the B-tree map/set fallible wrappers which rely on
 # `catch_unwind`. This approach cannot survive genuine OOM because
 # `handle_alloc_error` calls `abort()` rather than panicking, so `catch_unwind`
 # never catches anything. Use the `scapegoat` crate for fallible trees instead.
 # Retained for backward compatibility only. Requires `panic = "unwind"` (the
 # default); the build script errors if enabled under `panic = "abort"`.
-panic = []
+panic = ["std"]
 # Enables DashMap/DashSet wrappers. These do NOT guarantee panic-free behavior:
 # `DashMap::new()` implicitly allocates shards and has no fallible constructor,
 # so construction can still panic under memory pressure. Only enable this if you
 # accept that limitation and want the fallible mutation APIs on top.
-unstable = ["dep:dashmap"]
+unstable = ["dep:dashmap", "std"]
 
 [dev-dependencies]
 no-panic = { workspace = true }

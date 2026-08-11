@@ -23,6 +23,15 @@ pub enum ItemKind {
     OpaqueAttachment,
 }
 
+/// `ItemKind` is a simple enum with no inner data — Debug delegates to enum
+/// discriminant printing, which never allocates. Safe full passthrough.
+impl TryDebug for ItemKind {
+    #[inline]
+    fn try_fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        fmt::Debug::fmt(self, f)
+    }
+}
+
 // ── ItemImpl ────────────────────────────────────────────────────────────────
 
 /// Common trait implemented by every concrete item type.

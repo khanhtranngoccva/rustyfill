@@ -20,7 +20,7 @@
 //! for [`RandomState`] in [`crate::hashers`].
 
 use crate::sys::random::hashmap_random_keys_infallible;
-use std::hash::RandomState;
+use crate::lang_std::hash::RandomState;
 
 /// Extension trait for infallible [`RandomState`] construction.
 ///
@@ -32,8 +32,8 @@ use std::hash::RandomState;
 ///
 /// ```
 /// use rustyfill::TryRandomState;
-/// use std::hash::RandomState;
-/// use std::collections::HashMap;
+/// use ::std::hash::RandomState;
+/// use ::std::collections::HashMap;
 ///
 /// // Infallible: never panics, even if /dev/urandom is unreadable.
 /// let state = RandomState::try_new_infallible();
@@ -70,8 +70,9 @@ impl TryRandomState for RandomState {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::collections::HashSet;
-    use std::hash::{BuildHasher, Hasher};
+    use crate::lang_alloc::vec::Vec;
+    use crate::lang_std::collections::HashSet;
+    use crate::lang_std::hash::{BuildHasher, Hasher};
 
     #[test]
     fn try_new_infallible_produces_valid_state() {
@@ -97,8 +98,8 @@ mod tests {
     #[test]
     fn try_new_infallible_works_with_hashmap() {
         let state = RandomState::try_new_infallible();
-        let mut map: std::collections::HashMap<&str, i32> =
-            std::collections::HashMap::with_hasher(state);
+        let mut map: ::lang_std::collections::HashMap<&str, i32> =
+            ::lang_std::collections::HashMap::with_hasher(state);
         map.insert("alpha", 1);
         map.insert("beta", 2);
         assert_eq!(map["alpha"], 1);
@@ -152,7 +153,7 @@ mod tests {
     #[test]
     fn try_new_infallible_stress_diversity() {
         // Check that consecutive calls yield diverse seeds by hashing the same value.
-        let hashes: std::collections::HashSet<u64> = (0..50)
+        let hashes: ::lang_std::collections::HashSet<u64> = (0..50)
             .map(|_| RandomState::try_new_infallible().hash_one(12345u64))
             .collect();
 

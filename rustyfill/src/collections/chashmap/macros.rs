@@ -81,7 +81,7 @@ macro_rules! declare_concurrent_hash_map {
             once_cell::sync::Lazy::new({
                 || {
                     use $crate::TryRandomState;
-                    use std::hash::RandomState;
+                    use $crate::lang_std::hash::RandomState;
 
                     mod __inner {
                         use $crate::collections::chashmap::Shard;

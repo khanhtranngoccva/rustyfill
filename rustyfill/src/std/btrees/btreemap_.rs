@@ -11,7 +11,7 @@
 //! on out-of-memory. Read-only accessors delegate directly to `BTreeMap`.
 //!
 //! Because `BTreeMap::try_reserve` does not exist, these methods internally
-//! use [`std::panic::catch_unwind`] to intercept allocation panics from the
+//! use [`::lang_std::panic::catch_unwind`] to intercept allocation panics from the
 //! B-tree's internal node allocator. This means `K` and `V` must be
 //! [`RefUnwindSafe`](core::panic::RefUnwindSafe) for the fallible mutation methods.
 //!
@@ -21,11 +21,12 @@
 
 use crate::alloc::{AllocError, PayloadBox};
 use crate::try_clone::TryCloneError;
+use crate::try_fmt::{TryDebug, helpers::FormatterExt};
+use crate::lang_std::collections::BTreeMap;
+use crate::lang_std::panic::{AssertUnwindSafe, RefUnwindSafe, catch_unwind};
 use core::fmt;
 use core::mem::ManuallyDrop;
 use core::ptr;
-use std::collections::BTreeMap;
-use std::panic::{AssertUnwindSafe, RefUnwindSafe, catch_unwind};
 
 // ── Error type ────────────────────────────────────────────────────────────────
 
@@ -78,7 +79,28 @@ impl From<TryCloneError> for TryBTreeMapError {
     }
 }
 
-// ── Trait ─────────────────────────────────────────────────────────────────────
+impl TryDebug for TryBTreeMapError {
+    fn try_fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Alloc(e) => f
+                .try_debug_struct("TryBTreeMapError::Alloc")
+                .field("0", e)
+                .finish(),
+            Self::AllocPanic(p) => f
+                .try_debug_struct("TryBTreeMapError::AllocPanic")
+                .field("0", p)
+                .finish(),
+            Self::Clone(e) => f
+                .try_debug_struct("TryBTreeMapError::Clone")
+                .field("0", e)
+                .finish(),
+            Self::Other(msg) => f
+                .try_debug_struct("TryBTreeMapError::Other")
+                .field("0", msg)
+                .finish(),
+        }
+    }
+}
 
 /// A trait for fallible B-tree map operations.
 ///
@@ -89,13 +111,13 @@ impl From<TryCloneError> for TryBTreeMapError {
 /// # Note
 ///
 /// Because `BTreeMap::try_reserve` does not exist, mutation methods use
-/// [`std::panic::catch_unwind`] internally to intercept OOM panics.
+/// [`::std::panic::catch_unwind`] internally to intercept OOM panics.
 /// This is only possible due to the BTreeMap itself being UnwindSafe. Keys and
 /// values must be [`RefUnwindSafe`] for these methods.
 ///
 /// # Note on `try_insert`
 ///
-/// The inherent [`BTreeMap::try_insert`](std::collections::BTreeMap::try_insert) on
+/// The inherent [`BTreeMap::try_insert`](::std::collections::BTreeMap::try_insert) on
 /// nightly Rust returns `Err(old_value)` when a key already exists, but may *panic*
 /// on allocation failure. Our [`Self::try_insert`] catches allocation panics so it
 /// never propagates one — it returns [`TryBTreeMapError::AllocPanic`] instead, but it
@@ -164,13 +186,13 @@ pub trait TryBTreeMap<K, V>: Sized {
     /// that inserting through the entry will not allocate again. The entry API
     /// itself may still panic on OOM after this method returns `Ok`.
     ///
-    /// [`Entry`]: std::collections::btree_map::Entry
-    /// [`Entry::or_insert`]: std::collections::btree_map::Entry::or_insert
-    /// [`Entry::and_modify`]: std::collections::btree_map::Entry::and_modify
+    /// [`Entry`]: ::std::collections::btree_map::Entry
+    /// [`Entry::or_insert`]: ::std::collections::btree_map::Entry::or_insert
+    /// [`Entry::and_modify`]: ::std::collections::btree_map::Entry::and_modify
     fn try_entry<'a>(
         &'a mut self,
         key: K,
-    ) -> Result<std::collections::btree_map::Entry<'a, K, V>, TryBTreeMapError>
+    ) -> Result<::lang_std::collections::btree_map::Entry<'a, K, V>, TryBTreeMapError>
     where
         K: Ord + RefUnwindSafe,
         V: RefUnwindSafe;
@@ -233,7 +255,7 @@ pub trait TryBTreeMap<K, V>: Sized {
     fn fallible_entry<'a>(
         &'a mut self,
         key: K,
-    ) -> Result<std::collections::btree_map::Entry<'a, K, V>, TryBTreeMapError>
+    ) -> Result<::lang_std::collections::btree_map::Entry<'a, K, V>, TryBTreeMapError>
     where
         K: Ord + RefUnwindSafe,
         V: RefUnwindSafe,
@@ -440,7 +462,7 @@ impl<K: Ord + RefUnwindSafe, V: RefUnwindSafe> TryBTreeMap<K, V> for BTreeMap<K,
     fn try_entry<'a>(
         &'a mut self,
         key: K,
-    ) -> Result<std::collections::btree_map::Entry<'a, K, V>, TryBTreeMapError>
+    ) -> Result<::lang_std::collections::btree_map::Entry<'a, K, V>, TryBTreeMapError>
     where
         K: Ord + RefUnwindSafe,
         V: RefUnwindSafe,
@@ -574,6 +596,13 @@ impl<K, V> crate::try_default::TryDefault for BTreeMap<K, V> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    use crate::lang_alloc::boxed::Box;
+    use crate::lang_alloc::format;
+    use crate::lang_alloc::string::String;
+    use crate::lang_alloc::string::ToString;
+    use crate::lang_alloc::vec;
+    use crate::lang_alloc::vec::Vec;
     use crate::try_clone::TryClone;
     use crate::try_default::TryDefault;
 
@@ -706,12 +735,12 @@ mod tests {
         }
         impl Eq for DroppedKey {}
         impl PartialOrd for DroppedKey {
-            fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+            fn partial_cmp(&self, other: &Self) -> Option<::lang_std::cmp::Ordering> {
                 Some(self.cmp(other))
             }
         }
         impl Ord for DroppedKey {
-            fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+            fn cmp(&self, other: &Self) -> ::lang_std::cmp::Ordering {
                 self.0.cmp(&other.0)
             }
         }
@@ -741,14 +770,14 @@ mod tests {
         // Verify the returned old value is valid and gets dropped correctly.
         assert!(old.is_some());
         let old_val = old.unwrap();
-        assert_eq!(*old_val.0, vec![1, 2, 3]);
+        assert_eq!(*old_val.0, [1u8, 2, 3]);
         // old_val drops here, freeing its Box<Vec<u8>>.
 
         // Verify the current entry has the new value.
         let cur_key = map.keys().next().unwrap();
         assert_eq!(*cur_key.0, 42);
         let cur_val = map.values().next().unwrap();
-        assert_eq!(*cur_val.0, vec![4, 5, 6]);
+        assert_eq!(*cur_val.0, [4u8, 5, 6]);
 
         // map drops here — the remaining entry's Box<u64> key and Box<Vec<u8>>
         // value must be freed exactly once.
@@ -766,12 +795,12 @@ mod tests {
         }
         impl Eq for TrackedKey {}
         impl PartialOrd for TrackedKey {
-            fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+            fn partial_cmp(&self, other: &Self) -> Option<::lang_std::cmp::Ordering> {
                 Some(self.cmp(other))
             }
         }
         impl Ord for TrackedKey {
-            fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+            fn cmp(&self, other: &Self) -> ::lang_std::cmp::Ordering {
                 self.0.cmp(&other.0)
             }
         }
@@ -833,7 +862,8 @@ mod tests {
     #[test]
     fn try_extend_empty() {
         let mut map: BTreeMap<i32, i32> = BTreeMap::new();
-        map.try_extend(std::iter::empty::<(i32, i32)>()).unwrap();
+        map.try_extend(::lang_std::iter::empty::<(i32, i32)>())
+            .unwrap();
         assert!(map.is_empty());
     }
 
@@ -883,7 +913,7 @@ mod tests {
     #[test]
     fn try_collect_empty() {
         let map: BTreeMap<i32, i32> = <BTreeMap<i32, i32> as TryBTreeMap<_, _>>::try_collect(
-            std::iter::empty::<(i32, i32)>(),
+            ::lang_std::iter::empty::<(i32, i32)>(),
         )
         .unwrap();
         assert!(map.is_empty());
@@ -930,7 +960,9 @@ mod tests {
         let mut map: BTreeMap<String, Vec<Vec<u8>>> = BTreeMap::new();
         map.insert("nested".to_string(), vec![vec![1, 2], vec![3]]);
         let c = map.try_clone().unwrap();
-        assert_eq!(c["nested"], vec![vec![1, 2], vec![3]]);
+        assert_eq!(c["nested"].len(), 2);
+        assert_eq!(c["nested"][0], [1u8, 2]);
+        assert_eq!(c["nested"][1], [3u8]);
     }
 
     // ── TryDefault ───────────────────────────────────────────────────────────

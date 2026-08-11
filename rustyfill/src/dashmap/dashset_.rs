@@ -7,10 +7,11 @@ use crate::alloc::{AllocError, TryReserveError};
 use crate::dashmap::TryDashMap;
 use crate::prelude::{TryClone, TryDefault};
 use crate::try_clone::TryCloneError;
+use crate::try_fmt::{TryDebug, helpers::FormatterExt};
+use crate::lang_std::cmp::Eq;
+use crate::lang_std::hash::{BuildHasher, Hash, RandomState};
+use core::alloc::Layout;
 use core::fmt;
-use std::alloc::Layout;
-use std::cmp::Eq;
-use std::hash::{BuildHasher, Hash, RandomState};
 
 type DashMap<K, V, S = RandomState> = dashmap::DashMap<K, V, S>;
 type DashSet<T, S = RandomState> = dashmap::DashSet<T, S>;
@@ -68,6 +69,30 @@ impl From<crate::try_default::TryDefaultError> for TryDashSetError {
             crate::try_default::TryDefaultError::Reserve(e) => Self::Reserve(e),
             crate::try_default::TryDefaultError::Overflow => Self::Overflow,
             crate::try_default::TryDefaultError::Other(msg) => Self::Other(msg),
+        }
+    }
+}
+
+impl TryDebug for TryDashSetError {
+    fn try_fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Alloc(e) => f
+                .try_debug_struct("TryDashSetError::Alloc")
+                .field("0", e)
+                .finish(),
+            Self::Reserve(e) => f
+                .try_debug_struct("TryDashSetError::Reserve")
+                .field("0", e)
+                .finish(),
+            Self::Clone(e) => f
+                .try_debug_struct("TryDashSetError::Clone")
+                .field("0", e)
+                .finish(),
+            Self::Overflow => f.write_str("TryDashSetError::Overflow"),
+            Self::Other(msg) => f
+                .try_debug_struct("TryDashSetError::Other")
+                .field("0", msg)
+                .finish(),
         }
     }
 }
@@ -257,13 +282,13 @@ fn convert_ref<T, S>(set: &DashSet<T, S>) -> &DashMap<T, (), S> {
         assert!(map_layout.size() == set_layout.size());
         assert!(map_layout.align() == set_layout.align());
     };
-    unsafe { std::mem::transmute(set) }
+    unsafe { ::lang_std::mem::transmute(set) }
 }
 
 /// Mutable variant of [`convert_ref`].
 fn convert_mut<T, S>(set: &mut DashSet<T, S>) -> &mut DashMap<T, (), S> {
     // SAFETY: Same layout guarantees as [`convert_ref`], extended to mutable references.
-    unsafe { std::mem::transmute(set) }
+    unsafe { ::lang_std::mem::transmute(set) }
 }
 
 impl<T: Eq + Hash, S: BuildHasher + TryClone> TryDashSet<T, S> for DashSet<T, S> {
@@ -448,6 +473,9 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::lang_alloc::string::String;
+    use crate::lang_alloc::string::ToString;
+    use crate::lang_alloc::vec;
     use crate::try_clone::TryClone as _;
     use crate::try_default::TryDefault as _;
 
@@ -528,7 +556,7 @@ mod tests {
     #[test]
     fn try_extend_empty() {
         let set: DashSet<i32> = DashSet::new();
-        set.try_extend(std::iter::empty::<i32>()).unwrap();
+        set.try_extend(::lang_std::iter::empty::<i32>()).unwrap();
         assert!(set.is_empty());
     }
 
@@ -557,9 +585,10 @@ mod tests {
 
     #[test]
     fn try_collect_empty() {
-        let set: DashSet<i32> =
-            <DashSet<i32> as TryDashSet<_, RandomState>>::try_collect(std::iter::empty::<i32>())
-                .unwrap();
+        let set: DashSet<i32> = <DashSet<i32> as TryDashSet<_, RandomState>>::try_collect(
+            ::lang_std::iter::empty::<i32>(),
+        )
+        .unwrap();
         assert!(set.is_empty());
     }
 

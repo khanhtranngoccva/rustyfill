@@ -5,7 +5,7 @@
 
 use crate::try_to_owned::{TryToOwned, TryToOwnedError};
 use crate::vec::{TrySlice, TryVecError};
-use std::ffi::{CStr, CString};
+use crate::lang_std::ffi::{CStr, CString};
 
 impl TryToOwned for CStr {
     fn try_to_owned(&self) -> Result<CString, TryToOwnedError> {
@@ -79,7 +79,7 @@ mod tests {
     #[test]
     fn try_to_owned_matches_std() {
         let c = c"rust test";
-        let expected = <CStr as std::borrow::ToOwned>::to_owned(c);
+        let expected = <CStr as ::lang_std::borrow::ToOwned>::to_owned(c);
         let actual: CString = c.try_to_owned().unwrap();
         assert_eq!(actual, expected);
     }
@@ -87,7 +87,7 @@ mod tests {
     #[test]
     fn try_to_owned_implies_to_owned_bound() {
         let c = c"test";
-        let owned: CString = <CStr as std::borrow::ToOwned>::to_owned(c);
+        let owned: CString = <CStr as ::lang_std::borrow::ToOwned>::to_owned(c);
         assert_eq!(owned.to_str().unwrap(), "test");
     }
 }

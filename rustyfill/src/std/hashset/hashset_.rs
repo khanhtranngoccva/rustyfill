@@ -2,7 +2,7 @@
 //!
 //! Provides the [`TryHashSet`] trait with methods that mirror common `HashSet`
 //! constructors and mutating operations but return [`Result`] to handle allocation
-//! failures gracefully, using [`std::collections::TryReserveError`] as the primary
+//! failures gracefully, using [`::lang_std::collections::TryReserveError`] as the primary
 //! error type.
 //!
 //! # Design
@@ -19,10 +19,11 @@ use crate::alloc::AllocError;
 use crate::alloc::TryReserveError;
 use crate::try_clone::{TryClone, TryCloneError};
 use crate::try_default::{TryDefault, TryDefaultError};
+use crate::try_fmt::{TryDebug, helpers::FormatterExt};
+use crate::lang_std::cmp::Eq;
+use crate::lang_std::collections::HashSet;
+use crate::lang_std::hash::{BuildHasher, Hash, RandomState};
 use core::fmt;
-use std::cmp::Eq;
-use std::collections::HashSet;
-use std::hash::{BuildHasher, Hash, RandomState};
 
 // ── Error type ────────────────────────────────────────────────────────────────
 
@@ -79,6 +80,30 @@ impl From<TryCloneError> for TryHashSetError {
     }
 }
 
+impl TryDebug for TryHashSetError {
+    fn try_fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Alloc(e) => f
+                .try_debug_struct("TryHashSetError::Alloc")
+                .field("0", e)
+                .finish(),
+            Self::Reserve(e) => f
+                .try_debug_struct("TryHashSetError::Reserve")
+                .field("0", e)
+                .finish(),
+            Self::Clone(e) => f
+                .try_debug_struct("TryHashSetError::Clone")
+                .field("0", e)
+                .finish(),
+            Self::Overflow => f.write_str("TryHashSetError::Overflow"),
+            Self::Other(msg) => f
+                .try_debug_struct("TryHashSetError::Other")
+                .field("0", msg)
+                .finish(),
+        }
+    }
+}
+
 impl From<TryDefaultError> for TryHashSetError {
     fn from(err: TryDefaultError) -> Self {
         match err {
@@ -90,8 +115,8 @@ impl From<TryDefaultError> for TryHashSetError {
     }
 }
 
-impl From<std::collections::TryReserveError> for TryHashSetError {
-    fn from(e: std::collections::TryReserveError) -> Self {
+impl From<::lang_std::collections::TryReserveError> for TryHashSetError {
+    fn from(e: ::lang_std::collections::TryReserveError) -> Self {
         Self::Reserve(TryReserveError::from(e))
     }
 }
@@ -572,7 +597,11 @@ impl<T: crate::try_fmt::TryDebug, S> crate::try_fmt::TryDebug for HashSet<T, S> 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::hash::RandomState;
+    use crate::lang_alloc::string::String;
+    use crate::lang_alloc::string::ToString;
+    use crate::lang_alloc::vec;
+    use crate::lang_alloc::vec::Vec;
+    use crate::lang_std::hash::RandomState;
 
     // ── Construction ─────────────────────────────────────────────────────────
 
@@ -591,8 +620,8 @@ mod tests {
 
     #[test]
     fn try_with_capacity_and_hasher() {
-        use std::collections::hash_map::DefaultHasher;
-        use std::hash::BuildHasherDefault;
+        use crate::lang_std::collections::hash_map::DefaultHasher;
+        use crate::lang_std::hash::BuildHasherDefault;
 
         let hasher = BuildHasherDefault::<DefaultHasher>::default();
         let set: HashSet<&str, _> = HashSet::try_with_capacity_and_hasher(5, hasher).unwrap();
@@ -667,7 +696,7 @@ mod tests {
     #[test]
     fn try_extend_empty() {
         let mut set: HashSet<i32> = HashSet::new();
-        set.try_extend(std::iter::empty::<i32>()).unwrap();
+        set.try_extend(::lang_std::iter::empty::<i32>()).unwrap();
         assert!(set.is_empty());
     }
 
@@ -751,9 +780,10 @@ mod tests {
 
     #[test]
     fn try_collect_empty() {
-        let set: HashSet<i32> =
-            <HashSet<i32> as TryHashSet<_, RandomState>>::try_collect(std::iter::empty::<i32>())
-                .unwrap();
+        let set: HashSet<i32> = <HashSet<i32> as TryHashSet<_, RandomState>>::try_collect(
+            ::lang_std::iter::empty::<i32>(),
+        )
+        .unwrap();
         assert!(set.is_empty());
     }
 
@@ -775,8 +805,8 @@ mod tests {
 
     #[test]
     fn try_collect_with_hasher() {
-        use std::collections::hash_map::DefaultHasher;
-        use std::hash::BuildHasherDefault;
+        use crate::lang_std::collections::hash_map::DefaultHasher;
+        use crate::lang_std::hash::BuildHasherDefault;
 
         let hasher = BuildHasherDefault::<DefaultHasher>::default();
         let set: HashSet<i32, _> = HashSet::try_collect_with_hasher([1, 2, 3], hasher).unwrap();
@@ -820,8 +850,8 @@ mod tests {
 
     #[test]
     fn try_default_set_with_custom_hasher() {
-        use std::collections::hash_map::DefaultHasher;
-        use std::hash::BuildHasherDefault;
+        use crate::lang_std::collections::hash_map::DefaultHasher;
+        use crate::lang_std::hash::BuildHasherDefault;
 
         let set: HashSet<i32, BuildHasherDefault<DefaultHasher>> = HashSet::try_default().unwrap();
         assert!(set.is_empty());

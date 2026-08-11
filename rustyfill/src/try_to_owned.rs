@@ -11,9 +11,10 @@
 //! Implementors must ensure `try_to_owned` never panics — allocation failures are
 //! returned as errors instead.
 
+use crate::lang_alloc::borrow::ToOwned;
 use crate::alloc::{AllocError, TryReserveError};
 use crate::try_clone::TryCloneError;
-use std::borrow::ToOwned;
+use crate::try_fmt::{TryDebug, helpers::FormatterExt};
 
 /// Error returned by [`TryToOwned::try_to_owned`].
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -39,6 +40,24 @@ impl core::fmt::Display for TryToOwnedError {
     }
 }
 
+impl TryDebug for TryToOwnedError {
+    fn try_fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            Self::Alloc(e) => f.try_debug_struct("TryToOwnedError::Alloc")
+                .field("0", e)
+                .finish(),
+            Self::Reserve(e) => f.try_debug_struct("TryToOwnedError::Reserve")
+                .field("0", e)
+                .finish(),
+            Self::Overflow => f.write_str("TryToOwnedError::Overflow"),
+            Self::Other(msg) => f.try_debug_struct("TryToOwnedError::Other")
+                .field("0", msg)
+                .finish(),
+        }
+    }
+}
+
+#[cfg(feature = "std")]
 impl core::error::Error for TryToOwnedError {
     fn source(&self) -> Option<&(dyn core::error::Error + 'static)> {
         match self {
@@ -60,8 +79,9 @@ impl From<TryReserveError> for TryToOwnedError {
     }
 }
 
-impl From<std::collections::TryReserveError> for TryToOwnedError {
-    fn from(err: std::collections::TryReserveError) -> Self {
+#[cfg(feature = "std")]
+impl From<::lang_std::collections::TryReserveError> for TryToOwnedError {
+    fn from(err: ::lang_std::collections::TryReserveError) -> Self {
         Self::Reserve(TryReserveError::from(err))
     }
 }

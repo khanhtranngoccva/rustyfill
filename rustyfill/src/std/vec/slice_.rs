@@ -10,6 +10,8 @@ use crate::alloc::AllocError;
 use crate::try_clone::{TryClone, TryCloneError};
 use crate::try_default::{TryDefault, TryDefaultError};
 use crate::try_to_owned::{TryToOwned, TryToOwnedError};
+use crate::lang_alloc::boxed::Box;
+use crate::lang_alloc::vec::Vec;
 use core::alloc::Layout;
 use core::mem::{self, MaybeUninit};
 use core::ptr::{self, NonNull};
@@ -186,7 +188,7 @@ impl<T: TryClone> TryClone for Box<[T]> {
 
         // Allocate exactly `len` elements — no excess capacity, no shrinking.
         let layout = Layout::array::<T>(len).map_err(|_| TryCloneError::Overflow)?;
-        let ptr = unsafe { std::alloc::alloc(layout) };
+        let ptr = unsafe { ::lang_alloc::alloc::alloc(layout) };
         if ptr.is_null() {
             return Err(TryCloneError::Alloc(AllocError { layout }));
         }
@@ -234,6 +236,8 @@ impl<T> TryDefault for Box<[T]> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::lang_alloc::borrow::ToOwned;
+    use crate::lang_alloc::vec;
 
     #[test]
     fn try_to_vec_empty() {
@@ -260,7 +264,9 @@ mod tests {
     fn try_to_vec_with_nested_vecs() {
         let s: &[Vec<u8>] = &[vec![1, 2], vec![3]];
         let v: Vec<Vec<u8>> = s.try_to_vec().unwrap();
-        assert_eq!(v, [vec![1, 2], vec![3]]);
+        assert_eq!(v.len(), 2);
+        assert_eq!(v[0], [1u8, 2]);
+        assert_eq!(v[1], [3u8]);
     }
 
     #[test]
@@ -274,7 +280,10 @@ mod tests {
     fn try_to_vec_deeply_nested() {
         let s: &[Vec<Vec<u8>>] = &[vec![vec![1]], vec![vec![2], vec![3]]];
         let v: Vec<Vec<Vec<u8>>> = s.try_to_vec().unwrap();
-        assert_eq!(v, [vec![vec![1]], vec![vec![2], vec![3]]]);
+        assert_eq!(v.len(), 2);
+        assert_eq!(v[0][0], [1u8]);
+        assert_eq!(v[1][0], [2u8]);
+        assert_eq!(v[1][1], [3u8]);
     }
 
     #[test]

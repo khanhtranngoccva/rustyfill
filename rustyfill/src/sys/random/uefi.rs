@@ -23,7 +23,7 @@ pub fn fill_bytes(bytes: &mut [u8]) -> Result<(), RandomError> {
         return Ok(());
     }
 
-    Err(RandomError::Platform(std::borrow::Cow::Borrowed(
+    Err(RandomError::Platform(::lang_std::borrow::Cow::Borrowed(
         "no random source available on UEFI",
     )))
 }
@@ -38,7 +38,7 @@ mod rng_protocol {
     pub(crate) fn fill_bytes(bytes: &mut [u8]) -> bool {
         use super::super::uefi_helpers as helpers;
         use r_efi::protocols::rng;
-        use std::ptr;
+        use core::ptr;
 
         if let Ok(handles) = helpers::locate_handles(rng::PROTOCOL_GUID) {
             for handle in handles {
@@ -82,7 +82,7 @@ mod rdrand {
         }
     }
 
-    static RDRAND_GOOD: std::sync::LazyLock<bool> = std::sync::LazyLock::new(is_rdrand_good);
+    static RDRAND_GOOD: ::lang_std::sync::LazyLock<bool> = ::lang_std::sync::LazyLock::new(is_rdrand_good);
 
     // Recommendation from "Intel® Digital Random Number Generator (DRNG) Software
     // Implementation Guide" - Section 5.2.1 and "Intel® 64 and IA-32 Architectures

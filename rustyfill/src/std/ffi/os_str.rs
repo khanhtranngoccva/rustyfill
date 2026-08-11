@@ -6,8 +6,9 @@
 //! for consistency with [`TryOsString`](super::os_string::TryOsString).
 
 use crate::alloc::{AllocError, TryReserveError};
+use crate::try_fmt::{TryDebug, helpers::FormatterExt};
 use core::fmt;
-use std::ffi::{OsStr, OsString};
+use crate::lang_std::ffi::{OsStr, OsString};
 
 /// Error returned by [`TryOsStr`] operations.
 #[derive(Debug)]
@@ -44,6 +45,23 @@ impl From<AllocError> for TryOsStrError {
 impl From<TryReserveError> for TryOsStrError {
     fn from(err: TryReserveError) -> Self {
         Self::Reserve(err)
+    }
+}
+
+impl TryDebug for TryOsStrError {
+    fn try_fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Alloc(e) => f.try_debug_struct("TryOsStrError::Alloc")
+                .field("0", e)
+                .finish(),
+            Self::Reserve(e) => f.try_debug_struct("TryOsStrError::Reserve")
+                .field("0", e)
+                .finish(),
+            Self::Overflow => f.write_str("TryOsStrError::Overflow"),
+            Self::Other(msg) => f.try_debug_struct("TryOsStrError::Other")
+                .field("0", msg)
+                .finish(),
+        }
     }
 }
 
@@ -160,18 +178,18 @@ impl crate::try_fmt::TryDebug for OsStr {
 }
 
 // ---------------------------------------------------------------------------
-// TryDebug + TryDisplay for std::ffi::os_str::Display<'_>
+// TryDebug + TryDisplay for ::lang_std::ffi::os_str::Display<'_>
 // ---------------------------------------------------------------------------
-// std::ffi::os_str::Display's canonical Debug and Display impls write the OsStr
+// ::lang_std::ffi::os_str::Display's canonical Debug and Display impls write the OsStr
 // to the formatter without allocating. Safe to passthrough.
 
-impl crate::try_fmt::TryDebug for std::ffi::os_str::Display<'_> {
+impl crate::try_fmt::TryDebug for ::lang_std::ffi::os_str::Display<'_> {
     fn try_fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         fmt::Debug::fmt(self, f)
     }
 }
 
-impl crate::try_fmt::TryDisplay for std::ffi::os_str::Display<'_> {
+impl crate::try_fmt::TryDisplay for ::lang_std::ffi::os_str::Display<'_> {
     fn try_fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         fmt::Display::fmt(self, f)
     }
@@ -338,7 +356,7 @@ mod tests {
     #[test]
     fn try_to_owned_implies_to_owned_bound() {
         let s = OsStr::new("test");
-        let owned: OsString = <OsStr as std::borrow::ToOwned>::to_owned(s);
+        let owned: OsString = <OsStr as ::lang_std::borrow::ToOwned>::to_owned(s);
         assert_eq!(owned, OsString::from("test"));
     }
 }

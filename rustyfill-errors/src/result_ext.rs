@@ -63,7 +63,7 @@ pub trait ResultExt<T, E> {
     #[allow(clippy::result_large_err)]
     fn change_context<U>(self, context: U) -> Result<T, Report<U>>
     where
-        U: Error + Send + Sync + 'static;
+        U: Error + TryDebug + TryDisplay + Send + Sync + 'static;
 
     /// Lazily evaluates and changes the current context if this result is an
     /// error. The closure receives no arguments and returns the new context.
@@ -71,7 +71,7 @@ pub trait ResultExt<T, E> {
     #[allow(clippy::result_large_err)]
     fn change_context_lazy<U, F>(self, f: F) -> Result<T, Report<U>>
     where
-        U: Error + Send + Sync + 'static,
+        U: Error + TryDebug + TryDisplay + Send + Sync + 'static,
         F: FnOnce() -> U;
 
     /// Changes the current context using the map_err like syntax if this result is an error.
@@ -82,7 +82,7 @@ pub trait ResultExt<T, E> {
     #[allow(clippy::result_large_err)]
     fn change_context_adaptive<U, F>(self, f: F) -> Result<T, Report<U>>
     where
-        U: Error + Send + Sync + 'static,
+        U: Error + TryDebug + TryDisplay + Send + Sync + 'static,
         F: FnOnce(&mut Report<E>) -> U;
 }
 
@@ -135,7 +135,7 @@ where
     #[track_caller]
     fn change_context<U>(self, context: U) -> Result<T, Report<U>>
     where
-        U: Error + Send + Sync + 'static,
+        U: Error + TryDebug + TryDisplay + Send + Sync + 'static,
     {
         match self {
             Ok(val) => Ok(val),
@@ -146,7 +146,7 @@ where
     #[track_caller]
     fn change_context_lazy<U, F>(self, f: F) -> Result<T, Report<U>>
     where
-        U: Error + Send + Sync + 'static,
+        U: Error + TryDebug + TryDisplay + Send + Sync + 'static,
         F: FnOnce() -> U,
     {
         match self {
@@ -158,7 +158,7 @@ where
     #[track_caller]
     fn change_context_adaptive<U, F>(self, f: F) -> Result<T, Report<U>>
     where
-        U: Error + Send + Sync + 'static,
+        U: Error + TryDebug + TryDisplay + Send + Sync + 'static,
         F: FnOnce(&mut Report<E>) -> U,
     {
         match self {

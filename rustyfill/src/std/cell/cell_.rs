@@ -1,6 +1,7 @@
 use crate::try_clone::{TryClone, TryCloneError};
 use crate::try_default::{TryDefault, TryDefaultError};
-use std::cell::{BorrowError, BorrowMutError, Ref, RefCell, RefMut};
+use crate::try_fmt::{AssertDebug, TryDebug, helpers::FormatterExt};
+use crate::lang_std::cell::{BorrowError, BorrowMutError, Ref, RefCell, RefMut};
 
 /// Error returned when a fallible borrow operation fails.
 #[derive(Debug)]
@@ -29,6 +30,21 @@ impl From<BorrowError> for TryBorrowError {
 impl From<BorrowMutError> for TryBorrowError {
     fn from(e: BorrowMutError) -> Self {
         Self::BorrowMut(e)
+    }
+}
+
+impl TryDebug for TryBorrowError {
+    fn try_fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            Self::Borrow(e) => f
+                .try_debug_struct("TryBorrowError::Borrow")
+                .field("0", &AssertDebug(e))
+                .finish(),
+            Self::BorrowMut(e) => f
+                .try_debug_struct("TryBorrowError::BorrowMut")
+                .field("0", &AssertDebug(e))
+                .finish(),
+        }
     }
 }
 
@@ -116,6 +132,9 @@ impl<T: ?Sized + crate::try_fmt::TryDebug> crate::try_fmt::TryDebug for RefCell<
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::lang_alloc::string::String;
+    use crate::lang_alloc::vec;
+    use crate::lang_std::format;
 
     #[test]
     fn try_borrow_success() {
@@ -201,7 +220,7 @@ mod tests {
     fn refcell_try_clone_success() {
         let cell = RefCell::new(vec![1, 2, 3]);
         let cloned = cell.try_clone().unwrap();
-        assert_eq!(*cloned.borrow(), vec![1, 2, 3]);
+        assert_eq!(*cloned.borrow(), [1, 2, 3]);
         assert_ne!(cell.as_ptr(), cloned.as_ptr());
     }
 

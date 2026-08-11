@@ -17,7 +17,7 @@ pub fn fill_bytes(bytes: &mut [u8]) -> Result<(), RandomError> {
         let r = unsafe { libc::getentropy(chunk.as_mut_ptr().cast(), chunk.len()) };
         if r == -1 {
             return Err(RandomError::Syscall(
-                std::io::Error::last_os_error().raw_os_error().unwrap_or(-1),
+                ::lang_std::io::Error::last_os_error().raw_os_error().unwrap_or(-1),
             ));
         }
     }

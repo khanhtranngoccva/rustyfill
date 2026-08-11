@@ -8,6 +8,9 @@
 use crate::alloc::{AllocError, TryReserveError};
 use crate::try_clone::{TryClone, TryCloneError};
 use crate::try_default::{TryDefault, TryDefaultError};
+use crate::try_fmt::{TryDebug, helpers::FormatterExt};
+use crate::lang_alloc::boxed::Box;
+use crate::lang_alloc::string::String;
 use core::alloc::Layout;
 use core::fmt;
 
@@ -44,6 +47,23 @@ impl From<AllocError> for TryStrError {
 impl From<TryReserveError> for TryStrError {
     fn from(err: TryReserveError) -> Self {
         Self::Reserve(err)
+    }
+}
+
+impl TryDebug for TryStrError {
+    fn try_fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Alloc(e) => f.try_debug_struct("TryStrError::Alloc")
+                .field("0", e)
+                .finish(),
+            Self::Reserve(e) => f.try_debug_struct("TryStrError::Reserve")
+                .field("0", e)
+                .finish(),
+            Self::Overflow => f.write_str("TryStrError::Overflow"),
+            Self::Other(msg) => f.try_debug_struct("TryStrError::Other")
+                .field("0", msg)
+                .finish(),
+        }
     }
 }
 
@@ -144,7 +164,7 @@ impl TryClone for Box<str> {
         // Allocate exactly `len` bytes — no excess capacity.
         // Layout::array handles overflow checking internally.
         let layout = Layout::array::<u8>(len).map_err(|_| TryCloneError::Overflow)?;
-        let ptr = unsafe { std::alloc::alloc(layout) };
+        let ptr = unsafe { ::lang_alloc::alloc::alloc(layout) };
         if ptr.is_null() {
             return Err(TryCloneError::Alloc(AllocError { layout }));
         }
@@ -299,7 +319,7 @@ mod tests {
     #[test]
     fn try_to_owned_implies_to_owned_bound() {
         let s: &str = "test";
-        let owned: String = <str as std::borrow::ToOwned>::to_owned(s);
+        let owned: String = <str as ::lang_std::borrow::ToOwned>::to_owned(s);
         assert_eq!(owned, "test");
     }
 }

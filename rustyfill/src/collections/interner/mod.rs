@@ -38,6 +38,8 @@
 //! ```
 
 use crate::alloc::TryReserveError;
+use crate::lang_alloc::borrow::ToOwned;
+use crate::lang_alloc::string::String;
 use crate::arc::TryWeak;
 use crate::collections::chashmap::ConcurrentHashMap;
 use crate::prelude::{TryArc, TryClone, TryDebug};
@@ -46,13 +48,13 @@ use crate::try_default::{TryDefault, TryDefaultError};
 use crate::try_fmt::FormatterExt;
 use crate::try_to_owned::{TryToOwned, TryToOwnedError};
 use core::hash::Hash;
-use std::ffi::{CStr, CString, OsStr, OsString};
-use std::fmt::Debug;
-use std::hash::{BuildHasher as _, RandomState};
-use std::ops::Deref;
-use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::{Arc, Weak};
+use crate::lang_std::ffi::{CStr, CString, OsStr, OsString};
+use crate::lang_std::fmt::Debug;
+use crate::lang_std::hash::{BuildHasher as _, RandomState};
+use crate::lang_std::ops::Deref;
+use crate::lang_std::path::{Path, PathBuf};
+use crate::lang_std::sync::atomic::{AtomicUsize, Ordering};
+use crate::lang_std::sync::{Arc, Weak};
 
 /// Number of intern calls between pruning sweeps of unlocked shards.
 const PRUNE_INTERVAL: usize = 1024;
@@ -103,7 +105,7 @@ impl<Owned> PartialEq for InternKey<Owned> {
 /// Sealed trait mapping a borrowed type to its owned counterpart.
 ///
 /// Implemented only for `str`, `OsStr`, `CStr`, and `Path`.
-/// Mirrors the [`std::borrow::ToOwned`] relationship with stronger fallible
+/// Mirrors the [`::std::borrow::ToOwned`] relationship with stronger fallible
 /// semantics: the borrowed type must also implement [`TryToOwned`], and the
 /// owned type must be clonable so we can build the Arc before acquiring locks.
 pub trait InternKind: TryToOwned + Hash + Eq + 'static
@@ -309,19 +311,19 @@ where
 //        handles. When all handles drop, the Arc is freed and the Weak expires.
 
 crate::collections::chashmap::declare_concurrent_hash_map! {
-    pub(crate) static INTERNER_STR: ConcurrentHashMap<crate::collections::interner::InternKey<String>, ()> = 64
+    pub(crate) static INTERNER_STR: ConcurrentHashMap<crate::collections::interner::InternKey<::lang_alloc::string::String>, ()> = 64
 }
 
 crate::collections::chashmap::declare_concurrent_hash_map! {
-    pub(crate) static INTERNER_OS_STR: ConcurrentHashMap<crate::collections::interner::InternKey<std::ffi::OsString>, ()> = 64
+    pub(crate) static INTERNER_OS_STR: ConcurrentHashMap<crate::collections::interner::InternKey<::lang_std::ffi::OsString>, ()> = 64
 }
 
 crate::collections::chashmap::declare_concurrent_hash_map! {
-    pub(crate) static INTERNER_CSTR: ConcurrentHashMap<crate::collections::interner::InternKey<std::ffi::CString>, ()> = 64
+    pub(crate) static INTERNER_CSTR: ConcurrentHashMap<crate::collections::interner::InternKey<::lang_std::ffi::CString>, ()> = 64
 }
 
 crate::collections::chashmap::declare_concurrent_hash_map! {
-    pub(crate) static INTERNER_PATH: ConcurrentHashMap<crate::collections::interner::InternKey<std::path::PathBuf>, ()> = 64
+    pub(crate) static INTERNER_PATH: ConcurrentHashMap<crate::collections::interner::InternKey<::lang_std::path::PathBuf>, ()> = 64
 }
 
 /// Global monotonic counter tracking total intern calls across all types.
@@ -724,6 +726,10 @@ impl core::fmt::Display for InternPath {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::lang_alloc::string::String;
+    use crate::lang_alloc::string::ToString;
+    use crate::lang_alloc::vec::Vec;
+    use crate::lang_std::format;
 
     #[test]
     fn intern_basic() {
@@ -806,7 +812,7 @@ mod tests {
 
     #[test]
     fn intern_concurrent_access() {
-        use std::thread;
+        use crate::lang_std::thread;
         let handles: Vec<_> = (0..8)
             .map(|i| {
                 thread::spawn(move || {

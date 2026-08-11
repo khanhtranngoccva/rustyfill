@@ -2,7 +2,7 @@
 //!
 //! Provides the [`TryString`] trait with methods that mirror common `String`
 //! constructors and mutating operations but return [`Result`] to handle allocation
-//! failures gracefully, using [`std::collections::TryReserveError`] as the primary
+//! failures gracefully, using [`::lang_std::collections::TryReserveError`] as the primary
 //! error type.
 //!
 //! # Design
@@ -18,6 +18,9 @@ use crate::alloc::AllocError;
 use crate::alloc::TryReserveError;
 use crate::try_clone::{TryClone, TryCloneError};
 use crate::try_default::{TryDefault, TryDefaultError};
+use crate::try_fmt::{TryDebug, helpers::FormatterExt};
+use crate::lang_alloc::string::String;
+use crate::lang_alloc::vec::Vec;
 use core::fmt;
 
 /// Error returned by [`TryString`] operations.
@@ -63,9 +66,29 @@ impl From<TryReserveError> for TryStringError {
     }
 }
 
-impl From<std::collections::TryReserveError> for TryStringError {
-    fn from(err: std::collections::TryReserveError) -> Self {
+impl From<::lang_std::collections::TryReserveError> for TryStringError {
+    fn from(err: ::lang_std::collections::TryReserveError) -> Self {
         Self::Reserve(TryReserveError::from(err))
+    }
+}
+
+impl TryDebug for TryStringError {
+    fn try_fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Alloc(e) => f
+                .try_debug_struct("TryStringError::Alloc")
+                .field("0", e)
+                .finish(),
+            Self::Reserve(e) => f
+                .try_debug_struct("TryStringError::Reserve")
+                .field("0", e)
+                .finish(),
+            Self::Overflow => f.write_str("TryStringError::Overflow"),
+            Self::Other(msg) => f
+                .try_debug_struct("TryStringError::Other")
+                .field("0", msg)
+                .finish(),
+        }
     }
 }
 
@@ -283,7 +306,7 @@ impl TryString for String {
         // Convert to Vec<u8> (identical layout to String), shrink via TryVec,
         // then convert back. Only the spare capacity portion is reallocated —
         // the UTF-8 data bytes are never copied or revalidated.
-        let mut v = std::mem::take(self).into_bytes();
+        let mut v = ::lang_std::mem::take(self).into_bytes();
         let result = <Vec<u8> as crate::vec::TryVec<u8>>::try_shrink_to(&mut v, min_capacity);
         // The bytes originated from a valid String, so they remain valid UTF-8.
         *self = String::from_utf8(v).unwrap();
@@ -341,6 +364,7 @@ impl crate::try_fmt::TryDisplay for String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::lang_alloc::boxed::Box;
 
     // ── Construction ─────────────────────────────────────────────────────────
 

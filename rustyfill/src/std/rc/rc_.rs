@@ -1,17 +1,17 @@
 use crate::alloc::AllocError;
 use crate::boxed::TryBox;
+use crate::lang_alloc::boxed::Box;
+use crate::lang_std::rc::{Rc, Weak};
 use crate::try_clone::{TryClone, TryCloneError};
 use crate::try_default::{TryDefault, TryDefaultError};
-
+use core::cell::Cell;
 use core::mem::{ManuallyDrop, MaybeUninit};
 use core::pin::Pin;
 use core::ptr;
-use std::cell::Cell;
-use std::rc::{Rc, Weak};
 
 /// Internal representation of an Rc allocation.
 ///
-/// Layout matches `std::rc::Rc`: two usize counters followed by the data.
+/// Layout matches `::std::rc::Rc`: two usize counters followed by the data.
 /// `#[repr(C)]` is required so the compiler does not reorder fields — std's Rc
 /// computes counter offsets relative to the data pointer and expects this exact
 /// ordering. `align(2)` ensures that `Weak::new()`'s dangling sentinel
@@ -380,6 +380,12 @@ impl core::fmt::Display for TryUpgradeError {
     }
 }
 
+impl crate::try_fmt::TryDebug for TryUpgradeError {
+    fn try_fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.write_str("TryUpgradeError")
+    }
+}
+
 /// Fallible operations on [`Weak`] pointers.
 ///
 /// Implemented for `Weak<T>`. Provides [`try_upgrade`](Self::try_upgrade), which
@@ -470,6 +476,11 @@ impl<T: ?Sized + crate::try_fmt::TryDebug> crate::try_fmt::TryDebug for Rc<T> {
 #[allow(deprecated)]
 mod tests {
     use super::*;
+    use crate::lang_alloc::string::String;
+    use crate::lang_alloc::string::ToString;
+    use crate::lang_alloc::vec;
+    use crate::lang_alloc::vec::Vec;
+    use crate::lang_std::format;
 
     type PinRcResult<T> = Result<Pin<Rc<T>>, (T, AllocError)>;
 
@@ -862,12 +873,12 @@ mod tests {
     fn rc_dyn_trait_try_clone() {
         use crate::try_clone::TryClone;
         struct Greeter(String);
-        impl std::fmt::Display for Greeter {
-            fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        impl ::lang_std::fmt::Display for Greeter {
+            fn fmt(&self, f: &mut ::lang_std::fmt::Formatter<'_>) -> ::lang_std::fmt::Result {
                 write!(f, "Hello, {}!", self.0)
             }
         }
-        let rc: Rc<dyn std::fmt::Display> = Rc::new(Greeter("world".into()));
+        let rc: Rc<dyn ::lang_std::fmt::Display> = Rc::new(Greeter("world".into()));
         let rc2 = rc.try_clone().unwrap();
         assert_eq!(Rc::strong_count(&rc), 2);
         assert!(Rc::ptr_eq(&rc, &rc2));
@@ -992,7 +1003,7 @@ mod tests {
 
     #[test]
     fn rc_fallible_new_uninit_fails_on_oom() {
-        let r: Result<Rc<std::mem::MaybeUninit<i32>>, AllocError> = with_policy(
+        let r: Result<Rc<::lang_std::mem::MaybeUninit<i32>>, AllocError> = with_policy(
             FailPolicy::fail_next_alloc(),
             <Rc<i32> as TryRc<i32>>::fallible_new_uninit,
         );
@@ -1001,7 +1012,7 @@ mod tests {
 
     #[test]
     fn rc_fallible_new_zeroed_fails_on_oom() {
-        let r: Result<Rc<std::mem::MaybeUninit<[u8; 16]>>, AllocError> = with_policy(
+        let r: Result<Rc<::lang_std::mem::MaybeUninit<[u8; 16]>>, AllocError> = with_policy(
             FailPolicy::fail_next_alloc(),
             <Rc<[u8; 16]> as TryRc<[u8; 16]>>::fallible_new_zeroed,
         );

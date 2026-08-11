@@ -14,7 +14,7 @@ use crate::frame::{ContextFrame, DynamicFrame, ItemImpl, StaticFrame};
 use crate::frame::{OpaqueAttachment, PrintableAttachment};
 use rustyfill::alloc::TryReserveError;
 use rustyfill::prelude::{TryBox, TryVec, TryVecDeque};
-use rustyfill::try_fmt::{TryDebug, TryDisplay};
+use rustyfill::try_fmt::{TryDebug, TryDisplay, helpers::FormatterExt};
 
 // ── Report ───────────────────────────────────────────────────────────────────
 
@@ -386,13 +386,34 @@ pub struct ChangeContextError<C, T> {
     pub context: T,
 }
 
-impl<C: core::fmt::Debug + Error + TryDebug + TryDisplay + Send + Sync + 'static, T: core::fmt::Debug> core::fmt::Debug
-    for ChangeContextError<C, T>
+impl<
+    C: core::fmt::Debug + Error + TryDebug + TryDisplay + Send + Sync + 'static,
+    T: core::fmt::Debug,
+> core::fmt::Debug for ChangeContextError<C, T>
 {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.debug_struct("ChangeContextError")
             .field("report", &self.report)
             .field("context", &self.context)
+            .finish()
+    }
+}
+
+impl<C, T> TryDebug for ChangeContextError<C, T>
+where
+    C: Error + TryDebug + TryDisplay + Send + Sync + 'static,
+    T: core::fmt::Debug,
+{
+    /// Reduced functionality: prints struct name and metadata about the report
+    /// and context, but suppresses the full report tree (which may allocate on
+    /// formatting) and the context value (which may not implement TryDebug).
+    fn try_fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.try_debug_struct("ChangeContextError")
+            .field_owned("report_peer_count", self.report.peer_count())
+            .field_owned(
+                "context_type",
+                alloc::borrow::Cow::Borrowed::<str>(core::any::type_name::<T>()),
+            )
             .finish()
     }
 }
@@ -452,7 +473,7 @@ where
     #[track_caller]
     pub fn change_context<T>(self, context: T) -> Report<T>
     where
-        T: Error + Send + Sync + 'static,
+        T: Error + TryDebug + TryDisplay + Send + Sync + 'static,
     {
         let Self {
             head: old_head,
@@ -534,7 +555,7 @@ where
     #[allow(clippy::result_large_err, reason = "cannot allocate err on the heap")]
     pub fn try_change_context<T>(self, context: T) -> Result<Report<T>, ChangeContextError<C, T>>
     where
-        T: Error + Send + Sync + 'static,
+        T: Error + TryDebug + TryDisplay + Send + Sync + 'static,
     {
         let Self {
             head: old_head,

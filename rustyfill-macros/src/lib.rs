@@ -81,11 +81,11 @@ pub fn try_format_args(input: TokenStream) -> TokenStream {
 pub fn try_println(input: TokenStream) -> TokenStream {
     let tokens: proc_macro2::TokenStream = input.clone().into();
     if tokens.is_empty() {
-        return quote! { std::write!(std::io::stdout(), "\n") }.into();
+        return quote! { core::write!(::lang_std::io::stdout(), "\n") }.into();
     }
     quote! {{
-        let mut out = std::io::stdout().lock();
-        std::io::Write::write_fmt(
+        let mut out = ::lang_std::io::stdout().lock();
+        ::lang_std::io::Write::write_fmt(
             &mut out,
             ::rustyfill::try_format_args!(#tokens),
         )
@@ -98,11 +98,11 @@ pub fn try_println(input: TokenStream) -> TokenStream {
 pub fn try_print(input: TokenStream) -> TokenStream {
     let tokens: proc_macro2::TokenStream = input.clone().into();
     if tokens.is_empty() {
-        return quote! { Ok::<_, std::io::Error>(()) }.into();
+        return quote! { Ok::<_, ::lang_std::io::Error>(()) }.into();
     }
     quote! {{
-        let mut out = std::io::stdout().lock();
-        std::io::Write::write_fmt(
+        let mut out = ::lang_std::io::stdout().lock();
+        ::lang_std::io::Write::write_fmt(
             &mut out,
             ::rustyfill::try_format_args!(#tokens),
         )
@@ -136,7 +136,7 @@ pub fn try_write(input: TokenStream) -> TokenStream {
             let dst_ts: proc_macro2::TokenStream = tts.into_iter().collect();
             quote! {{
                 let _ = #dst_ts;
-                Ok::<_, std::io::Error>(())
+                Ok::<_, ::lang_std::io::Error>(())
             }}
             .into()
         }
@@ -145,7 +145,7 @@ pub fn try_write(input: TokenStream) -> TokenStream {
             let fmt_ts: proc_macro2::TokenStream = tts[idx + 1..].iter().cloned().collect();
             quote! {{
                 let mut dst = #dst_ts;
-                std::io::Write::write_fmt(
+                ::lang_std::io::Write::write_fmt(
                     &mut dst,
                     ::rustyfill::try_format_args!(#fmt_ts),
                 )
@@ -179,15 +179,15 @@ pub fn try_writeln(input: TokenStream) -> TokenStream {
     match comma_pos {
         None => {
             let dst_ts: proc_macro2::TokenStream = tts.into_iter().collect();
-            quote! { std::write!(#dst_ts, "\n") }.into()
+            quote! { core::write!(#dst_ts, "\n") }.into()
         }
         Some(idx) => {
             let dst_ts: proc_macro2::TokenStream = tts[..idx].iter().cloned().collect();
             let fmt_ts: proc_macro2::TokenStream = tts[idx + 1..].iter().cloned().collect();
             quote! {{
                 let mut dst = #dst_ts;
-                std::io::Write::write_fmt(&mut dst, ::rustyfill::try_format_args!(#fmt_ts))
-                    .and_then(|()| std::io::Write::write_all(&mut dst, b"\n"))
+                ::lang_std::io::Write::write_fmt(&mut dst, ::rustyfill::try_format_args!(#fmt_ts))
+                    .and_then(|()| ::lang_std::io::Write::write_all(&mut dst, b"\n"))
             }}
             .into()
         }
@@ -269,8 +269,8 @@ pub fn try_format_or(input: TokenStream) -> TokenStream {
                 ::rustyfill::string::TryString::try_write_fmt(
                     &mut buf,
                     ::rustyfill::try_format_args!(#fmt_ts),
-                ).map(|()| std::borrow::Cow::Owned(buf))
-                 .unwrap_or(std::borrow::Cow::Borrowed(""))
+                ).map(|()| ::lang_std::borrow::Cow::Owned(buf))
+                 .unwrap_or(::lang_std::borrow::Cow::Borrowed(""))
             }}
             .into()
         }
@@ -283,8 +283,8 @@ pub fn try_format_or(input: TokenStream) -> TokenStream {
                 ::rustyfill::string::TryString::try_write_fmt(
                     &mut buf,
                     ::rustyfill::try_format_args!(#fmt_part),
-                ).map(|()| std::borrow::Cow::Owned(buf))
-                 .unwrap_or(std::borrow::Cow::Borrowed(#fb_part))
+                ).map(|()| ::lang_std::borrow::Cow::Owned(buf))
+                 .unwrap_or(::lang_std::borrow::Cow::Borrowed(#fb_part))
             }}
             .into()
         }

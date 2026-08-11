@@ -7,7 +7,7 @@
 //! # Design
 //!
 //! `CString::new` can fail in two ways: the input may contain an interior nul byte
-//! (returned as [`std::ffi::NulError`]), or the internal buffer allocation may
+//! (returned as [`::lang_std::ffi::NulError`]), or the internal buffer allocation may
 //! panic on out-of-memory. [`TryCString::try_new`] takes ownership of a
 //! [`Vec<u8>`] so that allocation is decoupled from construction — the caller
 //! controls when memory is committed, and the method only needs to validate the
@@ -18,9 +18,11 @@ use crate::alloc::AllocError;
 use crate::alloc::TryReserveError;
 use crate::try_clone::{TryClone, TryCloneError};
 use crate::try_default::{TryDefault, TryDefaultError};
+use crate::try_fmt::{TryDebug, helpers::FormatterExt};
 use crate::vec::{TrySlice, TryVecError};
 use core::fmt;
-use std::ffi::CString;
+use crate::lang_std::ffi::CString;
+use crate::lang_alloc::vec::Vec;
 
 /// Error returned by [`TryCString`] operations.
 #[derive(Debug)]
@@ -69,9 +71,26 @@ impl From<TryReserveError> for TryCStringError {
     }
 }
 
-impl From<std::collections::TryReserveError> for TryCStringError {
-    fn from(err: std::collections::TryReserveError) -> Self {
+impl From<::lang_std::collections::TryReserveError> for TryCStringError {
+    fn from(err: ::lang_std::collections::TryReserveError) -> Self {
         Self::Reserve(TryReserveError::from(err))
+    }
+}
+
+impl TryDebug for TryCStringError {
+    fn try_fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Alloc(e) => f.try_debug_struct("TryCStringError::Alloc")
+                .field("0", e)
+                .finish(),
+            Self::Reserve(e) => f.try_debug_struct("TryCStringError::Reserve")
+                .field("0", e)
+                .finish(),
+            Self::Overflow => f.write_str("TryCStringError::Overflow"),
+            Self::Nul(idx) => f.try_debug_struct("TryCStringError::Nul")
+                .field("0", idx)
+                .finish(),
+        }
     }
 }
 
@@ -188,6 +207,9 @@ impl crate::try_fmt::TryDebug for CString {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::lang_alloc::vec;
+    use crate::lang_alloc::vec::Vec;
+    use crate::lang_std::format;
 
     // ── Valid inputs ─────────────────────────────────────────────────────────
 
