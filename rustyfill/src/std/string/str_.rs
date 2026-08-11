@@ -6,11 +6,11 @@
 //! for consistency with [`TryString`](super::string_::TryString).
 
 use crate::alloc::{AllocError, TryReserveError};
+use crate::lang_alloc::boxed::Box;
+use crate::lang_alloc::string::String;
 use crate::try_clone::{TryClone, TryCloneError};
 use crate::try_default::{TryDefault, TryDefaultError};
 use crate::try_fmt::{TryDebug, helpers::FormatterExt};
-use crate::lang_alloc::boxed::Box;
-use crate::lang_alloc::string::String;
 use core::alloc::Layout;
 use core::fmt;
 
@@ -53,14 +53,17 @@ impl From<TryReserveError> for TryStrError {
 impl TryDebug for TryStrError {
     fn try_fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::Alloc(e) => f.try_debug_struct("TryStrError::Alloc")
+            Self::Alloc(e) => f
+                .try_debug_struct("TryStrError::Alloc")
                 .field("0", e)
                 .finish(),
-            Self::Reserve(e) => f.try_debug_struct("TryStrError::Reserve")
+            Self::Reserve(e) => f
+                .try_debug_struct("TryStrError::Reserve")
                 .field("0", e)
                 .finish(),
             Self::Overflow => f.write_str("TryStrError::Overflow"),
-            Self::Other(msg) => f.try_debug_struct("TryStrError::Other")
+            Self::Other(msg) => f
+                .try_debug_struct("TryStrError::Other")
                 .field("0", msg)
                 .finish(),
         }

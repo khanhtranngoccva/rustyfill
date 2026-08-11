@@ -4,8 +4,8 @@
 //! clones it into each yielded [`RefMulti`] / [`RefMutMulti`]. The lock is held
 //! as long as any holder exists.
 
-use core::ops::{Deref, DerefMut};
 use crate::lang_std::sync::Arc;
+use core::ops::{Deref, DerefMut};
 
 use hashbrown::raw::RawTable;
 use parking_lot::{RwLockReadGuard, RwLockWriteGuard};

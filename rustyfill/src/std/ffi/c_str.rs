@@ -3,9 +3,9 @@
 //! Provides the [`TryToOwned`] implementation for `CStr`, enabling fallible
 //! conversion of a `&CStr` into an owned [`CString`].
 
+use crate::lang_std::ffi::{CStr, CString};
 use crate::try_to_owned::{TryToOwned, TryToOwnedError};
 use crate::vec::{TrySlice, TryVecError};
-use crate::lang_std::ffi::{CStr, CString};
 
 impl TryToOwned for CStr {
     fn try_to_owned(&self) -> Result<CString, TryToOwnedError> {

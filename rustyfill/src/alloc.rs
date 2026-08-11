@@ -10,11 +10,11 @@
 use crate::lang_alloc::borrow::Cow;
 #[cfg(feature = "std")]
 use crate::lang_alloc::boxed::Box;
-use core::alloc::Layout;
-use core::fmt;
 #[cfg(feature = "std")]
 use crate::try_fmt::AssertDebug;
 use crate::try_fmt::{TryDebug, helpers::FormatterExt};
+use core::alloc::Layout;
+use core::fmt;
 
 /// Polyfill allocation error returned when a heap allocation fails.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -70,7 +70,8 @@ impl TryDebug for TryReserveError {
     fn try_fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             #[cfg(feature = "std")]
-            Self::Std(e) => f.try_debug_struct("TryReserveError::Std")
+            Self::Std(e) => f
+                .try_debug_struct("TryReserveError::Std")
                 .field("0", e)
                 .finish(),
             Self::Other => f.write_str("TryReserveError::Other"),

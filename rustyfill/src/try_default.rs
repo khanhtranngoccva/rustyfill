@@ -48,14 +48,17 @@ impl fmt::Display for TryDefaultError {
 impl TryDebug for TryDefaultError {
     fn try_fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::Alloc(e) => f.try_debug_struct("TryDefaultError::Alloc")
+            Self::Alloc(e) => f
+                .try_debug_struct("TryDefaultError::Alloc")
                 .field("0", e)
                 .finish(),
-            Self::Reserve(e) => f.try_debug_struct("TryDefaultError::Reserve")
+            Self::Reserve(e) => f
+                .try_debug_struct("TryDefaultError::Reserve")
                 .field("0", e)
                 .finish(),
             Self::Overflow => f.write_str("TryDefaultError::Overflow"),
-            Self::Other(msg) => f.try_debug_struct("TryDefaultError::Other")
+            Self::Other(msg) => f
+                .try_debug_struct("TryDefaultError::Other")
                 .field("0", msg)
                 .finish(),
         }

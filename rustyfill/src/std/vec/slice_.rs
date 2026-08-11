@@ -7,11 +7,11 @@
 
 use super::vec_::TryVecError;
 use crate::alloc::AllocError;
+use crate::lang_alloc::boxed::Box;
+use crate::lang_alloc::vec::Vec;
 use crate::try_clone::{TryClone, TryCloneError};
 use crate::try_default::{TryDefault, TryDefaultError};
 use crate::try_to_owned::{TryToOwned, TryToOwnedError};
-use crate::lang_alloc::boxed::Box;
-use crate::lang_alloc::vec::Vec;
 use core::alloc::Layout;
 use core::mem::{self, MaybeUninit};
 use core::ptr::{self, NonNull};

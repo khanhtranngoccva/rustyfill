@@ -49,14 +49,17 @@ impl fmt::Display for TryCloneError {
 impl TryDebug for TryCloneError {
     fn try_fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::Alloc(e) => f.try_debug_struct("TryCloneError::Alloc")
+            Self::Alloc(e) => f
+                .try_debug_struct("TryCloneError::Alloc")
                 .field("0", e)
                 .finish(),
-            Self::Reserve(e) => f.try_debug_struct("TryCloneError::Reserve")
+            Self::Reserve(e) => f
+                .try_debug_struct("TryCloneError::Reserve")
                 .field("0", e)
                 .finish(),
             Self::Overflow => f.write_str("TryCloneError::Overflow"),
-            Self::Other(msg) => f.try_debug_struct("TryCloneError::Other")
+            Self::Other(msg) => f
+                .try_debug_struct("TryCloneError::Other")
                 .field("0", msg)
                 .finish(),
         }

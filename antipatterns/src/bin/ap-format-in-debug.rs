@@ -58,7 +58,10 @@ fn main() {
 
     // Demonstrate the good path first (should survive OOM).
     println!("Testing GoodDebug (correct impl)...");
-    let good = GoodDebug { name: "test", value: 42 };
+    let good = GoodDebug {
+        name: "test",
+        value: 42,
+    };
     let _guard = FailAllocGuard::fail_all();
     antipatterns::format_on_stack(format_args!("{good:?}"));
     drop(_guard);
@@ -67,7 +70,10 @@ fn main() {
     // Now demonstrate the bad path (will abort under OOM).
     println!("Testing BadDebug (antipattern impl)...");
     println!("  This will abort the process if format!() implicitly allocates.");
-    let bad = BadDebug { name: "test", value: 42 };
+    let bad = BadDebug {
+        name: "test",
+        value: 42,
+    };
     let _guard = FailAllocGuard::fail_all();
     antipatterns::format_on_stack(format_args!("{bad:?}"));
     // If we reach here, the antipattern didn't allocate (unexpected).

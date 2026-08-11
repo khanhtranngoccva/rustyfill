@@ -38,16 +38,10 @@
 //! ```
 
 use crate::alloc::TryReserveError;
-use crate::lang_alloc::borrow::ToOwned;
-use crate::lang_alloc::string::String;
 use crate::arc::TryWeak;
 use crate::collections::chashmap::ConcurrentHashMap;
-use crate::prelude::{TryArc, TryClone, TryDebug};
-use crate::try_clone::TryCloneError;
-use crate::try_default::{TryDefault, TryDefaultError};
-use crate::try_fmt::FormatterExt;
-use crate::try_to_owned::{TryToOwned, TryToOwnedError};
-use core::hash::Hash;
+use crate::lang_alloc::borrow::ToOwned;
+use crate::lang_alloc::string::String;
 use crate::lang_std::ffi::{CStr, CString, OsStr, OsString};
 use crate::lang_std::fmt::Debug;
 use crate::lang_std::hash::{BuildHasher as _, RandomState};
@@ -55,6 +49,12 @@ use crate::lang_std::ops::Deref;
 use crate::lang_std::path::{Path, PathBuf};
 use crate::lang_std::sync::atomic::{AtomicUsize, Ordering};
 use crate::lang_std::sync::{Arc, Weak};
+use crate::prelude::{TryArc, TryClone, TryDebug};
+use crate::try_clone::TryCloneError;
+use crate::try_default::{TryDefault, TryDefaultError};
+use crate::try_fmt::FormatterExt;
+use crate::try_to_owned::{TryToOwned, TryToOwnedError};
+use core::hash::Hash;
 
 /// Number of intern calls between pruning sweeps of unlocked shards.
 const PRUNE_INTERVAL: usize = 1024;

@@ -20,10 +20,10 @@
 //! `K` and `V` satisfy the respective bounds.
 
 use crate::alloc::{AllocError, PayloadBox};
-use crate::try_clone::TryCloneError;
-use crate::try_fmt::{TryDebug, helpers::FormatterExt};
 use crate::lang_std::collections::BTreeMap;
 use crate::lang_std::panic::{AssertUnwindSafe, RefUnwindSafe, catch_unwind};
+use crate::try_clone::TryCloneError;
+use crate::try_fmt::{TryDebug, helpers::FormatterExt};
 use core::fmt;
 use core::mem::ManuallyDrop;
 use core::ptr;

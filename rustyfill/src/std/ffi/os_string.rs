@@ -18,12 +18,12 @@
 
 use crate::alloc::AllocError;
 use crate::alloc::TryReserveError;
-use crate::try_clone::{TryClone, TryCloneError};
-use crate::try_default::{TryDefault, TryDefaultError};
-use crate::try_fmt::{TryDebug, helpers::FormatterExt};
 use crate::lang_alloc::string::String;
 use crate::lang_alloc::vec::Vec;
 use crate::lang_std::ffi::{OsStr, OsString};
+use crate::try_clone::{TryClone, TryCloneError};
+use crate::try_default::{TryDefault, TryDefaultError};
+use crate::try_fmt::{TryDebug, helpers::FormatterExt};
 use core::fmt;
 
 /// Error returned by [`TryOsString`] operations.

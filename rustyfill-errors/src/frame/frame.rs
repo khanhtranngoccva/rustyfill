@@ -8,7 +8,7 @@ use alloc::vec::Vec;
 use core::error::Error;
 use core::panic::Location;
 
-use rustyfill::try_fmt::{helpers::FormatterExt, TryDebug, TryDisplay};
+use rustyfill::try_fmt::{TryDebug, TryDisplay, helpers::FormatterExt};
 
 use crate::frame::item::{ContextFrame, ItemImpl};
 use rustyfill::prelude::TryBox;
@@ -198,7 +198,10 @@ impl<C: core::fmt::Debug> core::fmt::Debug for StaticFrame<C> {
 impl<C: core::fmt::Debug> TryDebug for StaticFrame<C> {
     fn try_fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.try_debug_struct("StaticFrame")
-            .field_owned("context_type", alloc::borrow::Cow::Borrowed::<str>(core::any::type_name::<C>()))
+            .field_owned(
+                "context_type",
+                alloc::borrow::Cow::Borrowed::<str>(core::any::type_name::<C>()),
+            )
             .field_owned("attachments_len", self.attachments.len())
             .field_owned("children_len", self.children.len())
             .field_owned("lost_attachments", self.lost_attachments)

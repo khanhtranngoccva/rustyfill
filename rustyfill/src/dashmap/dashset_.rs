@@ -5,11 +5,11 @@
 
 use crate::alloc::{AllocError, TryReserveError};
 use crate::dashmap::TryDashMap;
+use crate::lang_std::cmp::Eq;
+use crate::lang_std::hash::{BuildHasher, Hash, RandomState};
 use crate::prelude::{TryClone, TryDefault};
 use crate::try_clone::TryCloneError;
 use crate::try_fmt::{TryDebug, helpers::FormatterExt};
-use crate::lang_std::cmp::Eq;
-use crate::lang_std::hash::{BuildHasher, Hash, RandomState};
 use core::alloc::Layout;
 use core::fmt;
 

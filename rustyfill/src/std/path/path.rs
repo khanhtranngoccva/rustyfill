@@ -18,12 +18,12 @@
 
 use crate::alloc::AllocError;
 use crate::alloc::TryReserveError;
+use crate::lang_std::ffi::OsStr;
+use crate::lang_std::path::{Path, PathBuf};
 use crate::path::path_buf::inner_push;
 use crate::try_clone::{TryClone, TryCloneError};
 use crate::try_fmt::{TryDebug, helpers::FormatterExt};
 use crate::try_to_owned::{TryToOwned, TryToOwnedError};
-use crate::lang_std::ffi::OsStr;
-use crate::lang_std::path::{Path, PathBuf};
 use core::fmt;
 
 /// Error returned by [`TryPath`] operations.

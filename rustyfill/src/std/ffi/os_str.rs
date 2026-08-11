@@ -6,9 +6,9 @@
 //! for consistency with [`TryOsString`](super::os_string::TryOsString).
 
 use crate::alloc::{AllocError, TryReserveError};
+use crate::lang_std::ffi::{OsStr, OsString};
 use crate::try_fmt::{TryDebug, helpers::FormatterExt};
 use core::fmt;
-use crate::lang_std::ffi::{OsStr, OsString};
 
 /// Error returned by [`TryOsStr`] operations.
 #[derive(Debug)]
@@ -51,14 +51,17 @@ impl From<TryReserveError> for TryOsStrError {
 impl TryDebug for TryOsStrError {
     fn try_fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::Alloc(e) => f.try_debug_struct("TryOsStrError::Alloc")
+            Self::Alloc(e) => f
+                .try_debug_struct("TryOsStrError::Alloc")
                 .field("0", e)
                 .finish(),
-            Self::Reserve(e) => f.try_debug_struct("TryOsStrError::Reserve")
+            Self::Reserve(e) => f
+                .try_debug_struct("TryOsStrError::Reserve")
                 .field("0", e)
                 .finish(),
             Self::Overflow => f.write_str("TryOsStrError::Overflow"),
-            Self::Other(msg) => f.try_debug_struct("TryOsStrError::Other")
+            Self::Other(msg) => f
+                .try_debug_struct("TryOsStrError::Other")
                 .field("0", msg)
                 .finish(),
         }

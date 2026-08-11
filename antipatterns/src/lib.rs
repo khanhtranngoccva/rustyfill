@@ -1,7 +1,7 @@
 //! Shared helpers for antipattern demonstration binaries.
 //!
-//! Each binary in this crate demonstrates one specific antipattern. 
-//! Under OOM conditions (all allocations blocked), the process aborts instead of 
+//! Each binary in this crate demonstrates one specific antipattern.
+//! Under OOM conditions (all allocations blocked), the process aborts instead of
 //! returning an error — proving the risk.
 
 use std::fmt::Write;

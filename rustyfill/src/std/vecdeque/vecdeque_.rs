@@ -18,11 +18,11 @@
 
 use crate::alloc::AllocError;
 use crate::alloc::TryReserveError;
+use crate::lang_alloc::vec::Vec;
+use crate::lang_std::collections::VecDeque;
 use crate::try_clone::{TryClone, TryCloneError};
 use crate::try_default::{TryDefault, TryDefaultError};
 use crate::try_fmt::{TryDebug, helpers::FormatterExt};
-use crate::lang_alloc::vec::Vec;
-use crate::lang_std::collections::VecDeque;
 use core::fmt;
 
 /// Panic-safe guard that truncates a `VecDeque` back to its original length on drop

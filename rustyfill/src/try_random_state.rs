@@ -19,8 +19,8 @@
 //! [`TryDefault`](crate::try_default::TryDefault) which is already implemented
 //! for [`RandomState`] in [`crate::hashers`].
 
-use crate::sys::random::hashmap_random_keys_infallible;
 use crate::lang_std::hash::RandomState;
+use crate::sys::random::hashmap_random_keys_infallible;
 
 /// Extension trait for infallible [`RandomState`] construction.
 ///

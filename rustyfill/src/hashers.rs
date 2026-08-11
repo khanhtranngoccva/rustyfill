@@ -37,13 +37,13 @@
 //!
 //! # Notes
 //! - These types only guard against panics during creation of hasher factories. The user must ensure that the invocation via build_hasher does not implicitly panic, although it is practically never the case for the sake of performance.
+#[cfg(feature = "std")]
+use crate::lang_std::thread_local;
 use crate::{
     try_clone::{TryClone, TryCloneError},
     try_default::{TryDefault, TryDefaultError},
     try_fmt::{TryDebug, helpers::FormatterExt},
 };
-#[cfg(feature = "std")]
-use crate::lang_std::thread_local;
 use core::hash::BuildHasher;
 
 /// Marker trait for hasher factories that are safely duplicatable via a bitwise

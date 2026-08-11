@@ -15,8 +15,8 @@
 //!   allocation**.
 
 use crate::alloc::AllocError;
-use crate::prelude::TryBox;
 use crate::lang_alloc::boxed::Box;
+use crate::prelude::TryBox;
 
 /// Extension trait for fallible [`::std::io::Error`] construction.
 pub trait IoErrorExt {
@@ -27,7 +27,10 @@ pub trait IoErrorExt {
     /// The source is boxed once via [`Box::fallible_new`], returning
     /// [`AllocError`] on OOM. On success, the boxed error is passed to
     /// [`io::Error::new`] which accepts it without further allocation.
-    fn try_new<E>(kind: ::lang_std::io::ErrorKind, source: E) -> Result<::lang_std::io::Error, AllocError>
+    fn try_new<E>(
+        kind: ::lang_std::io::ErrorKind,
+        source: E,
+    ) -> Result<::lang_std::io::Error, AllocError>
     where
         E: ::lang_std::error::Error + Send + Sync + 'static;
 
@@ -68,7 +71,9 @@ pub trait IoErrorExt {
     /// Like [`Self::new_boxed`] but defaults to [`ErrorKind::Other`].
     ///
     /// Shorthand for `new_boxed(ErrorKind::Other, source)`. Never fails.
-    fn other_boxed(source: Box<dyn ::lang_std::error::Error + Send + Sync>) -> ::lang_std::io::Error;
+    fn other_boxed(
+        source: Box<dyn ::lang_std::error::Error + Send + Sync>,
+    ) -> ::lang_std::io::Error;
 
     /// Like [`Self::new_or_oom`] but defaults to [`ErrorKind::Other`].
     ///

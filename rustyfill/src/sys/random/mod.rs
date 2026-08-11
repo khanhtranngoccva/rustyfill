@@ -43,10 +43,12 @@ impl fmt::Display for RandomError {
 impl TryDebug for RandomError {
     fn try_fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::Syscall(code) => f.try_debug_struct("RandomError::Syscall")
+            Self::Syscall(code) => f
+                .try_debug_struct("RandomError::Syscall")
                 .field("0", code)
                 .finish(),
-            Self::Platform(msg) => f.try_debug_struct("RandomError::Platform")
+            Self::Platform(msg) => f
+                .try_debug_struct("RandomError::Platform")
                 .field("0", msg)
                 .finish(),
             Self::Unsupported => f.write_str("RandomError::Unsupported"),
@@ -243,14 +245,17 @@ pub fn hashmap_random_keys_infallible() -> (u64, u64) {
 
 // Default hashmap_random_keys for platforms without a native insecure path:
 // uses the same secure source (good enough for hashmap seeds).
-#[cfg(all(feature = "std", not(any(
-    target_os = "linux",
-    target_os = "android",
-    all(target_family = "wasm", target_os = "unknown"),
-    all(target_os = "wasi", not(target_env = "p1")),
-    target_os = "xous",
-    target_os = "vexos",
-))))]
+#[cfg(all(
+    feature = "std",
+    not(any(
+        target_os = "linux",
+        target_os = "android",
+        all(target_family = "wasm", target_os = "unknown"),
+        all(target_os = "wasi", not(target_env = "p1")),
+        target_os = "xous",
+        target_os = "vexos",
+    ))
+))]
 pub fn hashmap_random_keys() -> Result<(u64, u64), RandomError> {
     let mut buf = [0; 16];
     fill_bytes(&mut buf)?;

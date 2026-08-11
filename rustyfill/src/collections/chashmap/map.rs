@@ -1,12 +1,12 @@
 //! Core [`ConcurrentHashMap`] implementation.
 
 use crate::alloc::{AllocError, TryReserveError};
+use crate::lang_alloc::boxed::Box;
+use crate::lang_std::hash::RandomState;
 use crate::try_clone::{TryClone, TryCloneError};
 use crate::try_default::{TryDefault, TryDefaultError};
 use crate::try_fmt::{TryDebug, helpers::FormatterExt};
 use crate::vec::SliceInitGuard;
-use crate::lang_alloc::boxed::Box;
-use crate::lang_std::hash::RandomState;
 use core::borrow::Borrow;
 use core::hash::{BuildHasher, Hash};
 use core::mem::{self, MaybeUninit};
@@ -897,8 +897,8 @@ mod tests {
     use super::*;
     use crate::lang_alloc::string::String;
     use crate::lang_alloc::string::ToString;
-    use crate::lang_alloc::vec::Vec;
     use crate::lang_alloc::vec;
+    use crate::lang_alloc::vec::Vec;
     use crate::lang_std::sync::Arc;
     use crate::lang_std::thread;
 

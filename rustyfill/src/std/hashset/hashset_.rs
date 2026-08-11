@@ -17,12 +17,12 @@
 
 use crate::alloc::AllocError;
 use crate::alloc::TryReserveError;
-use crate::try_clone::{TryClone, TryCloneError};
-use crate::try_default::{TryDefault, TryDefaultError};
-use crate::try_fmt::{TryDebug, helpers::FormatterExt};
 use crate::lang_std::cmp::Eq;
 use crate::lang_std::collections::HashSet;
 use crate::lang_std::hash::{BuildHasher, Hash, RandomState};
+use crate::try_clone::{TryClone, TryCloneError};
+use crate::try_default::{TryDefault, TryDefaultError};
+use crate::try_fmt::{TryDebug, helpers::FormatterExt};
 use core::fmt;
 
 // ── Error type ────────────────────────────────────────────────────────────────

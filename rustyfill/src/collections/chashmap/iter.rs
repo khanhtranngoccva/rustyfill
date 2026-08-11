@@ -8,8 +8,8 @@
 //! Because `Arc::new` (initialization) and `Arc::clone` (cloning into yielded
 //! items) are fallible, iteration returns [`Result`] items.
 
-use core::hash::{BuildHasher, Hash};
 use crate::lang_std::sync::Arc;
+use core::hash::{BuildHasher, Hash};
 
 use hashbrown::raw::{RawIter, RawTable};
 use parking_lot::{RwLockReadGuard, RwLockWriteGuard};
@@ -45,10 +45,12 @@ impl core::fmt::Display for IterError {
 impl TryDebug for IterError {
     fn try_fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         match self {
-            Self::Alloc(e) => f.try_debug_struct("IterError::Alloc")
+            Self::Alloc(e) => f
+                .try_debug_struct("IterError::Alloc")
                 .field("0", e)
                 .finish(),
-            Self::Clone(e) => f.try_debug_struct("IterError::Clone")
+            Self::Clone(e) => f
+                .try_debug_struct("IterError::Clone")
                 .field("0", e)
                 .finish(),
         }

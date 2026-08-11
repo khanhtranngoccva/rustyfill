@@ -19,11 +19,11 @@
 use hashbrown::raw::RawTable;
 
 use crate::alloc::{AllocError, TryReserveError};
+use crate::lang_std::cmp::Eq;
+use crate::lang_std::hash::{BuildHasher, Hash, RandomState};
 use crate::prelude::TryDefault;
 use crate::try_clone::{TryClone, TryCloneError};
 use crate::try_fmt::{TryDebug, helpers::FormatterExt};
-use crate::lang_std::cmp::Eq;
-use crate::lang_std::hash::{BuildHasher, Hash, RandomState};
 use core::fmt;
 
 type DashMap<K, V, S = RandomState> = dashmap::DashMap<K, V, S>;

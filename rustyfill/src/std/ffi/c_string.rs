@@ -16,13 +16,13 @@
 
 use crate::alloc::AllocError;
 use crate::alloc::TryReserveError;
+use crate::lang_alloc::vec::Vec;
+use crate::lang_std::ffi::CString;
 use crate::try_clone::{TryClone, TryCloneError};
 use crate::try_default::{TryDefault, TryDefaultError};
 use crate::try_fmt::{TryDebug, helpers::FormatterExt};
 use crate::vec::{TrySlice, TryVecError};
 use core::fmt;
-use crate::lang_std::ffi::CString;
-use crate::lang_alloc::vec::Vec;
 
 /// Error returned by [`TryCString`] operations.
 #[derive(Debug)]
@@ -80,14 +80,17 @@ impl From<::lang_std::collections::TryReserveError> for TryCStringError {
 impl TryDebug for TryCStringError {
     fn try_fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::Alloc(e) => f.try_debug_struct("TryCStringError::Alloc")
+            Self::Alloc(e) => f
+                .try_debug_struct("TryCStringError::Alloc")
                 .field("0", e)
                 .finish(),
-            Self::Reserve(e) => f.try_debug_struct("TryCStringError::Reserve")
+            Self::Reserve(e) => f
+                .try_debug_struct("TryCStringError::Reserve")
                 .field("0", e)
                 .finish(),
             Self::Overflow => f.write_str("TryCStringError::Overflow"),
-            Self::Nul(idx) => f.try_debug_struct("TryCStringError::Nul")
+            Self::Nul(idx) => f
+                .try_debug_struct("TryCStringError::Nul")
                 .field("0", idx)
                 .finish(),
         }
