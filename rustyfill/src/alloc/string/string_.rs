@@ -131,7 +131,7 @@ pub trait TryString: Sized {
 
     /// Fallibly write formatted arguments into this string.
     ///
-    /// Mirrors [`fmt::Write::write_fmt`] but returns [`Err(TryReserveError)`]
+    /// Mirrors [`fmt::Write::write_fmt`] but returns `Err(TryReserveError)`
     /// if growing the internal buffer fails. On failure the string may contain
     /// a partial result.
     fn try_write_fmt(&mut self, args: fmt::Arguments<'_>) -> Result<(), TryReserveError>;

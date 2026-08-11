@@ -43,7 +43,7 @@ pub enum TryBTreeSetError {
     /// Stores the raw panic payload box directly to avoid any further allocation
     /// at the point of catch. Message extraction only happens lazily in [`fmt::Display`].
     AllocPanic(PayloadBox),
-    /// An element clone failed during a method that requires [`TryClone`].
+    /// An element clone failed during a method that requires [`crate::try_clone::TryClone`].
     Clone(TryCloneError),
     /// A logic-level failure with a static diagnostic message.
     Other(&'static str),
@@ -112,7 +112,7 @@ impl TryDebug for TryBTreeSetError {
 /// # Note
 ///
 /// Because `BTreeSet::try_reserve` does not exist, mutation methods use
-/// [`::std::panic::catch_unwind`] internally to intercept OOM panics.
+/// [`crate::lang_std::panic::catch_unwind`] internally to intercept OOM panics.
 /// Elements must be [`RefUnwindSafe`] for these methods.
 pub trait TryBTreeSet<T>: Sized {
     // ── Construction ────────────────────────────────────────────────────────
@@ -364,7 +364,7 @@ impl<T: Ord + RefUnwindSafe> TryBTreeSet<T> for BTreeSet<T> {
 
 // ── TryClone for BTreeSet<T> ────────────────────────────────────────────────
 
-/// Implements [`TryClone`] for `BTreeSet<T>` when elements are cloneable.
+/// Implements [`crate::try_clone::TryClone`] for `BTreeSet<T>` when elements are cloneable.
 /// Uses fallible clone for each element and catches allocation panics from
 /// internal B-tree node growth. Clones one element at a time and inserts it
 /// directly, avoiding an intermediate `Vec` allocation.

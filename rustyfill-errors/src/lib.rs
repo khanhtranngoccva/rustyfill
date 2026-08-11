@@ -10,13 +10,13 @@
 //! A [`Report<C>`] stores error nodes in two regions:
 //!
 //! 1. **Head** (inline, no allocation): a [`StaticFrame`] carrying the current
-//!    error type `C`, optional segment label, source [`Location`], attachments,
+//!    error type `C`, optional segment label, source `core::panic::Location`, attachments,
 //!    and child frames from previous demotions.
-//! 2. **Peers** (allocated, discardable): a [`VecDeque`] of additional
+//! 2. **Peers** (allocated, discardable): a `alloc::collections::VecDeque` of additional
 //!    [`StaticFrame`]s all sharing the same context type `C`. The deque can be
 //!    optionally capped; oldest peers are evicted first when full.
 //!
-//! Each frame may carry arbitrary [`Box<dyn ItemImpl>`] attachments and a list
+//! Each frame may carry arbitrary `Box<dyn ItemImpl>` attachments and a list
 //! of [`DynamicFrame`] children created when a report is demoted during
 //! [`change_context`](Report::change_context).
 //!

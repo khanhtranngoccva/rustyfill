@@ -1,6 +1,6 @@
 //! Helper types that mirror `std::fmt`'s debug builders (`DebugStruct`, `DebugTuple`,
 //! `DebugList`, `DebugMap`, `DebugSet`) but accept values that implement
-//! [`TryDebug`](super::TryDebug).
+//! [`TryDebug`].
 //!
 //! Each builder wraps members in [`TryDebugWrapper`](super::TryDebugWrapper) before
 //! delegating to the corresponding `std::fmt` debug type, ensuring that formatting

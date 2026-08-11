@@ -44,7 +44,7 @@ pub enum TryBTreeMapError {
     /// Stores the raw panic payload box directly to avoid any further allocation
     /// at the point of catch. Message extraction only happens lazily in [`fmt::Display`].
     AllocPanic(PayloadBox),
-    /// An element clone failed during a method that requires [`TryClone`].
+    /// An element clone failed during a method that requires [`crate::try_clone::TryClone`].
     Clone(TryCloneError),
     /// A logic-level failure with a static diagnostic message.
     Other(&'static str),
@@ -111,13 +111,13 @@ impl TryDebug for TryBTreeMapError {
 /// # Note
 ///
 /// Because `BTreeMap::try_reserve` does not exist, mutation methods use
-/// [`::std::panic::catch_unwind`] internally to intercept OOM panics.
+/// [`crate::lang_std::panic::catch_unwind`] internally to intercept OOM panics.
 /// This is only possible due to the BTreeMap itself being UnwindSafe. Keys and
 /// values must be [`RefUnwindSafe`] for these methods.
 ///
 /// # Note on `try_insert`
 ///
-/// The inherent [`BTreeMap::try_insert`](::std::collections::BTreeMap::try_insert) on
+/// The inherent [`BTreeMap::try_insert`](crate::lang_std::collections::BTreeMap::try_insert) on
 /// nightly Rust returns `Err(old_value)` when a key already exists, but may *panic*
 /// on allocation failure. Our [`Self::try_insert`] catches allocation panics so it
 /// never propagates one — it returns [`TryBTreeMapError::AllocPanic`] instead, but it
@@ -186,9 +186,9 @@ pub trait TryBTreeMap<K, V>: Sized {
     /// that inserting through the entry will not allocate again. The entry API
     /// itself may still panic on OOM after this method returns `Ok`.
     ///
-    /// [`Entry`]: ::std::collections::btree_map::Entry
-    /// [`Entry::or_insert`]: ::std::collections::btree_map::Entry::or_insert
-    /// [`Entry::and_modify`]: ::std::collections::btree_map::Entry::and_modify
+    /// [`Entry`]: crate::lang_std::collections::btree_map::Entry
+    /// [`Entry::or_insert`]: crate::lang_std::collections::btree_map::Entry::or_insert
+    /// [`Entry::and_modify`]: crate::lang_std::collections::btree_map::Entry::and_modify
     fn try_entry<'a>(
         &'a mut self,
         key: K,
@@ -551,7 +551,7 @@ impl<K: Ord + RefUnwindSafe, V: RefUnwindSafe> TryBTreeMap<K, V> for BTreeMap<K,
 
 // ── TryClone for BTreeMap<K, V> ──────────────────────────────────────────────
 
-/// Implements [`TryClone`] for `BTreeMap<K, V>` when keys and values are
+/// Implements [`crate::try_clone::TryClone`] for `BTreeMap<K, V>` when keys and values are
 /// cloneable. Clones one pair at a time and inserts it directly, avoiding an
 /// intermediate `Vec` allocation. Catches allocation panics from internal
 /// B-tree node growth.

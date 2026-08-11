@@ -2,7 +2,7 @@
 //!
 //! Provides the [`TryDefault`] trait, a drop-in analogue of [`Default`] that can
 //! fail when the default value requires allocating memory (e.g. constructing a
-//! default [`String`] or [`Vec`]).
+//! default [`crate::lang_alloc::string::String`] or [`crate::lang_alloc::vec::Vec`]).
 //!
 //! # Design
 //!
@@ -12,7 +12,7 @@
 //!
 //! All well-known [`Copy`] types (numbers, booleans, characters, unit type,
 //! tuples, and arrays) are implemented explicitly below. Non-`Copy` compound
-//! types ([`Option`], [`Result`]) delegate to their inner values via `TryDefault`.
+//! types ([`crate::lang_core::option::Option`], [`crate::lang_core::result::Result`]) delegate to their inner values via `TryDefault`.
 //!
 //! Structs and enums can derive `TryDefault` via the [`rustyfill_macros::TryDefault`]
 //! proc macro, which requires every field in every variant to also implement `TryDefault`.
@@ -80,14 +80,14 @@ impl From<TryReserveError> for TryDefaultError {
     }
 }
 
-/// A fallible analogue of [`default::Default`].
+/// A fallible analogue of [`crate::lang_core::default::Default`].
 ///
-/// Unlike [`default::Default`], which panics on allocation failure,
+/// Unlike [`crate::lang_core::default::Default`], which panics on allocation failure,
 /// [`TryDefault`] returns a [`Result`] so callers can handle out-of-memory
 /// gracefully.
 ///
 /// Implementors must ensure that `try_default` never panics — inner values should
-/// also be constructed via [`TryDefault`] rather than [`default::Default`].
+/// also be constructed via [`TryDefault`] rather than [`crate::lang_core::default::Default`].
 ///
 /// # Laziness
 ///
@@ -96,7 +96,7 @@ impl From<TryReserveError> for TryDefaultError {
 /// logical work such as recursively building inner fields. This way an allocation
 /// failure short‑circuits early and avoids wasted computation or partially
 /// constructed intermediate values. See
-/// [`Box<T>`](crate::boxed::TryBox) for an example of this pattern.
+/// [`Box<T>`](crate::alloc::boxed::TryBox) for an example of this pattern.
 pub trait TryDefault {
     /// Attempt to construct the default value.
     fn try_default() -> Result<Self, TryDefaultError>

@@ -1,7 +1,7 @@
 //! Test-time global allocator that intercepts allocation calls and can be
 //! instructed via thread-local state to return null, simulating OOM conditions.
 //!
-//! This crate installs a custom [`#[global_allocator]`][std::alloc::global_allocator]
+//! This crate installs a custom `#[global_allocator]`
 //! at compile time — it is intended as a **dev-dependency** only. Do not depend on
 //! it in production code.
 

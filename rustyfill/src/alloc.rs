@@ -3,7 +3,7 @@
 //! The [`alloc`](crate::lang_alloc) (alloc) crate's `AllocError` is not exposed on stable Rust,
 //! so we provide our own equivalent for use across this library. We also provide
 //! [`PayloadBox`], an owning wrapper around the raw panic payload from
-//! [`catch_unwind`](crate::lang_std::panic::catch_unwind), and [`TryReserveError`], a unified polyfill for
+//! `catch_unwind`, and [`TryReserveError`], a unified polyfill for
 //! capacity-reservation failures across different collection backends.
 
 #[cfg(feature = "std")]
@@ -52,13 +52,13 @@ impl TryDebug for AllocError {
 /// Unified error for fallible capacity reservation.
 ///
 /// Different collection types return different reserve-error types:
-/// standard collections expose [`::std::collections::TryReserveError`] which carries
+/// standard collections expose [`crate::lang_std::collections::TryReserveError`] which carries
 /// diagnostic information, while third-party collections like `dashmap` provide an
 /// empty non-exhaustive struct with no usable fields. This enum unifies both cases
 /// so that error types across this crate can use a single `Reserve` variant.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TryReserveError {
-    /// The underlying collection provided a [`::std::collections::TryReserveError`]
+    /// The underlying collection provided a [`crate::lang_std::collections::TryReserveError`]
     /// with diagnostic details about the failed allocation. Only available when
     /// the `std` feature is enabled.
     #[cfg(feature = "std")]
@@ -114,7 +114,7 @@ impl ::lang_std::error::Error for TryReserveError {
     }
 }
 
-/// Owning wrapper around the raw panic payload from [`::std::panic::catch_unwind`].
+/// Owning wrapper around the raw panic payload from [`crate::lang_std::panic::catch_unwind`].
 ///
 /// Holds the `Box<dyn Any + Send>` verbatim so that constructing the error
 /// after catching a panic performs zero additional allocations.

@@ -2,7 +2,7 @@
 //!
 //! Provides [`os_string::TryOsString`] for fallible construction and mutation of
 //! `OsString` values, [`os_str::TryOsStr`] for fallible `&OsStr`-to-`OsString`
-//! conversions, [`c_string::TryCString`] for fallible `CString` construction,
+//! conversions, [`crate::alloc::ffi::TryCString`] for fallible `CString` construction,
 //! and a [`TryToOwned`](crate::try_to_owned::TryToOwned) impl for `CStr`.
 //! All return [`Result`] on allocation failure instead of panicking.
 

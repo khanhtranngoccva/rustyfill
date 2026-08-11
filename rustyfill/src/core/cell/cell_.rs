@@ -57,13 +57,13 @@ impl TryDebug for TryBorrowError {
 pub trait TryRefCell<T: ?Sized> {
     /// Attempts to immutably borrow the inner value.
     ///
-    /// Returns [`Err(TryBorrowError::Borrow)`] if the value is already borrowed
+    /// Returns `Err(TryBorrowError::Borrow)` if the value is already borrowed
     /// mutably or if the immutable borrow count has reached its maximum.
     fn try_borrow(&self) -> Result<Ref<'_, T>, TryBorrowError>;
 
     /// Attempts to mutably borrow the inner value.
     ///
-    /// Returns [`Err(TryBorrowError::BorrowMut)`] if the value is already
+    /// Returns `Err(TryBorrowError::BorrowMut)` if the value is already
     /// borrowed (either mutably or immutably).
     fn try_borrow_mut(&self) -> Result<RefMut<'_, T>, TryBorrowError>;
 

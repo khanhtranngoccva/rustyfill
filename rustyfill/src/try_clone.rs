@@ -2,7 +2,7 @@
 //!
 //! Provides the [`TryClone`] trait, a drop-in analogue of [`Clone`] that can
 //! fail when the clone operation requires allocating memory (e.g. cloning a
-//! [`String`] or [`Vec`]).
+//! [`crate::lang_alloc::string::String`] or [`crate::lang_alloc::vec::Vec`]).
 //!
 //! # Design
 //!
@@ -12,7 +12,7 @@
 //!
 //! All well-known [`Copy`] types (numbers, booleans, characters, unit type,
 //! tuples, and arrays) are implemented explicitly below. Non-`Copy` compound
-//! types ([`Option`], [`Result`]) delegate to their inner values via `TryClone`.
+//! types ([`crate::lang_core::option::Option`], [`crate::lang_core::result::Result`]) delegate to their inner values via `TryClone`.
 //!
 //! Structs can derive `TryClone` via the [`rustyfill_macros::TryClone`] proc macro,
 //! which requires every field to also implement `TryClone`.
@@ -95,7 +95,7 @@ impl From<TryReserveError> for TryCloneError {
 /// backing storage **before** performing any logical work such as recursively
 /// cloning inner fields if possible. This way an allocation failure short‑circuits
 /// early and avoids wasted computation or intermediate values. See
-/// [`Box<T>`](crate::boxed::TryBox) for an example of this pattern.
+/// [`Box<T>`](crate::alloc::boxed::TryBox) for an example of this pattern.
 pub trait TryClone: Clone {
     /// Attempt to clone `self`.
     fn try_clone(&self) -> Result<Self, TryCloneError>;

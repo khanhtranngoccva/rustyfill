@@ -60,9 +60,9 @@ pub fn try_default_tuples(input: TokenStream) -> TokenStream {
 /// Produces a [`core::fmt::Arguments`] value identical to what
 /// [`core::format_args!`] would produce, except that every argument used as
 /// a formatted value is wrapped in the appropriate wrapper type
-/// ([`TryDebugWrapper`], [`TryDisplayWrapper`], [`TryLowerHexWrapper`], or
-/// [`TryUpperHexWrapper`]) so that formatting routes through the fallible
-/// [`TryDebug`] / [`TryDisplay`] / [`TryLowerHex`] / [`TryUpperHex`] paths.
+/// (`TryDebugWrapper`, `TryDisplayWrapper`, `TryLowerHexWrapper`, or
+/// `TryUpperHexWrapper`) so that formatting routes through the fallible
+/// `TryDebug` / `TryDisplay` / `TryLowerHex` / `TryUpperHex` paths.
 ///
 /// The wrapper is selected based on the trailing format character of each
 /// placeholder: `?` → Debug, `x` → LowerHex, `X` → UpperHex, everything else

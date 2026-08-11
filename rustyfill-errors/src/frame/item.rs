@@ -2,7 +2,7 @@
 //!
 //! Every piece of data stored inside a frame is an *item*: either a typed
 //! [`ContextFrame`] carrying an error plus segment and location, or an
-//! arbitrary attachment boxed as [`Box<dyn ItemImpl>`].
+//! arbitrary attachment boxed as `Box<dyn ItemImpl>`.
 
 use core::any::Any;
 use core::fmt;
@@ -36,7 +36,7 @@ impl TryDebug for ItemKind {
 
 /// Common trait implemented by every concrete item type.
 ///
-/// This is the type-erased interface behind [`Box<dyn ItemImpl>`] inside both
+/// This is the type-erased interface behind `Box<dyn ItemImpl>` inside both
 /// [`StaticFrame`](super::StaticFrame) attachments and
 /// [`DynamicFrame`](super::DynamicFrame) heads.
 ///
@@ -90,7 +90,7 @@ use alloc::borrow::Cow;
 /// source location where it was created.
 ///
 /// Stored inline in [`StaticFrame`](super::StaticFrame), or boxed as
-/// [`Box<dyn ItemImpl>`] inside a [`DynamicFrame`](super::DynamicFrame) when
+/// `Box<dyn ItemImpl>` inside a [`DynamicFrame`](super::DynamicFrame) when
 /// demoted during [`change_context`](super::super::Report::change_context).
 pub struct ContextFrame<C> {
     pub(crate) context: C,

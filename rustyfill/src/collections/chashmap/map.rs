@@ -242,7 +242,7 @@ impl<K: Eq + Hash, V, S: BuildHasher> ConcurrentHashMap<K, V, S> {
 
     /// Construct an empty map with the provided hasher and 32 shards.
     ///
-    /// Equivalent to [`DashMap::with_hasher`](dashmap::DashMap::with_hasher).
+    /// Equivalent to `DashMap::with_hasher`.
     pub fn try_with_hasher(hasher: S) -> Result<Self, ConcurrentHashMapError> {
         Self::try_with_capacity_and_hasher_and_shards(0, hasher, 32)
     }
@@ -251,7 +251,7 @@ impl<K: Eq + Hash, V, S: BuildHasher> ConcurrentHashMap<K, V, S> {
 
     /// Construct with capacity and the provided hasher, using 32 shards.
     ///
-    /// Equivalent to [`DashMap::with_capacity_and_hasher`](dashmap::DashMap::with_capacity_and_hasher).
+    /// Equivalent to `DashMap::with_capacity_and_hasher`.
     pub fn try_with_capacity_and_hasher(
         capacity: usize,
         hasher: S,
@@ -643,7 +643,7 @@ impl<K: Eq + Hash, V, S: BuildHasher> ConcurrentHashMap<K, V, S> {
     /// Returns an immutable iterator over all key-value pairs in the map.
     ///
     /// Lazily acquires a read lock per shard via an `Arc` and yields fallible
-    /// [`RefMulti`] guards. Errors occur if `Arc` allocation or cloning fails.
+    /// `RefMulti` guards. Errors occur if `Arc` allocation or cloning fails.
     pub fn iter(&self) -> super::iter::Iter<'_, K, V, S> {
         super::iter::Iter::new(self)
     }
@@ -651,7 +651,7 @@ impl<K: Eq + Hash, V, S: BuildHasher> ConcurrentHashMap<K, V, S> {
     /// Returns a mutable iterator over all key-value pairs in the map.
     ///
     /// Lazily acquires a write lock per shard via an `Arc` and yields fallible
-    /// [`RefMutMulti`] guards. Errors occur if `Arc` allocation or cloning fails.
+    /// `RefMutMulti` guards. Errors occur if `Arc` allocation or cloning fails.
     pub fn iter_mut(&self) -> super::iter::IterMut<'_, K, V, S> {
         super::iter::IterMut::new(self)
     }

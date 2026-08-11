@@ -72,15 +72,15 @@ impl TryDebug for TryStrError {
     }
 }
 
-/// A trait for fallibly converting a string slice into an owned [`String`].
+/// A trait for fallibly converting a string slice into an owned [`crate::lang_alloc::string::String`].
 ///
 /// Implemented for [`str`]. Methods reserve capacity upfront so that allocation
 /// failures are returned as errors rather than panicking or aborting.
 pub trait TryStr {
     /// Fallibly copy this string slice into a new [`String`].
     ///
-    /// This is the fallible analogue of [`ToString::to_string`] and
-    /// [`str::to_owned`]. Reserves capacity for the full byte length before
+    /// This is the fallible analogue of `ToString::to_string` and
+    /// `str::to_owned`. Reserves capacity for the full byte length before
     /// copying, so that allocation failures are caught cleanly.
     ///
     /// Returns [`TryStrError::Reserve`] on allocation failure.

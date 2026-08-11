@@ -76,7 +76,7 @@ pub trait TryOsStr {
     /// Fallibly copy this `OsStr` into a new [`OsString`].
     ///
     /// This is the fallible analogue of [`OsStr::to_os_string`] and
-    /// [`OsStr::to_owned`]. Reserves capacity for the full byte length before
+    /// `OsStr::to_owned`. Reserves capacity for the full byte length before
     /// copying, so that allocation failures are caught cleanly.
     ///
     /// Returns [`TryOsStrError::Reserve`] on allocation failure.

@@ -1,4 +1,4 @@
-//! Convenience extension for [`Result<T, Report<E>`] that chains report-building
+//! Convenience extension for `Result<T, Report<E>>` that chains report-building
 //! operations without requiring explicit `map_err`.
 //!
 //! Every method operates only when the result is an `Err`, leaving `Ok` values
@@ -26,8 +26,8 @@ use crate::Report;
 pub trait ResultExt<T, E> {
     /// Attaches printable data to the head frame if this result is an error.
     ///
-    /// The value must implement [`TryDebug`](rustyfill::try_fmt::TryDebug) and
-    /// [`TryDisplay`](rustyfill::try_fmt::TryDisplay). Silently drops the
+    /// The value must implement [`TryDebug`] and
+    /// [`TryDisplay`]. Silently drops the
     /// attachment on OOM.
     fn attach<A>(self, attachment: A) -> Self
     where
@@ -42,8 +42,8 @@ pub trait ResultExt<T, E> {
 
     /// Attaches opaque data to the head frame if this result is an error.
     ///
-    /// Unlike [`attach`](Self::attach), the value need not implement [`Debug`]
-    /// or [`Display`]. Silently drops the attachment on OOM.
+    /// Unlike [`attach`](Self::attach), the value need not implement `core::fmt::Debug`
+    /// or `core::fmt::Display`. Silently drops the attachment on OOM.
     fn attach_opaque<A>(self, attachment: A) -> Self
     where
         A: Send + Sync + 'static;

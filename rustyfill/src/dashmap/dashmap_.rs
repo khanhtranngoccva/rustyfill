@@ -206,7 +206,7 @@ impl TryDebug for TryDashMapNonblockError {
 /// `DashMap` methods that can fail due to allocation pressure, returning
 /// [`Result`] values that propagate [`TryDashMapError`] on failure.
 ///
-/// Unlike [`::std::collections::HashMap`], `DashMap` is concurrent: mutation
+/// Unlike `std::collections::HashMap`, `DashMap` is concurrent: mutation
 /// methods take `&self` and lock individual shards at runtime. These fallible
 /// wrappers pre-reserve capacity on the relevant shard(s) so that the actual
 /// insert does not panic on OOM.

@@ -93,7 +93,7 @@ pub trait TryPath {
     /// Fallibly copy this `Path` into a new [`PathBuf`].
     ///
     /// This is the fallible analogue of [`Path::to_path_buf`] and
-    /// [`Path::to_owned`]. Reserves capacity for the full byte length before
+    /// `Path::to_owned`. Reserves capacity for the full byte length before
     /// copying, so that allocation failures are caught cleanly.
     ///
     /// Returns [`TryPathError::Reserve`] on allocation failure.

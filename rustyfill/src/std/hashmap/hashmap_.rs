@@ -132,7 +132,7 @@ impl From<::lang_std::collections::TryReserveError> for TryHashMapError {
 ///
 /// # Note on `try_insert`
 ///
-/// The inherent [`HashMap::try_insert`](::std::collections::HashMap::try_insert) on
+/// The inherent [`HashMap::try_insert`](crate::lang_std::collections::HashMap::try_insert) on
 /// stable Rust returns `Err(old_value)` when a key already exists, but may *panic*
 /// on allocation failure. Our [`Self::try_insert`] reserves capacity first so it
 /// never panics on OOM — it returns [`TryHashMapError::Reserve`] instead, but it
@@ -237,9 +237,9 @@ pub trait TryHashMap<K, V, S = RandomState>: Sized {
     /// Unlike the inherent [`HashMap::entry`], this method guarantees that
     /// inserting through the entry will not allocate again.
     ///
-    /// [`Entry`]: ::std::collections::hash_map::Entry
-    /// [`Entry::or_insert`]: ::std::collections::hash_map::Entry::or_insert
-    /// [`Entry::and_modify`]: ::std::collections::hash_map::Entry::and_modify
+    /// [`Entry`]: crate::lang_std::collections::hash_map::Entry
+    /// [`Entry::or_insert`]: crate::lang_std::collections::hash_map::Entry::or_insert
+    /// [`Entry::and_modify`]: crate::lang_std::collections::hash_map::Entry::and_modify
     fn try_entry<'a>(
         &'a mut self,
         key: K,

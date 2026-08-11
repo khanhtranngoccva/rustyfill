@@ -180,7 +180,7 @@ impl<C> Report<C> {
 
     /// Attaches printable data to the head frame.
     ///
-    /// The value must implement [`Debug`] and [`Display`] so that the
+    /// The value must implement `core::fmt::Debug` and `core::fmt::Display` so that the
     /// attachment can be rendered when the report is formatted.
     ///
     /// If boxing or vec growth fails, the attachment is silently dropped
@@ -207,8 +207,8 @@ impl<C> Report<C> {
 
     /// Attaches opaque data to the head frame without formatting requirements.
     ///
-    /// Unlike [`attach`](Self::attach), the value need not implement [`Debug`]
-    /// or [`Display`]. It can only be recovered by downcasting via
+    /// Unlike [`attach`](Self::attach), the value need not implement `core::fmt::Debug`
+    /// or `core::fmt::Display`. It can only be recovered by downcasting via
     /// [`contains`](Self::contains) / [`downcast_ref`](Self::downcast_ref).
     ///
     /// If boxing or vec growth fails, the attachment is silently dropped
@@ -269,7 +269,7 @@ impl<C> Report<C> {
     /// on allocation failure.
     ///
     /// Unlike [`try_attach`](Self::try_attach), the value need not implement
-    /// [`Debug`] or [`Display`].
+    /// `core::fmt::Debug` or `core::fmt::Display`.
     ///
     /// Returns `Ok(report)` on success, or `Err((report, attachment))` giving
     /// back ownership so the caller isn't surprised by silent data loss.
@@ -382,7 +382,7 @@ impl<C> Report<C> {
 pub struct ChangeContextError<C, T> {
     /// The original report, recovered from whatever frames could be rebuilt.
     pub report: Report<C>,
-    /// The new context that was passed to [`try_change_context`].
+    /// The new context that was passed to [`Report::try_change_context`].
     pub context: T,
 }
 
@@ -950,7 +950,7 @@ where
     /// Uses internal iteration so that [`&mut FrameRefMut`] cannot escape the
     /// callback — preventing aliasing vulnerabilities.
     ///
-    /// Returns [`Err(TryReserveError)`] if stack allocation fails during descent.
+    /// Returns `Err(TryReserveError)` if stack allocation fails during descent.
     pub fn frames_mut<F, B>(&mut self, visitor: F) -> Result<ControlFlow<B>, TryReserveError>
     where
         F: FnMut(&mut FrameRefMut<'_, C>) -> ControlFlow<B>,

@@ -19,15 +19,15 @@ use crate::lang_alloc::boxed::Box;
 use crate::lang_core::fmt;
 use crate::prelude::TryBox;
 
-/// Extension trait for fallible [`::std::io::Error`] construction.
+/// Extension trait for fallible `::std::io::Error` construction.
 pub trait IoErrorExt {
     // ── new(kind, source) variants ────────────────────────────────────────────
 
-    /// Fallibly construct an [`::std::io::Error`] from a kind and a concrete error source.
+    /// Fallibly construct an `::std::io::Error` from a kind and a concrete error source.
     ///
     /// The source is boxed once via [`Box::fallible_new`], returning
     /// [`AllocError`] on OOM. On success, the boxed error is passed to
-    /// [`io::Error::new`] which accepts it without further allocation.
+    /// `io::Error::new` which accepts it without further allocation.
     fn try_new<E>(
         kind: ::lang_std::io::ErrorKind,
         source: E,
@@ -35,7 +35,7 @@ pub trait IoErrorExt {
     where
         E: ::lang_std::error::Error + Send + Sync + 'static;
 
-    /// Construct an [`::std::io::Error`] from a kind and an already-boxed error source.
+    /// Construct an `::std::io::Error` from a kind and an already-boxed error source.
     ///
     /// Reuses the existing box directly — **no extra allocation** occurs.
     /// Prefer this when you already have a `Box<dyn Error + Send + Sync>`
@@ -47,14 +47,14 @@ pub trait IoErrorExt {
         source: Box<dyn ::lang_std::error::Error + Send + Sync>,
     ) -> ::lang_std::io::Error;
 
-    /// Construct an [`::std::io::Error`] from a kind and a concrete error source,
-    /// falling back to [`ErrorKind::OutOfMemory`] if boxing fails.
+    /// Construct an `::std::io::Error` from a kind and a concrete error source,
+    /// falling back to `ErrorKind::OutOfMemory` if boxing fails.
     ///
-    /// Unlike [`Self::try_new`], this always returns an [`::std::io::Error`] — never
+    /// Unlike [`Self::try_new`], this always returns an `::std::io::Error` — never
     /// an [`AllocError`]. If the heap allocation needed to box the source succeeds,
     /// the returned error has the requested kind with the original source attached.
     /// If boxing fails due to OOM, the returned error is constructed from
-    /// [`ErrorKind::OutOfMemory`] with no source, so the caller gets a valid
+    /// `ErrorKind::OutOfMemory` with no source, so the caller gets a valid
     /// error either way without needing to branch on [`Result`].
     fn new_or_oom<E>(kind: ::lang_std::io::ErrorKind, source: E) -> ::lang_std::io::Error
     where
@@ -62,23 +62,23 @@ pub trait IoErrorExt {
 
     // ── other(source) variants ────────────────────────────────────────────────
 
-    /// Like [`Self::try_new`] but defaults to [`ErrorKind::Other`].
+    /// Like [`Self::try_new`] but defaults to `ErrorKind::Other`.
     ///
     /// Shorthand for `try_new(ErrorKind::Other, source)`.
     fn try_other<E>(source: E) -> Result<::lang_std::io::Error, AllocError>
     where
         E: ::lang_std::error::Error + Send + Sync + 'static;
 
-    /// Like [`Self::new_boxed`] but defaults to [`ErrorKind::Other`].
+    /// Like [`Self::new_boxed`] but defaults to `ErrorKind::Other`.
     ///
     /// Shorthand for `new_boxed(ErrorKind::Other, source)`. Never fails.
     fn other_boxed(
         source: Box<dyn ::lang_std::error::Error + Send + Sync>,
     ) -> ::lang_std::io::Error;
 
-    /// Like [`Self::new_or_oom`] but defaults to [`ErrorKind::Other`].
+    /// Like [`Self::new_or_oom`] but defaults to `ErrorKind::Other`.
     ///
-    /// Falls back to [`ErrorKind::OutOfMemory`] if boxing fails.
+    /// Falls back to `ErrorKind::OutOfMemory` if boxing fails.
     fn other_or_oom<E>(source: E) -> ::lang_std::io::Error
     where
         E: ::lang_std::error::Error + Send + Sync + 'static;

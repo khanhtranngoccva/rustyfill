@@ -27,7 +27,7 @@ struct ArcInner<T: ?Sized> {
 
 /// A trait for fallibly constructing an [`Arc`].
 ///
-/// Implemented for `Arc<T>`. Mirrors the [`TryBox`](crate::boxed::TryBox) pattern:
+/// Implemented for `Arc<T>`. Mirrors the [`TryBox`](crate::alloc::boxed::TryBox) pattern:
 /// only the allocating constructors are fallible; all other Arc behaviour
 /// (cloning, downgrading, dropping) delegates to the standard library.
 ///
@@ -84,7 +84,7 @@ pub trait TryArc<T>: Sized {
     /// This is a panic-free analogue of [`Arc::unwrap_or_clone`]. When there are
     /// other strong references, the inner value is cloned via [`TryClone`] rather
     /// than [`Clone`], so allocation failures during cloning (e.g. cloning a
-    /// [`String`]) return an error instead of panicking.
+    /// [`crate::lang_alloc::string::String`]) return an error instead of panicking.
     ///
     /// On failure, returns the original `Arc` alongside the clone error so the
     /// caller retains access to the shared data.

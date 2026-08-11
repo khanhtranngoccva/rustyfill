@@ -6,22 +6,6 @@
 //! a shared reference to the existing copy. If not, the value is cloned into an
 //! [`Arc`] and stored globally.
 //!
-//! # Memory layout
-//!
-//! Each entry in the backing map stores [`InternKey`] as the key and `()` as the
-//! value. [`InternKey`] holds the pre-computed hash (`u64`) for O(1) shard routing
-//! and bucket lookup, plus a [`Weak`] pointer to the owned type that does not keep
-//! the data alive. The actual `Arc<Owned>` is held solely by external
-//! [`Intern::Shared`] handles. When all handles are dropped, the `Arc` is freed,
-//! the `Weak` in the key expires, and the next prune sweep reclaims the entry.
-//! Backing memory is freed as soon as all handles are dropped (subject to the
-//! prune interval).
-//!
-//! # Safety
-//!
-//! All fallible work (the `Arc` allocation) happens **before** any lock is acquired,
-//! so an OOM cannot leave a shard in an inconsistent state or leak a write lock.
-//!
 //! # Pruning
 //!
 //! Every `PRUNE_INTERVAL` intern calls, unlocked shards are scanned for expired
@@ -107,7 +91,7 @@ impl<Owned> PartialEq for InternKey<Owned> {
 /// Sealed trait mapping a borrowed type to its owned counterpart.
 ///
 /// Implemented only for `str`, `OsStr`, `CStr`, and `Path`.
-/// Mirrors the [`::std::borrow::ToOwned`] relationship with stronger fallible
+/// Mirrors the `ToOwned` relationship with stronger fallible
 /// semantics: the borrowed type must also implement [`TryToOwned`], and the
 /// owned type must be clonable so we can build the Arc before acquiring locks.
 pub trait InternKind: TryToOwned + Hash + Eq + 'static
@@ -127,7 +111,7 @@ impl InternKind for Path {}
 /// An interned value that may be owned or shared via Arc.
 ///
 /// The type parameter `B` is the borrowed form (`str`, `OsStr`, `CStr`, `Path`).
-/// The owned form is provided by [`InternKind::Owned`].
+/// The owned form is provided by `<B as ToOwned>::Owned`.
 ///
 /// Supported types: `Intern<str>`, `Intern<OsStr>`, `Intern<CStr>`, `Intern<Path>`.
 pub enum Intern<B: InternKind + ?Sized>
