@@ -5,7 +5,10 @@ use alloc::boxed::Box;
 use alloc::collections::VecDeque;
 use alloc::vec::Vec;
 
+use core::error::Error;
 use core::panic::Location;
+
+use rustyfill::try_fmt::{TryDebug, TryDisplay};
 
 use crate::frame::item::{ContextFrame, ItemImpl};
 use rustyfill::prelude::TryBox;
@@ -138,7 +141,7 @@ impl<C> StaticFrame<C> {
     #[must_use]
     pub(crate) fn downcast_mut<T: Send + Sync + 'static>(&mut self) -> Option<&mut T>
     where
-        C: core::error::Error + Send + Sync + 'static,
+        C: Error + TryDebug + TryDisplay + Send + Sync + 'static,
     {
         // Check context first.
         if let Some(r) = self.context.as_any_mut().downcast_mut::<T>() {
@@ -215,7 +218,7 @@ impl DynamicFrame {
         sf: StaticFrame<C>,
     ) -> Result<Self, (StaticFrame<C>, rustyfill::alloc::AllocError)>
     where
-        C: core::error::Error + Send + Sync + 'static,
+        C: Error + TryDebug + TryDisplay + Send + Sync + 'static,
     {
         let StaticFrame {
             context,

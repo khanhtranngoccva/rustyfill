@@ -4,17 +4,19 @@
 //! Attachments are boxed as [`Box<dyn ItemImpl>`](crate::ItemImpl) inside frames.
 //! Two wrapper types exist depending on whether the inner value is human-readable:
 //!
-//! - [`PrintableAttachment<T>`] — for values that implement `Debug` + `Display`.
+//! - [`PrintableAttachment<T>`] — for values that implement `TryDebug` + `TryDisplay`.
 //! - [`OpaqueAttachment<T>`] — for any `Send + Sync + 'static` value.
 
 use core::any::Any;
 use core::fmt;
 
+use rustyfill::try_fmt::{TryDebug, TryDisplay};
+
 use crate::frame::{ItemImpl, ItemKind};
 
 // ── PrintableAttachment ──────────────────────────────────────────────────────
 
-/// An attachment wrapping a value that implements [`Debug`] and [`Display`].
+/// An attachment wrapping a value that implements [`TryDebug`] and [`TryDisplay`].
 ///
 /// The trait objects produced from this type can be printed via the inherited
 /// `dyn fmt::Debug` and `dyn fmt::Display` vtables.
@@ -38,9 +40,9 @@ impl<T> PrintableAttachment<T> {
     }
 }
 
-impl<T: Send + Sync + 'static> ItemImpl for PrintableAttachment<T> {
+impl<T: TryDebug + TryDisplay + Send + Sync + 'static> ItemImpl for PrintableAttachment<T> {
     fn kind(&self) -> ItemKind {
-        ItemKind::Attachment
+        ItemKind::PrintableAttachment
     }
 
     fn as_any(&self) -> &dyn Any {
@@ -50,16 +52,40 @@ impl<T: Send + Sync + 'static> ItemImpl for PrintableAttachment<T> {
     fn as_any_mut(&mut self) -> &mut dyn Any {
         &mut self.0
     }
+
+    fn is_printable(&self) -> bool {
+        true
+    }
+
+    fn try_display_fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        TryDisplay::try_fmt(&self.0, f)
+    }
 }
 
-impl<T: fmt::Debug> fmt::Debug for PrintableAttachment<T> {
+impl<T: TryDebug> TryDebug for PrintableAttachment<T> {
+    #[inline]
+    fn try_fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        TryDebug::try_fmt(&self.0, f)
+    }
+}
+
+impl<T: TryDisplay> TryDisplay for PrintableAttachment<T> {
+    #[inline]
+    fn try_fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        TryDisplay::try_fmt(&self.0, f)
+    }
+}
+
+impl<T: TryDebug> fmt::Debug for PrintableAttachment<T> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        // TryDebug has Debug as a supertrait, so this always works.
         fmt::Debug::fmt(&self.0, f)
     }
 }
 
-impl<T: fmt::Display> fmt::Display for PrintableAttachment<T> {
+impl<T: TryDisplay> fmt::Display for PrintableAttachment<T> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        // TryDisplay has Display as a supertrait, so this always works.
         fmt::Display::fmt(&self.0, f)
     }
 }
@@ -90,9 +116,37 @@ impl<T> OpaqueAttachment<T> {
     }
 }
 
+impl<T: Send + Sync + 'static> TryDebug for OpaqueAttachment<T> {
+    #[inline]
+    fn try_fmt(&self, _f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        Ok(())
+    }
+}
+
+impl<T: Send + Sync + 'static> TryDisplay for OpaqueAttachment<T> {
+    #[inline]
+    fn try_fmt(&self, _f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        Ok(())
+    }
+}
+
+impl<T: Send + Sync + 'static> fmt::Debug for OpaqueAttachment<T> {
+    #[inline]
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "<opaque>")
+    }
+}
+
+impl<T: Send + Sync + 'static> fmt::Display for OpaqueAttachment<T> {
+    #[inline]
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "<opaque>")
+    }
+}
+
 impl<T: Send + Sync + 'static> ItemImpl for OpaqueAttachment<T> {
     fn kind(&self) -> ItemKind {
-        ItemKind::Attachment
+        ItemKind::OpaqueAttachment
     }
 
     fn as_any(&self) -> &dyn Any {

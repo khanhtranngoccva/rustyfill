@@ -7,6 +7,8 @@
 
 use core::error::Error;
 
+use rustyfill::try_fmt::{TryDebug, TryDisplay};
+
 use crate::Report;
 
 /// Extension trait for [`Result`] values whose error type is a [`Report`].
@@ -24,17 +26,18 @@ use crate::Report;
 pub trait ResultExt<T, E> {
     /// Attaches printable data to the head frame if this result is an error.
     ///
-    /// The value must implement [`Debug`](core::fmt::Debug) and
-    /// [`Display`](core::fmt::Display). Silently drops the attachment on OOM.
+    /// The value must implement [`TryDebug`](rustyfill::try_fmt::TryDebug) and
+    /// [`TryDisplay`](rustyfill::try_fmt::TryDisplay). Silently drops the
+    /// attachment on OOM.
     fn attach<A>(self, attachment: A) -> Self
     where
-        A: core::fmt::Debug + core::fmt::Display + Send + Sync + 'static;
+        A: rustyfill::try_fmt::TryDebug + rustyfill::try_fmt::TryDisplay + Send + Sync + 'static;
 
     /// Lazily evaluates and attaches printable data to the head frame if this
     /// result is an error. The closure is only called when the result is `Err`.
     fn attach_lazy<A, F>(self, f: F) -> Self
     where
-        A: core::fmt::Debug + core::fmt::Display + Send + Sync + 'static,
+        A: rustyfill::try_fmt::TryDebug + rustyfill::try_fmt::TryDisplay + Send + Sync + 'static,
         F: FnOnce() -> A;
 
     /// Attaches opaque data to the head frame if this result is an error.
@@ -85,11 +88,11 @@ pub trait ResultExt<T, E> {
 
 impl<T, E> ResultExt<T, E> for Result<T, Report<E>>
 where
-    E: Error + Send + Sync + 'static,
+    E: Error + TryDebug + TryDisplay + Send + Sync + 'static,
 {
     fn attach<A>(self, attachment: A) -> Self
     where
-        A: core::fmt::Debug + core::fmt::Display + Send + Sync + 'static,
+        A: rustyfill::try_fmt::TryDebug + rustyfill::try_fmt::TryDisplay + Send + Sync + 'static,
     {
         match self {
             Ok(val) => Ok(val),
@@ -99,7 +102,7 @@ where
 
     fn attach_lazy<A, F>(self, f: F) -> Self
     where
-        A: core::fmt::Debug + core::fmt::Display + Send + Sync + 'static,
+        A: rustyfill::try_fmt::TryDebug + rustyfill::try_fmt::TryDisplay + Send + Sync + 'static,
         F: FnOnce() -> A,
     {
         match self {
@@ -187,6 +190,8 @@ mod tests {
         }
     }
     impl Error for IoError {}
+    rustyfill::debug_passthrough!(IoError);
+    rustyfill::display_passthrough!(IoError);
 
     #[derive(Debug)]
     struct AppError(Cow<'static, str>);
@@ -196,6 +201,8 @@ mod tests {
         }
     }
     impl Error for AppError {}
+    rustyfill::debug_passthrough!(AppError);
+    rustyfill::display_passthrough!(AppError);
 
     #[test]
     fn attach_on_ok_is_noop() {

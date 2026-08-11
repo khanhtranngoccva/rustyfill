@@ -28,6 +28,7 @@
 extern crate alloc;
 
 mod fmt;
+mod fmt_helpers;
 pub mod frame;
 mod report;
 pub mod result_ext;

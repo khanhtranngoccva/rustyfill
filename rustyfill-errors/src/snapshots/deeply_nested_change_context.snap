@@ -1,0 +1,8 @@
+level 3
+├╴at rustyfill-errors/src/report.rs:1697:40
+│
+╰─▶ level 2
+    ├╴at rustyfill-errors/src/report.rs:1696:41
+    │
+    ╰─▶ level 1
+        ╰╴at rustyfill-errors/src/report.rs:1695:18

@@ -1,0 +1,8 @@
+top
+├╴at rustyfill-errors/src/report.rs:1716:14
+│
+╰┬▶ base
+ │  ╰╴at rustyfill-errors/src/report.rs:1714:42
+ │
+ ╰▶ peer
+    ╰╴at rustyfill-errors/src/report.rs:1715:14

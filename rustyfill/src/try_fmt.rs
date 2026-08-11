@@ -29,7 +29,11 @@
 
 use core::fmt;
 
+mod assert;
 pub mod helpers;
+
+// Re-export AssertFmt at the try_fmt module level.
+pub use assert::AssertFmt;
 
 // Re-export helper types at the try_fmt module level for convenience.
 pub use helpers::{
@@ -279,178 +283,8 @@ impl<T: TryUpperExp> fmt::UpperExp for TryUpperExpWrapper<T> {
     }
 }
 
-// ── AssertFmt wrappers ──────────────────────────────────────────────────────────
-// Passthrough wrappers for foreign types that do not implement the Try* traits.
-// The user asserts (on their honor) that the underlying std fmt implementation
-// never implicitly allocates — i.e., it may allocate and return an error, but
-// will not panic on OOM.
-
-/// Wraps any value that implements [`fmt::Debug`] so it can be used as a [`TryDebug`]
-/// value. Use this for foreign types whose `Debug` implementation you have verified
-/// never implicitly allocates (may allocate and return an error, but will not panic).
-pub struct AssertDebug<T: fmt::Debug>(pub T);
-
-impl<T: fmt::Debug> AssertDebug<T> {
-    /// Create an assertion wrapper around a [`fmt::Debug`] value.
-    #[inline]
-    pub const fn new(value: T) -> Self {
-        Self(value)
-    }
-}
-
-impl<T: fmt::Debug> fmt::Debug for AssertDebug<T> {
-    #[inline]
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        fmt::Debug::fmt(&self.0, f)
-    }
-}
-
-impl<T: fmt::Debug> TryDebug for AssertDebug<T> {
-    #[inline]
-    fn try_fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        fmt::Debug::fmt(&self.0, f)
-    }
-}
-
-/// Wraps any value that implements [`fmt::Display`] so it can be used as a
-/// [`TryDisplay`] value. Use this for foreign types whose `Display` implementation
-/// you have verified never implicitly allocates (may allocate and return an error,
-/// but will not panic).
-pub struct AssertDisplay<T: fmt::Display>(pub T);
-
-impl<T: fmt::Display> AssertDisplay<T> {
-    /// Create an assertion wrapper around a [`fmt::Display`] value.
-    #[inline]
-    pub const fn new(value: T) -> Self {
-        Self(value)
-    }
-}
-
-impl<T: fmt::Display> fmt::Display for AssertDisplay<T> {
-    #[inline]
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        fmt::Display::fmt(&self.0, f)
-    }
-}
-
-impl<T: fmt::Display> TryDisplay for AssertDisplay<T> {
-    #[inline]
-    fn try_fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        fmt::Display::fmt(&self.0, f)
-    }
-}
-
-/// Wraps any value that implements [`fmt::LowerHex`] so it can be used as a
-/// [`TryLowerHex`] value. Use this for foreign types whose `LowerHex` implementation
-/// you have verified never implicitly allocates (may allocate and return an error,
-/// but will not panic).
-pub struct AssertLowerHex<T: fmt::LowerHex>(pub T);
-
-impl<T: fmt::LowerHex> AssertLowerHex<T> {
-    /// Create an assertion wrapper around a [`fmt::LowerHex`] value.
-    #[inline]
-    pub const fn new(value: T) -> Self {
-        Self(value)
-    }
-}
-
-impl<T: fmt::LowerHex> fmt::LowerHex for AssertLowerHex<T> {
-    #[inline]
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        fmt::LowerHex::fmt(&self.0, f)
-    }
-}
-
-impl<T: fmt::LowerHex> TryLowerHex for AssertLowerHex<T> {
-    #[inline]
-    fn try_fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        fmt::LowerHex::fmt(&self.0, f)
-    }
-}
-
-/// Wraps any value that implements [`fmt::UpperHex`] so it can be used as a
-/// [`TryUpperHex`] value. Use this for foreign types whose `UpperHex` implementation
-/// you have verified never implicitly allocates (may allocate and return an error,
-/// but will not panic).
-pub struct AssertUpperHex<T: fmt::UpperHex>(pub T);
-
-impl<T: fmt::UpperHex> AssertUpperHex<T> {
-    /// Create an assertion wrapper around a [`fmt::UpperHex`] value.
-    #[inline]
-    pub const fn new(value: T) -> Self {
-        Self(value)
-    }
-}
-
-impl<T: fmt::UpperHex> fmt::UpperHex for AssertUpperHex<T> {
-    #[inline]
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        fmt::UpperHex::fmt(&self.0, f)
-    }
-}
-
-impl<T: fmt::UpperHex> TryUpperHex for AssertUpperHex<T> {
-    #[inline]
-    fn try_fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        fmt::UpperHex::fmt(&self.0, f)
-    }
-}
-
-/// Wraps any value that implements [`fmt::LowerExp`] so it can be used as a
-/// [`TryLowerExp`] value. Use this for foreign types whose `LowerExp` implementation
-/// you have verified never implicitly allocates (may allocate and return an error,
-/// but will not panic).
-pub struct AssertLowerExp<T: fmt::LowerExp>(pub T);
-
-impl<T: fmt::LowerExp> AssertLowerExp<T> {
-    /// Create an assertion wrapper around a [`fmt::LowerExp`] value.
-    #[inline]
-    pub const fn new(value: T) -> Self {
-        Self(value)
-    }
-}
-
-impl<T: fmt::LowerExp> fmt::LowerExp for AssertLowerExp<T> {
-    #[inline]
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        fmt::LowerExp::fmt(&self.0, f)
-    }
-}
-
-impl<T: fmt::LowerExp> TryLowerExp for AssertLowerExp<T> {
-    #[inline]
-    fn try_fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        fmt::LowerExp::fmt(&self.0, f)
-    }
-}
-
-/// Wraps any value that implements [`fmt::UpperExp`] so it can be used as a
-/// [`TryUpperExp`] value. Use this for foreign types whose `UpperExp` implementation
-/// you have verified never implicitly allocates (may allocate and return an error,
-/// but will not panic).
-pub struct AssertUpperExp<T: fmt::UpperExp>(pub T);
-
-impl<T: fmt::UpperExp> AssertUpperExp<T> {
-    /// Create an assertion wrapper around a [`fmt::UpperExp`] value.
-    #[inline]
-    pub const fn new(value: T) -> Self {
-        Self(value)
-    }
-}
-
-impl<T: fmt::UpperExp> fmt::UpperExp for AssertUpperExp<T> {
-    #[inline]
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        fmt::UpperExp::fmt(&self.0, f)
-    }
-}
-
-impl<T: fmt::UpperExp> TryUpperExp for AssertUpperExp<T> {
-    #[inline]
-    fn try_fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        fmt::UpperExp::fmt(&self.0, f)
-    }
-}
+// Re-export individual assert wrappers from the assert module.
+pub use assert::{AssertDebug, AssertDisplay, AssertLowerExp, AssertLowerHex, AssertUpperExp, AssertUpperHex};
 
 // ── Macro helpers ──────────────────────────────────────────────────────────────
 

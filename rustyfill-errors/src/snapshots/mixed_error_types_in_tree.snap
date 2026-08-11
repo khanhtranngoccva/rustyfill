@@ -1,0 +1,10 @@
+service unavailable
+├╴at rustyfill-errors/src/report.rs:1769:14
+│
+╰┬▶ network timeout
+ │  ├╴at rustyfill-errors/src/report.rs:1766:41
+ │  │
+ │  ╰─▶ io error
+ │      ╰╴at rustyfill-errors/src/report.rs:1765:18
+ ╰▶ retry exhausted
+    ╰╴at rustyfill-errors/src/report.rs:1768:14

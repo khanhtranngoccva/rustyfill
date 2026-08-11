@@ -1,0 +1,4 @@
+root error
+├╴at rustyfill-errors/src/report.rs:1666:22
+├╴detail one
+╰╴42

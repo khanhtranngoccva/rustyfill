@@ -1,0 +1,17 @@
+[package]
+name = "antipatterns"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[[bin]]
+name = "ap-format-in-debug"
+path = "src/bin/ap-format-in-debug.rs"
+
+[[bin]]
+name = "ap-format-in-trydebug"
+path = "src/bin/ap-format-in-trydebug.rs"
+
+[dependencies]
+rustyfill = { path = "../rustyfill" }
+rustyfill-test-allocator = { path = "../rustyfill-test-allocator" }

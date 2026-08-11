@@ -4,10 +4,11 @@
 //! [`ContextFrame`] carrying an error plus segment and location, or an
 //! arbitrary attachment boxed as [`Box<dyn ItemImpl>`].
 
-use alloc::borrow::Cow;
 use core::any::Any;
 use core::fmt;
 use core::panic::Location;
+
+use rustyfill::try_fmt::{TryDebug, TryDisplay};
 
 // ── ItemKind ────────────────────────────────────────────────────────────────
 
@@ -16,8 +17,10 @@ use core::panic::Location;
 pub enum ItemKind {
     /// A context item holding an error type plus its segment label and location.
     Context,
-    /// An arbitrary attachment (opaque or printable).
-    Attachment,
+    /// A printable attachment wrapping a value that implements [`TryDisplay`](rustyfill::try_fmt::TryDisplay).
+    PrintableAttachment,
+    /// An opaque attachment with no formatting guarantees.
+    OpaqueAttachment,
 }
 
 // ── ItemImpl ────────────────────────────────────────────────────────────────
@@ -27,7 +30,10 @@ pub enum ItemKind {
 /// This is the type-erased interface behind [`Box<dyn ItemImpl>`] inside both
 /// [`StaticFrame`](super::StaticFrame) attachments and
 /// [`DynamicFrame`](super::DynamicFrame) heads.
-pub trait ItemImpl: Send + Sync + 'static {
+///
+/// [`TryDisplay`] and [`TryDebug`] are supertraits so that `dyn ItemImpl` can
+/// be formatted fallibly without needing a cached string.
+pub trait ItemImpl: TryDisplay + TryDebug + Send + Sync + 'static {
     /// Returns what kind of item this is.
     fn kind(&self) -> ItemKind;
 
@@ -36,16 +42,40 @@ pub trait ItemImpl: Send + Sync + 'static {
 
     /// Mutable downcast to [`Any`] for runtime type mutation.
     fn as_any_mut(&mut self) -> &mut dyn Any;
-}
 
-// Prevent accidental Debug/Display of the raw trait object.
-impl fmt::Debug for dyn ItemImpl {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "ItemImpl({:?})", self.kind())
+    /// Returns `true` if this attachment can be displayed via [`fmt::Display`].
+    ///
+    /// Printable attachments return `true`; opaque attachments return `false`.
+    /// Context items always return `false` — they are rendered separately.
+    fn is_printable(&self) -> bool {
+        false
     }
+
+    /// Formats this item for human-readable display output (fallible path).
+    ///
+    /// For printable attachments, delegates to [`TryDisplay::try_fmt`].
+    /// For opaque attachments, returns `Ok(())`.
+    fn try_display_fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        TryDisplay::try_fmt(self, f)
+    }
+
+    /// Formats this item for human-readable display output (infallible path).
+    ///
+    /// For printable attachments, delegates to [`fmt::Display`].
+    /// For opaque attachments and context items, writes nothing.
+    fn display_fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.try_display_fmt(f)
+    }
+
+    /// Writes the "at file:line:col" location line for context items.
+    ///
+    /// Returns `Ok(())` if a location was written, does nothing for non-context items.
+    fn write_location(&self, _f: &mut fmt::Formatter<'_>) {}
 }
 
 // ── ContextFrame ─────────────────────────────────────────────────────────────
+
+use alloc::borrow::Cow;
 
 /// A context item holding an error, its business logic segment label, and the
 /// source location where it was created.
@@ -100,7 +130,9 @@ impl<C> ContextFrame<C> {
     }
 }
 
-impl<C: core::error::Error + Send + Sync + 'static> ItemImpl for ContextFrame<C> {
+impl<C: core::error::Error + TryDebug + TryDisplay + Send + Sync + 'static> ItemImpl
+    for ContextFrame<C>
+{
     fn kind(&self) -> ItemKind {
         ItemKind::Context
     }
@@ -111,6 +143,29 @@ impl<C: core::error::Error + Send + Sync + 'static> ItemImpl for ContextFrame<C>
 
     fn as_any_mut(&mut self) -> &mut dyn Any {
         &mut self.context
+    }
+
+    fn is_printable(&self) -> bool {
+        false
+    }
+
+    fn write_location(&self, f: &mut fmt::Formatter<'_>) {
+        let loc = &self.location;
+        let _ = write!(f, "at {}:{}:{}", loc.file(), loc.line(), loc.column());
+    }
+}
+
+impl<C: TryDebug> TryDebug for ContextFrame<C> {
+    #[inline]
+    fn try_fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        TryDebug::try_fmt(&self.context, f)
+    }
+}
+
+impl<C: TryDisplay> TryDisplay for ContextFrame<C> {
+    #[inline]
+    fn try_fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        TryDisplay::try_fmt(&self.context, f)
     }
 }
 

@@ -1,0 +1,6 @@
+outer
+├╴at rustyfill-errors/src/report.rs:1706:48
+│
+╰─▶ inner
+    ├╴at rustyfill-errors/src/report.rs:1705:21
+    ╰╴inner-attach

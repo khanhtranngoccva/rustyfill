@@ -1,0 +1,5 @@
+outer error
+├╴at rustyfill-errors/src/report.rs:1687:51
+│
+╰─▶ inner error
+    ╰╴at rustyfill-errors/src/report.rs:1687:13

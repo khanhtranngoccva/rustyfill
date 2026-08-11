@@ -14,6 +14,7 @@ use crate::frame::{ContextFrame, DynamicFrame, ItemImpl, StaticFrame};
 use crate::frame::{OpaqueAttachment, PrintableAttachment};
 use rustyfill::alloc::TryReserveError;
 use rustyfill::prelude::{TryBox, TryVec, TryVecDeque};
+use rustyfill::try_fmt::{TryDebug, TryDisplay};
 
 // ── Report ───────────────────────────────────────────────────────────────────
 
@@ -186,7 +187,7 @@ impl<C> Report<C> {
     /// and [`head.lost_attachments`](StaticFrame::lost_attachments) is incremented.
     pub fn attach<A>(mut self, attachment: A) -> Self
     where
-        A: core::fmt::Debug + core::fmt::Display + Send + Sync + 'static,
+        A: rustyfill::try_fmt::TryDebug + rustyfill::try_fmt::TryDisplay + Send + Sync + 'static,
     {
         let pa = PrintableAttachment::new(attachment);
         match Box::<PrintableAttachment<A>>::fallible_new_give_back(pa) {
@@ -235,14 +236,15 @@ impl<C> Report<C> {
     /// Attaches printable data to the head frame, returning the attachment
     /// on allocation failure.
     ///
-    /// The value must implement [`Debug`] and [`Display`].
+    /// The value must implement [`TryDebug`](rustyfill::try_fmt::TryDebug) and
+    /// [`TryDisplay`](rustyfill::try_fmt::TryDisplay).
     ///
     /// Returns `Ok(report)` on success, or `Err((report, attachment))` giving
     /// back ownership so the caller isn't surprised by silent data loss.
     #[allow(clippy::result_large_err, reason = "cannot allocate error on the heap")]
     pub fn try_attach<A>(mut self, attachment: A) -> Result<Self, (Self, A)>
     where
-        A: core::fmt::Debug + core::fmt::Display + Send + Sync + 'static,
+        A: rustyfill::try_fmt::TryDebug + rustyfill::try_fmt::TryDisplay + Send + Sync + 'static,
     {
         // Reserve space in the vec first so that if it fails we haven't yet
         // boxed the attachment and can return it cleanly.
@@ -384,7 +386,7 @@ pub struct ChangeContextError<C, T> {
     pub context: T,
 }
 
-impl<C: core::fmt::Debug + Error + Send + Sync + 'static, T: core::fmt::Debug> core::fmt::Debug
+impl<C: core::fmt::Debug + Error + TryDebug + TryDisplay + Send + Sync + 'static, T: core::fmt::Debug> core::fmt::Debug
     for ChangeContextError<C, T>
 {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
@@ -408,7 +410,7 @@ struct IntermediateFrame<C> {
 
 impl<C> IntermediateFrame<C>
 where
-    C: Error + Send + Sync + 'static,
+    C: Error + TryDebug + TryDisplay + Send + Sync + 'static,
 {
     /// Converts an intermediate frame into a [`DynamicFrame`] by casting the
     /// boxed context to a trait object (no additional allocation).
@@ -437,7 +439,7 @@ where
 
 impl<C> Report<C>
 where
-    C: Error + Send + Sync + 'static,
+    C: Error + TryDebug + TryDisplay + Send + Sync + 'static,
 {
     /// Changes the current context to a new type `T`.
     ///
@@ -467,7 +469,7 @@ where
         let _ = new_head_sf.children.try_reserve(total);
 
         // Helper: convert a StaticFrame to a DynamicFrame and push it onto
-        // children. On from_static failure, evicts oldest children repeatedly
+        // children. On conversion failure, evicts oldest children repeatedly
         // and retries until success or no children remain to evict. On push
         // failure, evicts one oldest child and retries the push.
         let mut demote_and_push = |sf: StaticFrame<C>| {
@@ -588,14 +590,14 @@ where
         // intermediates plus remaining unboxed peers into the original report.
         while let Some(sf) = peers.pop_back() {
             let StaticFrame {
-                context: ctx,
+                context,
                 attachments,
                 children,
                 lost_attachments,
                 lost_children,
             } = sf;
 
-            let boxed_ctx = match Box::<ContextFrame<C>>::fallible_new_give_back(ctx) {
+            let boxed_ctx = match Box::<ContextFrame<C>>::fallible_new_give_back(context) {
                 Ok(b) => b,
                 Err((ctx_recovered, _)) => {
                     let sf = StaticFrame {
@@ -636,14 +638,14 @@ where
 
         // Box old_head last.
         let StaticFrame {
-            context: ctx,
+            context,
             attachments,
             children,
             lost_attachments,
             lost_children,
         } = old_head;
 
-        let boxed_ctx = match Box::<ContextFrame<C>>::fallible_new_give_back(ctx) {
+        let boxed_ctx = match Box::<ContextFrame<C>>::fallible_new_give_back(context) {
             Ok(b) => b,
             Err((ctx_recovered, _)) => {
                 let sf = StaticFrame {
@@ -810,7 +812,7 @@ pub enum FrameRef<'a, C> {
 
 impl<'a, C> FrameRef<'a, C>
 where
-    C: Error + Send + Sync + 'static,
+    C: Error + TryDebug + TryDisplay + Send + Sync + 'static,
 {
     /// Returns what kind of item this frame's context is.
     ///
@@ -848,7 +850,7 @@ pub enum FrameRefMut<'a, C> {
 
 impl<'a, C> FrameRefMut<'a, C>
 where
-    C: Error + Send + Sync + 'static,
+    C: Error + TryDebug + TryDisplay + Send + Sync + 'static,
 {
     /// Returns what kind of item this frame's context is.
     ///
@@ -1001,6 +1003,11 @@ where
         loop {
             if let Some(top) = self.stack.last_mut() {
                 if let Some(df) = top.iter.next() {
+                    // Record depth BEFORE pushing this frame's children onto
+                    // the stack, so that depth reflects the frame's position
+                    // in the tree (not the stack size after descent).
+                    let depth = self.stack.len();
+
                     // Push new stack entry to descend into this child's subtree.
                     if !df.children().is_empty() {
                         let child_iter = df.children().iter();
@@ -1014,7 +1021,6 @@ where
                             self.pending_err = Some((e, self.stack.len() + 1));
                         }
                     }
-                    let depth = self.stack.len();
                     return Some((Ok(FrameRef::Dynamic(df)), depth));
                 } else {
                     // Children exhausted — emit lost marker if any.
@@ -1321,6 +1327,8 @@ mod tests {
         }
     }
     impl Error for TestError {}
+    rustyfill::debug_passthrough!(TestError);
+    rustyfill::display_passthrough!(TestError);
 
     #[derive(Debug)]
     struct OtherError(&'static str);
@@ -1330,6 +1338,8 @@ mod tests {
         }
     }
     impl Error for OtherError {}
+    rustyfill::debug_passthrough!(OtherError);
+    rustyfill::display_passthrough!(OtherError);
 
     #[test]
     fn report_new_stores_context_and_location() {
@@ -1458,6 +1468,8 @@ mod tests {
             }
         }
         impl Error for MutableError {}
+        rustyfill::debug_passthrough!(MutableError);
+        rustyfill::display_passthrough!(MutableError);
 
         let mut report = Report::new(MutableError(42));
         if let Some(e) = report.downcast_mut::<MutableError>() {
@@ -1574,7 +1586,7 @@ mod tests {
     // Report Display output against the saved snapshot file.
     // Skipped under Miri which does not support filesystem access in isolation mode.
 
-    #[cfg(not(miri))]
+    #[cfg_attr(miri, ignore)]
     fn get_snapshot_dir() -> std::path::PathBuf {
         std::env::var("CARGO_TARGET_DIR")
             .ok()
@@ -1589,7 +1601,7 @@ mod tests {
             .join("snapshots")
     }
 
-    #[cfg(not(miri))]
+    #[cfg_attr(miri, ignore)]
     fn write_snapshot(name: &str, content: &str) {
         let dir = get_snapshot_dir();
         std::fs::create_dir_all(&dir).expect("failed to create snapshot directory");
@@ -1597,13 +1609,13 @@ mod tests {
         std::fs::write(&path, content).expect("failed to write snapshot");
     }
 
-    #[cfg(not(miri))]
+    #[cfg_attr(miri, ignore)]
     fn read_snapshot(name: &str) -> Option<alloc::string::String> {
         let path = get_snapshot_dir().join(alloc::format!("{name}.snap"));
         std::fs::read_to_string(path).ok()
     }
 
-    #[cfg(not(miri))]
+    #[cfg_attr(miri, ignore)]
     fn assert_snapshot(name: &str, actual: &str) {
         match read_snapshot(name) {
             Some(expected) if expected == actual => {} // matches
@@ -1624,7 +1636,7 @@ mod tests {
         }
     }
 
-    #[cfg(not(miri))]
+    #[cfg_attr(miri, ignore)]
     #[test]
     fn display_single_frame() {
         let report = Report::new(TestError("something went wrong"));
@@ -1632,7 +1644,7 @@ mod tests {
         assert_snapshot("single_frame", &output);
     }
 
-    #[cfg(not(miri))]
+    #[cfg_attr(miri, ignore)]
     #[test]
     fn display_single_frame_with_segment() {
         let report = Report::with_segment(TestError("parse failed"), "parsing config");
@@ -1640,7 +1652,7 @@ mod tests {
         assert_snapshot("single_frame_with_segment", &output);
     }
 
-    #[cfg(not(miri))]
+    #[cfg_attr(miri, ignore)]
     #[test]
     fn display_with_attachment() {
         let report = Report::new(TestError("root error")).attach("extra context");
@@ -1648,7 +1660,7 @@ mod tests {
         assert_snapshot("with_attachment", &output);
     }
 
-    #[cfg(not(miri))]
+    #[cfg_attr(miri, ignore)]
     #[test]
     fn display_with_multiple_attachments() {
         let report = Report::new(TestError("root error"))
@@ -1658,7 +1670,7 @@ mod tests {
         assert_snapshot("with_multiple_attachments", &output);
     }
 
-    #[cfg(not(miri))]
+    #[cfg_attr(miri, ignore)]
     #[test]
     fn display_with_peers() {
         let report = Report::new(TestError("first"))
@@ -1668,7 +1680,7 @@ mod tests {
         assert_snapshot("with_peers", &output);
     }
 
-    #[cfg(not(miri))]
+    #[cfg_attr(miri, ignore)]
     #[test]
     fn display_after_change_context() {
         let report: Report<OtherError> =
@@ -1677,7 +1689,7 @@ mod tests {
         assert_snapshot("after_change_context", &output);
     }
 
-    #[cfg(not(miri))]
+    #[cfg_attr(miri, ignore)]
     #[test]
     fn display_deeply_nested_change_context() {
         let r1 = Report::new(TestError("level 1"));
@@ -1687,7 +1699,7 @@ mod tests {
         assert_snapshot("deeply_nested_change_context", &output);
     }
 
-    #[cfg(not(miri))]
+    #[cfg_attr(miri, ignore)]
     #[test]
     fn display_change_context_with_attachments() {
         let inner = Report::new(TestError("inner")).attach("inner-attach");
@@ -1696,7 +1708,7 @@ mod tests {
         assert_snapshot("change_context_with_attachments", &output);
     }
 
-    #[cfg(not(miri))]
+    #[cfg_attr(miri, ignore)]
     #[test]
     fn display_peers_then_change_context() {
         let report: Report<OtherError> = Report::new(TestError("base"))
@@ -1706,7 +1718,7 @@ mod tests {
         assert_snapshot("peers_then_change_context", &output);
     }
 
-    #[cfg(not(miri))]
+    #[cfg_attr(miri, ignore)]
     #[test]
     fn display_with_capacity_eviction() {
         let report = Report::new(TestError("first"))
@@ -1717,7 +1729,7 @@ mod tests {
         assert_snapshot("with_capacity_eviction", &output);
     }
 
-    #[cfg(not(miri))]
+    #[cfg_attr(miri, ignore)]
     #[test]
     fn display_minimal_report() {
         let report = Report::new(TestError("minimal"));
@@ -1726,7 +1738,7 @@ mod tests {
         assert_snapshot("minimal_report", &output);
     }
 
-    #[cfg(not(miri))]
+    #[cfg_attr(miri, ignore)]
     #[test]
     fn display_debug_delegates_to_display() {
         let report = Report::with_segment(TestError("debug test"), "checking debug");
@@ -1735,7 +1747,7 @@ mod tests {
         assert_eq!(display_output, debug_output);
     }
 
-    #[cfg(not(miri))]
+    #[cfg_attr(miri, ignore)]
     #[test]
     fn display_multilevel_tree_with_segments() {
         let r1 = Report::with_segment(TestError("database connection failed"), "db.connect");
