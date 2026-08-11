@@ -1,6 +1,7 @@
 //! Entry API for [`ConcurrentHashMap`](super::ConcurrentHashMap).
 
-use core::hash::Hash;
+use crate::lang_core::hash::Hash;
+use crate::lang_core::mem;
 use hashbrown::raw::{Bucket, InsertSlot, RawTable};
 use parking_lot::RwLockWriteGuard;
 
@@ -91,7 +92,7 @@ impl<'a, K: Eq + Hash + 'a, V> OccupiedEntry<'a, K, V> {
 
     /// Replaces the value and returns the old one.
     pub fn insert(&mut self, value: V) -> V {
-        core::mem::replace(self.get_mut(), value)
+        mem::replace(self.get_mut(), value)
     }
 
     /// Removes the entry and returns the value.

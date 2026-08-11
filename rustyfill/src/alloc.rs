@@ -1,20 +1,31 @@
-//! Custom allocation error type and panic payload wrapper.
+//! Custom allocation types, allocation errors, and panic payload wrapper.
 //!
-//! The [`alloc`](core::alloc) crate's `AllocError` is not exposed on stable Rust,
+//! The [`alloc`](crate::lang_alloc) (alloc) crate's `AllocError` is not exposed on stable Rust,
 //! so we provide our own equivalent for use across this library. We also provide
 //! [`PayloadBox`], an owning wrapper around the raw panic payload from
-//! [`::lang_std::panic::catch_unwind`], and [`TryReserveError`], a unified polyfill for
+//! [`catch_unwind`](crate::lang_std::panic::catch_unwind), and [`TryReserveError`], a unified polyfill for
 //! capacity-reservation failures across different collection backends.
 
 #[cfg(feature = "std")]
 use crate::lang_alloc::borrow::Cow;
 #[cfg(feature = "std")]
 use crate::lang_alloc::boxed::Box;
+use crate::lang_core::alloc::Layout;
+use crate::lang_core::any;
+use crate::lang_core::fmt;
 #[cfg(feature = "std")]
 use crate::try_fmt::AssertDebug;
 use crate::try_fmt::{TryDebug, helpers::FormatterExt};
-use core::alloc::Layout;
-use core::fmt;
+
+pub mod arc;
+pub mod boxed;
+#[cfg(feature = "panic")]
+pub mod btrees;
+pub mod ffi;
+pub mod rc;
+pub mod string;
+pub mod vec;
+pub mod vecdeque;
 
 /// Polyfill allocation error returned when a heap allocation fails.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -109,7 +120,7 @@ impl ::lang_std::error::Error for TryReserveError {
 /// after catching a panic performs zero additional allocations.
 #[cfg(feature = "std")]
 #[derive(Debug)]
-pub struct PayloadBox(pub Box<dyn core::any::Any + Send>);
+pub struct PayloadBox(pub Box<dyn any::Any + Send>);
 
 #[cfg(feature = "std")]
 impl PayloadBox {

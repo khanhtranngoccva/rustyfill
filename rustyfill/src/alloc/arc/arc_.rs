@@ -1,13 +1,14 @@
 use crate::alloc::AllocError;
-use crate::boxed::TryBox;
+use crate::alloc::boxed::TryBox;
 use crate::lang_alloc::boxed::Box;
+use crate::lang_core::fmt;
+use crate::lang_core::mem::{ManuallyDrop, MaybeUninit};
+use crate::lang_core::pin::Pin;
+use crate::lang_core::ptr;
+use crate::lang_core::sync::atomic::{AtomicUsize, Ordering};
 use crate::lang_std::sync::{Arc, Weak};
 use crate::try_clone::{TryClone, TryCloneError};
 use crate::try_default::{TryDefault, TryDefaultError};
-use core::mem::{ManuallyDrop, MaybeUninit};
-use core::pin::Pin;
-use core::ptr;
-use core::sync::atomic::{AtomicUsize, Ordering};
 
 /// Internal representation of an Arc allocation.
 ///
@@ -303,8 +304,8 @@ fn arc_inner<T: ?Sized>(arc: &Arc<T>) -> &ArcInner<T> {
     // The NonNull points into a live heap allocation owned by the Arc, so
     // dereferencing yields a valid &ArcInner<T>.
     unsafe {
-        let ptr_field: *const core::ptr::NonNull<ArcInner<T>> = core::ptr::from_ref(arc).cast();
-        let non_null: core::ptr::NonNull<ArcInner<T>> = *ptr_field;
+        let ptr_field: *const ptr::NonNull<ArcInner<T>> = ptr::from_ref(arc).cast();
+        let non_null: ptr::NonNull<ArcInner<T>> = *ptr_field;
         non_null.as_ref()
     }
 }
@@ -320,8 +321,8 @@ fn weak_inner<T: ?Sized>(weak: &Weak<T>) -> &ArcInner<T> {
     // `ptr: NonNull<ArcInner<T>>`. Caller must ensure this isn't a dangling
     // Weak (address != usize::MAX) before calling.
     unsafe {
-        let ptr_field: *const core::ptr::NonNull<ArcInner<T>> = core::ptr::from_ref(weak).cast();
-        let non_null: core::ptr::NonNull<ArcInner<T>> = *ptr_field;
+        let ptr_field: *const ptr::NonNull<ArcInner<T>> = ptr::from_ref(weak).cast();
+        let non_null: ptr::NonNull<ArcInner<T>> = *ptr_field;
         non_null.as_ref()
     }
 }
@@ -346,7 +347,7 @@ impl<T: ?Sized> TryClone for Arc<T> {
             });
 
         match ok {
-            Ok(_) => Ok(unsafe { core::ptr::read(self) }),
+            Ok(_) => Ok(unsafe { ptr::read(self) }),
             Err(_) => Err(TryCloneError::Other("Arc strong refcount exceeded")),
         }
     }
@@ -357,7 +358,7 @@ impl<T: ?Sized> TryClone for Weak<T> {
         // Check for the dangling sentinel used by Weak::new() — no allocation exists,
         // so cloning is just a pointer copy that can never fail.
         if weak_is_dangling(self) {
-            return Ok(unsafe { core::ptr::read(self) });
+            return Ok(unsafe { ptr::read(self) });
         }
 
         let inner = weak_inner(self);
@@ -373,7 +374,7 @@ impl<T: ?Sized> TryClone for Weak<T> {
             });
 
         match ok {
-            Ok(_) => Ok(unsafe { core::ptr::read(self) }),
+            Ok(_) => Ok(unsafe { ptr::read(self) }),
             Err(_) => Err(TryCloneError::Other("Arc weak refcount exceeded")),
         }
     }
@@ -383,14 +384,14 @@ impl<T: ?Sized> TryClone for Weak<T> {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct TryUpgradeError;
 
-impl core::fmt::Display for TryUpgradeError {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+impl fmt::Display for TryUpgradeError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "upgrade failed: strong refcount exceeded")
     }
 }
 
 impl crate::try_fmt::TryDebug for TryUpgradeError {
-    fn try_fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+    fn try_fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str("TryUpgradeError")
     }
 }
@@ -450,7 +451,7 @@ impl<T: ?Sized> TryWeak<T> for Weak<T> {
                 // value below MAX_REFCOUNT. Allocation is still alive.
                 // SAFETY: pointer is valid, strong count > 0 after increment.
                 Some(Ok(unsafe {
-                    core::ptr::read(&*(self as *const Weak<T> as *const Arc<T>))
+                    ptr::read(&*(self as *const Weak<T> as *const Arc<T>))
                 }))
             }
             Err(prev) => {
@@ -492,7 +493,7 @@ impl<T> TryDefault for Weak<T> {
 // ── TryDebug for Arc<T> ──────────────────────────────────────────────────────
 
 impl<T: ?Sized + crate::try_fmt::TryDebug> crate::try_fmt::TryDebug for Arc<T> {
-    fn try_fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+    fn try_fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         (**self).try_fmt(f)
     }
 }
@@ -891,7 +892,7 @@ mod tests {
 
     #[test]
     fn weak_try_upgrade_success() {
-        use crate::arc::TryWeak;
+        use super::TryWeak;
         let arc = <Arc<i32> as TryArc<i32>>::try_new(42).unwrap();
         let weak = Arc::downgrade(&arc);
         assert_eq!(Arc::strong_count(&arc), 1);
@@ -903,14 +904,12 @@ mod tests {
 
     #[test]
     fn weak_try_upgrade_dangling_returns_none() {
-        use crate::arc::TryWeak;
         let weak: Weak<i32> = Weak::new();
         assert!(weak.try_upgrade().is_none());
     }
 
     #[test]
     fn weak_try_upgrade_after_drop_returns_none() {
-        use crate::arc::TryWeak;
         let weak = {
             let arc = <Arc<i32> as TryArc<i32>>::try_new(99).unwrap();
             Arc::downgrade(&arc)
@@ -921,7 +920,6 @@ mod tests {
 
     #[test]
     fn weak_try_upgrade_overflow_rejects() {
-        use crate::arc::TryWeak;
         let arc = <Arc<i32> as TryArc<i32>>::try_new(0).unwrap();
         let weak = Arc::downgrade(&arc);
         let inner = weak_inner(&weak);
@@ -948,7 +946,6 @@ mod tests {
 
     #[test]
     fn weak_try_upgrade_dyn_trait() {
-        use crate::arc::TryWeak;
         let arc: Arc<dyn ::lang_std::fmt::Debug> = Arc::new(42i32);
         let weak = Arc::downgrade(&arc);
         let upgraded = weak.try_upgrade().unwrap().unwrap();

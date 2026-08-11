@@ -7,5 +7,5 @@ pub fn fill_bytes(bytes: &mut [u8]) -> Result<(), RandomError> {
 }
 
 unsafe extern "C" {
-    fn trusty_rng_secure_rand(randomBuffer: *mut core::ffi::c_void, randomBufferLen: libc::size_t);
+    fn trusty_rng_secure_rand(randomBuffer: *mut  ffi::c_void, randomBufferLen: libc::size_t);
 }

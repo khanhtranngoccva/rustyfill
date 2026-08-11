@@ -36,8 +36,8 @@
 //!    inserted. The [`Resumable`] holds that stranded element as the head,
 //!    plus the unconsumed remainder.
 
+use crate::lang_core::fmt;
 use crate::try_fmt::{TryDebug, helpers::FormatterExt};
-use core::fmt;
 
 /// A source of items that decomposes into an optional leading element and an
 /// inner iterator.
@@ -202,6 +202,7 @@ mod tests {
     use super::*;
     use crate::lang_alloc::vec;
     use crate::lang_alloc::vec::Vec;
+    use crate::lang_core::ops;
     use crate::lang_std::format;
 
     #[test]
@@ -259,7 +260,7 @@ mod tests {
 
     #[test]
     fn stable_type_across_retries() {
-        type Base = core::ops::Range<i32>;
+        type Base = ops::Range<i32>;
 
         // Simulate first failure producing Resumable<Base>.
         let r1: Resumable<Base> = Resumable::new(0, 1..4);

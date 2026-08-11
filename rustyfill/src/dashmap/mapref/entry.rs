@@ -5,8 +5,8 @@
 //! reserved *before* insertion, guaranteeing that entry methods like
 //! [`VacantEntry::insert`] cannot panic on out-of-memory.
 
-use core::hash::Hash;
-use core::mem;
+use crate::lang_core::hash::Hash;
+use crate::lang_core::mem;
 
 type SharedValue<T> = dashmap::SharedValue<T>;
 type RwLockWriteGuard<'a, K, V> =

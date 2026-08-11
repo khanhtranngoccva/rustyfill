@@ -10,7 +10,7 @@ pub fn fill_bytes(bytes: &mut [u8]) -> Result<(), RandomError> {
         if result == 0 {
             Ok(())
         } else {
-            Err(RandomError::Platform(core::borrow::Cow::Borrowed(
+            Err(RandomError::Platform (borrow::Cow::Borrowed(
                 "SOLID_RNG_SampleRandomBytes failed",
             )))
         }

@@ -1,8 +1,8 @@
 //! Mutable reference guard backed by an exclusive shard lock.
 
-use core::fmt;
-use core::hash::Hash;
-use core::ops::{Deref, DerefMut};
+use crate::lang_core::fmt;
+use crate::lang_core::hash::Hash;
+use crate::lang_core::ops::{Deref, DerefMut};
 
 type SharedValue<T> = dashmap::SharedValue<T>;
 type RwLockWriteGuard<'a, K, V> =

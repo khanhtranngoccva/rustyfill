@@ -16,7 +16,7 @@
 //! }
 //! ```
 
-use core::fmt;
+use crate::lang_core::fmt;
 
 use super::TryDebug;
 
@@ -104,7 +104,7 @@ impl<'f> FormatterExt<'f> for fmt::Formatter<'f> {
 
 /// Builder for formatting a list whose elements implement [`TryDebug`].
 ///
-/// Wraps each element before passing it to the inner [`core::fmt::DebugList`],
+/// Wraps each element before passing it to the inner [`fmt::DebugList`],
 /// so formatting routes through [`TryDebug::try_fmt`].
 pub struct TryDebugList<'b, 'f> {
     inner: fmt::DebugList<'b, 'f>,

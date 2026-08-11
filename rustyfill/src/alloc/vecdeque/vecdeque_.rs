@@ -18,12 +18,15 @@
 
 use crate::alloc::AllocError;
 use crate::alloc::TryReserveError;
+use crate::alloc::vec::{TryVec, TryVecError};
 use crate::lang_alloc::vec::Vec;
+use crate::lang_core::cmp;
+use crate::lang_core::fmt;
+use crate::lang_core::mem;
 use crate::lang_std::collections::VecDeque;
 use crate::try_clone::{TryClone, TryCloneError};
 use crate::try_default::{TryDefault, TryDefaultError};
 use crate::try_fmt::{TryDebug, helpers::FormatterExt};
-use core::fmt;
 
 /// Panic-safe guard that truncates a `VecDeque` back to its original length on drop
 /// unless disarmed via `forget()`. Used by fallible extend/resize methods so that if
@@ -46,7 +49,7 @@ impl<'a, T> TruncateGuard<'a, T> {
     /// Disable the guard — no truncation on scope exit.
     fn forget(mut self) {
         self.len_before = self.deque.len();
-        core::mem::forget(self);
+        mem::forget(self);
     }
 }
 
@@ -610,7 +613,7 @@ impl<T> TryVecDeque<T> for VecDeque<T> {
     }
 
     fn try_shrink_to(&mut self, min_capacity: usize) -> Result<(), TryVecDequeError> {
-        let target = core::cmp::max(self.len(), min_capacity);
+        let target = cmp::max(self.len(), min_capacity);
         if self.capacity() <= target {
             return Ok(());
         }
@@ -618,16 +621,16 @@ impl<T> TryVecDeque<T> for VecDeque<T> {
         // then convert back. We can't access VecDeque's internal ring-buffer
         // pointers directly, so this round-trip is the safest approach.
         let mut vec: Vec<T> = ::lang_std::mem::take(self).into();
-        let result = <Vec<T> as crate::vec::TryVec<T>>::fallible_shrink_to(&mut vec, target);
+        let result = <Vec<T> as TryVec<T>>::fallible_shrink_to(&mut vec, target);
         // Recover the deque before error handling so that a shrink failure
         // does not silently discard the original data.
         *self = vec.into();
         result.map_err(|e| match e {
-            crate::vec::TryVecError::Alloc(e) => TryVecDequeError::Alloc(e),
-            crate::vec::TryVecError::Reserve(e) => TryVecDequeError::Reserve(e),
-            crate::vec::TryVecError::Clone(_) => unreachable!("shrink does not clone"),
-            crate::vec::TryVecError::Overflow => TryVecDequeError::Overflow,
-            crate::vec::TryVecError::Other(msg) => TryVecDequeError::Other(msg),
+            TryVecError::Alloc(e) => TryVecDequeError::Alloc(e),
+            TryVecError::Reserve(e) => TryVecDequeError::Reserve(e),
+            TryVecError::Clone(_) => unreachable!("shrink does not clone"),
+            TryVecError::Overflow => TryVecDequeError::Overflow,
+            TryVecError::Other(msg) => TryVecDequeError::Other(msg),
         })
     }
 

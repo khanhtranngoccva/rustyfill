@@ -13,6 +13,8 @@
 
 use crate::alloc::{AllocError, TryReserveError};
 use crate::lang_alloc::borrow::ToOwned;
+use crate::lang_core::error;
+use crate::lang_core::fmt;
 use crate::try_clone::TryCloneError;
 use crate::try_fmt::{TryDebug, helpers::FormatterExt};
 
@@ -29,8 +31,8 @@ pub enum TryToOwnedError {
     Other(&'static str),
 }
 
-impl core::fmt::Display for TryToOwnedError {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+impl fmt::Display for TryToOwnedError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Alloc(_) => write!(f, "to_owned failed: heap allocation error"),
             Self::Reserve(e) => write!(f, "to_owned failed: {}", e),
@@ -41,7 +43,7 @@ impl core::fmt::Display for TryToOwnedError {
 }
 
 impl TryDebug for TryToOwnedError {
-    fn try_fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+    fn try_fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Alloc(e) => f
                 .try_debug_struct("TryToOwnedError::Alloc")
@@ -61,8 +63,8 @@ impl TryDebug for TryToOwnedError {
 }
 
 #[cfg(feature = "std")]
-impl core::error::Error for TryToOwnedError {
-    fn source(&self) -> Option<&(dyn core::error::Error + 'static)> {
+impl error::Error for TryToOwnedError {
+    fn source(&self) -> Option<&(dyn error::Error + 'static)> {
         match self {
             Self::Reserve(e) => Some(e),
             Self::Alloc(_) | Self::Overflow | Self::Other(_) => None,

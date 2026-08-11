@@ -26,6 +26,7 @@
 // and `pub mod alloc` modules that re-export fallible wrappers. Made `pub` so that
 // `#[macro_export]` macros in downstream crates can reference them via `$crate::lang_std`.
 pub extern crate alloc as lang_alloc;
+pub extern crate core as lang_core;
 #[cfg(feature = "std")]
 pub extern crate std as lang_std;
 
@@ -36,6 +37,7 @@ extern crate self as rustyfill;
 
 pub mod alloc;
 pub mod collections;
+pub mod core;
 #[cfg(feature = "unstable")]
 pub mod dashmap;
 #[cfg(feature = "std")]
@@ -52,34 +54,6 @@ pub mod try_fmt;
 #[cfg(feature = "std")]
 pub mod try_random_state;
 pub mod try_to_owned;
-
-// Re-export std submodules at crate root for backward compatibility
-#[cfg(feature = "std")]
-pub use crate::std::arc;
-#[cfg(feature = "std")]
-pub use crate::std::boxed;
-#[cfg(all(feature = "std", feature = "panic"))]
-pub use crate::std::btrees;
-#[cfg(feature = "std")]
-pub use crate::std::cell;
-#[cfg(feature = "std")]
-pub use crate::std::ffi;
-#[cfg(feature = "std")]
-pub use crate::std::hashmap;
-#[cfg(feature = "std")]
-pub use crate::std::hashset;
-#[cfg(feature = "std")]
-pub use crate::std::path;
-#[cfg(feature = "std")]
-pub use crate::std::rc;
-#[cfg(feature = "std")]
-pub use crate::std::string;
-#[cfg(feature = "std")]
-pub use crate::std::sync;
-#[cfg(feature = "std")]
-pub use crate::std::vec;
-#[cfg(feature = "std")]
-pub use crate::std::vecdeque;
 
 pub use rustyfill_macros::{TryClone, TryDebug, TryDefault};
 pub use rustyfill_macros::{

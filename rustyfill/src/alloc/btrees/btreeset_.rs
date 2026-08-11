@@ -13,19 +13,19 @@
 //! Because `BTreeSet::try_reserve` does not exist, these methods internally
 //! use [`::lang_std::panic::catch_unwind`] to intercept allocation panics from the
 //! B-tree's internal node allocator. This means `T` must be
-//! [`RefUnwindSafe`](core::panic::RefUnwindSafe) for the fallible mutation methods.
+//! [`RefUnwindSafe`] (panic::RefUnwindSafe) for the fallible mutation methods.
 //!
 //! The trait also implements [`TryClone`](crate::try_clone::TryClone) and
 //! [`TryDefault`](crate::try_default::TryDefault) for `BTreeSet<T>` when
 //! `T` satisfies the respective bounds.
 use crate::alloc::{AllocError, PayloadBox};
+use crate::lang_core::fmt;
+use crate::lang_core::mem::ManuallyDrop;
+use crate::lang_core::ptr;
 use crate::lang_std::collections::BTreeSet;
 use crate::lang_std::panic::{AssertUnwindSafe, RefUnwindSafe, catch_unwind};
 use crate::try_clone::TryCloneError;
 use crate::try_fmt::{TryDebug, helpers::FormatterExt};
-use core::fmt;
-use core::mem::ManuallyDrop;
-use core::ptr;
 
 // ── Error type ────────────────────────────────────────────────────────────────
 
@@ -408,6 +408,7 @@ impl<T> crate::try_default::TryDefault for BTreeSet<T> {
 
 #[cfg(test)]
 mod tests {
+
     use super::*;
     use crate::lang_alloc::boxed::Box;
     use crate::lang_alloc::format;
@@ -415,6 +416,7 @@ mod tests {
     use crate::lang_alloc::string::ToString;
     use crate::lang_alloc::vec;
     use crate::lang_alloc::vec::Vec;
+    use crate::lang_core::any;
     use crate::try_clone::TryClone;
     use crate::try_default::TryDefault;
 
@@ -715,7 +717,7 @@ mod tests {
 
     #[test]
     fn error_display_alloc_panic() {
-        let payload: Box<dyn core::any::Any + Send> = Box::new("out of memory");
+        let payload: Box<dyn any::Any + Send> = Box::new("out of memory");
         let err = TryBTreeSetError::AllocPanic(PayloadBox(payload));
         let msg = format!("{}", err);
         assert!(msg.contains("allocation panicked"));

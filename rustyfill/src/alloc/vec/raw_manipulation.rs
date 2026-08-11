@@ -1,7 +1,7 @@
 use crate::alloc::AllocError;
 use crate::lang_alloc::vec::Vec;
-use core::alloc::Layout;
-use core::ptr::{self, NonNull};
+use crate::lang_core::alloc::Layout;
+use crate::lang_core::ptr::{self, NonNull};
 
 /// # Safety
 ///

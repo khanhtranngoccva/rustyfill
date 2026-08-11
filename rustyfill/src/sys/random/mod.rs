@@ -12,7 +12,7 @@
 //! [`Result`] instead of panicking.
 
 use crate::lang_alloc::borrow::Cow;
-use core::fmt;
+use crate::lang_core::fmt;
 
 use crate::try_fmt::{TryDebug, helpers::FormatterExt};
 

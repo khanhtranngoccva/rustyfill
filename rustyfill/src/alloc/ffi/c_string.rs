@@ -16,13 +16,13 @@
 
 use crate::alloc::AllocError;
 use crate::alloc::TryReserveError;
+use crate::alloc::vec::{TrySlice, TryVecError};
 use crate::lang_alloc::vec::Vec;
+use crate::lang_core::fmt;
 use crate::lang_std::ffi::CString;
 use crate::try_clone::{TryClone, TryCloneError};
 use crate::try_default::{TryDefault, TryDefaultError};
 use crate::try_fmt::{TryDebug, helpers::FormatterExt};
-use crate::vec::{TrySlice, TryVecError};
-use core::fmt;
 
 /// Error returned by [`TryCString`] operations.
 #[derive(Debug)]

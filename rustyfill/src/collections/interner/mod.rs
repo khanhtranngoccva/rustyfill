@@ -38,23 +38,25 @@
 //! ```
 
 use crate::alloc::TryReserveError;
-use crate::arc::TryWeak;
 use crate::collections::chashmap::ConcurrentHashMap;
 use crate::lang_alloc::borrow::ToOwned;
 use crate::lang_alloc::string::String;
+use crate::lang_core::fmt;
+use crate::lang_core::hash;
+use crate::lang_core::hash::Hash;
 use crate::lang_std::ffi::{CStr, CString, OsStr, OsString};
-use crate::lang_std::fmt::Debug;
 use crate::lang_std::hash::{BuildHasher as _, RandomState};
 use crate::lang_std::ops::Deref;
 use crate::lang_std::path::{Path, PathBuf};
 use crate::lang_std::sync::atomic::{AtomicUsize, Ordering};
 use crate::lang_std::sync::{Arc, Weak};
-use crate::prelude::{TryArc, TryClone, TryDebug};
+use crate::std::arc::{TryArc, TryWeak};
+use crate::try_clone::TryClone;
 use crate::try_clone::TryCloneError;
 use crate::try_default::{TryDefault, TryDefaultError};
 use crate::try_fmt::FormatterExt;
+use crate::try_fmt::TryDebug;
 use crate::try_to_owned::{TryToOwned, TryToOwnedError};
-use core::hash::Hash;
 
 /// Number of intern calls between pruning sweeps of unlocked shards.
 const PRUNE_INTERVAL: usize = 1024;
@@ -85,7 +87,7 @@ impl<Owned> Clone for InternKey<Owned> {
 }
 
 impl<Owned> Hash for InternKey<Owned> {
-    fn hash<H: core::hash::Hasher>(&self, state: &mut H) {
+    fn hash<H: hash::Hasher>(&self, state: &mut H) {
         // Only hash the u64 — the Weak component is irrelevant for bucket placement.
         self.hash.hash(state);
     }
@@ -261,11 +263,11 @@ where
     }
 }
 
-impl<B: InternKind + ?Sized> core::fmt::Debug for Intern<B>
+impl<B: InternKind + ?Sized> fmt::Debug for Intern<B>
 where
-    <B as ToOwned>::Owned: Hash + Eq + PartialEq<B> + TryClone + Debug,
+    <B as ToOwned>::Owned: Hash + Eq + PartialEq<B> + TryClone + fmt::Debug,
 {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Owned(v) => f.debug_tuple("Owned").field(v).finish(),
             Self::Shared(v) => f.debug_tuple("Shared").field(v).finish(),
@@ -277,7 +279,7 @@ impl<B: InternKind + ?Sized> TryDebug for Intern<B>
 where
     <B as ToOwned>::Owned: Hash + Eq + PartialEq<B> + TryClone + TryDebug,
 {
-    fn try_fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+    fn try_fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Owned(v) => f.try_debug_tuple("Owned").field(v).finish(),
             Self::Shared(v) => f.try_debug_tuple("Shared").field(v).finish(),
@@ -553,8 +555,8 @@ impl PartialEq<&str> for InternStr {
     }
 }
 
-impl core::fmt::Display for InternStr {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+impl fmt::Display for InternStr {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "{}", self.deref())
     }
 }
@@ -609,8 +611,8 @@ impl PartialEq<OsStr> for InternOsStr {
     }
 }
 
-impl core::fmt::Display for InternOsStr {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+impl fmt::Display for InternOsStr {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "{}", self.deref().to_string_lossy())
     }
 }
@@ -656,8 +658,8 @@ impl PartialEq<CStr> for InternCStr {
     }
 }
 
-impl core::fmt::Display for InternCStr {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+impl fmt::Display for InternCStr {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self.deref().to_str() {
             Ok(s) => write!(f, "{}", s),
             Err(_) => write!(f, "<invalid utf-8 cstr>"),
@@ -715,8 +717,8 @@ impl PartialEq<Path> for InternPath {
     }
 }
 
-impl core::fmt::Display for InternPath {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+impl fmt::Display for InternPath {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "{}", self.deref().display())
     }
 }

@@ -3,9 +3,10 @@
 //! Provides the [`TryToOwned`] implementation for `CStr`, enabling fallible
 //! conversion of a `&CStr` into an owned [`CString`].
 
+use crate::alloc::vec::{TrySlice, TryVecError};
+use crate::lang_core::fmt;
 use crate::lang_std::ffi::{CStr, CString};
 use crate::try_to_owned::{TryToOwned, TryToOwnedError};
-use crate::vec::{TrySlice, TryVecError};
 
 impl TryToOwned for CStr {
     fn try_to_owned(&self) -> Result<CString, TryToOwnedError> {
@@ -33,7 +34,7 @@ impl TryToOwned for CStr {
 // ---------------------------------------------------------------------------
 
 impl crate::try_fmt::TryDebug for CStr {
-    fn try_fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+    fn try_fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         // Mirrors std's Debug impl for CStr which shows as a quoted UTF-8 string.
         write!(f, "\"")?;
         for &byte in self.to_bytes() {

@@ -18,13 +18,14 @@
 
 use crate::alloc::AllocError;
 use crate::alloc::TryReserveError;
+use crate::lang_core::fmt;
 use crate::lang_std::ffi::OsStr;
 use crate::lang_std::path::{Path, PathBuf};
-use crate::path::path_buf::inner_push;
+use crate::std::path::path_buf::inner_push;
+use crate::std::path::{TryPathBuf, TryPathBufError};
 use crate::try_clone::{TryClone, TryCloneError};
 use crate::try_fmt::{TryDebug, helpers::FormatterExt};
 use crate::try_to_owned::{TryToOwned, TryToOwnedError};
-use core::fmt;
 
 /// Error returned by [`TryPath`] operations.
 #[derive(Debug)]
@@ -173,7 +174,6 @@ impl TryPath for Path {
     }
 
     fn try_with_added_extension<E: AsRef<OsStr>>(&self, ext: E) -> Result<PathBuf, TryPathError> {
-        use crate::path::{TryPathBuf, TryPathBufError};
         let mut out = self.try_to_path_buf()?;
         out.try_add_extension(ext).map_err(|e| match e {
             TryPathBufError::Alloc(a) => TryPathError::Alloc(a),
@@ -259,7 +259,7 @@ mod tests {
     use super::*;
     use crate::lang_alloc::vec::Vec;
     use crate::lang_std::format;
-    use crate::path::TryPathBuf;
+    use crate::std::path::TryPathBuf;
 
     /// Assert that `try_join(base, child)` produces the same result as
     /// `Path::join(base, child)` on this platform.

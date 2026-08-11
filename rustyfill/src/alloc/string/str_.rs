@@ -8,11 +8,13 @@
 use crate::alloc::{AllocError, TryReserveError};
 use crate::lang_alloc::boxed::Box;
 use crate::lang_alloc::string::String;
+use crate::lang_core::alloc::Layout;
+use crate::lang_core::fmt;
+use crate::lang_core::mem;
+use crate::lang_core::ptr;
 use crate::try_clone::{TryClone, TryCloneError};
 use crate::try_default::{TryDefault, TryDefaultError};
 use crate::try_fmt::{TryDebug, helpers::FormatterExt};
-use core::alloc::Layout;
-use core::fmt;
 
 /// Error returned by [`TryStr`] operations.
 #[derive(Debug)]
@@ -175,18 +177,17 @@ impl TryClone for Box<str> {
         // Wrap immediately in a Box<[u8]> so that Drop cleans up on any panic
         // between here and the final transmute to Box<str>.
         // SAFETY: layout matches `len` elements of u8.
-        let mut out: Box<[u8]> =
-            unsafe { Box::from_raw(core::ptr::slice_from_raw_parts_mut(ptr, len)) };
+        let mut out: Box<[u8]> = unsafe { Box::from_raw(ptr::slice_from_raw_parts_mut(ptr, len)) };
 
         // SAFETY: `bytes` is valid UTF-8 and lives for at least the duration of
         // this memcpy (borrowed from `self`). Destination has exactly `len` bytes.
         unsafe {
-            core::ptr::copy_nonoverlapping(bytes.as_ptr(), out.as_mut_ptr(), len);
+            ptr::copy_nonoverlapping(bytes.as_ptr(), out.as_mut_ptr(), len);
         }
 
         // SAFETY: we just copied valid UTF-8 bytes. `Box<[u8]>` and `Box<str>`
         // have identical memory layouts (fat pointer: data ptr + length).
-        Ok(unsafe { core::mem::transmute::<Box<[u8]>, Box<str>>(out) })
+        Ok(unsafe { mem::transmute::<Box<[u8]>, Box<str>>(out) })
     }
 }
 

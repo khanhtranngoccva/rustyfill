@@ -11,7 +11,7 @@ pub fn fill_bytes(mut bytes: &mut [u8]) -> Result<(), RandomError> {
         let ret = unsafe { libc::randSecure() };
         if ret < 0 {
             return Err(RandomError::Platform(
-                core::borrow::Cow::Borrowed("VxWorks randSecure failed"),
+                 borrow::Cow::Borrowed("VxWorks randSecure failed"),
             ));
         } else if ret > 0 {
             RNG_INIT.store(true, Relaxed);
@@ -26,7 +26,7 @@ pub fn fill_bytes(mut bytes: &mut [u8]) -> Result<(), RandomError> {
         let ret = unsafe { libc::randABytes(bytes.as_mut_ptr(), len) };
         if ret < 0 {
             return Err(RandomError::Platform(
-                core::borrow::Cow::Borrowed("VxWorks randABytes failed"),
+                 borrow::Cow::Borrowed("VxWorks randABytes failed"),
             ));
         }
         bytes = &mut bytes[len as usize..];

@@ -14,15 +14,17 @@
 //! [`TryDefault`](crate::try_default::TryDefault) for `Vec<T>` when `T` satisfies
 //! the respective bounds.
 
+use super::raw_manipulation::RawVecInnerView;
 use crate::alloc::AllocError;
 use crate::alloc::TryReserveError;
 use crate::lang_alloc::vec::Vec;
+use crate::lang_core::alloc::Layout;
+use crate::lang_core::cmp;
+use crate::lang_core::fmt;
+use crate::lang_core::mem;
 use crate::try_clone::{TryClone, TryCloneError};
 use crate::try_default::{TryDefault, TryDefaultError};
 use crate::try_fmt::{TryDebug, helpers::FormatterExt};
-use crate::vec::raw_manipulation::RawVecInnerView;
-use core::alloc::Layout;
-use core::fmt;
 
 /// Panic-safe guard that truncates a `Vec` back to its original length on drop
 /// unless disarmed via `forget()`. Used by fallible extend methods so that if
@@ -43,7 +45,7 @@ impl<'a, T> TruncateGuard<'a, T> {
 
     /// Disable the guard — no truncation on scope exit.
     fn forget(self) {
-        core::mem::forget(self);
+        mem::forget(self);
     }
 }
 
@@ -678,7 +680,7 @@ impl<T> TryVec<T> for Vec<T> {
     }
 
     fn try_shrink_to(&mut self, min_capacity: usize) -> Result<(), TryVecError> {
-        let target = core::cmp::max(self.len(), min_capacity);
+        let target = cmp::max(self.len(), min_capacity);
         if self.capacity() <= target {
             return Ok(());
         }
@@ -786,6 +788,7 @@ mod tests {
     use crate::lang_alloc::string::String;
     use crate::lang_alloc::string::ToString;
     use crate::lang_alloc::vec;
+    use crate::lang_core::iter;
 
     // ── Construction ─────────────────────────────────────────────────────────
 
@@ -873,7 +876,7 @@ mod tests {
     #[test]
     fn try_extend_empty() {
         let mut v: Vec<i32> = Vec::new();
-        v.try_extend(core::iter::empty::<i32>()).unwrap();
+        v.try_extend(iter::empty::<i32>()).unwrap();
         assert!(v.is_empty());
     }
 
@@ -1061,7 +1064,7 @@ mod tests {
 
     #[test]
     fn try_collect_empty() {
-        let v: Vec<i32> = Vec::try_collect(core::iter::empty::<i32>()).unwrap();
+        let v: Vec<i32> = Vec::try_collect(iter::empty::<i32>()).unwrap();
         assert!(v.is_empty());
     }
 

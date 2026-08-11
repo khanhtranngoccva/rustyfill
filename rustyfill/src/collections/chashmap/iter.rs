@@ -8,14 +8,15 @@
 //! Because `Arc::new` (initialization) and `Arc::clone` (cloning into yielded
 //! items) are fallible, iteration returns [`Result`] items.
 
+use crate::lang_core::fmt;
+use crate::lang_core::hash::{BuildHasher, Hash};
 use crate::lang_std::sync::Arc;
-use core::hash::{BuildHasher, Hash};
 
 use hashbrown::raw::{RawIter, RawTable};
 use parking_lot::{RwLockReadGuard, RwLockWriteGuard};
 
 use crate::alloc::AllocError;
-use crate::arc::TryArc;
+use crate::std::arc::TryArc;
 use crate::try_clone::{TryClone, TryCloneError};
 use crate::try_fmt::{TryDebug, helpers::FormatterExt};
 
@@ -33,8 +34,8 @@ pub enum IterError {
     Clone(TryCloneError),
 }
 
-impl core::fmt::Display for IterError {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+impl fmt::Display for IterError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Alloc(_) => write!(f, "iteration failed: heap allocation error"),
             Self::Clone(e) => write!(f, "iteration failed: {}", e),
@@ -43,7 +44,7 @@ impl core::fmt::Display for IterError {
 }
 
 impl TryDebug for IterError {
-    fn try_fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+    fn try_fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Alloc(e) => f
                 .try_debug_struct("IterError::Alloc")

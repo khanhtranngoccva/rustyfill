@@ -37,6 +37,9 @@
 //!
 //! # Notes
 //! - These types only guard against panics during creation of hasher factories. The user must ensure that the invocation via build_hasher does not implicitly panic, although it is practically never the case for the sake of performance.
+use crate::lang_core::fmt;
+use crate::lang_core::hash::BuildHasher;
+use crate::lang_core::mem;
 #[cfg(feature = "std")]
 use crate::lang_std::thread_local;
 use crate::{
@@ -44,7 +47,6 @@ use crate::{
     try_default::{TryDefault, TryDefaultError},
     try_fmt::{TryDebug, helpers::FormatterExt},
 };
-use core::hash::BuildHasher;
 
 /// Marker trait for hasher factories that are safely duplicatable via a bitwise
 /// copy.
@@ -52,7 +54,7 @@ use core::hash::BuildHasher;
 /// Any type that implements both [`BuildHasher`] and [`Copy`] automatically
 /// satisfies this trait via a blanket implementation. No manual impl is needed.
 ///
-/// Types satisfying this trait can be duplicated with `core::ptr::read` or
+/// Types satisfying this trait can be duplicated with  `ptr::read` or
 /// [`Self::unsafe_copy`] without risk of panicking or double-freeing. This is
 /// strictly stronger than [`Clone`] — it requires [`Copy`].
 ///
@@ -131,9 +133,8 @@ impl TryDefault for ::lang_std::hash::RandomState {
             // SAFETY: RandomState's internal representation is two u64 values.
             // We construct it directly from our randomly generated keys, avoiding
             // the panic-prone Default::default() path entirely.
-            let rs = unsafe {
-                core::mem::transmute::<(u64, u64), ::lang_std::hash::RandomState>((k1, k2))
-            };
+            let rs =
+                unsafe { mem::transmute::<(u64, u64), ::lang_std::hash::RandomState>((k1, k2)) };
             let rs_clone = rs.clone();
             cell.set(rs).ok();
             Ok(rs_clone)
@@ -281,8 +282,8 @@ impl<H: CopyBuildHasher> BuildHasher for CopyHasherFactory<H> {
     }
 }
 
-impl<H: CopyBuildHasher + core::fmt::Debug> core::fmt::Debug for CopyHasherFactory<H> {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+impl<H: CopyBuildHasher + fmt::Debug> fmt::Debug for CopyHasherFactory<H> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("CopyHasherFactory")
             .field("inner", &self.inner)
             .finish()
@@ -290,7 +291,7 @@ impl<H: CopyBuildHasher + core::fmt::Debug> core::fmt::Debug for CopyHasherFacto
 }
 
 impl<H: CopyBuildHasher + TryDebug> TryDebug for CopyHasherFactory<H> {
-    fn try_fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+    fn try_fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.try_debug_struct("CopyHasherFactory")
             .field("inner", &self.inner)
             .finish()
@@ -464,8 +465,8 @@ impl<H: BuildHasher + Default> TryDefault for ArbitraryHasherFactory<H> {
     }
 }
 
-impl<H: BuildHasher + core::fmt::Debug> core::fmt::Debug for ArbitraryHasherFactory<H> {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+impl<H: BuildHasher + fmt::Debug> fmt::Debug for ArbitraryHasherFactory<H> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("ArbitraryHasherFactory")
             .field("inner", &self.inner)
             .finish()
@@ -473,7 +474,7 @@ impl<H: BuildHasher + core::fmt::Debug> core::fmt::Debug for ArbitraryHasherFact
 }
 
 impl<H: BuildHasher + TryDebug> TryDebug for ArbitraryHasherFactory<H> {
-    fn try_fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+    fn try_fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.try_debug_struct("ArbitraryHasherFactory")
             .field("inner", &self.inner)
             .finish()
@@ -493,6 +494,7 @@ mod tests {
     use super::*;
     use crate::lang_alloc::format;
     use crate::lang_alloc::vec::Vec;
+    use crate::lang_core::ptr;
     use crate::lang_std::hash::Hasher;
 
     // ── Custom trivially-copyable hashers ─────────────────────────────────────
@@ -655,7 +657,7 @@ mod tests {
     #[test]
     fn ptr_read_matches_unsafe_copy() {
         let original = Djb2Builder { seed: 42 };
-        let via_ptr_read = unsafe { core::ptr::read(&original) };
+        let via_ptr_read = unsafe { ptr::read(&original) };
         let via_method = original.unsafe_copy();
         assert_eq!(via_ptr_read.seed, via_method.seed);
     }
@@ -686,7 +688,7 @@ mod tests {
     // ```
     //
     // We verify at runtime that it indeed lacks Copy by checking
-    // `core::mem::needs_drop` and size properties.
+    //  `mem::needs_drop` and size properties.
     #[test]
     fn allocating_builder_is_not_copy() {
         // AllocatingBuilder contains a Vec, so it's Clone but not Copy.
@@ -763,7 +765,7 @@ mod tests {
     fn factory_with_zero_sized_hasher() {
         let factory = CopyHasherFactory::new(Fnv1aBuilder);
         // Fnv1aBuilder is zero-sized; the factory should also be zero-sized.
-        assert_eq!(core::mem::size_of_val(&factory), 0);
+        assert_eq!(mem::size_of_val(&factory), 0);
     }
 
     #[test]

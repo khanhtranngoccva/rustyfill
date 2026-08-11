@@ -5,12 +5,12 @@
 
 use crate::alloc::AllocError;
 use crate::lang_alloc::boxed::Box;
+use crate::lang_core::alloc::Layout;
+use crate::lang_core::fmt;
+use crate::lang_core::mem::{self, MaybeUninit};
+use crate::lang_core::pin::Pin;
 use crate::try_clone::{TryClone, TryCloneError};
 use crate::try_default::{TryDefault, TryDefaultError};
-use core::alloc::Layout;
-use core::fmt;
-use core::mem::{self, MaybeUninit};
-use core::pin::Pin;
 /// A trait for fallibly allocating a value on the heap.
 ///
 /// Implemented for `Box<T>`.

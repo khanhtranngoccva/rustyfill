@@ -19,12 +19,14 @@
 use hashbrown::raw::RawTable;
 
 use crate::alloc::{AllocError, TryReserveError};
+use crate::lang_core::fmt;
+use crate::lang_core::mem;
+use crate::lang_core::ptr;
 use crate::lang_std::cmp::Eq;
 use crate::lang_std::hash::{BuildHasher, Hash, RandomState};
 use crate::prelude::TryDefault;
 use crate::try_clone::{TryClone, TryCloneError};
 use crate::try_fmt::{TryDebug, helpers::FormatterExt};
-use core::fmt;
 
 type DashMap<K, V, S = RandomState> = dashmap::DashMap<K, V, S>;
 
@@ -952,7 +954,7 @@ impl<K: Eq + Hash, V, S: BuildHasher + TryClone> TryDashMap<K, V, S> for DashMap
     // ── Capacity / shrink ───────────────────────────────────────────────────
 
     fn try_shrink_to_fit(&self) -> Result<(), TryDashMapError> {
-        use core::mem::ManuallyDrop;
+        use crate::lang_core::mem::ManuallyDrop;
 
         let hf = self.hasher().clone();
 
@@ -978,7 +980,7 @@ impl<K: Eq + Hash, V, S: BuildHasher + TryClone> TryDashMap<K, V, S> for DashMap
                     // SAFETY: `ptr` is valid for reads — it points to a live entry
                     // inside the old table that we hold exclusive access to.
                     let hash = hf.hash_one(&(*ptr).0);
-                    let entry: ManuallyDrop<ShardEntry<K, V>> = core::ptr::read(ptr as *mut _); // takes ownership
+                    let entry: ManuallyDrop<ShardEntry<K, V>> = ptr::read(ptr as *mut _); // takes ownership
                     match new_table.try_insert_no_grow(hash, entry) {
                         Ok(_) => {}
                         Err(_) => {
@@ -995,15 +997,15 @@ impl<K: Eq + Hash, V, S: BuildHasher + TryClone> TryDashMap<K, V, S> for DashMap
             }
 
             // Hydrate the new table into the shard slot.
-            let old_table = core::mem::replace(&mut *shard, unsafe {
-                ::lang_std::mem::transmute::<
+            let old_table = mem::replace(&mut *shard, unsafe {
+                mem::transmute::<
                     RawTable<::lang_std::mem::ManuallyDrop<ShardEntry<K, V>>>,
                     RawTable<ShardEntry<K, V>>,
                 >(new_table)
             });
             // Values were moved out of the old table above, so we need to dehydrate the table.
             let _dehydrated_table = unsafe {
-                ::lang_std::mem::transmute::<
+                mem::transmute::<
                     RawTable<ShardEntry<K, V>>,
                     RawTable<::lang_std::mem::ManuallyDrop<ShardEntry<K, V>>>,
                 >(old_table)

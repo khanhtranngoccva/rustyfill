@@ -25,10 +25,12 @@
 //! write!(f, "{:?}", wrapped)?; // Debug — works because PathBuf: Debug
 //! ```
 
-use core::any::Any;
-use core::fmt;
-use core::ops::{Deref, DerefMut};
-
+use crate::lang_core::any::Any;
+use crate::lang_core::cmp;
+use crate::lang_core::error;
+use crate::lang_core::fmt;
+use crate::lang_core::hash;
+use crate::lang_core::ops::{Deref, DerefMut};
 use crate::try_clone::{TryClone, TryCloneError};
 use crate::try_default::{TryDefault, TryDefaultError};
 use crate::try_fmt::{TryDebug, TryDisplay, TryLowerExp, TryLowerHex, TryUpperExp, TryUpperHex};
@@ -217,9 +219,9 @@ impl<T: fmt::UpperExp> TryUpperExp for AssertFmt<T> {
 
 // ── Error trait ─────────────────────────────────────────────────────────────────
 
-impl<T: core::error::Error + 'static> core::error::Error for AssertFmt<T> {
+impl<T: error::Error + 'static> error::Error for AssertFmt<T> {
     #[inline]
-    fn source(&self) -> Option<&(dyn core::error::Error + 'static)> {
+    fn source(&self) -> Option<&(dyn error::Error + 'static)> {
         self.0.source()
     }
 }
@@ -271,21 +273,21 @@ impl<T: Eq> Eq for AssertFmt<T> {}
 
 impl<T: PartialOrd> PartialOrd for AssertFmt<T> {
     #[inline]
-    fn partial_cmp(&self, other: &Self) -> Option<core::cmp::Ordering> {
+    fn partial_cmp(&self, other: &Self) -> Option<cmp::Ordering> {
         self.0.partial_cmp(&other.0)
     }
 }
 
 impl<T: Ord> Ord for AssertFmt<T> {
     #[inline]
-    fn cmp(&self, other: &Self) -> core::cmp::Ordering {
+    fn cmp(&self, other: &Self) -> cmp::Ordering {
         self.0.cmp(&other.0)
     }
 }
 
-impl<T: core::hash::Hash> core::hash::Hash for AssertFmt<T> {
+impl<T: hash::Hash> hash::Hash for AssertFmt<T> {
     #[inline]
-    fn hash<H: core::hash::Hasher>(&self, state: &mut H) {
+    fn hash<H: hash::Hasher>(&self, state: &mut H) {
         self.0.hash(state);
     }
 }

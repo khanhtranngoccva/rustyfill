@@ -19,6 +19,7 @@
 //! [`TryDefault`](crate::try_default::TryDefault) which is already implemented
 //! for [`RandomState`] in [`crate::hashers`].
 
+use crate::lang_core::mem;
 use crate::lang_std::hash::RandomState;
 use crate::sys::random::hashmap_random_keys_infallible;
 
@@ -63,7 +64,7 @@ impl TryRandomState for RandomState {
         // SAFETY: RandomState's internal representation is two u64 values.
         // We construct it directly from our randomly generated keys, avoiding
         // the panic-prone Default::default() path entirely.
-        unsafe { core::mem::transmute::<(u64, u64), RandomState>((k1, k2)) }
+        unsafe { mem::transmute::<(u64, u64), RandomState>((k1, k2)) }
     }
 }
 

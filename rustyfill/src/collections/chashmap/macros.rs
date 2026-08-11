@@ -65,7 +65,7 @@ macro_rules! declare_concurrent_hash_map {
 
                     unsafe {
                         let ptr = &raw mut __inner::__SHARDS as *mut $crate::collections::chashmap::Shard<$K, $V>;
-                        let slice = core::slice::from_raw_parts_mut(ptr, __inner::SHARD_COUNT);
+                        let slice = $crate::lang_core::slice::from_raw_parts_mut(ptr, __inner::SHARD_COUNT);
                         $crate::collections::chashmap::ConcurrentHashMap::from_static(
                             slice,
                             <$S>::default(),
@@ -99,7 +99,7 @@ macro_rules! declare_concurrent_hash_map {
 
                     unsafe {
                         let ptr = &raw mut __inner::__SHARDS as *mut $crate::collections::chashmap::Shard<$K, $V>;
-                        let slice = core::slice::from_raw_parts_mut(ptr, __inner::SHARD_COUNT);
+                        let slice = $crate::lang_core::slice::from_raw_parts_mut(ptr, __inner::SHARD_COUNT);
                         $crate::collections::chashmap::ConcurrentHashMap::from_static(
                             slice,
                             RandomState::try_new_infallible(),
@@ -130,7 +130,7 @@ macro_rules! declare_concurrent_hash_map {
 
                     unsafe {
                         let ptr = &raw mut __inner::__SHARDS as *mut $crate::collections::chashmap::Shard<$K, $V>;
-                        let slice = core::slice::from_raw_parts_mut(ptr, __inner::SHARD_COUNT);
+                        let slice = $crate::lang_core::slice::from_raw_parts_mut(ptr, __inner::SHARD_COUNT);
                         $crate::collections::chashmap::ConcurrentHashMap::from_static(
                             slice,
                             <$S>::default(),

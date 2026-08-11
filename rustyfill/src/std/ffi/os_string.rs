@@ -18,13 +18,14 @@
 
 use crate::alloc::AllocError;
 use crate::alloc::TryReserveError;
+use crate::alloc::vec::{TryVec, TryVecError};
 use crate::lang_alloc::string::String;
 use crate::lang_alloc::vec::Vec;
+use crate::lang_core::fmt;
 use crate::lang_std::ffi::{OsStr, OsString};
 use crate::try_clone::{TryClone, TryCloneError};
 use crate::try_default::{TryDefault, TryDefaultError};
 use crate::try_fmt::{TryDebug, helpers::FormatterExt};
-use core::fmt;
 
 /// Error returned by [`TryOsString`] operations.
 ///
@@ -252,15 +253,15 @@ impl TryOsString for OsString {
         // back. Only the spare capacity portion is reallocated — the OS string
         // data bytes are never copied or revalidated.
         let mut v = ::lang_std::mem::replace(self, OsString::new()).into_encoded_bytes();
-        let result = <Vec<u8> as crate::vec::TryVec<u8>>::fallible_shrink_to(&mut v, min_capacity);
+        let result = <Vec<u8> as TryVec<u8>>::fallible_shrink_to(&mut v, min_capacity);
         // SAFETY: the bytes originated from a valid OsString via into_encoded_bytes.
         *self = unsafe { OsString::from_encoded_bytes_unchecked(v) };
         result.map_err(|e| match e {
-            crate::vec::TryVecError::Alloc(e) => TryOsStringError::Alloc(e),
-            crate::vec::TryVecError::Reserve(e) => TryOsStringError::Reserve(e),
-            crate::vec::TryVecError::Clone(_) => unreachable!("shrink does not clone"),
-            crate::vec::TryVecError::Overflow => TryOsStringError::Overflow,
-            crate::vec::TryVecError::Other(msg) => TryOsStringError::Other(msg),
+            TryVecError::Alloc(e) => TryOsStringError::Alloc(e),
+            TryVecError::Reserve(e) => TryOsStringError::Reserve(e),
+            TryVecError::Clone(_) => unreachable!("shrink does not clone"),
+            TryVecError::Overflow => TryOsStringError::Overflow,
+            TryVecError::Other(msg) => TryOsStringError::Other(msg),
         })
     }
 

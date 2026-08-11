@@ -16,6 +16,7 @@
 
 use crate::alloc::AllocError;
 use crate::lang_alloc::boxed::Box;
+use crate::lang_core::fmt;
 use crate::prelude::TryBox;
 
 /// Extension trait for fallible [`::std::io::Error`] construction.
@@ -135,14 +136,14 @@ impl IoErrorExt for ::lang_std::io::Error {
 // ── TryDebug / TryDisplay for io::Error ────────────────────────────────────────
 
 impl crate::try_fmt::TryDebug for ::lang_std::io::Error {
-    fn try_fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        core::fmt::Debug::fmt(self, f)
+    fn try_fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        fmt::Debug::fmt(self, f)
     }
 }
 
 impl crate::try_fmt::TryDisplay for ::lang_std::io::Error {
-    fn try_fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        core::fmt::Display::fmt(self, f)
+    fn try_fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        fmt::Display::fmt(self, f)
     }
 }
 
@@ -150,14 +151,14 @@ impl crate::try_fmt::TryDisplay for ::lang_std::io::Error {
 
 impl crate::try_fmt::TryDebug for ::lang_std::io::ErrorKind {
     #[inline]
-    fn try_fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        core::fmt::Debug::fmt(self, f)
+    fn try_fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        fmt::Debug::fmt(self, f)
     }
 }
 
 impl crate::try_fmt::TryDisplay for ::lang_std::io::ErrorKind {
     #[inline]
-    fn try_fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        core::fmt::Display::fmt(self, f)
+    fn try_fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        fmt::Display::fmt(self, f)
     }
 }

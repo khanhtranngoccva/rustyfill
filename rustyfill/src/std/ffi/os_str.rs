@@ -6,9 +6,9 @@
 //! for consistency with [`TryOsString`](super::os_string::TryOsString).
 
 use crate::alloc::{AllocError, TryReserveError};
+use crate::lang_core::fmt;
 use crate::lang_std::ffi::{OsStr, OsString};
 use crate::try_fmt::{TryDebug, helpers::FormatterExt};
-use core::fmt;
 
 /// Error returned by [`TryOsStr`] operations.
 #[derive(Debug)]

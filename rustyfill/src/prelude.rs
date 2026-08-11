@@ -27,52 +27,49 @@ pub use crate::try_to_owned::TryToOwned;
 #[cfg(feature = "std")]
 pub use crate::try_random_state::TryRandomState;
 
-// ── Box (requires `std` feature for std::boxed wrappers) ──────────────────────
+// ── Box ──────────────────────
+
+pub use crate::alloc::boxed::TryBox;
+
+// ── Vec & slice ──────────────────────────────────────
 
 #[cfg(feature = "std")]
-pub use crate::boxed::TryBox;
-
-// ── Vec & slice (requires `std` feature) ──────────────────────────────────────
-
-#[cfg(feature = "std")]
-pub use crate::vec::{TrySlice, TryVec};
+pub use crate::alloc::vec::{TrySlice, TryVec};
 
 // ── HashMap & HashSet (requires `std` feature) ────────────────────────────────
 
 #[cfg(feature = "std")]
-pub use crate::hashmap::TryHashMap;
+pub use crate::std::hashmap::TryHashMap;
 #[cfg(feature = "std")]
-pub use crate::hashset::TryHashSet;
+pub use crate::std::hashset::TryHashSet;
 
-// ── VecDeque (requires `std` feature) ─────────────────────────────────────────
+// ── VecDeque ─────────────────────────────────────────
 
-#[cfg(feature = "std")]
-pub use crate::vecdeque::TryVecDeque;
+pub use crate::alloc::vecdeque::TryVecDeque;
 
-// ── String & str (requires `std` feature) ─────────────────────────────────────
+// ── String & str ─────────────────────────────────────
 
-#[cfg(feature = "std")]
-pub use crate::string::{TryStr, TryString};
+pub use crate::alloc::string::{TryStr, TryString};
 
-// ── Arc & Weak (multi-threaded, requires `std` feature) ───────────────────────
+// ── Arc & Weak ───────────────────────
 
-#[cfg(feature = "std")]
-pub use crate::arc::{TryArc, TryWeak as TryArcWeak};
+pub use crate::alloc::arc::{TryArc, TryWeak as TryArcWeak};
 
-// ── Rc & Weak (single-threaded, requires `std` feature) ──────────────────────
+// ── Rc & Weak ──────────────────────
 
-#[cfg(feature = "std")]
-pub use crate::rc::{TryRc, TryWeak as TryRcWeak};
+pub use crate::alloc::rc::{TryRc, TryWeak as TryRcWeak};
 
-// ── FFI strings (requires `std` feature) ──────────────────────────────────────
+// ── FFI strings ──────────────────────────────────────
+
+pub use crate::alloc::ffi::{TryCString, TryCStringError};
 
 #[cfg(feature = "std")]
-pub use crate::ffi::{TryCString, TryOsStr, TryOsString};
+pub use crate::std::ffi::{TryOsStr, TryOsString};
 
 // ── Paths (requires `std` feature) ────────────────────────────────────────────
 
 #[cfg(feature = "std")]
-pub use crate::path::{TryPath, TryPathBuf};
+pub use crate::std::path::{TryPath, TryPathBuf};
 
 // ── DashMap & DashSet (unstable — see `unstable` feature) ────────────────────
 
@@ -83,13 +80,8 @@ pub use crate::dashmap::{TryDashMap, TryDashSet};
 
 #[cfg(feature = "panic")]
 #[allow(deprecated)]
-pub use crate::btrees::{TryBTreeMap, TryBTreeSet};
+pub use crate::alloc::btrees::{TryBTreeMap, TryBTreeSet};
 
-// ── RefCell (requires `std` feature) ──────────────────────────────────────────
+// ── RefCell ──────────────────────────────────────────
 
-#[cfg(feature = "std")]
-pub use crate::cell::TryRefCell;
-
-// ── RwLock & Mutex (requires `std` feature) ───────────────────────────────────
-// TryDebug impls delegate to std Debug (allocation-free, verified by OOM tests).
-// See rustyfill::sync for the implementations.
+pub use crate::core::cell::TryRefCell;

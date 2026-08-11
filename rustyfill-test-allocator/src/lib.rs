@@ -280,7 +280,7 @@ impl Drop for FailAllocGuard {
 mod tests {
     use super::*;
     use rustyfill::alloc::AllocError;
-    use rustyfill::boxed::TryBox;
+    use rustyfill::alloc::boxed::TryBox;
 
     #[test]
     fn guard_restores_previous_policy() {

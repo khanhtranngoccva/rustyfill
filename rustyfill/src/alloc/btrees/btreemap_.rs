@@ -13,20 +13,20 @@
 //! Because `BTreeMap::try_reserve` does not exist, these methods internally
 //! use [`::lang_std::panic::catch_unwind`] to intercept allocation panics from the
 //! B-tree's internal node allocator. This means `K` and `V` must be
-//! [`RefUnwindSafe`](core::panic::RefUnwindSafe) for the fallible mutation methods.
+//! [`RefUnwindSafe`] (panic::RefUnwindSafe) for the fallible mutation methods.
 //!
 //! The trait also implements [`TryClone`](crate::try_clone::TryClone) and
 //! [`TryDefault`](crate::try_default::TryDefault) for `BTreeMap<K, V>` when
 //! `K` and `V` satisfy the respective bounds.
 
 use crate::alloc::{AllocError, PayloadBox};
+use crate::lang_core::fmt;
+use crate::lang_core::mem::ManuallyDrop;
+use crate::lang_core::ptr;
 use crate::lang_std::collections::BTreeMap;
 use crate::lang_std::panic::{AssertUnwindSafe, RefUnwindSafe, catch_unwind};
 use crate::try_clone::TryCloneError;
 use crate::try_fmt::{TryDebug, helpers::FormatterExt};
-use core::fmt;
-use core::mem::ManuallyDrop;
-use core::ptr;
 
 // ── Error type ────────────────────────────────────────────────────────────────
 
@@ -595,6 +595,7 @@ impl<K, V> crate::try_default::TryDefault for BTreeMap<K, V> {
 
 #[cfg(test)]
 mod tests {
+
     use super::*;
 
     use crate::lang_alloc::boxed::Box;
@@ -603,6 +604,7 @@ mod tests {
     use crate::lang_alloc::string::ToString;
     use crate::lang_alloc::vec;
     use crate::lang_alloc::vec::Vec;
+    use crate::lang_core::any::Any;
     use crate::try_clone::TryClone;
     use crate::try_default::TryDefault;
 
@@ -1027,7 +1029,7 @@ mod tests {
 
     #[test]
     fn error_display_alloc_panic() {
-        let payload: Box<dyn core::any::Any + Send> = Box::new("out of memory");
+        let payload: Box<dyn Any + Send> = Box::new("out of memory");
         let err = TryBTreeMapError::AllocPanic(PayloadBox(payload));
         let msg = format!("{}", err);
         assert!(msg.contains("allocation panicked"));

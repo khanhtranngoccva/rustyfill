@@ -18,9 +18,12 @@
 //! which requires every field to also implement `TryClone`.
 
 use crate::alloc::{AllocError, TryReserveError};
+use crate::lang_core::array;
+use crate::lang_core::clone::Clone;
+use crate::lang_core::fmt;
+use crate::lang_core::mem;
+use crate::lang_core::ptr;
 use crate::try_fmt::{TryDebug, helpers::FormatterExt};
-use core::clone::Clone;
-use core::fmt;
 
 /// Returned when a fallible clone operation fails.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -138,12 +141,12 @@ rustyfill_macros::try_clone_tuples!(12);
 /// Panic-safe guard that drops any initialized elements in a `MaybeUninit` array
 /// if dropped before `forget()` is called (e.g. on panic or early return).
 struct ArrayInitGuard<'a, T, const N: usize> {
-    slots: &'a mut [core::mem::MaybeUninit<T>; N],
+    slots: &'a mut [mem::MaybeUninit<T>; N],
     count: usize,
 }
 
 impl<'a, T, const N: usize> ArrayInitGuard<'a, T, N> {
-    fn new(slots: &'a mut [core::mem::MaybeUninit<T>; N]) -> Self {
+    fn new(slots: &'a mut [mem::MaybeUninit<T>; N]) -> Self {
         Self { slots, count: 0 }
     }
 
@@ -151,7 +154,7 @@ impl<'a, T, const N: usize> ArrayInitGuard<'a, T, N> {
     /// Call this only after all slots have been successfully initialized.
     fn forget(mut self) {
         self.count = 0;
-        core::mem::forget(self);
+        mem::forget(self);
     }
 }
 
@@ -159,7 +162,7 @@ impl<'a, T, const N: usize> Drop for ArrayInitGuard<'a, T, N> {
     fn drop(&mut self) {
         unsafe {
             for slot in self.slots.iter_mut().take(self.count) {
-                core::ptr::drop_in_place(slot.as_mut_ptr());
+                ptr::drop_in_place(slot.as_mut_ptr());
             }
         }
     }
@@ -167,15 +170,14 @@ impl<'a, T, const N: usize> Drop for ArrayInitGuard<'a, T, N> {
 
 impl<T: TryClone, const N: usize> TryClone for [T; N] {
     fn try_clone(&self) -> Result<Self, TryCloneError> {
-        let mut out: [core::mem::MaybeUninit<T>; N] =
-            core::array::from_fn(|_| core::mem::MaybeUninit::uninit());
+        let mut out: [mem::MaybeUninit<T>; N] = array::from_fn(|_| mem::MaybeUninit::uninit());
         let mut guard = ArrayInitGuard::new(&mut out);
 
         for (i, elem) in self.iter().enumerate() {
             match elem.try_clone() {
                 Ok(cloned) => {
                     unsafe {
-                        core::ptr::write(guard.slots[i].as_mut_ptr(), cloned);
+                        ptr::write(guard.slots[i].as_mut_ptr(), cloned);
                     }
                     guard.count += 1;
                 }
@@ -190,7 +192,7 @@ impl<T: TryClone, const N: usize> TryClone for [T; N] {
         // SAFETY: we verified that all N slots were written successfully above.
         // Using transmute_copy instead of MaybeUninit::array_assume_init because
         // the latter is still unstable as of Rust 1.97 (tracking issue #96097).
-        Ok(unsafe { core::mem::transmute_copy(&out) })
+        Ok(unsafe { mem::transmute_copy(&out) })
     }
 }
 

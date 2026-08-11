@@ -18,8 +18,11 @@
 //! proc macro, which requires every field in every variant to also implement `TryDefault`.
 
 use crate::alloc::{AllocError, TryReserveError};
+use crate::lang_core::array;
+use crate::lang_core::fmt;
+use crate::lang_core::mem;
+use crate::lang_core::ptr;
 use crate::try_fmt::{TryDebug, helpers::FormatterExt};
-use core::fmt;
 
 /// Returned when a fallible default construction fails.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -77,14 +80,14 @@ impl From<TryReserveError> for TryDefaultError {
     }
 }
 
-/// A fallible analogue of [`core::default::Default`].
+/// A fallible analogue of [`default::Default`].
 ///
-/// Unlike [`core::default::Default`], which panics on allocation failure,
+/// Unlike [`default::Default`], which panics on allocation failure,
 /// [`TryDefault`] returns a [`Result`] so callers can handle out-of-memory
 /// gracefully.
 ///
 /// Implementors must ensure that `try_default` never panics — inner values should
-/// also be constructed via [`TryDefault`] rather than [`core::default::Default`].
+/// also be constructed via [`TryDefault`] rather than [`default::Default`].
 ///
 /// # Laziness
 ///
@@ -141,12 +144,12 @@ rustyfill_macros::try_default_tuples!(12);
 /// Panic-safe guard that drops any initialized elements in a `MaybeUninit` array
 /// if dropped before `forget()` is called (e.g. on panic or early return).
 struct ArrayInitGuard<'a, T, const N: usize> {
-    slots: &'a mut [core::mem::MaybeUninit<T>; N],
+    slots: &'a mut [mem::MaybeUninit<T>; N],
     count: usize,
 }
 
 impl<'a, T, const N: usize> ArrayInitGuard<'a, T, N> {
-    fn new(slots: &'a mut [core::mem::MaybeUninit<T>; N]) -> Self {
+    fn new(slots: &'a mut [mem::MaybeUninit<T>; N]) -> Self {
         Self { slots, count: 0 }
     }
 
@@ -154,7 +157,7 @@ impl<'a, T, const N: usize> ArrayInitGuard<'a, T, N> {
     /// Call this only after all slots have been successfully initialized.
     fn forget(mut self) {
         self.count = 0;
-        core::mem::forget(self);
+        mem::forget(self);
     }
 }
 
@@ -162,7 +165,7 @@ impl<'a, T, const N: usize> Drop for ArrayInitGuard<'a, T, N> {
     fn drop(&mut self) {
         unsafe {
             for slot in self.slots.iter_mut().take(self.count) {
-                core::ptr::drop_in_place(slot.as_mut_ptr());
+                ptr::drop_in_place(slot.as_mut_ptr());
             }
         }
     }
@@ -170,15 +173,14 @@ impl<'a, T, const N: usize> Drop for ArrayInitGuard<'a, T, N> {
 
 impl<T: TryDefault, const N: usize> TryDefault for [T; N] {
     fn try_default() -> Result<Self, TryDefaultError> {
-        let mut out: [core::mem::MaybeUninit<T>; N] =
-            core::array::from_fn(|_| core::mem::MaybeUninit::uninit());
+        let mut out: [mem::MaybeUninit<T>; N] = array::from_fn(|_| mem::MaybeUninit::uninit());
         let mut guard = ArrayInitGuard::new(&mut out);
 
         for slot in guard.slots.iter_mut() {
             match T::try_default() {
                 Ok(val) => {
                     unsafe {
-                        core::ptr::write(slot.as_mut_ptr(), val);
+                        ptr::write(slot.as_mut_ptr(), val);
                     }
                     guard.count += 1;
                 }
@@ -193,7 +195,7 @@ impl<T: TryDefault, const N: usize> TryDefault for [T; N] {
         // SAFETY: we verified that all N slots were written successfully above.
         // Using transmute_copy instead of MaybeUninit::array_assume_init because
         // the latter is still unstable as of Rust 1.97 (tracking issue #96097).
-        Ok(unsafe { core::mem::transmute_copy(&out) })
+        Ok(unsafe { mem::transmute_copy(&out) })
     }
 }
 

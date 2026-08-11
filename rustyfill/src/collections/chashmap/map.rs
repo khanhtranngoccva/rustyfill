@@ -1,15 +1,18 @@
 //! Core [`ConcurrentHashMap`] implementation.
 
+use crate::alloc::vec::SliceInitGuard;
 use crate::alloc::{AllocError, TryReserveError};
+use crate::lang_alloc;
 use crate::lang_alloc::boxed::Box;
+use crate::lang_core::borrow::Borrow;
+use crate::lang_core::fmt;
+use crate::lang_core::hash::{BuildHasher, Hash};
+use crate::lang_core::mem::{self, MaybeUninit};
+use crate::lang_core::ptr;
 use crate::lang_std::hash::RandomState;
 use crate::try_clone::{TryClone, TryCloneError};
 use crate::try_default::{TryDefault, TryDefaultError};
 use crate::try_fmt::{TryDebug, helpers::FormatterExt};
-use crate::vec::SliceInitGuard;
-use core::borrow::Borrow;
-use core::hash::{BuildHasher, Hash};
-use core::mem::{self, MaybeUninit};
 
 use super::entry::{Entry, OccupiedEntry, VacantEntry};
 use super::refs::{Ref, RefMut};
@@ -55,8 +58,8 @@ pub enum ConcurrentHashMapError {
     Other(&'static str),
 }
 
-impl core::fmt::Display for ConcurrentHashMapError {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+impl fmt::Display for ConcurrentHashMapError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Alloc(_) => write!(
                 f,
@@ -103,7 +106,7 @@ impl From<TryDefaultError> for ConcurrentHashMapError {
 }
 
 impl TryDebug for ConcurrentHashMapError {
-    fn try_fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+    fn try_fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Alloc(e) => f
                 .try_debug_struct("ConcurrentHashMapError::Alloc")
@@ -137,8 +140,8 @@ pub enum ConcurrentHashMapNonblockError {
     Locked,
 }
 
-impl core::fmt::Display for ConcurrentHashMapNonblockError {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+impl fmt::Display for ConcurrentHashMapNonblockError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Alloc(_) => write!(
                 f,
@@ -169,7 +172,7 @@ impl From<ConcurrentHashMapError> for ConcurrentHashMapNonblockError {
 }
 
 impl TryDebug for ConcurrentHashMapNonblockError {
-    fn try_fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+    fn try_fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Alloc(e) => f
                 .try_debug_struct("ConcurrentHashMapNonblockError::Alloc")
@@ -299,7 +302,7 @@ impl<K: Eq + Hash, V, S: BuildHasher> ConcurrentHashMap<K, V, S> {
             ));
         }
         let shift = usize::BITS - shard_count.trailing_zeros();
-        let layout = core::alloc::Layout::array::<Shard<K, V>>(shard_count)
+        let layout = lang_alloc::alloc::Layout::array::<Shard<K, V>>(shard_count)
             .map_err(|_| ConcurrentHashMapError::Overflow)?;
         let ptr = unsafe { ::lang_alloc::alloc::alloc(layout) };
         if ptr.is_null() {
@@ -310,12 +313,12 @@ impl<K: Eq + Hash, V, S: BuildHasher> ConcurrentHashMap<K, V, S> {
         // SAFETY: layout matches `shard_count` elements of MaybeUninit<Shard<K,V>>,
         // which has the same size and alignment as Shard<K,V>.
         let mut uninit_shards: Box<[MaybeUninit<Shard<K, V>>]> =
-            unsafe { Box::from_raw(core::ptr::slice_from_raw_parts_mut(ptr.cast(), shard_count)) };
+            unsafe { Box::from_raw(ptr::slice_from_raw_parts_mut(ptr.cast(), shard_count)) };
         let mut guard = SliceInitGuard::new(&mut uninit_shards);
 
         for slot in guard.slots.iter_mut() {
             unsafe {
-                core::ptr::write(slot.as_mut_ptr(), Shard::<K, V>::new());
+                ptr::write(slot.as_mut_ptr(), Shard::<K, V>::new());
             }
             guard.count += 1;
         }
@@ -785,13 +788,13 @@ impl<K, V, S> Drop for ConcurrentHashMap<K, V, S> {
 
 // ── Debug for ConcurrentHashMap ────────────────────────────────────────────────
 
-impl<K, V, S> core::fmt::Debug for ConcurrentHashMap<K, V, S>
+impl<K, V, S> fmt::Debug for ConcurrentHashMap<K, V, S>
 where
-    K: core::fmt::Debug + Eq + Hash,
-    V: core::fmt::Debug,
+    K: fmt::Debug + Eq + Hash,
+    V: fmt::Debug,
     S: BuildHasher,
 {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let mut map = f.debug_map();
         self.visit_all(|k, v| {
             map.entry(k, v);
@@ -829,7 +832,7 @@ where
     V: TryDebug,
     S: BuildHasher,
 {
-    fn try_fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+    fn try_fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str("ConcurrentHashMap { ")?;
         let mut first = true;
         for i in 0..self.shard_count() {

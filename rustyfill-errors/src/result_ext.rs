@@ -177,7 +177,7 @@ mod tests {
     extern crate std;
 
     use alloc::borrow::Cow;
-    use rustyfill::string::TryStr;
+    use rustyfill::alloc::string::TryStr;
 
     use super::*;
     use crate::Report;

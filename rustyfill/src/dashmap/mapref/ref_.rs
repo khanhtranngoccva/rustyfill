@@ -1,8 +1,8 @@
 //! Shared (read-only) reference guard backed by a shared shard lock.
 
-use core::fmt;
-use core::hash::Hash;
-use core::ops::Deref;
+use crate::lang_core::fmt;
+use crate::lang_core::hash::Hash;
+use crate::lang_core::ops::Deref;
 
 type SharedValue<T> = dashmap::SharedValue<T>;
 type RwLockReadGuard<'a, K, V> =

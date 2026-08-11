@@ -1,13 +1,14 @@
 use crate::alloc::AllocError;
-use crate::boxed::TryBox;
+use crate::alloc::boxed::TryBox;
 use crate::lang_alloc::boxed::Box;
+use crate::lang_core::cell::Cell;
+use crate::lang_core::fmt;
+use crate::lang_core::mem::{ManuallyDrop, MaybeUninit};
+use crate::lang_core::pin::Pin;
+use crate::lang_core::ptr;
 use crate::lang_std::rc::{Rc, Weak};
 use crate::try_clone::{TryClone, TryCloneError};
 use crate::try_default::{TryDefault, TryDefaultError};
-use core::cell::Cell;
-use core::mem::{ManuallyDrop, MaybeUninit};
-use core::pin::Pin;
-use core::ptr;
 
 /// Internal representation of an Rc allocation.
 ///
@@ -298,8 +299,8 @@ const MAX_REFCOUNT: usize = (isize::MAX) as usize;
 /// DSTs with custom alignment.
 fn rc_inner<T: ?Sized>(rc: &Rc<T>) -> &RcInner<T> {
     unsafe {
-        let ptr_field: *const core::ptr::NonNull<RcInner<T>> = core::ptr::from_ref(rc).cast();
-        let non_null: core::ptr::NonNull<RcInner<T>> = *ptr_field;
+        let ptr_field: *const ptr::NonNull<RcInner<T>> = ptr::from_ref(rc).cast();
+        let non_null: ptr::NonNull<RcInner<T>> = *ptr_field;
         non_null.as_ref()
     }
 }
@@ -315,8 +316,8 @@ fn weak_inner<T: ?Sized>(weak: &Weak<T>) -> &RcInner<T> {
     // `ptr: NonNull<RcInner<T>>`. Caller must ensure this isn't a dangling
     // Weak (address != usize::MAX) before calling.
     unsafe {
-        let ptr_field: *const core::ptr::NonNull<RcInner<T>> = core::ptr::from_ref(weak).cast();
-        let non_null: core::ptr::NonNull<RcInner<T>> = *ptr_field;
+        let ptr_field: *const ptr::NonNull<RcInner<T>> = ptr::from_ref(weak).cast();
+        let non_null: ptr::NonNull<RcInner<T>> = *ptr_field;
         non_null.as_ref()
     }
 }
@@ -342,7 +343,7 @@ impl<T: ?Sized> TryClone for Rc<T> {
         strong += 1;
         inner.strong.set(strong);
 
-        Ok(unsafe { core::ptr::read(self) })
+        Ok(unsafe { ptr::read(self) })
     }
 }
 
@@ -351,7 +352,7 @@ impl<T: ?Sized> TryClone for Weak<T> {
         // Check for the dangling sentinel used by Weak::new() — no allocation exists,
         // so cloning is just a pointer copy that can never fail.
         if weak_is_dangling(self) {
-            return Ok(unsafe { core::ptr::read(self) });
+            return Ok(unsafe { ptr::read(self) });
         }
 
         let inner = weak_inner(self);
@@ -366,7 +367,7 @@ impl<T: ?Sized> TryClone for Weak<T> {
         weak += 1;
         inner.weak.set(weak);
 
-        Ok(unsafe { core::ptr::read(self) })
+        Ok(unsafe { ptr::read(self) })
     }
 }
 
@@ -374,14 +375,14 @@ impl<T: ?Sized> TryClone for Weak<T> {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct TryUpgradeError;
 
-impl core::fmt::Display for TryUpgradeError {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+impl fmt::Display for TryUpgradeError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "upgrade failed: strong refcount exceeded")
     }
 }
 
 impl crate::try_fmt::TryDebug for TryUpgradeError {
-    fn try_fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+    fn try_fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str("TryUpgradeError")
     }
 }
@@ -436,7 +437,7 @@ impl<T: ?Sized> TryWeak<T> for Weak<T> {
         // value below MAX_REFCOUNT. Allocation is still alive.
         // SAFETY: pointer is valid, strong count > 0 after increment.
         Some(Ok(unsafe {
-            core::ptr::read(&*(self as *const Weak<T> as *const Rc<T>))
+            ptr::read(&*(self as *const Weak<T> as *const Rc<T>))
         }))
     }
 }
@@ -467,7 +468,7 @@ impl<T> TryDefault for Weak<T> {
 // ── TryDebug for Rc<T> ──────────────────────────────────────────────────────
 
 impl<T: ?Sized + crate::try_fmt::TryDebug> crate::try_fmt::TryDebug for Rc<T> {
-    fn try_fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+    fn try_fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         (**self).try_fmt(f)
     }
 }
@@ -798,7 +799,6 @@ mod tests {
 
     #[test]
     fn weak_try_upgrade_success() {
-        use crate::rc::TryWeak;
         let rc = <Rc<i32> as TryRc<i32>>::try_new(42).unwrap();
         let weak = Rc::downgrade(&rc);
         assert_eq!(Rc::strong_count(&rc), 1);
@@ -810,14 +810,12 @@ mod tests {
 
     #[test]
     fn weak_try_upgrade_dangling_returns_none() {
-        use crate::rc::TryWeak;
         let weak: Weak<i32> = Weak::new();
         assert!(weak.try_upgrade().is_none());
     }
 
     #[test]
     fn weak_try_upgrade_after_drop_returns_none() {
-        use crate::rc::TryWeak;
         let weak = {
             let rc = <Rc<i32> as TryRc<i32>>::try_new(99).unwrap();
             Rc::downgrade(&rc)
@@ -827,7 +825,6 @@ mod tests {
 
     #[test]
     fn weak_try_upgrade_overflow_rejects() {
-        use crate::rc::TryWeak;
         let rc = <Rc<i32> as TryRc<i32>>::try_new(0).unwrap();
         let weak = Rc::downgrade(&rc);
         let inner = weak_inner(&weak);
@@ -839,7 +836,6 @@ mod tests {
 
     #[test]
     fn weak_try_upgrade_multiple_roundtrip() {
-        use crate::std::rc::TryWeak;
         let rc = <Rc<String> as TryRc<String>>::try_new("hello".into()).unwrap();
         let weak = Rc::downgrade(&rc);
         for _ in 0..50 {

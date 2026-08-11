@@ -16,12 +16,13 @@
 
 use crate::alloc::AllocError;
 use crate::alloc::TryReserveError;
+use crate::alloc::vec::{TryVec, TryVecError};
 use crate::lang_alloc::string::String;
 use crate::lang_alloc::vec::Vec;
+use crate::lang_core::fmt;
 use crate::try_clone::{TryClone, TryCloneError};
 use crate::try_default::{TryDefault, TryDefaultError};
 use crate::try_fmt::{TryDebug, helpers::FormatterExt};
-use core::fmt;
 
 /// Error returned by [`TryString`] operations.
 ///
@@ -130,10 +131,10 @@ pub trait TryString: Sized {
 
     /// Fallibly write formatted arguments into this string.
     ///
-    /// Mirrors [`core::fmt::Write::write_fmt`] but returns [`Err(TryReserveError)`]
+    /// Mirrors [`fmt::Write::write_fmt`] but returns [`Err(TryReserveError)`]
     /// if growing the internal buffer fails. On failure the string may contain
     /// a partial result.
-    fn try_write_fmt(&mut self, args: core::fmt::Arguments<'_>) -> Result<(), TryReserveError>;
+    fn try_write_fmt(&mut self, args: fmt::Arguments<'_>) -> Result<(), TryReserveError>;
 
     /// Fallibly insert a `char` into this `String` at a valid byte index.
     ///
@@ -255,15 +256,15 @@ impl TryString for String {
         Ok(())
     }
 
-    fn try_write_fmt(&mut self, args: core::fmt::Arguments<'_>) -> Result<(), TryReserveError> {
+    fn try_write_fmt(&mut self, args: fmt::Arguments<'_>) -> Result<(), TryReserveError> {
         // Use a wrapper that delegates write_str to try_push_str.
         struct FallibleWriter<'a>(&'a mut String);
-        impl core::fmt::Write for FallibleWriter<'_> {
-            fn write_str(&mut self, s: &str) -> core::fmt::Result {
-                self.0.try_push_str(s).map_err(|_| core::fmt::Error)
+        impl fmt::Write for FallibleWriter<'_> {
+            fn write_str(&mut self, s: &str) -> fmt::Result {
+                self.0.try_push_str(s).map_err(|_| fmt::Error)
             }
         }
-        core::fmt::write(&mut FallibleWriter(self), args).map_err(|_| {
+        fmt::write(&mut FallibleWriter(self), args).map_err(|_| {
             // Distinguish: if the string grew since the last successful call,
             // it was an OOM; otherwise it was a format error (shouldn't happen
             // with valid Arguments, so treat as OOM conservatively).
@@ -307,15 +308,15 @@ impl TryString for String {
         // then convert back. Only the spare capacity portion is reallocated —
         // the UTF-8 data bytes are never copied or revalidated.
         let mut v = ::lang_std::mem::take(self).into_bytes();
-        let result = <Vec<u8> as crate::vec::TryVec<u8>>::try_shrink_to(&mut v, min_capacity);
+        let result = <Vec<u8> as TryVec<u8>>::try_shrink_to(&mut v, min_capacity);
         // The bytes originated from a valid String, so they remain valid UTF-8.
         *self = String::from_utf8(v).unwrap();
         result.map_err(|e| match e {
-            crate::vec::TryVecError::Alloc(e) => TryStringError::Alloc(e),
-            crate::vec::TryVecError::Reserve(e) => TryStringError::Reserve(e),
-            crate::vec::TryVecError::Clone(_) => unreachable!("shrink does not clone"),
-            crate::vec::TryVecError::Overflow => TryStringError::Overflow,
-            crate::vec::TryVecError::Other(msg) => TryStringError::Other(msg),
+            TryVecError::Alloc(e) => TryStringError::Alloc(e),
+            TryVecError::Reserve(e) => TryStringError::Reserve(e),
+            TryVecError::Clone(_) => unreachable!("shrink does not clone"),
+            TryVecError::Overflow => TryStringError::Overflow,
+            TryVecError::Other(msg) => TryStringError::Other(msg),
         })
     }
 }

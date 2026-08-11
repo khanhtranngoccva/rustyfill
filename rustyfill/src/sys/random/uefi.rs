@@ -38,7 +38,7 @@ mod rng_protocol {
     pub(crate) fn fill_bytes(bytes: &mut [u8]) -> bool {
         use super::super::uefi_helpers as helpers;
         use r_efi::protocols::rng;
-        use core::ptr;
+        use  ptr;
 
         if let Ok(handles) = helpers::locate_handles(rng::PROTOCOL_GUID) {
             for handle in handles {
@@ -71,12 +71,12 @@ mod rng_protocol {
 mod rdrand {
     cfg_select! {
         target_arch = "x86_64" => {
-            use core::arch::x86_64 as arch;
+            use  arch::x86_64 as arch;
             use arch::_rdrand64_step as rdrand_step;
             type Word = u64;
         }
         target_arch = "x86" => {
-            use core::arch::x86 as arch;
+            use  arch::x86 as arch;
             use arch::_rdrand32_step as rdrand_step;
             type Word = u32;
         }

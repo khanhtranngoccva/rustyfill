@@ -8,11 +8,11 @@
 //!
 //! # Design
 //!
-//! - [`TryDebug`] requires [`core::fmt::Debug`] as a supertrait.
-//! - [`TryDisplay`] requires [`core::fmt::Display`] as a supertrait.
-//! - Both traits return [`core::fmt::Result`] — the same type as canonical
+//! - [`TryDebug`] requires [`fmt::Debug`] as a supertrait.
+//! - [`TryDisplay`] requires [`fmt::Display`] as a supertrait.
+//! - Both traits return [`fmt::Result`] — the same type as canonical
 //!   `Debug::fmt` / `Display::fmt`. No custom error enum is needed because
-//!   [`core::fmt::Error`] is already an opaque, uninhabited sentinel that signals
+//!   [`fmt::Error`] is already an opaque, uninhabited sentinel that signals
 //!   "the write failed" (either I/O or, in our case, a hidden allocation).
 //! - Implementations must never call `format!()` or any function that implicitly
 //!   allocates and panics on OOM.
@@ -23,11 +23,16 @@
 //!   `Debug`/`Display` impls never implicitly allocate and panic.
 //! - Dedicated wrapper types ([`TryDebugWrapper`], [`TryDisplayWrapper`],
 //!   [`TryLowerHexWrapper`], [`TryUpperHexWrapper`]) expose the corresponding
-//!   standard formatting trait so that `core::format_args!` routes through
+//!   standard formatting trait so that  `format_args!` routes through
 //!   the fallible paths. Each wrapper carries a hard bound on construction,
 //!   producing precise compiler diagnostics when a value lacks the expected trait.
 
-use core::fmt;
+use crate::lang_alloc::alloc;
+use crate::lang_core::any;
+use crate::lang_core::fmt;
+use crate::lang_core::marker;
+use crate::lang_core::mem;
+use crate::lang_core::ops;
 
 mod assert;
 pub mod helpers;
@@ -42,9 +47,9 @@ pub use helpers::{
 
 // ── Traits ─────────────────────────────────────────────────────────────────────
 
-/// A fallible analogue of [`core::fmt::Debug`].
+/// A fallible analogue of [`fmt::Debug`].
 ///
-/// Unlike [`core::fmt::Debug`], which can silently panic if its implementation
+/// Unlike [`fmt::Debug`], which can silently panic if its implementation
 /// allocates under memory pressure, [`TryDebug::try_fmt`] returns a
 /// [`fmt::Result`] so callers can detect failure.
 ///
@@ -61,9 +66,9 @@ pub trait TryDebug: fmt::Debug {
     fn try_fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result;
 }
 
-/// A fallible analogue of [`core::fmt::Display`].
+/// A fallible analogue of [`fmt::Display`].
 ///
-/// Unlike [`core::fmt::Display`], which can silently panic if its implementation
+/// Unlike [`fmt::Display`], which can silently panic if its implementation
 /// allocates under memory pressure, [`TryDisplay::try_fmt`] returns a
 /// [`fmt::Result`] so callers can detect failure.
 ///
@@ -80,7 +85,7 @@ pub trait TryDisplay: fmt::Display {
     fn try_fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result;
 }
 
-/// A fallible analogue of [`core::fmt::LowerHex`].
+/// A fallible analogue of [`fmt::LowerHex`].
 ///
 /// Formats the value as lowercase hexadecimal (e.g., `ff`). Numeric primitives
 /// implement this by delegating to their standard `LowerHex` impl, which never
@@ -99,7 +104,7 @@ pub trait TryLowerHex: fmt::LowerHex {
     fn try_fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result;
 }
 
-/// A fallible analogue of [`core::fmt::UpperHex`].
+/// A fallible analogue of [`fmt::UpperHex`].
 ///
 /// Formats the value as uppercase hexadecimal (e.g., `FF`). Numeric primitives
 /// implement this by delegating to their standard `UpperHex` impl, which never
@@ -118,7 +123,7 @@ pub trait TryUpperHex: fmt::UpperHex {
     fn try_fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result;
 }
 
-/// A fallible analogue of [`core::fmt::LowerExp`].
+/// A fallible analogue of [`fmt::LowerExp`].
 ///
 /// Formats the value in lowercase exponential notation (e.g., `1.23e+6`).
 /// Floating-point primitives implement this by delegating to their standard
@@ -137,7 +142,7 @@ pub trait TryLowerExp: fmt::LowerExp {
     fn try_fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result;
 }
 
-/// A fallible analogue of [`core::fmt::UpperExp`].
+/// A fallible analogue of [`fmt::UpperExp`].
 ///
 /// Formats the value in uppercase exponential notation (e.g., `1.23E+6`).
 /// Floating-point primitives implement this by delegating to their standard
@@ -478,47 +483,39 @@ impl<T: TryDebug> TryDebug for Option<T> {
 impl<T: TryDebug, E: TryDebug> TryDebug for Result<T, E> {
     fn try_fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Ok(v) => {
-                f.write_str("Ok(")?;
-                v.try_fmt(f)?;
-                f.write_str(")")
-            }
-            Err(e) => {
-                f.write_str("Err(")?;
-                e.try_fmt(f)?;
-                f.write_str(")")
-            }
+            Ok(v) => f.try_debug_tuple("Ok").field(v).finish(),
+            Err(e) => f.try_debug_tuple("Err").field(e).finish(),
         }
     }
 }
 
 // ── Marker types ───────────────────────────────────────────────────────────────
 
-impl<T> TryDebug for core::marker::PhantomData<T> {
+impl<T> TryDebug for marker::PhantomData<T> {
     #[inline]
     fn try_fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "PhantomData<{}>", core::any::type_name::<T>())
+        write!(f, "PhantomData<{}>", any::type_name::<T>())
     }
 }
 
-impl<T: TryDebug> TryDebug for core::mem::ManuallyDrop<T> {
+impl<T: TryDebug> TryDebug for mem::ManuallyDrop<T> {
     #[inline]
     fn try_fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let inner = <Self as core::ops::Deref>::deref(self);
+        let inner = <Self as ops::Deref>::deref(self);
         f.write_str("ManuallyDrop { value: MaybeDangling(")?;
         inner.try_fmt(f)?;
         f.write_str(") }")
     }
 }
 
-impl<T> TryDebug for core::mem::MaybeUninit<T> {
+impl<T> TryDebug for mem::MaybeUninit<T> {
     #[inline]
     fn try_fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "MaybeUninit<{}>", core::any::type_name::<T>())
+        write!(f, "MaybeUninit<{}>", any::type_name::<T>())
     }
 }
 
-impl TryDebug for core::marker::PhantomPinned {
+impl TryDebug for marker::PhantomPinned {
     #[inline]
     fn try_fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str("PhantomPinned")
@@ -582,19 +579,19 @@ macro_rules! impl_try_debug_for_range {
 }
 
 impl_try_debug_for_range!(
-    core::ops::Range<usize>,
-    core::ops::Range<i32>,
-    core::ops::Range<u32>,
-    core::ops::RangeFrom<usize>,
-    core::ops::RangeTo<usize>,
-    core::ops::RangeFull,
+    ops::Range<usize>,
+    ops::Range<i32>,
+    ops::Range<u32>,
+    ops::RangeFrom<usize>,
+    ops::RangeTo<usize>,
+    ops::RangeFull,
 );
 
-// ── core::alloc::Layout ────────────────────────────────────────────────────────
+// ──  alloc::Layout ────────────────────────────────────────────────────────
 // Layout's Debug impl prints size and align as decimal integers — no hidden
 // allocations. Safe to passthrough.
 
-impl TryDebug for core::alloc::Layout {
+impl TryDebug for alloc::Layout {
     #[inline]
     fn try_fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         // Delegate to std Debug which formats as "Layout { size: N, align: M }".
@@ -653,8 +650,11 @@ macro_rules! debug_passthrough {
     ($ty:ty) => {
         impl $crate::try_fmt::TryDebug for $ty {
             #[inline]
-            fn try_fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-                core::fmt::Debug::fmt(self, f)
+            fn try_fmt(
+                &self,
+                f: &mut ::rustyfill::lang_core::fmt::Formatter<'_>,
+            ) -> ::rustyfill::lang_core::fmt::Result {
+                ::rustyfill::lang_core::fmt::Debug::fmt(self, f)
             }
         }
     };
@@ -685,8 +685,11 @@ macro_rules! display_passthrough {
     ($ty:ty) => {
         impl $crate::try_fmt::TryDisplay for $ty {
             #[inline]
-            fn try_fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-                core::fmt::Display::fmt(self, f)
+            fn try_fmt(
+                &self,
+                f: &mut ::rustyfill::lang_core::fmt::Formatter<'_>,
+            ) -> ::rustyfill::lang_core::fmt::Result {
+                ::rustyfill::lang_core::fmt::Display::fmt(self, f)
             }
         }
     };
@@ -703,8 +706,8 @@ macro_rules! lowerhex_passthrough {
     ($ty:ty) => {
         impl $crate::try_fmt::TryLowerHex for $ty {
             #[inline]
-            fn try_fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-                core::fmt::LowerHex::fmt(self, f)
+            fn try_fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+                fmt::LowerHex::fmt(self, f)
             }
         }
     };
@@ -721,8 +724,8 @@ macro_rules! upperhex_passthrough {
     ($ty:ty) => {
         impl $crate::try_fmt::TryUpperHex for $ty {
             #[inline]
-            fn try_fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-                core::fmt::UpperHex::fmt(self, f)
+            fn try_fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+                fmt::UpperHex::fmt(self, f)
             }
         }
     };
@@ -739,8 +742,8 @@ macro_rules! lowerexp_passthrough {
     ($ty:ty) => {
         impl $crate::try_fmt::TryLowerExp for $ty {
             #[inline]
-            fn try_fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-                core::fmt::LowerExp::fmt(self, f)
+            fn try_fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+                fmt::LowerExp::fmt(self, f)
             }
         }
     };
@@ -757,8 +760,8 @@ macro_rules! upperexp_passthrough {
     ($ty:ty) => {
         impl $crate::try_fmt::TryUpperExp for $ty {
             #[inline]
-            fn try_fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-                core::fmt::UpperExp::fmt(self, f)
+            fn try_fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+                fmt::UpperExp::fmt(self, f)
             }
         }
     };
@@ -1307,19 +1310,19 @@ mod oom_tests {
 
     #[test]
     fn try_debug_phantom_data_no_alloc() {
-        let pd: core::marker::PhantomData<String> = core::marker::PhantomData;
+        let pd: marker::PhantomData<String> = marker::PhantomData;
         assert!(assert_try_debug_no_alloc(&pd));
     }
 
     #[test]
     fn try_debug_maybe_uninit_no_alloc() {
-        let mu: core::mem::MaybeUninit<i32> = core::mem::MaybeUninit::uninit();
+        let mu: mem::MaybeUninit<i32> = mem::MaybeUninit::uninit();
         assert!(assert_try_debug_no_alloc(&mu));
     }
 
     #[test]
     fn try_debug_phantom_pinned_no_alloc() {
-        let pp: core::marker::PhantomPinned = core::marker::PhantomPinned;
+        let pp: marker::PhantomPinned = marker::PhantomPinned;
         assert!(assert_try_debug_no_alloc(&pp));
     }
 
@@ -1327,17 +1330,16 @@ mod oom_tests {
 
     #[test]
     fn try_debug_manually_drop_primitive_no_alloc() {
-        let md: core::mem::ManuallyDrop<i32> = core::mem::ManuallyDrop::new(42);
+        let md: mem::ManuallyDrop<i32> = mem::ManuallyDrop::new(42);
         assert!(assert_try_debug_no_alloc(&md));
     }
 
     #[test]
     fn try_debug_manually_drop_string_no_alloc() {
-        let mut md: core::mem::ManuallyDrop<String> =
-            core::mem::ManuallyDrop::new(String::from("wrapped"));
+        let mut md: mem::ManuallyDrop<String> = mem::ManuallyDrop::new(String::from("wrapped"));
         assert!(assert_try_debug_no_alloc(&md));
         unsafe {
-            core::mem::ManuallyDrop::drop(&mut md);
+            mem::ManuallyDrop::drop(&mut md);
         }
     }
 
@@ -1345,25 +1347,25 @@ mod oom_tests {
 
     #[test]
     fn try_debug_range_usize_no_alloc() {
-        let r: core::ops::Range<usize> = 0..10;
+        let r: ops::Range<usize> = 0..10;
         assert!(assert_try_debug_no_alloc(&r));
     }
 
     #[test]
     fn try_debug_range_i32_no_alloc() {
-        let r: core::ops::Range<i32> = -5..5;
+        let r: ops::Range<i32> = -5..5;
         assert!(assert_try_debug_no_alloc(&r));
     }
 
     #[test]
     fn try_debug_range_from_no_alloc() {
-        let r: core::ops::RangeFrom<usize> = 10..;
+        let r: ops::RangeFrom<usize> = 10..;
         assert!(assert_try_debug_no_alloc(&r));
     }
 
     #[test]
     fn try_debug_range_to_no_alloc() {
-        let r: core::ops::RangeTo<usize> = ..10;
+        let r: ops::RangeTo<usize> = ..10;
         assert!(assert_try_debug_no_alloc(&r));
     }
 
@@ -1472,13 +1474,16 @@ mod oom_tests {
 #[allow(clippy::needless_borrows_for_generic_args)]
 mod try_write_tests {
     use super::TryDebug;
+    use crate::lang_alloc::format;
     use crate::lang_alloc::string::String;
     use crate::lang_alloc::vec;
     use crate::lang_alloc::vec::Vec;
-    use crate::lang_std::format;
+    use crate::lang_core::fmt;
+    use crate::lang_core::marker;
+    use crate::lang_core::mem;
+    use crate::lang_core::ops;
     use crate::lang_std::io::{Cursor, Write};
     use crate::try_write;
-    use core::fmt;
 
     // ── Basic formatting modes ─────────────────────────────────────────────
 
@@ -1486,7 +1491,7 @@ mod try_write_tests {
     fn parity_no_args() {
         let mut bs = Cursor::new(Vec::new());
         let mut bt = Cursor::new(Vec::new());
-        core::write!(&mut bs, "hello world").unwrap();
+        write!(&mut bs, "hello world").unwrap();
         try_write!(&mut bt, "hello world").unwrap();
         assert_eq!(bs.into_inner(), bt.into_inner());
     }
@@ -1496,7 +1501,7 @@ mod try_write_tests {
         let v = 42;
         let mut bs = Cursor::new(Vec::new());
         let mut bt = Cursor::new(Vec::new());
-        core::write!(&mut bs, "{}", v).unwrap();
+        write!(&mut bs, "{}", v).unwrap();
         try_write!(&mut bt, "{}", v).unwrap();
         assert_eq!(bs.into_inner(), bt.into_inner());
     }
@@ -1506,7 +1511,7 @@ mod try_write_tests {
         let v = 42;
         let mut bs = Cursor::new(Vec::new());
         let mut bt = Cursor::new(Vec::new());
-        core::write!(&mut bs, "{0}", v).unwrap();
+        write!(&mut bs, "{0}", v).unwrap();
         try_write!(&mut bt, "{0}", v).unwrap();
         assert_eq!(bs.into_inner(), bt.into_inner());
     }
@@ -1516,7 +1521,7 @@ mod try_write_tests {
         let mut bs = Cursor::new(Vec::new());
         let mut bt = Cursor::new(Vec::new());
         #[allow(clippy::write_literal)]
-        core::write!(&mut bs, "{n}", n = "hello").unwrap();
+        write!(&mut bs, "{n}", n = "hello").unwrap();
         try_write!(&mut bt, "{n}", n = "hello").unwrap();
         assert_eq!(bs.into_inner(), bt.into_inner());
     }
@@ -1526,7 +1531,7 @@ mod try_write_tests {
         let v = vec![1, 2, 3];
         let mut bs = Cursor::new(Vec::new());
         let mut bt = Cursor::new(Vec::new());
-        core::write!(&mut bs, "{:?}", v.clone()).unwrap();
+        write!(&mut bs, "{:?}", v.clone()).unwrap();
         try_write!(&mut bt, "{:?}", &v).unwrap();
         assert_eq!(bs.into_inner(), bt.into_inner());
     }
@@ -1537,7 +1542,7 @@ mod try_write_tests {
     fn parity_lower_hex() {
         let mut bs = Cursor::new(Vec::new());
         let mut bt = Cursor::new(Vec::new());
-        core::write!(&mut bs, "{:x}", 255u32).unwrap();
+        write!(&mut bs, "{:x}", 255u32).unwrap();
         try_write!(&mut bt, "{:x}", 255u32).unwrap();
         assert_eq!(bs.into_inner(), bt.into_inner());
     }
@@ -1546,7 +1551,7 @@ mod try_write_tests {
     fn parity_upper_hex() {
         let mut bs = Cursor::new(Vec::new());
         let mut bt = Cursor::new(Vec::new());
-        core::write!(&mut bs, "{:X}", 255u32).unwrap();
+        write!(&mut bs, "{:X}", 255u32).unwrap();
         try_write!(&mut bt, "{:X}", 255u32).unwrap();
         assert_eq!(bs.into_inner(), bt.into_inner());
     }
@@ -1555,7 +1560,7 @@ mod try_write_tests {
     fn parity_lower_hex_alternate() {
         let mut bs = Cursor::new(Vec::new());
         let mut bt = Cursor::new(Vec::new());
-        core::write!(&mut bs, "{:#x}", 255u32).unwrap();
+        write!(&mut bs, "{:#x}", 255u32).unwrap();
         try_write!(&mut bt, "{:#x}", 255u32).unwrap();
         assert_eq!(bs.into_inner(), bt.into_inner());
     }
@@ -1564,7 +1569,7 @@ mod try_write_tests {
     fn parity_upper_hex_alternate() {
         let mut bs = Cursor::new(Vec::new());
         let mut bt = Cursor::new(Vec::new());
-        core::write!(&mut bs, "{:#X}", 0xDEAD_BEEFu64).unwrap();
+        write!(&mut bs, "{:#X}", 0xDEAD_BEEFu64).unwrap();
         try_write!(&mut bt, "{:#X}", 0xDEAD_BEEFu64).unwrap();
         assert_eq!(bs.into_inner(), bt.into_inner());
     }
@@ -1573,7 +1578,7 @@ mod try_write_tests {
     fn parity_hex_width_and_padding() {
         let mut bs = Cursor::new(Vec::new());
         let mut bt = Cursor::new(Vec::new());
-        core::write!(&mut bs, "{:08x}", 5u32).unwrap();
+        write!(&mut bs, "{:08x}", 5u32).unwrap();
         try_write!(&mut bt, "{:08x}", 5u32).unwrap();
         assert_eq!(bs.into_inner(), bt.into_inner());
     }
@@ -1582,7 +1587,7 @@ mod try_write_tests {
     fn parity_hex_zero_pad_alternate_upper() {
         let mut bs = Cursor::new(Vec::new());
         let mut bt = Cursor::new(Vec::new());
-        core::write!(&mut bs, "{:#010X}", 0xFFu32).unwrap();
+        write!(&mut bs, "{:#010X}", 0xFFu32).unwrap();
         try_write!(&mut bt, "{:#010X}", 0xFFu32).unwrap();
         assert_eq!(bs.into_inner(), bt.into_inner());
     }
@@ -1591,7 +1596,7 @@ mod try_write_tests {
     fn parity_hex_explicit_align_zero_fill() {
         let mut bs = Cursor::new(Vec::new());
         let mut bt = Cursor::new(Vec::new());
-        core::write!(&mut bs, "{:0>6x}", 42u32).unwrap();
+        write!(&mut bs, "{:0>6x}", 42u32).unwrap();
         try_write!(&mut bt, "{:0>6x}", 42u32).unwrap();
         assert_eq!(bs.into_inner(), bt.into_inner());
     }
@@ -1601,7 +1606,7 @@ mod try_write_tests {
         let val: u16 = 0xAB;
         let mut bs = Cursor::new(Vec::new());
         let mut bt = Cursor::new(Vec::new());
-        core::write!(&mut bs, "{:X}", &val).unwrap();
+        write!(&mut bs, "{:X}", &val).unwrap();
         try_write!(&mut bt, "{:X}", &val).unwrap();
         assert_eq!(bs.into_inner(), bt.into_inner());
     }
@@ -1612,7 +1617,7 @@ mod try_write_tests {
     fn parity_multi_auto() {
         let mut bs = Cursor::new(Vec::new());
         let mut bt = Cursor::new(Vec::new());
-        core::write!(&mut bs, "{} + {} = {}", 1, 2, 3).unwrap();
+        write!(&mut bs, "{} + {} = {}", 1, 2, 3).unwrap();
         try_write!(&mut bt, "{} + {} = {}", 1, 2, 3).unwrap();
         assert_eq!(bs.into_inner(), bt.into_inner());
     }
@@ -1622,7 +1627,7 @@ mod try_write_tests {
         let mut bs = Cursor::new(Vec::new());
         let mut bt = Cursor::new(Vec::new());
         #[allow(clippy::write_literal)]
-        core::write!(&mut bs, "{1} then {0}", "a", "b").unwrap();
+        write!(&mut bs, "{1} then {0}", "a", "b").unwrap();
         try_write!(&mut bt, "{1} then {0}", "a", "b").unwrap();
         assert_eq!(bs.into_inner(), bt.into_inner());
     }
@@ -1631,7 +1636,7 @@ mod try_write_tests {
     fn parity_repeated_pos() {
         let mut bs = Cursor::new(Vec::new());
         let mut bt = Cursor::new(Vec::new());
-        core::write!(&mut bs, "{0}-{0}-{0}", 7).unwrap();
+        write!(&mut bs, "{0}-{0}-{0}", 7).unwrap();
         try_write!(&mut bt, "{0}-{0}-{0}", 7).unwrap();
         assert_eq!(bs.into_inner(), bt.into_inner());
     }
@@ -1642,7 +1647,7 @@ mod try_write_tests {
     fn parity_right_align() {
         let mut bs = Cursor::new(Vec::new());
         let mut bt = Cursor::new(Vec::new());
-        core::write!(&mut bs, "{:>10}", "hi").unwrap();
+        write!(&mut bs, "{:>10}", "hi").unwrap();
         try_write!(&mut bt, "{:>10}", "hi").unwrap();
         assert_eq!(bs.into_inner(), bt.into_inner());
     }
@@ -1651,7 +1656,7 @@ mod try_write_tests {
     fn parity_left_align() {
         let mut bs = Cursor::new(Vec::new());
         let mut bt = Cursor::new(Vec::new());
-        core::write!(&mut bs, "{:<5}", "hi").unwrap();
+        write!(&mut bs, "{:<5}", "hi").unwrap();
         try_write!(&mut bt, "{:<5}", "hi").unwrap();
         assert_eq!(bs.into_inner(), bt.into_inner());
     }
@@ -1660,7 +1665,7 @@ mod try_write_tests {
     fn parity_center_align() {
         let mut bs = Cursor::new(Vec::new());
         let mut bt = Cursor::new(Vec::new());
-        core::write!(&mut bs, "{:^7}", "x").unwrap();
+        write!(&mut bs, "{:^7}", "x").unwrap();
         try_write!(&mut bt, "{:^7}", "x").unwrap();
         assert_eq!(bs.into_inner(), bt.into_inner());
     }
@@ -1669,7 +1674,7 @@ mod try_write_tests {
     fn parity_zero_pad() {
         let mut bs = Cursor::new(Vec::new());
         let mut bt = Cursor::new(Vec::new());
-        core::write!(&mut bs, "{:08}", 5u32).unwrap();
+        write!(&mut bs, "{:08}", 5u32).unwrap();
         try_write!(&mut bt, "{:08}", 5u32).unwrap();
         assert_eq!(bs.into_inner(), bt.into_inner());
     }
@@ -1680,7 +1685,7 @@ mod try_write_tests {
     fn parity_dyn_width_pos() {
         let mut bs = Cursor::new(Vec::new());
         let mut bt = Cursor::new(Vec::new());
-        core::write!(&mut bs, "{0:><1$}", "hi", 10usize).unwrap();
+        write!(&mut bs, "{0:><1$}", "hi", 10usize).unwrap();
         try_write!(&mut bt, "{0:><1$}", "hi", 10usize).unwrap();
         assert_eq!(bs.into_inner(), bt.into_inner());
     }
@@ -1689,7 +1694,7 @@ mod try_write_tests {
     fn parity_dyn_prec_int() {
         let mut bs = Cursor::new(Vec::new());
         let mut bt = Cursor::new(Vec::new());
-        core::write!(&mut bs, "{0:01$}", 42u32, 5usize).unwrap();
+        write!(&mut bs, "{0:01$}", 42u32, 5usize).unwrap();
         try_write!(&mut bt, "{0:01$}", 42u32, 5usize).unwrap();
         assert_eq!(bs.into_inner(), bt.into_inner());
     }
@@ -1698,7 +1703,7 @@ mod try_write_tests {
     fn parity_dyn_width_named() {
         let mut bs = Cursor::new(Vec::new());
         let mut bt = Cursor::new(Vec::new());
-        core::write!(&mut bs, "{v:><w$}", v = "hi", w = 10usize).unwrap();
+        write!(&mut bs, "{v:><w$}", v = "hi", w = 10usize).unwrap();
         try_write!(&mut bt, "{v:><w$}", v = "hi", w = 10usize).unwrap();
         assert_eq!(bs.into_inner(), bt.into_inner());
     }
@@ -1708,7 +1713,7 @@ mod try_write_tests {
         // Static numeric width (works on stable; dynamic {N$} requires nightly)
         let mut bs = Cursor::new(Vec::new());
         let mut bt = Cursor::new(Vec::new());
-        core::write!(&mut bs, "{:>10}", "hi").unwrap();
+        write!(&mut bs, "{:>10}", "hi").unwrap();
         try_write!(&mut bt, "{:>10}", "hi").unwrap();
         assert_eq!(bs.into_inner(), bt.into_inner());
     }
@@ -1719,7 +1724,7 @@ mod try_write_tests {
     fn parity_escaped_braces() {
         let mut bs = Cursor::new(Vec::new());
         let mut bt = Cursor::new(Vec::new());
-        core::write!(&mut bs, "{{literal}}").unwrap();
+        write!(&mut bs, "{{literal}}").unwrap();
         try_write!(&mut bt, "{{literal}}").unwrap();
         assert_eq!(bs.into_inner(), bt.into_inner());
     }
@@ -1728,7 +1733,7 @@ mod try_write_tests {
     fn parity_mixed_escape() {
         let mut bs = Cursor::new(Vec::new());
         let mut bt = Cursor::new(Vec::new());
-        core::write!(&mut bs, "{{value: {}}}", 42).unwrap();
+        write!(&mut bs, "{{value: {}}}", 42).unwrap();
         try_write!(&mut bt, "{{value: {}}}", 42).unwrap();
         assert_eq!(bs.into_inner(), bt.into_inner());
     }
@@ -1739,7 +1744,7 @@ mod try_write_tests {
     fn parity_plus_sign() {
         let mut bs = Cursor::new(Vec::new());
         let mut bt = Cursor::new(Vec::new());
-        core::write!(&mut bs, "{:+}", 5i32).unwrap();
+        write!(&mut bs, "{:+}", 5i32).unwrap();
         try_write!(&mut bt, "{:+}", 5i32).unwrap();
         assert_eq!(bs.into_inner(), bt.into_inner());
     }
@@ -1748,7 +1753,7 @@ mod try_write_tests {
     fn parity_space_sign() {
         let mut bs = Cursor::new(Vec::new());
         let mut bt = Cursor::new(Vec::new());
-        core::write!(&mut bs, "{: }", -5i32).unwrap();
+        write!(&mut bs, "{: }", -5i32).unwrap();
         try_write!(&mut bt, "{: }", -5i32).unwrap();
         assert_eq!(bs.into_inner(), bt.into_inner());
     }
@@ -1760,7 +1765,7 @@ mod try_write_tests {
         let s = String::from("hi");
         let mut bs = Cursor::new(Vec::new());
         let mut bt = Cursor::new(Vec::new());
-        core::write!(&mut bs, "{}", s.len()).unwrap();
+        write!(&mut bs, "{}", s.len()).unwrap();
         try_write!(&mut bt, "{}", s.len()).unwrap();
         assert_eq!(bs.into_inner(), bt.into_inner());
     }
@@ -1770,7 +1775,7 @@ mod try_write_tests {
         let mut bs = Cursor::new(Vec::new());
         let mut bt = Cursor::new(Vec::new());
         #[allow(clippy::redundant_closure_call)]
-        core::write!(&mut bs, "{}", (|| 42)()).unwrap();
+        write!(&mut bs, "{}", (|| 42)()).unwrap();
         #[allow(clippy::redundant_closure_call)]
         try_write!(&mut bt, "{}", (|| 42)()).unwrap();
         assert_eq!(bs.into_inner(), bt.into_inner());
@@ -1781,7 +1786,7 @@ mod try_write_tests {
         let arr = [10, 20];
         let mut bs = Cursor::new(Vec::new());
         let mut bt = Cursor::new(Vec::new());
-        core::write!(&mut bs, "{}", arr[1]).unwrap();
+        write!(&mut bs, "{}", arr[1]).unwrap();
         try_write!(&mut bt, "{}", arr[1]).unwrap();
         assert_eq!(bs.into_inner(), bt.into_inner());
     }
@@ -1791,7 +1796,7 @@ mod try_write_tests {
         let mut bs = Cursor::new(Vec::new());
         let mut bt = Cursor::new(Vec::new());
         #[allow(clippy::unnecessary_literal_unwrap)]
-        core::write!(&mut bs, "{}", Some(42).unwrap_or(0)).unwrap();
+        write!(&mut bs, "{}", Some(42).unwrap_or(0)).unwrap();
         #[allow(clippy::unnecessary_literal_unwrap)]
         try_write!(&mut bt, "{}", Some(42).unwrap_or(0)).unwrap();
         assert_eq!(bs.into_inner(), bt.into_inner());
@@ -1809,7 +1814,7 @@ mod try_write_tests {
     fn parity_dest_mut_ref() {
         let mut b1 = Vec::new();
         let mut b2 = Vec::new();
-        core::write!(&mut b1, "test").unwrap();
+        write!(&mut b1, "test").unwrap();
         try_write!(&mut b2, "test").unwrap();
         assert_eq!(b1, b2);
     }
@@ -1882,7 +1887,7 @@ mod try_write_tests {
     fn parity_empty_string() {
         let mut bs = Cursor::new(Vec::new());
         let mut bt = Cursor::new(Vec::new());
-        core::write!(&mut bs, "").unwrap();
+        write!(&mut bs, "").unwrap();
         try_write!(&mut bt, "").unwrap();
         assert_eq!(bs.into_inner(), bt.into_inner());
     }
@@ -1891,7 +1896,7 @@ mod try_write_tests {
     fn parity_whitespace() {
         let mut bs = Cursor::new(Vec::new());
         let mut bt = Cursor::new(Vec::new());
-        core::write!(&mut bs, "   \t\n  ").unwrap();
+        write!(&mut bs, "   \t\n  ").unwrap();
         try_write!(&mut bt, "   \t\n  ").unwrap();
         assert_eq!(bs.into_inner(), bt.into_inner());
     }
@@ -1900,7 +1905,7 @@ mod try_write_tests {
     fn parity_special_chars() {
         let mut bs = Cursor::new(Vec::new());
         let mut bt = Cursor::new(Vec::new());
-        core::write!(&mut bs, "tab\there\nnewline\rquote\"backslash\\").unwrap();
+        write!(&mut bs, "tab\there\nnewline\rquote\"backslash\\").unwrap();
         try_write!(&mut bt, "tab\there\nnewline\rquote\"backslash\\").unwrap();
         assert_eq!(bs.into_inner(), bt.into_inner());
     }
@@ -1909,7 +1914,7 @@ mod try_write_tests {
     fn parity_unicode() {
         let mut bs = Cursor::new(Vec::new());
         let mut bt = Cursor::new(Vec::new());
-        core::write!(&mut bs, "cafe").unwrap();
+        write!(&mut bs, "cafe").unwrap();
         try_write!(&mut bt, "cafe").unwrap();
         assert_eq!(bs.into_inner(), bt.into_inner());
     }
@@ -1918,7 +1923,7 @@ mod try_write_tests {
     fn parity_all_named() {
         let mut bs = Cursor::new(Vec::new());
         let mut bt = Cursor::new(Vec::new());
-        core::write!(&mut bs, "{x} {y}", x = 1, y = 2).unwrap();
+        write!(&mut bs, "{x} {y}", x = 1, y = 2).unwrap();
         try_write!(&mut bt, "{x} {y}", x = 1, y = 2).unwrap();
         assert_eq!(bs.into_inner(), bt.into_inner());
     }
@@ -1929,7 +1934,7 @@ mod try_write_tests {
         // doesn't implement LowerHex). Using signed integer Display.
         let mut bs = Cursor::new(Vec::new());
         let mut bt = Cursor::new(Vec::new());
-        core::write!(&mut bs, "{:>+#10}", 5i32).unwrap();
+        write!(&mut bs, "{:>+#10}", 5i32).unwrap();
         try_write!(&mut bt, "{:>+#10}", 5i32).unwrap();
         assert_eq!(bs.into_inner(), bt.into_inner());
     }
@@ -1939,7 +1944,7 @@ mod try_write_tests {
         let mut bs = Cursor::new(Vec::new());
         let mut bt = Cursor::new(Vec::new());
         #[allow(clippy::write_literal)]
-        core::write!(&mut bs, "{}", 'Z').unwrap();
+        write!(&mut bs, "{}", 'Z').unwrap();
         try_write!(&mut bt, "{}", 'Z').unwrap();
         assert_eq!(bs.into_inner(), bt.into_inner());
     }
@@ -1949,7 +1954,7 @@ mod try_write_tests {
         let mut bs = Cursor::new(Vec::new());
         let mut bt = Cursor::new(Vec::new());
         #[allow(clippy::write_literal)]
-        core::write!(&mut bs, "{}", true).unwrap();
+        write!(&mut bs, "{}", true).unwrap();
         try_write!(&mut bt, "{}", true).unwrap();
         assert_eq!(bs.into_inner(), bt.into_inner());
     }
@@ -1958,7 +1963,7 @@ mod try_write_tests {
     fn parity_unit_debug() {
         let mut bs = Cursor::new(Vec::new());
         let mut bt = Cursor::new(Vec::new());
-        core::write!(&mut bs, "{:?}", ()).unwrap();
+        write!(&mut bs, "{:?}", ()).unwrap();
         try_write!(&mut bt, "{:?}", ()).unwrap();
         assert_eq!(bs.into_inner(), bt.into_inner());
     }
@@ -1968,7 +1973,7 @@ mod try_write_tests {
         let t = (1, "two", true);
         let mut bs = Cursor::new(Vec::new());
         let mut bt = Cursor::new(Vec::new());
-        core::write!(&mut bs, "{:?}", t).unwrap();
+        write!(&mut bs, "{:?}", t).unwrap();
         try_write!(&mut bt, "{:?}", &t).unwrap();
         assert_eq!(bs.into_inner(), bt.into_inner());
     }
@@ -1980,7 +1985,7 @@ mod try_write_tests {
         let p = Point(3, 4);
         let mut bs = Cursor::new(Vec::new());
         let mut bt = Cursor::new(Vec::new());
-        core::write!(&mut bs, "{:?}", p).unwrap();
+        write!(&mut bs, "{:?}", p).unwrap();
         try_write!(&mut bt, "{:?}", &p).unwrap();
         assert_eq!(bs.into_inner(), bt.into_inner());
     }
@@ -1996,7 +2001,7 @@ mod try_write_tests {
         let s = Shape::Rect(10, 20);
         let mut bs = Cursor::new(Vec::new());
         let mut bt = Cursor::new(Vec::new());
-        core::write!(&mut bs, "{:?}", s).unwrap();
+        write!(&mut bs, "{:?}", s).unwrap();
         try_write!(&mut bt, "{:?}", &s).unwrap();
         assert_eq!(bs.into_inner(), bt.into_inner());
     }
@@ -2006,7 +2011,7 @@ mod try_write_tests {
         let o: Option<String> = Some(String::from("inner"));
         let mut bs = Cursor::new(Vec::new());
         let mut bt = Cursor::new(Vec::new());
-        core::write!(&mut bs, "{:?}", o).unwrap();
+        write!(&mut bs, "{:?}", o).unwrap();
         try_write!(&mut bt, "{:?}", &o).unwrap();
         assert_eq!(bs.into_inner(), bt.into_inner());
     }
@@ -2016,7 +2021,7 @@ mod try_write_tests {
         let o: Option<i32> = None;
         let mut bs = Cursor::new(Vec::new());
         let mut bt = Cursor::new(Vec::new());
-        core::write!(&mut bs, "{:?}", o).unwrap();
+        write!(&mut bs, "{:?}", o).unwrap();
         try_write!(&mut bt, "{:?}", o).unwrap();
         assert_eq!(bs.into_inner(), bt.into_inner());
     }
@@ -2026,7 +2031,7 @@ mod try_write_tests {
         let r: Result<i32, &str> = Ok(42);
         let mut bs = Cursor::new(Vec::new());
         let mut bt = Cursor::new(Vec::new());
-        core::write!(&mut bs, "{:?}", r).unwrap();
+        write!(&mut bs, "{:?}", r).unwrap();
         try_write!(&mut bt, "{:?}", &r).unwrap();
         assert_eq!(bs.into_inner(), bt.into_inner());
     }
@@ -2036,7 +2041,7 @@ mod try_write_tests {
         let r: Result<i32, &str> = Err("fail");
         let mut bs = Cursor::new(Vec::new());
         let mut bt = Cursor::new(Vec::new());
-        core::write!(&mut bs, "{:?}", r).unwrap();
+        write!(&mut bs, "{:?}", r).unwrap();
         try_write!(&mut bt, "{:?}", &r).unwrap();
         assert_eq!(bs.into_inner(), bt.into_inner());
     }
@@ -2046,7 +2051,7 @@ mod try_write_tests {
         let arr = [1, 2, 3];
         let mut bs = Cursor::new(Vec::new());
         let mut bt = Cursor::new(Vec::new());
-        core::write!(&mut bs, "{:?}", arr).unwrap();
+        write!(&mut bs, "{:?}", arr).unwrap();
         try_write!(&mut bt, "{:?}", &arr).unwrap();
         assert_eq!(bs.into_inner(), bt.into_inner());
     }
@@ -2056,7 +2061,7 @@ mod try_write_tests {
         let slice: &[i32] = &[10, 20, 30];
         let mut bs = Cursor::new(Vec::new());
         let mut bt = Cursor::new(Vec::new());
-        core::write!(&mut bs, "{:?}", slice).unwrap();
+        write!(&mut bs, "{:?}", slice).unwrap();
         try_write!(&mut bt, "{:?}", slice).unwrap();
         assert_eq!(bs.into_inner(), bt.into_inner());
     }
@@ -2066,7 +2071,7 @@ mod try_write_tests {
         let s = String::from("hello");
         let mut bs = Cursor::new(Vec::new());
         let mut bt = Cursor::new(Vec::new());
-        core::write!(&mut bs, "{}", s).unwrap();
+        write!(&mut bs, "{}", s).unwrap();
         try_write!(&mut bt, "{}", &s).unwrap();
         assert_eq!(bs.into_inner(), bt.into_inner());
     }
@@ -2076,7 +2081,7 @@ mod try_write_tests {
         let s: &str = "hello str ref";
         let mut bs = Cursor::new(Vec::new());
         let mut bt = Cursor::new(Vec::new());
-        core::write!(&mut bs, "{}", s).unwrap();
+        write!(&mut bs, "{}", s).unwrap();
         try_write!(&mut bt, "{}", s).unwrap();
         assert_eq!(bs.into_inner(), bt.into_inner());
     }
@@ -2086,7 +2091,7 @@ mod try_write_tests {
         let v = vec![String::from("a")];
         let mut bs = Cursor::new(Vec::new());
         let mut bt = Cursor::new(Vec::new());
-        core::write!(&mut bs, "{:?}", v.clone()).unwrap();
+        write!(&mut bs, "{:?}", v.clone()).unwrap();
         try_write!(&mut bt, "{:?}", &v).unwrap();
         assert_eq!(bs.into_inner(), bt.into_inner());
     }
@@ -2096,7 +2101,7 @@ mod try_write_tests {
         let pb = ::lang_std::path::PathBuf::from("/tmp/test");
         let mut bs = Cursor::new(Vec::new());
         let mut bt = Cursor::new(Vec::new());
-        core::write!(&mut bs, "{:?}", pb).unwrap();
+        write!(&mut bs, "{:?}", pb).unwrap();
         try_write!(&mut bt, "{:?}", &pb).unwrap();
         assert_eq!(bs.into_inner(), bt.into_inner());
     }
@@ -2107,7 +2112,7 @@ mod try_write_tests {
         let d = pb.display();
         let mut bs = Cursor::new(Vec::new());
         let mut bt = Cursor::new(Vec::new());
-        core::write!(&mut bs, "{}", d).unwrap();
+        write!(&mut bs, "{}", d).unwrap();
         try_write!(&mut bt, "{}", d).unwrap();
         assert_eq!(bs.into_inner(), bt.into_inner());
     }
@@ -2118,7 +2123,7 @@ mod try_write_tests {
     fn parity_f64_default_display() {
         let mut bs = Cursor::new(Vec::new());
         let mut bt = Cursor::new(Vec::new());
-        core::write!(&mut bs, "{}", ::lang_std::f64::consts::PI).unwrap();
+        write!(&mut bs, "{}", ::lang_std::f64::consts::PI).unwrap();
         try_write!(&mut bt, "{}", ::lang_std::f64::consts::PI).unwrap();
         assert_eq!(bs.into_inner(), bt.into_inner());
     }
@@ -2127,7 +2132,7 @@ mod try_write_tests {
     fn parity_f32_default_display() {
         let mut bs = Cursor::new(Vec::new());
         let mut bt = Cursor::new(Vec::new());
-        core::write!(&mut bs, "{}", ::lang_std::f32::consts::PI).unwrap();
+        write!(&mut bs, "{}", ::lang_std::f32::consts::PI).unwrap();
         try_write!(&mut bt, "{}", ::lang_std::f32::consts::PI).unwrap();
         assert_eq!(bs.into_inner(), bt.into_inner());
     }
@@ -2136,7 +2141,7 @@ mod try_write_tests {
     fn parity_f64_debug() {
         let mut bs = Cursor::new(Vec::new());
         let mut bt = Cursor::new(Vec::new());
-        core::write!(&mut bs, "{:?}", ::lang_std::f64::consts::PI).unwrap();
+        write!(&mut bs, "{:?}", ::lang_std::f64::consts::PI).unwrap();
         try_write!(&mut bt, "{:?}", ::lang_std::f64::consts::PI).unwrap();
         assert_eq!(bs.into_inner(), bt.into_inner());
     }
@@ -2145,7 +2150,7 @@ mod try_write_tests {
     fn parity_f32_debug() {
         let mut bs = Cursor::new(Vec::new());
         let mut bt = Cursor::new(Vec::new());
-        core::write!(&mut bs, "{:?}", ::lang_std::f32::consts::PI).unwrap();
+        write!(&mut bs, "{:?}", ::lang_std::f32::consts::PI).unwrap();
         try_write!(&mut bt, "{:?}", ::lang_std::f32::consts::PI).unwrap();
         assert_eq!(bs.into_inner(), bt.into_inner());
     }
@@ -2154,7 +2159,7 @@ mod try_write_tests {
     fn parity_f64_precision() {
         let mut bs = Cursor::new(Vec::new());
         let mut bt = Cursor::new(Vec::new());
-        core::write!(&mut bs, "{:.10}", ::lang_std::f64::consts::PI).unwrap();
+        write!(&mut bs, "{:.10}", ::lang_std::f64::consts::PI).unwrap();
         try_write!(&mut bt, "{:.10}", ::lang_std::f64::consts::PI).unwrap();
         assert_eq!(bs.into_inner(), bt.into_inner());
     }
@@ -2163,7 +2168,7 @@ mod try_write_tests {
     fn parity_f32_precision() {
         let mut bs = Cursor::new(Vec::new());
         let mut bt = Cursor::new(Vec::new());
-        core::write!(&mut bs, "{:.5}", ::lang_std::f32::consts::PI).unwrap();
+        write!(&mut bs, "{:.5}", ::lang_std::f32::consts::PI).unwrap();
         try_write!(&mut bt, "{:.5}", ::lang_std::f32::consts::PI).unwrap();
         assert_eq!(bs.into_inner(), bt.into_inner());
     }
@@ -2172,7 +2177,7 @@ mod try_write_tests {
     fn parity_f64_scientific() {
         let mut bs = Cursor::new(Vec::new());
         let mut bt = Cursor::new(Vec::new());
-        core::write!(&mut bs, "{:.5e}", 123456789.0_f64).unwrap();
+        write!(&mut bs, "{:.5e}", 123456789.0_f64).unwrap();
         try_write!(&mut bt, "{:.5e}", 123456789.0_f64).unwrap();
         assert_eq!(bs.into_inner(), bt.into_inner());
     }
@@ -2181,7 +2186,7 @@ mod try_write_tests {
     fn parity_f64_scientific_upper() {
         let mut bs = Cursor::new(Vec::new());
         let mut bt = Cursor::new(Vec::new());
-        core::write!(&mut bs, "{:.5E}", 123456789.0_f64).unwrap();
+        write!(&mut bs, "{:.5E}", 123456789.0_f64).unwrap();
         try_write!(&mut bt, "{:.5E}", 123456789.0_f64).unwrap();
         assert_eq!(bs.into_inner(), bt.into_inner());
     }
@@ -2190,7 +2195,7 @@ mod try_write_tests {
     fn parity_f32_scientific() {
         let mut bs = Cursor::new(Vec::new());
         let mut bt = Cursor::new(Vec::new());
-        core::write!(&mut bs, "{:.5e}", 123456.0_f32).unwrap();
+        write!(&mut bs, "{:.5e}", 123456.0_f32).unwrap();
         try_write!(&mut bt, "{:.5e}", 123456.0_f32).unwrap();
         assert_eq!(bs.into_inner(), bt.into_inner());
     }
@@ -2199,7 +2204,7 @@ mod try_write_tests {
     fn parity_f64_special_values() {
         let mut bs = Cursor::new(Vec::new());
         let mut bt = Cursor::new(Vec::new());
-        core::write!(
+        write!(
             &mut bs,
             "{} {} {}",
             f64::INFINITY,
@@ -2222,7 +2227,7 @@ mod try_write_tests {
     fn parity_f64_negative_zero_debug() {
         let mut bs = Cursor::new(Vec::new());
         let mut bt = Cursor::new(Vec::new());
-        core::write!(&mut bs, "{:?}", -0.0_f64).unwrap();
+        write!(&mut bs, "{:?}", -0.0_f64).unwrap();
         try_write!(&mut bt, "{:?}", -0.0_f64).unwrap();
         assert_eq!(bs.into_inner(), bt.into_inner());
     }
@@ -2231,7 +2236,7 @@ mod try_write_tests {
     fn parity_f64_width_and_padding() {
         let mut bs = Cursor::new(Vec::new());
         let mut bt = Cursor::new(Vec::new());
-        core::write!(&mut bs, "{:>10.2}", ::lang_std::f64::consts::PI).unwrap();
+        write!(&mut bs, "{:>10.2}", ::lang_std::f64::consts::PI).unwrap();
         try_write!(&mut bt, "{:>10.2}", ::lang_std::f64::consts::PI).unwrap();
         assert_eq!(bs.into_inner(), bt.into_inner());
     }
@@ -2334,7 +2339,7 @@ mod try_write_tests {
         // ::lang_std::fmt docs: "{:-<5}" — custom fill char '-' with left alignment
         let mut bs = Cursor::new(Vec::new());
         let mut bt = Cursor::new(Vec::new());
-        core::write!(&mut bs, "{:-<5}", "x").unwrap();
+        write!(&mut bs, "{:-<5}", "x").unwrap();
         try_write!(&mut bt, "{:-<5}", "x").unwrap();
         assert_eq!(bs.into_inner(), bt.into_inner());
     }
@@ -2344,7 +2349,7 @@ mod try_write_tests {
         // ::lang_std::fmt docs: "{:^5}" is default space; test with explicit fill
         let mut bs = Cursor::new(Vec::new());
         let mut bt = Cursor::new(Vec::new());
-        core::write!(&mut bs, "{:.^5}", "x").unwrap();
+        write!(&mut bs, "{:.^5}", "x").unwrap();
         try_write!(&mut bt, "{:.^5}", "x").unwrap();
         assert_eq!(bs.into_inner(), bt.into_inner());
     }
@@ -2354,7 +2359,7 @@ mod try_write_tests {
         // ::lang_std::fmt docs: "{:>5}" is default space; test with explicit fill
         let mut bs = Cursor::new(Vec::new());
         let mut bt = Cursor::new(Vec::new());
-        core::write!(&mut bs, "{:_>8}", "hi").unwrap();
+        write!(&mut bs, "{:_>8}", "hi").unwrap();
         try_write!(&mut bt, "{:_>8}", "hi").unwrap();
         assert_eq!(bs.into_inner(), bt.into_inner());
     }
@@ -2367,7 +2372,7 @@ mod try_write_tests {
         let s = "hello world";
         let mut bs = Cursor::new(Vec::new());
         let mut bt = Cursor::new(Vec::new());
-        core::write!(&mut bs, "{:.5}", s).unwrap();
+        write!(&mut bs, "{:.5}", s).unwrap();
         try_write!(&mut bt, "{:.5}", s).unwrap();
         assert_eq!(bs.into_inner(), bt.into_inner());
     }
@@ -2378,7 +2383,7 @@ mod try_write_tests {
         let s = "hello world";
         let mut bs = Cursor::new(Vec::new());
         let mut bt = Cursor::new(Vec::new());
-        core::write!(&mut bs, "{:>10.5}", s).unwrap();
+        write!(&mut bs, "{:>10.5}", s).unwrap();
         try_write!(&mut bt, "{:>10.5}", s).unwrap();
         assert_eq!(bs.into_inner(), bt.into_inner());
     }
@@ -2391,7 +2396,7 @@ mod try_write_tests {
         // the auto iterator, so {} picks up from where it left off
         let mut bs = Cursor::new(Vec::new());
         let mut bt = Cursor::new(Vec::new());
-        core::write!(&mut bs, "{1} {} {0} {}", 1, 2).unwrap();
+        write!(&mut bs, "{1} {} {0} {}", 1, 2).unwrap();
         try_write!(&mut bt, "{1} {} {0} {}", 1, 2).unwrap();
         assert_eq!(bs.into_inner(), bt.into_inner());
     }
@@ -2408,7 +2413,7 @@ mod try_write_tests {
         let val = 42u32;
         let mut bs = Cursor::new(Vec::new());
         let mut bt = Cursor::new(Vec::new());
-        core::write!(&mut bs, "{:#?}", val).unwrap();
+        write!(&mut bs, "{:#?}", val).unwrap();
         try_write!(&mut bt, "{:#?}", val).unwrap();
         assert_eq!(bs.into_inner(), bt.into_inner());
     }
@@ -2420,7 +2425,7 @@ mod try_write_tests {
         // ::lang_std::fmt docs: "{number:.prec$}" — dynamic precision from named arg
         let mut bs = Cursor::new(Vec::new());
         let mut bt = Cursor::new(Vec::new());
-        core::write!(
+        write!(
             &mut bs,
             "{number:.prec$}",
             number = ::lang_std::f64::consts::PI,
@@ -2444,7 +2449,7 @@ mod try_write_tests {
         // Combining sign flag (+) and alternate flag (#) with hex output
         let mut bs = Cursor::new(Vec::new());
         let mut bt = Cursor::new(Vec::new());
-        core::write!(&mut bs, "{:#x}", 27u32).unwrap();
+        write!(&mut bs, "{:#x}", 27u32).unwrap();
         try_write!(&mut bt, "{:#x}", 27u32).unwrap();
         assert_eq!(bs.into_inner(), bt.into_inner());
     }
@@ -2456,7 +2461,7 @@ mod try_write_tests {
         // ::lang_std::fmt docs: "{:05}" on -5 yields "-0005" (sign-aware zero padding)
         let mut bs = Cursor::new(Vec::new());
         let mut bt = Cursor::new(Vec::new());
-        core::write!(&mut bs, "{:05}", -5i32).unwrap();
+        write!(&mut bs, "{:05}", -5i32).unwrap();
         try_write!(&mut bt, "{:05}", -5i32).unwrap();
         assert_eq!(bs.into_inner(), bt.into_inner());
     }
@@ -2466,7 +2471,7 @@ mod try_write_tests {
         // ::lang_std::fmt docs: "{:05}" on 5 yields "00005"
         let mut bs = Cursor::new(Vec::new());
         let mut bt = Cursor::new(Vec::new());
-        core::write!(&mut bs, "{:05}", 5i32).unwrap();
+        write!(&mut bs, "{:05}", 5i32).unwrap();
         try_write!(&mut bt, "{:05}", 5i32).unwrap();
         assert_eq!(bs.into_inner(), bt.into_inner());
     }
@@ -2485,7 +2490,7 @@ mod try_write_tests {
         let flag = true;
         let mut bs = Cursor::new(Vec::new());
         let mut bt = Cursor::new(Vec::new());
-        core::write!(&mut bs, "{0} {1:?}", val, flag).unwrap();
+        write!(&mut bs, "{0} {1:?}", val, flag).unwrap();
         try_write!(&mut bt, "{0} {1:?}", val, flag).unwrap();
         assert_eq!(bs.into_inner(), bt.into_inner());
     }
@@ -2497,7 +2502,7 @@ mod try_write_tests {
         // ::lang_std::fmt grammar allows trailing whitespace before closing }
         let mut bs = Cursor::new(Vec::new());
         let mut bt = Cursor::new(Vec::new());
-        core::write!(&mut bs, "{:>10 }", "hi").unwrap();
+        write!(&mut bs, "{:>10 }", "hi").unwrap();
         try_write!(&mut bt, "{:>10 }", "hi").unwrap();
         assert_eq!(bs.into_inner(), bt.into_inner());
     }
@@ -2509,7 +2514,7 @@ mod try_write_tests {
         // Dynamic precision controlling string truncation length
         let mut bs = Cursor::new(Vec::new());
         let mut bt = Cursor::new(Vec::new());
-        core::write!(&mut bs, "{0:.<1$}", "hello world", 5usize).unwrap();
+        write!(&mut bs, "{0:.<1$}", "hello world", 5usize).unwrap();
         try_write!(&mut bt, "{0:.<1$}", "hello world", 5usize).unwrap();
         assert_eq!(bs.into_inner(), bt.into_inner());
     }
@@ -2521,7 +2526,7 @@ mod try_write_tests {
         // Combines fill char, alignment, width, and precision in one spec
         let mut bs = Cursor::new(Vec::new());
         let mut bt = Cursor::new(Vec::new());
-        core::write!(&mut bs, "{:_>10.5}", "hello world").unwrap();
+        write!(&mut bs, "{:_>10.5}", "hello world").unwrap();
         try_write!(&mut bt, "{:_>10.5}", "hello world").unwrap();
         assert_eq!(bs.into_inner(), bt.into_inner());
     }
@@ -2548,7 +2553,7 @@ mod try_write_tests {
         };
         let mut bs = Cursor::new(Vec::new());
         let mut bt = Cursor::new(Vec::new());
-        core::write!(&mut bs, "{:?}", s).unwrap();
+        write!(&mut bs, "{:?}", s).unwrap();
         try_write!(&mut bt, "{:?}", &s).unwrap();
         assert_eq!(bs.into_inner(), bt.into_inner());
     }
@@ -2558,7 +2563,7 @@ mod try_write_tests {
         let s = ParityTupleStruct(42, String::from("world"));
         let mut bs = Cursor::new(Vec::new());
         let mut bt = Cursor::new(Vec::new());
-        core::write!(&mut bs, "{:?}", s).unwrap();
+        write!(&mut bs, "{:?}", s).unwrap();
         try_write!(&mut bt, "{:?}", &s).unwrap();
         assert_eq!(bs.into_inner(), bt.into_inner());
     }
@@ -2568,7 +2573,7 @@ mod try_write_tests {
         let s = ParityUnitStruct;
         let mut bs = Cursor::new(Vec::new());
         let mut bt = Cursor::new(Vec::new());
-        core::write!(&mut bs, "{:?}", s).unwrap();
+        write!(&mut bs, "{:?}", s).unwrap();
         try_write!(&mut bt, "{:?}", &s).unwrap();
         assert_eq!(bs.into_inner(), bt.into_inner());
     }
@@ -2588,7 +2593,7 @@ mod try_write_tests {
         let e = ParitySampleEnum::TupleVariant(42, String::from("data"));
         let mut bs = Cursor::new(Vec::new());
         let mut bt = Cursor::new(Vec::new());
-        core::write!(&mut bs, "{:?}", e).unwrap();
+        write!(&mut bs, "{:?}", e).unwrap();
         try_write!(&mut bt, "{:?}", &e).unwrap();
         assert_eq!(bs.into_inner(), bt.into_inner());
     }
@@ -2598,7 +2603,7 @@ mod try_write_tests {
         let e = ParitySampleEnum::UnitVariant;
         let mut bs = Cursor::new(Vec::new());
         let mut bt = Cursor::new(Vec::new());
-        core::write!(&mut bs, "{:?}", e).unwrap();
+        write!(&mut bs, "{:?}", e).unwrap();
         try_write!(&mut bt, "{:?}", &e).unwrap();
         assert_eq!(bs.into_inner(), bt.into_inner());
     }
@@ -2611,7 +2616,7 @@ mod try_write_tests {
         };
         let mut bs = Cursor::new(Vec::new());
         let mut bt = Cursor::new(Vec::new());
-        core::write!(&mut bs, "{:?}", e).unwrap();
+        write!(&mut bs, "{:?}", e).unwrap();
         try_write!(&mut bt, "{:?}", &e).unwrap();
         assert_eq!(bs.into_inner(), bt.into_inner());
     }
@@ -2624,7 +2629,7 @@ mod try_write_tests {
         let ptr: *const i32 = &val;
         let mut bs = Cursor::new(Vec::new());
         let mut bt = Cursor::new(Vec::new());
-        core::write!(&mut bs, "{:?}", ptr).unwrap();
+        write!(&mut bs, "{:?}", ptr).unwrap();
         try_write!(&mut bt, "{:?}", &ptr).unwrap();
         assert_eq!(bs.into_inner(), bt.into_inner());
     }
@@ -2635,7 +2640,7 @@ mod try_write_tests {
         let ptr: *mut i32 = &val as *const i32 as *mut i32;
         let mut bs = Cursor::new(Vec::new());
         let mut bt = Cursor::new(Vec::new());
-        core::write!(&mut bs, "{:?}", ptr).unwrap();
+        write!(&mut bs, "{:?}", ptr).unwrap();
         try_write!(&mut bt, "{:?}", &ptr).unwrap();
         assert_eq!(bs.into_inner(), bt.into_inner());
     }
@@ -2645,7 +2650,7 @@ mod try_write_tests {
         let ptr: *const u8 = ::lang_std::ptr::null();
         let mut bs = Cursor::new(Vec::new());
         let mut bt = Cursor::new(Vec::new());
-        core::write!(&mut bs, "{:?}", ptr).unwrap();
+        write!(&mut bs, "{:?}", ptr).unwrap();
         try_write!(&mut bt, "{:?}", &ptr).unwrap();
         assert_eq!(bs.into_inner(), bt.into_inner());
     }
@@ -2654,30 +2659,30 @@ mod try_write_tests {
 
     #[test]
     fn parity_phantom_data_debug() {
-        let pd: core::marker::PhantomData<String> = core::marker::PhantomData;
+        let pd: marker::PhantomData<String> = marker::PhantomData;
         let mut bs = Cursor::new(Vec::new());
         let mut bt = Cursor::new(Vec::new());
-        core::write!(&mut bs, "{:?}", pd).unwrap();
+        write!(&mut bs, "{:?}", pd).unwrap();
         try_write!(&mut bt, "{:?}", &pd).unwrap();
         assert_eq!(bs.into_inner(), bt.into_inner());
     }
 
     #[test]
     fn parity_maybe_uninit_debug() {
-        let mu: core::mem::MaybeUninit<i32> = core::mem::MaybeUninit::uninit();
+        let mu: mem::MaybeUninit<i32> = mem::MaybeUninit::uninit();
         let mut bs = Cursor::new(Vec::new());
         let mut bt = Cursor::new(Vec::new());
-        core::write!(&mut bs, "{:?}", mu).unwrap();
+        write!(&mut bs, "{:?}", mu).unwrap();
         try_write!(&mut bt, "{:?}", &mu).unwrap();
         assert_eq!(bs.into_inner(), bt.into_inner());
     }
 
     #[test]
     fn parity_phantom_pinned_debug() {
-        let pp: core::marker::PhantomPinned = core::marker::PhantomPinned;
+        let pp: marker::PhantomPinned = marker::PhantomPinned;
         let mut bs = Cursor::new(Vec::new());
         let mut bt = Cursor::new(Vec::new());
-        core::write!(&mut bs, "{:?}", pp).unwrap();
+        write!(&mut bs, "{:?}", pp).unwrap();
         try_write!(&mut bt, "{:?}", &pp).unwrap();
         assert_eq!(bs.into_inner(), bt.into_inner());
     }
@@ -2686,25 +2691,24 @@ mod try_write_tests {
 
     #[test]
     fn parity_manually_drop_primitive_debug() {
-        let md: core::mem::ManuallyDrop<i32> = core::mem::ManuallyDrop::new(42);
+        let md: mem::ManuallyDrop<i32> = mem::ManuallyDrop::new(42);
         let mut bs = Cursor::new(Vec::new());
         let mut bt = Cursor::new(Vec::new());
-        core::write!(&mut bs, "{:?}", md).unwrap();
+        write!(&mut bs, "{:?}", md).unwrap();
         try_write!(&mut bt, "{:?}", &md).unwrap();
         assert_eq!(bs.into_inner(), bt.into_inner());
     }
 
     #[test]
     fn parity_manually_drop_string_debug() {
-        let mut md: core::mem::ManuallyDrop<String> =
-            core::mem::ManuallyDrop::new(String::from("wrapped"));
+        let mut md: mem::ManuallyDrop<String> = mem::ManuallyDrop::new(String::from("wrapped"));
         let mut bs = Cursor::new(Vec::new());
         let mut bt = Cursor::new(Vec::new());
-        core::write!(&mut bs, "{:?}", md).unwrap();
+        write!(&mut bs, "{:?}", md).unwrap();
         try_write!(&mut bt, "{:?}", &md).unwrap();
         assert_eq!(bs.into_inner(), bt.into_inner());
         unsafe {
-            core::mem::ManuallyDrop::drop(&mut md);
+            mem::ManuallyDrop::drop(&mut md);
         }
     }
 
@@ -2712,40 +2716,40 @@ mod try_write_tests {
 
     #[test]
     fn parity_range_usize_debug() {
-        let r: core::ops::Range<usize> = 0..10;
+        let r: ops::Range<usize> = 0..10;
         let mut bs = Cursor::new(Vec::new());
         let mut bt = Cursor::new(Vec::new());
-        core::write!(&mut bs, "{:?}", r).unwrap();
+        write!(&mut bs, "{:?}", r).unwrap();
         try_write!(&mut bt, "{:?}", &r).unwrap();
         assert_eq!(bs.into_inner(), bt.into_inner());
     }
 
     #[test]
     fn parity_range_i32_debug() {
-        let r: core::ops::Range<i32> = -5..5;
+        let r: ops::Range<i32> = -5..5;
         let mut bs = Cursor::new(Vec::new());
         let mut bt = Cursor::new(Vec::new());
-        core::write!(&mut bs, "{:?}", r).unwrap();
+        write!(&mut bs, "{:?}", r).unwrap();
         try_write!(&mut bt, "{:?}", &r).unwrap();
         assert_eq!(bs.into_inner(), bt.into_inner());
     }
 
     #[test]
     fn parity_range_from_debug() {
-        let r: core::ops::RangeFrom<usize> = 10..;
+        let r: ops::RangeFrom<usize> = 10..;
         let mut bs = Cursor::new(Vec::new());
         let mut bt = Cursor::new(Vec::new());
-        core::write!(&mut bs, "{:?}", r).unwrap();
+        write!(&mut bs, "{:?}", r).unwrap();
         try_write!(&mut bt, "{:?}", &r).unwrap();
         assert_eq!(bs.into_inner(), bt.into_inner());
     }
 
     #[test]
     fn parity_range_to_debug() {
-        let r: core::ops::RangeTo<usize> = ..10;
+        let r: ops::RangeTo<usize> = ..10;
         let mut bs = Cursor::new(Vec::new());
         let mut bt = Cursor::new(Vec::new());
-        core::write!(&mut bs, "{:?}", r).unwrap();
+        write!(&mut bs, "{:?}", r).unwrap();
         try_write!(&mut bt, "{:?}", &r).unwrap();
         assert_eq!(bs.into_inner(), bt.into_inner());
     }
@@ -2755,7 +2759,7 @@ mod try_write_tests {
         let r = ..;
         let mut bs = Cursor::new(Vec::new());
         let mut bt = Cursor::new(Vec::new());
-        core::write!(&mut bs, "{:?}", r).unwrap();
+        write!(&mut bs, "{:?}", r).unwrap();
         try_write!(&mut bt, "{:?}", &r).unwrap();
         assert_eq!(bs.into_inner(), bt.into_inner());
     }
@@ -2767,7 +2771,7 @@ mod try_write_tests {
         let t = (42,);
         let mut bs = Cursor::new(Vec::new());
         let mut bt = Cursor::new(Vec::new());
-        core::write!(&mut bs, "{:?}", t).unwrap();
+        write!(&mut bs, "{:?}", t).unwrap();
         try_write!(&mut bt, "{:?}", &t).unwrap();
         assert_eq!(bs.into_inner(), bt.into_inner());
     }
@@ -2777,7 +2781,7 @@ mod try_write_tests {
         let t = (1, "two");
         let mut bs = Cursor::new(Vec::new());
         let mut bt = Cursor::new(Vec::new());
-        core::write!(&mut bs, "{:?}", t).unwrap();
+        write!(&mut bs, "{:?}", t).unwrap();
         try_write!(&mut bt, "{:?}", &t).unwrap();
         assert_eq!(bs.into_inner(), bt.into_inner());
     }
@@ -2787,7 +2791,7 @@ mod try_write_tests {
         let t = (1, 2u32, true, 'x', String::from("five"));
         let mut bs = Cursor::new(Vec::new());
         let mut bt = Cursor::new(Vec::new());
-        core::write!(&mut bs, "{:?}", t).unwrap();
+        write!(&mut bs, "{:?}", t).unwrap();
         try_write!(&mut bt, "{:?}", &t).unwrap();
         assert_eq!(bs.into_inner(), bt.into_inner());
     }
@@ -2799,7 +2803,7 @@ mod try_write_tests {
         let a: [i32; 0] = [];
         let mut bs = Cursor::new(Vec::new());
         let mut bt = Cursor::new(Vec::new());
-        core::write!(&mut bs, "{:?}", a).unwrap();
+        write!(&mut bs, "{:?}", a).unwrap();
         try_write!(&mut bt, "{:?}", &a).unwrap();
         assert_eq!(bs.into_inner(), bt.into_inner());
     }
@@ -2809,7 +2813,7 @@ mod try_write_tests {
         let a: [u8; 16] = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15];
         let mut bs = Cursor::new(Vec::new());
         let mut bt = Cursor::new(Vec::new());
-        core::write!(&mut bs, "{:?}", a).unwrap();
+        write!(&mut bs, "{:?}", a).unwrap();
         try_write!(&mut bt, "{:?}", &a).unwrap();
         assert_eq!(bs.into_inner(), bt.into_inner());
     }
@@ -2821,7 +2825,7 @@ mod try_write_tests {
         let bytes: &[u8] = &[0xDE, 0xAD, 0xBE, 0xEF];
         let mut bs = Cursor::new(Vec::new());
         let mut bt = Cursor::new(Vec::new());
-        core::write!(&mut bs, "{:?}", bytes).unwrap();
+        write!(&mut bs, "{:?}", bytes).unwrap();
         try_write!(&mut bt, "{:?}", bytes).unwrap();
         assert_eq!(bs.into_inner(), bt.into_inner());
     }
@@ -2831,7 +2835,7 @@ mod try_write_tests {
         let bytes: [u8; 4] = [0xDE, 0xAD, 0xBE, 0xEF];
         let mut bs = Cursor::new(Vec::new());
         let mut bt = Cursor::new(Vec::new());
-        core::write!(&mut bs, "{:?}", bytes).unwrap();
+        write!(&mut bs, "{:?}", bytes).unwrap();
         try_write!(&mut bt, "{:?}", &bytes).unwrap();
         assert_eq!(bs.into_inner(), bt.into_inner());
     }
@@ -2844,7 +2848,7 @@ mod try_write_tests {
         let r: &&i32 = &&val;
         let mut bs = Cursor::new(Vec::new());
         let mut bt = Cursor::new(Vec::new());
-        core::write!(&mut bs, "{:?}", r).unwrap();
+        write!(&mut bs, "{:?}", r).unwrap();
         try_write!(&mut bt, "{:?}", &r).unwrap();
         assert_eq!(bs.into_inner(), bt.into_inner());
     }
@@ -2855,7 +2859,7 @@ mod try_write_tests {
         let r: &&&i32 = &&&val;
         let mut bs = Cursor::new(Vec::new());
         let mut bt = Cursor::new(Vec::new());
-        core::write!(&mut bs, "{:?}", r).unwrap();
+        write!(&mut bs, "{:?}", r).unwrap();
         try_write!(&mut bt, "{:?}", &r).unwrap();
         assert_eq!(bs.into_inner(), bt.into_inner());
     }
@@ -2867,7 +2871,7 @@ mod try_write_tests {
         let o: Option<Vec<i32>> = Some(vec![1, 2, 3]);
         let mut bs = Cursor::new(Vec::new());
         let mut bt = Cursor::new(Vec::new());
-        core::write!(&mut bs, "{:?}", o).unwrap();
+        write!(&mut bs, "{:?}", o).unwrap();
         try_write!(&mut bt, "{:?}", &o).unwrap();
         assert_eq!(bs.into_inner(), bt.into_inner());
     }
@@ -2879,7 +2883,7 @@ mod try_write_tests {
         let r: Result<Vec<String>, &str> = Ok(vec![String::from("ok")]);
         let mut bs = Cursor::new(Vec::new());
         let mut bt = Cursor::new(Vec::new());
-        core::write!(&mut bs, "{:?}", r).unwrap();
+        write!(&mut bs, "{:?}", r).unwrap();
         try_write!(&mut bt, "{:?}", &r).unwrap();
         assert_eq!(bs.into_inner(), bt.into_inner());
     }
@@ -2892,7 +2896,7 @@ mod try_write_tests {
             vec![Some(Ok([1, 2])), None, Some(Err("error"))];
         let mut bs = Cursor::new(Vec::new());
         let mut bt = Cursor::new(Vec::new());
-        core::write!(&mut bs, "{:?}", val.clone()).unwrap();
+        write!(&mut bs, "{:?}", val.clone()).unwrap();
         try_write!(&mut bt, "{:?}", &val).unwrap();
         assert_eq!(bs.into_inner(), bt.into_inner());
     }

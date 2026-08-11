@@ -17,7 +17,7 @@ pub fn fill_bytes(bytes: &mut [u8]) -> Result<(), RandomError> {
     if ret == libc::kCCSuccess {
         Ok(())
     } else {
-        Err(RandomError::Platform(core::borrow::Cow::Borrowed(
+        Err(RandomError::Platform (borrow::Cow::Borrowed(
             "CCRandomGenerateBytes failed",
         )))
     }

@@ -5,13 +5,13 @@
 
 use crate::alloc::{AllocError, TryReserveError};
 use crate::dashmap::TryDashMap;
+use crate::lang_core::alloc::Layout;
+use crate::lang_core::fmt;
 use crate::lang_std::cmp::Eq;
 use crate::lang_std::hash::{BuildHasher, Hash, RandomState};
 use crate::prelude::{TryClone, TryDefault};
 use crate::try_clone::TryCloneError;
 use crate::try_fmt::{TryDebug, helpers::FormatterExt};
-use core::alloc::Layout;
-use core::fmt;
 
 type DashMap<K, V, S = RandomState> = dashmap::DashMap<K, V, S>;
 type DashSet<T, S = RandomState> = dashmap::DashSet<T, S>;

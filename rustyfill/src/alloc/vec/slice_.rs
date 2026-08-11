@@ -9,12 +9,12 @@ use super::vec_::TryVecError;
 use crate::alloc::AllocError;
 use crate::lang_alloc::boxed::Box;
 use crate::lang_alloc::vec::Vec;
+use crate::lang_core::alloc::Layout;
+use crate::lang_core::mem::{self, MaybeUninit};
+use crate::lang_core::ptr::{self, NonNull};
 use crate::try_clone::{TryClone, TryCloneError};
 use crate::try_default::{TryDefault, TryDefaultError};
 use crate::try_to_owned::{TryToOwned, TryToOwnedError};
-use core::alloc::Layout;
-use core::mem::{self, MaybeUninit};
-use core::ptr::{self, NonNull};
 
 /// A trait for fallibly converting a slice into a [`Vec`].
 ///
@@ -163,7 +163,7 @@ impl<'a, T> Drop for SliceInitGuard<'a, T> {
     fn drop(&mut self) {
         unsafe {
             for slot in self.slots.iter_mut().take(self.count) {
-                core::ptr::drop_in_place(slot.as_mut_ptr());
+                ptr::drop_in_place(slot.as_mut_ptr());
             }
         }
     }
@@ -181,7 +181,7 @@ impl<T: TryClone> TryClone for Box<[T]> {
             // SAFETY: for empty slices and ZSTs, a dangling aligned pointer is valid.
             // We cast through a fat pointer constructed from the raw parts.
             return Ok(unsafe {
-                let fat: *mut [T] = core::ptr::slice_from_raw_parts_mut(ptr.as_ptr().cast(), len);
+                let fat: *mut [T] = ptr::slice_from_raw_parts_mut(ptr.as_ptr().cast(), len);
                 Box::from_raw(fat)
             });
         }
@@ -197,14 +197,14 @@ impl<T: TryClone> TryClone for Box<[T]> {
         // SAFETY: layout matches `len` elements of MaybeUninit<T>, which has
         // the same size and alignment as T.
         let mut out: Box<[MaybeUninit<T>]> =
-            unsafe { Box::from_raw(core::ptr::slice_from_raw_parts_mut(ptr.cast(), len)) };
+            unsafe { Box::from_raw(ptr::slice_from_raw_parts_mut(ptr.cast(), len)) };
         let mut guard = SliceInitGuard::new(&mut out);
 
         for (slot, elem) in guard.slots.iter_mut().zip(self.iter()) {
             match elem.try_clone() {
                 Ok(cloned) => {
                     unsafe {
-                        core::ptr::write(slot.as_mut_ptr(), cloned);
+                        ptr::write(slot.as_mut_ptr(), cloned);
                     }
                     guard.count += 1;
                 }

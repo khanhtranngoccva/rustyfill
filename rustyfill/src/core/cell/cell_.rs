@@ -1,4 +1,5 @@
-use crate::lang_std::cell::{BorrowError, BorrowMutError, Ref, RefCell, RefMut};
+use crate::lang_core::cell::{BorrowError, BorrowMutError, Ref, RefCell, RefMut};
+use crate::lang_core::fmt;
 use crate::try_clone::{TryClone, TryCloneError};
 use crate::try_default::{TryDefault, TryDefaultError};
 use crate::try_fmt::{AssertDebug, TryDebug, helpers::FormatterExt};
@@ -12,8 +13,8 @@ pub enum TryBorrowError {
     BorrowMut(BorrowMutError),
 }
 
-impl core::fmt::Display for TryBorrowError {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+impl fmt::Display for TryBorrowError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Borrow(_) => write!(f, "immutable borrow failed: already at maximum"),
             Self::BorrowMut(_) => write!(f, "mutable borrow failed: another borrow is active"),
@@ -34,7 +35,7 @@ impl From<BorrowMutError> for TryBorrowError {
 }
 
 impl TryDebug for TryBorrowError {
-    fn try_fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+    fn try_fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Borrow(e) => f
                 .try_debug_struct("TryBorrowError::Borrow")
@@ -117,7 +118,7 @@ impl<T: TryDefault> TryDefault for RefCell<T> {
 // ── TryDebug for RefCell<T> ───────────────────────────────────────────────────
 
 impl<T: ?Sized + crate::try_fmt::TryDebug> crate::try_fmt::TryDebug for RefCell<T> {
-    fn try_fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+    fn try_fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self.try_borrow() {
             Ok(inner) => {
                 f.write_str("RefCell { value: ")?;

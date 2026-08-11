@@ -200,7 +200,7 @@ pub fn try_format(input: TokenStream) -> TokenStream {
     let tokens: proc_macro2::TokenStream = input.clone().into();
     quote! {{
         let mut buf = String::new();
-        ::rustyfill::string::TryString::try_write_fmt(
+        ::rustyfill::alloc::string::TryString::try_write_fmt(
             &mut buf,
             ::rustyfill::try_format_args!(#tokens),
         ).map(|()| buf)
@@ -266,7 +266,7 @@ pub fn try_format_or(input: TokenStream) -> TokenStream {
             let fmt_ts: proc_macro2::TokenStream = tts.into_iter().collect();
             quote! {{
                 let mut buf = String::new();
-                ::rustyfill::string::TryString::try_write_fmt(
+                ::rustyfill::alloc::string::TryString::try_write_fmt(
                     &mut buf,
                     ::rustyfill::try_format_args!(#fmt_ts),
                 ).map(|()| ::lang_std::borrow::Cow::Owned(buf))
@@ -280,7 +280,7 @@ pub fn try_format_or(input: TokenStream) -> TokenStream {
 
             quote! {{
                 let mut buf = String::new();
-                ::rustyfill::string::TryString::try_write_fmt(
+                ::rustyfill::alloc::string::TryString::try_write_fmt(
                     &mut buf,
                     ::rustyfill::try_format_args!(#fmt_part),
                 ).map(|()| ::lang_std::borrow::Cow::Owned(buf))
