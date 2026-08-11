@@ -1216,20 +1216,20 @@ mod tests {
 
     #[test]
     fn vec_try_with_capacity_fails_on_oom() {
-        let r: Result<Vec<u8>, TryReserveError> = with_policy(
-            FailPolicy::fail_next_alloc(),
-            || <Vec<u8> as TryVec<u8>>::try_with_capacity(10),
-        );
+        let r: Result<Vec<u8>, TryReserveError> =
+            with_policy(FailPolicy::fail_next_alloc(), || {
+                <Vec<u8> as TryVec<u8>>::try_with_capacity(10)
+            });
         assert!(r.is_err());
     }
 
     #[test]
     fn vec_try_with_capacity_zero_succeeds_under_oom() {
         // Zero-capacity Vec doesn't allocate.
-        let r: Result<Vec<u8>, TryReserveError> = with_policy(
-            FailPolicy::fail_next_alloc(),
-            || <Vec<u8> as TryVec<u8>>::try_with_capacity(0),
-        );
+        let r: Result<Vec<u8>, TryReserveError> =
+            with_policy(FailPolicy::fail_next_alloc(), || {
+                <Vec<u8> as TryVec<u8>>::try_with_capacity(0)
+            });
         assert!(r.is_ok());
         assert!(r.as_ref().unwrap().is_empty());
     }
@@ -1245,20 +1245,16 @@ mod tests {
     #[test]
     fn vec_try_clone_fails_on_oom() {
         let orig: Vec<u32> = vec![1, 2, 3];
-        let r: Result<Vec<u32>, TryCloneError> = with_policy(
-            FailPolicy::fail_next_alloc(),
-            || orig.try_clone(),
-        );
+        let r: Result<Vec<u32>, TryCloneError> =
+            with_policy(FailPolicy::fail_next_alloc(), || orig.try_clone());
         assert!(r.is_err());
     }
 
     #[test]
     fn vec_try_clone_empty_succeeds_under_oom() {
         let orig: Vec<u32> = Vec::new();
-        let r: Result<Vec<u32>, TryCloneError> = with_policy(
-            FailPolicy::fail_next_alloc(),
-            || orig.try_clone(),
-        );
+        let r: Result<Vec<u32>, TryCloneError> =
+            with_policy(FailPolicy::fail_next_alloc(), || orig.try_clone());
         assert!(r.is_ok());
         assert!(r.as_ref().unwrap().is_empty());
     }
@@ -1266,10 +1262,9 @@ mod tests {
     #[test]
     fn vec_try_from_slice_fails_on_oom() {
         let slice: &[u32] = &[10, 20, 30];
-        let r: Result<Vec<u32>, TryVecError> = with_policy(
-            FailPolicy::fail_next_alloc(),
-            || Vec::<u32>::try_from_slice(slice),
-        );
+        let r: Result<Vec<u32>, TryVecError> = with_policy(FailPolicy::fail_next_alloc(), || {
+            Vec::<u32>::try_from_slice(slice)
+        });
         assert!(r.is_err());
     }
 
@@ -1290,7 +1285,9 @@ mod tests {
     #[test]
     fn vec_try_resize_grow_fails_on_oom() {
         let mut v: Vec<u32> = Vec::new();
-        let r = with_policy(FailPolicy::fail_next_alloc(), || v.try_resize_with(10, || 99u32));
+        let r = with_policy(FailPolicy::fail_next_alloc(), || {
+            v.try_resize_with(10, || 99u32)
+        });
         assert!(r.is_err());
     }
 
@@ -1298,34 +1295,33 @@ mod tests {
     fn vec_try_extend_fails_on_oom() {
         let items: Vec<u32> = vec![1, 2, 3];
         let mut v: Vec<u32> = Vec::new();
-        let r = with_policy(FailPolicy::fail_next_alloc(), || v.try_extend(items.iter().copied()));
+        let r = with_policy(FailPolicy::fail_next_alloc(), || {
+            v.try_extend(items.iter().copied())
+        });
         assert!(r.is_err());
     }
 
     #[test]
     fn vec_try_collect_fails_on_oom() {
-        let r: Result<Vec<u32>, TryReserveError> = with_policy(
-            FailPolicy::fail_next_alloc(),
-            || Vec::try_collect(1..=3),
-        );
+        let r: Result<Vec<u32>, TryReserveError> =
+            with_policy(FailPolicy::fail_next_alloc(), || Vec::try_collect(1..=3));
         assert!(r.is_err());
     }
 
     #[test]
     fn vec_try_from_elem_fails_on_oom() {
-        let r: Result<Vec<u32>, TryVecError> = with_policy(
-            FailPolicy::fail_next_alloc(),
-            || Vec::try_from_elem(&0u32, 5),
-        );
+        let r: Result<Vec<u32>, TryVecError> = with_policy(FailPolicy::fail_next_alloc(), || {
+            Vec::try_from_elem(&0u32, 5)
+        });
         assert!(r.is_err());
     }
 
     #[test]
     fn vec_oom_restores_allocation_afterwards() {
-        let r: Result<Vec<u8>, TryReserveError> = with_policy(
-            FailPolicy::fail_next_alloc(),
-            || <Vec<u8> as TryVec<u8>>::try_with_capacity(10),
-        );
+        let r: Result<Vec<u8>, TryReserveError> =
+            with_policy(FailPolicy::fail_next_alloc(), || {
+                <Vec<u8> as TryVec<u8>>::try_with_capacity(10)
+            });
         assert!(r.is_err());
         // Allocation works again after guard scope ends.
         let r: Result<Vec<u8>, TryReserveError> = <Vec<u8> as TryVec<u8>>::try_with_capacity(10);

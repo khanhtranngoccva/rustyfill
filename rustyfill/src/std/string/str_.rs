@@ -87,7 +87,8 @@ impl TryStr for str {
     fn try_to_string(&self) -> Result<String, TryStrError> {
         let mut out = String::new();
         if !self.is_empty() {
-            out.try_reserve(self.len()).map_err(|e| TryStrError::Reserve(e.into()))?;
+            out.try_reserve(self.len())
+                .map_err(|e| TryStrError::Reserve(e.into()))?;
         }
         out.push_str(self);
         Ok(out)
@@ -100,7 +101,8 @@ impl TryStr for str {
         }
         let total_len = len.checked_mul(n).ok_or(TryStrError::Overflow)?;
         let mut out = String::new();
-        out.try_reserve(total_len).map_err(|e| TryStrError::Reserve(e.into()))?;
+        out.try_reserve(total_len)
+            .map_err(|e| TryStrError::Reserve(e.into()))?;
         for _ in 0..n {
             out.push_str(self);
         }
@@ -150,9 +152,8 @@ impl TryClone for Box<str> {
         // Wrap immediately in a Box<[u8]> so that Drop cleans up on any panic
         // between here and the final transmute to Box<str>.
         // SAFETY: layout matches `len` elements of u8.
-        let mut out: Box<[u8]> = unsafe {
-            Box::from_raw(core::ptr::slice_from_raw_parts_mut(ptr, len))
-        };
+        let mut out: Box<[u8]> =
+            unsafe { Box::from_raw(core::ptr::slice_from_raw_parts_mut(ptr, len)) };
 
         // SAFETY: `bytes` is valid UTF-8 and lives for at least the duration of
         // this memcpy (borrowed from `self`). Destination has exactly `len` bytes.

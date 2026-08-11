@@ -13,8 +13,8 @@ type RwLockWriteGuard<'a, K, V> =
     dashmap::RwLockWriteGuard<'a, hashbrown::raw::RawTable<(K, SharedValue<V>)>>;
 type ShardEntry<K, V> = (K, SharedValue<V>);
 
-use crate::try_default::{TryDefault, TryDefaultError};
 use super::RefMut;
+use crate::try_default::{TryDefault, TryDefaultError};
 
 /// An owned read-write accessor to a slot in a `DashMap`.
 ///

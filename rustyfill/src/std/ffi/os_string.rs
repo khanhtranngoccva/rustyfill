@@ -475,19 +475,19 @@ mod tests {
 
     #[test]
     fn osstring_try_with_capacity_fails_on_oom() {
-        let r: Result<OsString, TryReserveError> = with_policy(
-            FailPolicy::fail_next_alloc(),
-            || <OsString as TryOsString>::try_with_capacity(10),
-        );
+        let r: Result<OsString, TryReserveError> =
+            with_policy(FailPolicy::fail_next_alloc(), || {
+                <OsString as TryOsString>::try_with_capacity(10)
+            });
         assert!(r.is_err());
     }
 
     #[test]
     fn osstring_try_with_capacity_zero_succeeds_under_oom() {
-        let r: Result<OsString, TryReserveError> = with_policy(
-            FailPolicy::fail_next_alloc(),
-            || <OsString as TryOsString>::try_with_capacity(0),
-        );
+        let r: Result<OsString, TryReserveError> =
+            with_policy(FailPolicy::fail_next_alloc(), || {
+                <OsString as TryOsString>::try_with_capacity(0)
+            });
         assert!(r.is_ok());
     }
 
@@ -495,30 +495,25 @@ mod tests {
     fn osstring_try_push_fails_on_oom() {
         let mut s = OsString::new();
         s.try_shrink_to_fit().unwrap();
-        let r = with_policy(
-            FailPolicy::fail_next_alloc(),
-            || s.fallible_push(OsStr::new("hello")),
-        );
+        let r = with_policy(FailPolicy::fail_next_alloc(), || {
+            s.fallible_push(OsStr::new("hello"))
+        });
         assert!(r.is_err());
     }
 
     #[test]
     fn osstring_try_clone_fails_on_oom() {
         let orig = OsString::try_from_str("hello").unwrap();
-        let r: Result<OsString, TryCloneError> = with_policy(
-            FailPolicy::fail_next_alloc(),
-            || orig.try_clone(),
-        );
+        let r: Result<OsString, TryCloneError> =
+            with_policy(FailPolicy::fail_next_alloc(), || orig.try_clone());
         assert!(r.is_err());
     }
 
     #[test]
     fn osstring_try_clone_empty_succeeds_under_oom() {
         let orig = OsString::new();
-        let r: Result<OsString, TryCloneError> = with_policy(
-            FailPolicy::fail_next_alloc(),
-            || orig.try_clone(),
-        );
+        let r: Result<OsString, TryCloneError> =
+            with_policy(FailPolicy::fail_next_alloc(), || orig.try_clone());
         assert!(r.is_ok());
     }
 
@@ -538,10 +533,10 @@ mod tests {
 
     #[test]
     fn osstring_oom_restores_allocation_afterwards() {
-        let r: Result<OsString, TryReserveError> = with_policy(
-            FailPolicy::fail_next_alloc(),
-            || <OsString as TryOsString>::try_with_capacity(10),
-        );
+        let r: Result<OsString, TryReserveError> =
+            with_policy(FailPolicy::fail_next_alloc(), || {
+                <OsString as TryOsString>::try_with_capacity(10)
+            });
         assert!(r.is_err());
         // Allocation works again after guard scope ends.
         let r: Result<OsString, TryReserveError> = <OsString as TryOsString>::try_with_capacity(10);

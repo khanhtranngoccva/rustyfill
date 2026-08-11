@@ -340,9 +340,10 @@ impl<T: Eq + Hash, S: BuildHasher + TryClone> TryDashSet<T, S> for DashSet<T, S>
         let (head, mut iter) = source.safe_into_iter();
 
         if let Some(value) = head
-            && let Err((v, e)) = Self::try_insert_give_back(self, value) {
-                return Err((e, Resumable::new(v, iter)));
-            }
+            && let Err((v, e)) = Self::try_insert_give_back(self, value)
+        {
+            return Err((e, Resumable::new(v, iter)));
+        }
 
         while let Some(value) = iter.next() {
             match Self::try_insert_give_back(self, value) {
@@ -358,15 +359,13 @@ impl<T: Eq + Hash, S: BuildHasher + TryClone> TryDashSet<T, S> for DashSet<T, S>
     // ── Capacity / shrink ───────────────────────────────────────────────────
 
     fn try_shrink_to_fit(&self) -> Result<(), TryDashSetError> {
-        convert_ref(self)
-            .try_shrink_to_fit()
-            .map_err(|e| match e {
-                super::TryDashMapError::Alloc(a) => TryDashSetError::Alloc(a),
-                super::TryDashMapError::Reserve(r) => TryDashSetError::Reserve(r),
-                super::TryDashMapError::Clone(c) => TryDashSetError::Clone(c),
-                super::TryDashMapError::Overflow => TryDashSetError::Overflow,
-                super::TryDashMapError::Other(m) => TryDashSetError::Other(m),
-            })
+        convert_ref(self).try_shrink_to_fit().map_err(|e| match e {
+            super::TryDashMapError::Alloc(a) => TryDashSetError::Alloc(a),
+            super::TryDashMapError::Reserve(r) => TryDashSetError::Reserve(r),
+            super::TryDashMapError::Clone(c) => TryDashSetError::Clone(c),
+            super::TryDashMapError::Overflow => TryDashSetError::Overflow,
+            super::TryDashMapError::Other(m) => TryDashSetError::Other(m),
+        })
     }
 
     // ── Bulk construction ───────────────────────────────────────────────────

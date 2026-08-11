@@ -207,7 +207,7 @@ static GLOBAL: TestAllocator = TestAllocator;
 ///
 /// Snapshots the active policy and invocation counters at construction time,
 /// so nested guards correctly restore the outer guard's state on drop.
-/// 
+///
 /// Callers should use with_policy to avoid unpredictable behaviors.
 ///
 /// # Thread affinity
@@ -290,7 +290,10 @@ mod tests {
         assert!(r.is_err(), "inner guard should have caused OOM");
         drop(_inner);
         let r1: Result<Box<i32>, AllocError> = <Box<i32> as TryBox<i32>>::fallible_new(2);
-        assert!(r1.is_ok(), "first alloc under restored outer should succeed");
+        assert!(
+            r1.is_ok(),
+            "first alloc under restored outer should succeed"
+        );
         let r2: Result<Box<i32>, AllocError> = <Box<i32> as TryBox<i32>>::fallible_new(3);
         assert!(r2.is_err(), "second alloc under restored outer should fail");
         drop(outer);

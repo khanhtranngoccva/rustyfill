@@ -1,13 +1,13 @@
 pub mod arc;
 pub mod boxed;
-pub mod cell;
-pub mod rc;
 #[cfg(feature = "panic")]
 pub mod btrees;
+pub mod cell;
 pub mod ffi;
 pub mod hashmap;
 pub mod hashset;
 pub mod path;
+pub mod rc;
 pub mod string;
 pub mod sync;
 pub mod vec;

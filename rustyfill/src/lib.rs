@@ -35,14 +35,14 @@ pub mod try_to_owned;
 // Re-export std submodules at crate root for backward compatibility
 pub use std::arc;
 pub use std::boxed;
-pub use std::cell;
-pub use std::rc;
 #[cfg(feature = "panic")]
 pub use std::btrees;
+pub use std::cell;
 pub use std::ffi;
 pub use std::hashmap;
 pub use std::hashset;
 pub use std::path;
+pub use std::rc;
 pub use std::string;
 pub use std::sync;
 pub use std::vec;

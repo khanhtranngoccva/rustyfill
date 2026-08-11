@@ -1457,7 +1457,9 @@ mod oom_tests {
         let mut md: core::mem::ManuallyDrop<String> =
             core::mem::ManuallyDrop::new(String::from("wrapped"));
         assert!(assert_try_debug_no_alloc(&md));
-        unsafe { core::mem::ManuallyDrop::drop(&mut md); }
+        unsafe {
+            core::mem::ManuallyDrop::drop(&mut md);
+        }
     }
 
     // ── Ranges ──────────────────────────────────────────────────────────────
@@ -2818,7 +2820,9 @@ mod try_write_tests {
         std::write!(&mut bs, "{:?}", md).unwrap();
         try_write!(&mut bt, "{:?}", &md).unwrap();
         assert_eq!(bs.into_inner(), bt.into_inner());
-        unsafe { core::mem::ManuallyDrop::drop(&mut md); }
+        unsafe {
+            core::mem::ManuallyDrop::drop(&mut md);
+        }
     }
 
     // ── Ranges ───────────────────────────────────────────────────────────────

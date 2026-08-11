@@ -1197,19 +1197,19 @@ use rustyfill_test_allocator::{FailPolicy, with_policy};
 
 #[test]
 fn vecdeque_try_with_capacity_fails_on_oom() {
-    let r: Result<VecDeque<u32>, TryReserveError> = with_policy(
-        FailPolicy::fail_next_alloc(),
-        || <VecDeque<u32> as TryVecDeque<u32>>::try_with_capacity(10),
-    );
+    let r: Result<VecDeque<u32>, TryReserveError> =
+        with_policy(FailPolicy::fail_next_alloc(), || {
+            <VecDeque<u32> as TryVecDeque<u32>>::try_with_capacity(10)
+        });
     assert!(r.is_err());
 }
 
 #[test]
 fn vecdeque_try_with_capacity_zero_succeeds_under_oom() {
-    let r: Result<VecDeque<u32>, TryReserveError> = with_policy(
-        FailPolicy::fail_next_alloc(),
-        || <VecDeque<u32> as TryVecDeque<u32>>::try_with_capacity(0),
-    );
+    let r: Result<VecDeque<u32>, TryReserveError> =
+        with_policy(FailPolicy::fail_next_alloc(), || {
+            <VecDeque<u32> as TryVecDeque<u32>>::try_with_capacity(0)
+        });
     assert!(r.is_ok());
 }
 
@@ -1232,59 +1232,55 @@ fn vecdeque_try_push_front_fails_on_oom() {
 #[test]
 fn vecdeque_try_clone_fails_on_oom() {
     let orig: VecDeque<u32> = VecDeque::from([1, 2, 3]);
-    let r: Result<VecDeque<u32>, TryCloneError> = with_policy(
-        FailPolicy::fail_next_alloc(),
-        || orig.try_clone(),
-    );
+    let r: Result<VecDeque<u32>, TryCloneError> =
+        with_policy(FailPolicy::fail_next_alloc(), || orig.try_clone());
     assert!(r.is_err());
 }
 
 #[test]
 fn vecdeque_try_clone_empty_succeeds_under_oom() {
     let orig: VecDeque<u32> = VecDeque::new();
-    let r: Result<VecDeque<u32>, TryCloneError> = with_policy(
-        FailPolicy::fail_next_alloc(),
-        || orig.try_clone(),
-    );
+    let r: Result<VecDeque<u32>, TryCloneError> =
+        with_policy(FailPolicy::fail_next_alloc(), || orig.try_clone());
     assert!(r.is_ok());
 }
 
 #[test]
 fn vecdeque_try_collect_fails_on_oom() {
     let items = [1u32, 2u32, 3u32];
-    let r: Result<VecDeque<u32>, TryReserveError> = with_policy(
-        FailPolicy::fail_next_alloc(),
-        || VecDeque::try_collect(items.iter().copied()),
-    );
+    let r: Result<VecDeque<u32>, TryReserveError> =
+        with_policy(FailPolicy::fail_next_alloc(), || {
+            VecDeque::try_collect(items.iter().copied())
+        });
     assert!(r.is_err());
 }
 
 #[test]
 fn vecdeque_try_from_slice_fails_on_oom() {
     let slice = &[1u32, 2u32];
-    let r: Result<VecDeque<u32>, TryVecDequeError> = with_policy(
-        FailPolicy::fail_next_alloc(),
-        || <VecDeque<u32> as TryVecDeque<u32>>::try_from_slice(slice),
-    );
+    let r: Result<VecDeque<u32>, TryVecDequeError> =
+        with_policy(FailPolicy::fail_next_alloc(), || {
+            <VecDeque<u32> as TryVecDeque<u32>>::try_from_slice(slice)
+        });
     assert!(r.is_err());
 }
 
 #[test]
 fn vecdeque_try_from_elem_fails_on_oom() {
     let val = 42u32;
-    let r: Result<VecDeque<u32>, TryVecDequeError> = with_policy(
-        FailPolicy::fail_next_alloc(),
-        || <VecDeque<u32> as TryVecDeque<u32>>::try_from_elem(&val, 5),
-    );
+    let r: Result<VecDeque<u32>, TryVecDequeError> =
+        with_policy(FailPolicy::fail_next_alloc(), || {
+            <VecDeque<u32> as TryVecDeque<u32>>::try_from_elem(&val, 5)
+        });
     assert!(r.is_err());
 }
 
 #[test]
 fn vecdeque_oom_restores_allocation_afterwards() {
-    let r: Result<VecDeque<u32>, TryReserveError> = with_policy(
-        FailPolicy::fail_next_alloc(),
-        || <VecDeque<u32> as TryVecDeque<u32>>::try_with_capacity(10),
-    );
+    let r: Result<VecDeque<u32>, TryReserveError> =
+        with_policy(FailPolicy::fail_next_alloc(), || {
+            <VecDeque<u32> as TryVecDeque<u32>>::try_with_capacity(10)
+        });
     assert!(r.is_err());
     let r: Result<VecDeque<u32>, TryReserveError> =
         <VecDeque<u32> as TryVecDeque<u32>>::try_with_capacity(10);

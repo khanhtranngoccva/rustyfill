@@ -125,7 +125,8 @@ impl TryDefault for std::hash::RandomState {
             // SAFETY: RandomState's internal representation is two u64 values.
             // We construct it directly from our randomly generated keys, avoiding
             // the panic-prone Default::default() path entirely.
-            let rs = unsafe { core::mem::transmute::<(u64, u64), std::hash::RandomState>((k1, k2)) };
+            let rs =
+                unsafe { core::mem::transmute::<(u64, u64), std::hash::RandomState>((k1, k2)) };
             let rs_clone = rs.clone();
             cell.set(rs).ok();
             Ok(rs_clone)

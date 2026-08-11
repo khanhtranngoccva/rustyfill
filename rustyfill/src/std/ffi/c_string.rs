@@ -360,10 +360,8 @@ mod tests {
     #[test]
     fn cstring_try_clone_fails_on_oom() {
         let c = CString::try_new(b"hello".to_vec()).unwrap();
-        let r: Result<CString, TryCloneError> = with_policy(
-            FailPolicy::fail_next_alloc(),
-            || c.try_clone(),
-        );
+        let r: Result<CString, TryCloneError> =
+            with_policy(FailPolicy::fail_next_alloc(), || c.try_clone());
         assert!(r.is_err());
     }
 
@@ -372,10 +370,8 @@ mod tests {
         // Even an empty CString contains a trailing nul byte, so try_to_vec()
         // always allocates at least 1 byte. No zero-allocation path exists.
         let c = CString::try_new(Vec::new()).unwrap();
-        let r: Result<CString, TryCloneError> = with_policy(
-            FailPolicy::fail_next_alloc(),
-            || c.try_clone(),
-        );
+        let r: Result<CString, TryCloneError> =
+            with_policy(FailPolicy::fail_next_alloc(), || c.try_clone());
         assert!(r.is_err());
     }
 
@@ -396,10 +392,8 @@ mod tests {
     #[test]
     fn cstring_oom_restores_allocation_afterwards() {
         let c = CString::try_new(b"hello".to_vec()).unwrap();
-        let r: Result<CString, TryCloneError> = with_policy(
-            FailPolicy::fail_next_alloc(),
-            || c.try_clone(),
-        );
+        let r: Result<CString, TryCloneError> =
+            with_policy(FailPolicy::fail_next_alloc(), || c.try_clone());
         assert!(r.is_err());
         let r: Result<CString, TryCloneError> = c.try_clone();
         assert!(r.is_ok());

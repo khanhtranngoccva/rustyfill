@@ -1,6 +1,6 @@
 use crate::try_clone::{TryClone, TryCloneError};
 use crate::try_default::{TryDefault, TryDefaultError};
-use std::cell::{BorrowError, BorrowMutError, RefCell, Ref, RefMut};
+use std::cell::{BorrowError, BorrowMutError, Ref, RefCell, RefMut};
 
 /// Error returned when a fallible borrow operation fails.
 #[derive(Debug)]

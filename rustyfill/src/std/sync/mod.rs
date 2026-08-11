@@ -5,5 +5,5 @@
 //! inner value when readable, falling back to a non-allocating placeholder
 //! otherwise.
 
-mod rwlock_;
 mod mutex_;
+mod rwlock_;

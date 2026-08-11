@@ -10,6 +10,4 @@
 pub mod chashmap;
 pub mod interner;
 
-pub use chashmap::{
-    ConcurrentHashMap, ConcurrentHashMapError, ConcurrentHashMapNonblockError,
-};
+pub use chashmap::{ConcurrentHashMap, ConcurrentHashMapError, ConcurrentHashMapNonblockError};

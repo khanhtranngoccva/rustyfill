@@ -259,9 +259,8 @@ impl<K: Eq + Hash, V, S: BuildHasher> ConcurrentHashMap<K, V, S> {
         // Wrap immediately in a Box so Drop cleans up the allocation on panic.
         // SAFETY: layout matches `shard_count` elements of MaybeUninit<Shard<K,V>>,
         // which has the same size and alignment as Shard<K,V>.
-        let mut uninit_shards: Box<[MaybeUninit<Shard<K, V>>]> = unsafe {
-            Box::from_raw(core::ptr::slice_from_raw_parts_mut(ptr.cast(), shard_count))
-        };
+        let mut uninit_shards: Box<[MaybeUninit<Shard<K, V>>]> =
+            unsafe { Box::from_raw(core::ptr::slice_from_raw_parts_mut(ptr.cast(), shard_count)) };
         let mut guard = SliceInitGuard::new(&mut uninit_shards);
 
         for slot in guard.slots.iter_mut() {
@@ -275,9 +274,7 @@ impl<K: Eq + Hash, V, S: BuildHasher> ConcurrentHashMap<K, V, S> {
 
         // SAFETY: all `shard_count` slots were written successfully above.
         // Box<[MaybeUninit<Shard<K,V>>]> and Box<[Shard<K,V>]> have identical layouts.
-        let boxed: Box<[Shard<K, V>]> = unsafe {
-            mem::transmute(uninit_shards)
-        };
+        let boxed: Box<[Shard<K, V>]> = unsafe { mem::transmute(uninit_shards) };
 
         let map = Self {
             shards: ShardsStorage::Heap(boxed),

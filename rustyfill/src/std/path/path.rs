@@ -112,7 +112,10 @@ pub trait TryPath {
     }
 
     /// Alias for [`Self::try_with_added_extension`].
-    fn fallible_with_added_extension<E: AsRef<OsStr>>(&self, ext: E) -> Result<PathBuf, TryPathError> {
+    fn fallible_with_added_extension<E: AsRef<OsStr>>(
+        &self,
+        ext: E,
+    ) -> Result<PathBuf, TryPathError> {
         Self::try_with_added_extension(self, ext)
     }
 }
@@ -137,7 +140,8 @@ impl TryPath for Path {
         let src = self.as_os_str();
         let len = src.len();
         if len > 0 {
-            os.try_reserve(len).map_err(|e| TryPathError::Reserve(e.into()))?;
+            os.try_reserve(len)
+                .map_err(|e| TryPathError::Reserve(e.into()))?;
         }
         os.push(src);
         Ok(out)

@@ -873,23 +873,19 @@ mod tests {
 
     #[test]
     fn hashset_try_with_capacity_fails_on_oom() {
-        let r: Result<HashSet<u32>, TryHashSetError> = with_policy(
-            FailPolicy::fail_next_alloc(),
-            || {
+        let r: Result<HashSet<u32>, TryHashSetError> =
+            with_policy(FailPolicy::fail_next_alloc(), || {
                 <HashSet<u32> as TryHashSet<u32, RandomState>>::try_with_capacity(10)
-            },
-        );
+            });
         assert!(r.is_err());
     }
 
     #[test]
     fn hashset_try_with_capacity_zero_succeeds_under_oom() {
-        let r: Result<HashSet<u32>, TryHashSetError> = with_policy(
-            FailPolicy::fail_next_alloc(),
-            || {
+        let r: Result<HashSet<u32>, TryHashSetError> =
+            with_policy(FailPolicy::fail_next_alloc(), || {
                 <HashSet<u32> as TryHashSet<u32, RandomState>>::try_with_capacity(0)
-            },
-        );
+            });
         assert!(r.is_ok());
     }
 
@@ -904,41 +900,35 @@ mod tests {
     #[test]
     fn hashset_try_clone_fails_on_oom() {
         let orig: HashSet<u32> = HashSet::from([1, 2, 3]);
-        let r: Result<HashSet<u32>, TryCloneError> = with_policy(
-            FailPolicy::fail_next_alloc(),
-            || orig.try_clone(),
-        );
+        let r: Result<HashSet<u32>, TryCloneError> =
+            with_policy(FailPolicy::fail_next_alloc(), || orig.try_clone());
         assert!(r.is_err());
     }
 
     #[test]
     fn hashset_try_clone_empty_succeeds_under_oom() {
         let orig: HashSet<u32> = HashSet::new();
-        let r: Result<HashSet<u32>, TryCloneError> = with_policy(
-            FailPolicy::fail_next_alloc(),
-            || orig.try_clone(),
-        );
+        let r: Result<HashSet<u32>, TryCloneError> =
+            with_policy(FailPolicy::fail_next_alloc(), || orig.try_clone());
         assert!(r.is_ok());
     }
 
     #[test]
     fn hashset_try_collect_fails_on_oom() {
         let items = [1u32, 2u32, 3u32];
-        let r: Result<HashSet<u32>, TryHashSetError> = with_policy(
-            FailPolicy::fail_next_alloc(),
-            || HashSet::try_collect(items.iter().copied()),
-        );
+        let r: Result<HashSet<u32>, TryHashSetError> =
+            with_policy(FailPolicy::fail_next_alloc(), || {
+                HashSet::try_collect(items.iter().copied())
+            });
         assert!(r.is_err());
     }
 
     #[test]
     fn hashset_oom_restores_allocation_afterwards() {
-        let r: Result<HashSet<u32>, TryHashSetError> = with_policy(
-            FailPolicy::fail_next_alloc(),
-            || {
+        let r: Result<HashSet<u32>, TryHashSetError> =
+            with_policy(FailPolicy::fail_next_alloc(), || {
                 <HashSet<u32> as TryHashSet<u32, RandomState>>::try_with_capacity(10)
-            },
-        );
+            });
         assert!(r.is_err());
         // Allocation works again after guard scope ends.
         let r: Result<HashSet<u32>, TryHashSetError> =
@@ -950,9 +940,12 @@ mod tests {
     fn hashset_nth_alloc_fail_targets_correct_call() {
         type HS = HashSet<u32, RandomState>;
         let (r1_ok, r2_err, r3_ok) = with_policy(FailPolicy::fail_nth_alloc(2), || {
-            let r1: Result<HS, TryHashSetError> = <HS as TryHashSet<u32, RandomState>>::try_with_capacity(1);
-            let r2: Result<HS, TryHashSetError> = <HS as TryHashSet<u32, RandomState>>::try_with_capacity(1);
-            let r3: Result<HS, TryHashSetError> = <HS as TryHashSet<u32, RandomState>>::try_with_capacity(1);
+            let r1: Result<HS, TryHashSetError> =
+                <HS as TryHashSet<u32, RandomState>>::try_with_capacity(1);
+            let r2: Result<HS, TryHashSetError> =
+                <HS as TryHashSet<u32, RandomState>>::try_with_capacity(1);
+            let r3: Result<HS, TryHashSetError> =
+                <HS as TryHashSet<u32, RandomState>>::try_with_capacity(1);
             (r1.is_ok(), r2.is_err(), r3.is_ok())
         });
         assert!(r1_ok, "first alloc should succeed");

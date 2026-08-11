@@ -20,9 +20,7 @@ fn main() {
             eprintln!("Usage:");
             eprintln!("  cargo xtask sanitize   — run tests on nightly with -Zsanitizer=leak");
             eprintln!("  cargo xtask miri       — run tests under Miri for undefined behavior");
-            eprintln!(
-                "  cargo xtask panic      — verify the `panic` feature rejects panic=abort"
-            );
+            eprintln!("  cargo xtask panic      — verify the `panic` feature rejects panic=abort");
             std::process::exit(1);
         }
     }

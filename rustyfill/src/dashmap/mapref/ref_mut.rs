@@ -27,11 +27,7 @@ impl<'a, K: Eq + Hash, V> RefMut<'a, K, V> {
     ///
     /// The caller must ensure that `k` points to a live key inside the locked
     /// shard and `v` points to a live value wrapped in `SharedValue`.
-    pub(crate) unsafe fn new(
-        guard: RwLockWriteGuard<'a, K, V>,
-        k: *const K,
-        v: *mut V,
-    ) -> Self {
+    pub(crate) unsafe fn new(guard: RwLockWriteGuard<'a, K, V>, k: *const K, v: *mut V) -> Self {
         Self { guard, k, v }
     }
 
