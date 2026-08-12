@@ -126,7 +126,7 @@ pub fn try_write(input: TokenStream) -> TokenStream {
             let dst_ts: proc_macro2::TokenStream = tts.into_iter().collect();
             quote! {{
                 let _ = #dst_ts;
-                Ok::<_, ::lang_std::io::Error>(())
+                Ok::<_, ::core::fmt::Error>(())
             }}
             .into()
         }
@@ -135,10 +135,7 @@ pub fn try_write(input: TokenStream) -> TokenStream {
             let fmt_ts: proc_macro2::TokenStream = tts[idx + 1..].iter().cloned().collect();
             quote! {{
                 let mut dst = #dst_ts;
-                ::lang_std::io::Write::write_fmt(
-                    &mut dst,
-                    ::rustyfill::try_format_args!(#fmt_ts),
-                )
+                dst.write_fmt(::rustyfill::try_format_args!(#fmt_ts))
             }}
             .into()
         }
@@ -169,15 +166,19 @@ pub fn try_writeln(input: TokenStream) -> TokenStream {
     match comma_pos {
         None => {
             let dst_ts: proc_macro2::TokenStream = tts.into_iter().collect();
-            quote! { core::write!(#dst_ts, "\n") }.into()
+            quote! {{
+                let mut dst = #dst_ts;
+                dst.write_str("\n")
+            }}
+            .into()
         }
         Some(idx) => {
             let dst_ts: proc_macro2::TokenStream = tts[..idx].iter().cloned().collect();
             let fmt_ts: proc_macro2::TokenStream = tts[idx + 1..].iter().cloned().collect();
             quote! {{
                 let mut dst = #dst_ts;
-                ::lang_std::io::Write::write_fmt(&mut dst, ::rustyfill::try_format_args!(#fmt_ts))
-                    .and_then(|()| ::lang_std::io::Write::write_all(&mut dst, b"\n"))
+                dst.write_fmt(::rustyfill::try_format_args!(#fmt_ts))
+                    .and_then(|()| dst.write_str("\n"))
             }}
             .into()
         }

@@ -45,7 +45,7 @@ use crate::{
 use lang_core::fmt;
 use lang_core::hash;
 use lang_core::hash::BuildHasher;
-#[cfg_attr(not(feature = "std"), expect(unused))]
+#[cfg(feature = "std")]
 use lang_core::mem;
 #[cfg(feature = "std")]
 use lang_std::panic;
@@ -496,9 +496,9 @@ mod tests {
     use super::*;
     use lang_alloc::format;
     use lang_alloc::vec::Vec;
+    use lang_core::hash::Hasher;
+    use lang_core::mem;
     use lang_core::ptr;
-    use lang_std::collections;
-    use lang_std::hash::Hasher;
 
     // ── Custom trivially-copyable hashers ─────────────────────────────────────
 
@@ -772,9 +772,10 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "std")]
     fn factory_works_in_hashmap_signature() {
         // Prove that CopyHasherFactory satisfies the bounds needed for HashMap.
-        use collections::HashMap;
+        use lang_std::collections::HashMap;
         let factory = CopyHasherFactory::new(Fnv1aBuilder);
         let mut map: HashMap<&str, i32, _> = HashMap::with_hasher(factory);
         map.insert("key", 42);
@@ -791,6 +792,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "std")]
     fn random_state_try_clone_succeeds() {
         let rs = lang_std::hash::RandomState::new();
         let cloned = rs.try_clone().unwrap();
@@ -798,6 +800,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "std")]
     fn build_hasher_default_try_clone_succeeds() {
         use lang_std::hash::{BuildHasherDefault, DefaultHasher};
         let h: BuildHasherDefault<DefaultHasher> = BuildHasherDefault::default();
@@ -817,6 +820,7 @@ mod tests {
     use super::ArbitraryHasherFactory;
 
     #[test]
+    #[cfg(feature = "std")]
     fn arbitrary_factory_constructs_and_delegates() {
         let factory = unsafe { ArbitraryHasherFactory::new(lang_std::hash::RandomState::new()) };
         let hash = factory.hash_one("hello");
@@ -846,6 +850,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "std")]
     fn arbitrary_factory_try_clone_random_state() {
         let factory = unsafe { ArbitraryHasherFactory::new(lang_std::hash::RandomState::new()) };
         let cloned = factory.try_clone().unwrap();
@@ -853,6 +858,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "std")]
     fn arbitrary_factory_try_clone_djb2() {
         let factory = unsafe { ArbitraryHasherFactory::new(Djb2Builder { seed: 5381 }) };
         let cloned = factory.try_clone().unwrap();
@@ -860,13 +866,7 @@ mod tests {
     }
 
     #[test]
-    fn arbitrary_factory_try_default_random_state() {
-        let factory = <ArbitraryHasherFactory<lang_std::hash::RandomState>>::try_default().unwrap();
-        let hash = factory.hash_one("world");
-        assert_ne!(hash, 0);
-    }
-
-    #[test]
+    #[cfg(feature = "std")]
     fn arbitrary_factory_try_default_fnv() {
         let factory = <ArbitraryHasherFactory<Fnv1aBuilder>>::try_default().unwrap();
         let h = factory.build_hasher();
@@ -874,8 +874,17 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "std")]
+    fn arbitrary_factory_try_default_random_state() {
+        let factory = <ArbitraryHasherFactory<lang_std::hash::RandomState>>::try_default().unwrap();
+        let hash = factory.hash_one("world");
+        assert_ne!(hash, 0);
+    }
+
+    #[test]
+    #[cfg(feature = "std")]
     fn arbitrary_factory_works_in_hashmap() {
-        use collections::HashMap;
+        use lang_std::collections::HashMap;
         let factory = unsafe { ArbitraryHasherFactory::new(lang_std::hash::RandomState::new()) };
         let mut map: HashMap<&str, i32, _> = HashMap::with_hasher(factory);
         map.insert("key", 42);
@@ -899,6 +908,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "std")]
     fn arbitrary_factory_not_copy() {
         // Verify that ArbitraryHasherFactory does not require Copy by
         // confirming Clone works (since RandomState is Clone but not Copy).

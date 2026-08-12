@@ -5,9 +5,10 @@
 //! it uses direct indexing: the key's slot index is used as the array offset,
 //! so lookups are O(1) without hashing.
 
+use crate::alloc::vec::TryVec;
 use crate::alloc::AllocError;
 use crate::alloc::TryReserveError;
-use crate::collections::slotmap::key::{Key, KeyData};
+use crate::collections::slotmap::key::{Key, KeyData, MAX_SLOTS_LEN};
 use lang_alloc::vec::Vec;
 use lang_core::fmt::{self, Debug};
 use lang_core::iter::{Enumerate, Extend, FromIterator, FusedIterator};
@@ -15,6 +16,8 @@ use lang_core::marker::PhantomData;
 use lang_core::mem::replace;
 use lang_core::num::NonZeroU32;
 use lang_core::ops::{Index, IndexMut};
+use crate::try_clone::{TryClone, TryCloneError};
+use crate::try_default::{TryDefault, TryDefaultError};
 use crate::try_fmt::helpers::FormatterExt;
 use crate::try_fmt::TryDebug;
 
@@ -82,6 +85,18 @@ impl<T> Slot<T> {
             Occupied { value, .. } => Some(value),
             Vacant => None,
         }
+    }
+}
+
+impl<T: TryClone> TryClone for Slot<T> {
+    fn try_clone(&self) -> Result<Self, TryCloneError> {
+        Ok(match self {
+            Occupied { value, version } => Occupied {
+                value: value.try_clone()?,
+                version: *version,
+            },
+            Vacant => Vacant,
+        })
     }
 }
 
@@ -157,29 +172,25 @@ pub struct SecondaryMap<K: Key, V> {
 
 impl<K: Key, V> SecondaryMap<K, V> {
     /// Constructs a new, empty [`SecondaryMap`].
-    pub fn new() -> Self {
-        Self::with_capacity(0)
-    }
-
-    /// Creates an empty [`SecondaryMap`] with room for at least `capacity` slots.
-    pub fn with_capacity(capacity: usize) -> Self {
-        let mut slots = Vec::with_capacity(capacity + 1); // sentinel
-        slots.push(Slot::new_vacant());
-        Self {
-            slots,
-            num_elems: 0,
-            _k: PhantomData,
-        }
+    ///
+    /// Fallible because even an empty map allocates space for the sentinel slot.
+    pub fn try_new() -> Result<Self, SecondaryMapError> {
+        Self::try_with_capacity(0)
     }
 
     /// Creates a [`SecondaryMap`] with the given capacity.
+    ///
+    /// Returns [`SecondaryMapError::Overflow`] if `capacity` would exceed the
+    /// maximum number of usable slots ([`MAX_SLOTS_LEN`] – 1), accounting for
+    /// the sentinel that always occupies index 0.
     pub fn try_with_capacity(capacity: usize) -> Result<Self, SecondaryMapError> {
-        if capacity == 0 {
-            return Ok(Self::new());
+        if capacity >= MAX_SLOTS_LEN.saturating_sub(1) {
+            return Err(SecondaryMapError::Overflow);
         }
-        let mut slots = Vec::new();
-        slots.push(Slot::new_vacant());
-        slots.try_reserve(capacity).map_err(SecondaryMapError::from)?;
+        let mut slots = Vec::<Slot<V>>::try_with_capacity(capacity + 1)
+            .map_err(SecondaryMapError::from)?;
+        slots.try_push(Slot::new_vacant())
+            .map_err(SecondaryMapError::from)?;
         Ok(Self {
             slots,
             num_elems: 0,
@@ -203,7 +214,13 @@ impl<K: Key, V> SecondaryMap<K, V> {
     }
 
     /// Tries to set the capacity to at least `new_capacity`.
+    ///
+    /// Returns [`SecondaryMapError::Overflow`] if `new_capacity` would exceed
+    /// the maximum number of usable slots ([`MAX_SLOTS_LEN`] – 1).
     pub fn try_set_capacity(&mut self, new_capacity: usize) -> Result<(), SecondaryMapError> {
+        if new_capacity >= MAX_SLOTS_LEN.saturating_sub(1) {
+            return Err(SecondaryMapError::Overflow);
+        }
         let target = new_capacity + 1; // sentinel
         if target > self.slots.capacity() {
             let needed = target.saturating_sub(self.slots.len());
@@ -234,6 +251,11 @@ impl<K: Key, V> SecondaryMap<K, V> {
 
         let kd = key.data();
         let idx = kd.idx() as usize;
+
+        // Guard against indices that would exceed our storage limit.
+        if idx >= MAX_SLOTS_LEN.saturating_sub(1) {
+            return Err(SecondaryMapError::Overflow);
+        }
 
         // Grow slots if needed.
         while self.slots.len() <= idx {
@@ -336,35 +358,42 @@ impl<K: Key, V> SecondaryMap<K, V> {
         unsafe { self.slots.get_unchecked_mut(key.data().idx() as usize).get_unchecked_mut() }
     }
 
-    /// Entry API — returns `None` if the key was removed from the originating map.
-    pub fn entry(&mut self, key: K) -> Option<Entry<'_, K, V>> {
+    /// Fallible entry API — returns `None` if the key was removed from the
+    /// originating map, or `Err` if the underlying allocation fails.
+    pub fn try_entry(&mut self, key: K) -> Result<Option<Entry<'_, K, V>>, SecondaryMapError> {
         if key.is_null() {
-            return None;
+            return Ok(None);
         }
 
         let kd = key.data();
         let idx = kd.idx() as usize;
 
-        // Ensure slot exists.
+        // Guard against indices that would exceed our storage limit.
+        if idx >= MAX_SLOTS_LEN.saturating_sub(1) {
+            return Err(SecondaryMapError::Overflow);
+        }
+
+        // Ensure slot exists, growing fallibly.
         while self.slots.len() <= idx {
+            self.slots.try_reserve(1).map_err(SecondaryMapError::from)?;
             self.slots.push(Slot::new_vacant());
         }
 
-        let slot = unsafe { self.slots.get_unchecked(idx) };
+        let slot = &self.slots[idx];
         if kd.version_raw() == slot.version() {
-            Some(Entry::Occupied(OccupiedEntry {
+            Ok(Some(Entry::Occupied(OccupiedEntry {
                 map: self,
                 kd,
                 _k: PhantomData,
-            }))
+            })))
         } else if is_older_version(kd.version_raw(), slot.version()) {
-            None
+            Ok(None)
         } else {
-            Some(Entry::Vacant(VacantEntry {
+            Ok(Some(Entry::Vacant(VacantEntry {
                 map: self,
                 kd,
                 _k: PhantomData,
-            }))
+            })))
         }
     }
 
@@ -407,8 +436,52 @@ impl<K: Key, V> SecondaryMap<K, V> {
 }
 
 impl<K: Key, V> Default for SecondaryMap<K, V> {
+    /// Constructs an empty [`SecondaryMap`].
+    ///
+    /// # Panics
+    ///
+    /// Panics if the sentinel slot allocation fails. This is only reachable on
+    /// catastrophic OOM and is consistent with Rust's `Default` contract, which
+    /// cannot return errors. Prefer [`Self::try_new`] or [`Self::try_with_capacity`]
+    /// for fallible construction.
     fn default() -> Self {
-        Self::new()
+        Self::try_with_capacity(0)
+            .expect("SecondaryMap::default panicked: failed to allocate sentinel slot")
+    }
+}
+
+impl<K: Key, V> TryClone for SecondaryMap<K, V>
+where
+    V: TryClone,
+{
+    fn try_clone(&self) -> Result<Self, TryCloneError> {
+        let slots = self.slots.try_clone()?;
+        Ok(Self {
+            slots,
+            num_elems: self.num_elems,
+            _k: PhantomData,
+        })
+    }
+}
+
+impl<K: Key, V> TryDefault for SecondaryMap<K, V> {
+    fn try_default() -> Result<Self, TryDefaultError> {
+        Self::try_with_capacity(0).map_err(|e| match e {
+            SecondaryMapError::Alloc(a) => TryDefaultError::Alloc(a),
+            SecondaryMapError::Reserve(r) => TryDefaultError::Reserve(r),
+            SecondaryMapError::Overflow => TryDefaultError::Overflow,
+        })
+    }
+}
+
+impl<K: Key + TryDebug, V: TryDebug> TryDebug for SecondaryMap<K, V> {
+    fn try_fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        use crate::try_fmt::helpers::FormatterExt;
+        let mut map = f.try_debug_map();
+        for (k, v) in self.iter() {
+            map.entry(&k, v);
+        }
+        map.finish()
     }
 }
 
@@ -449,7 +522,10 @@ impl<K: Key, V: Eq> Eq for SecondaryMap<K, V> {}
 
 impl<K: Key, V> FromIterator<(K, V)> for SecondaryMap<K, V> {
     fn from_iter<I: IntoIterator<Item = (K, V)>>(iter: I) -> Self {
-        let mut sec = Self::new();
+        // SAFETY: constructing an empty map only allocates a sentinel slot.
+        // Panics here are consistent with Rust's infallible trait contract.
+        let mut sec = Self::try_new()
+            .expect("SecondaryMap::from_iter panicked: failed to allocate sentinel slot");
         sec.extend(iter);
         sec
     }
@@ -837,9 +913,9 @@ mod tests {
 
     #[test]
     fn basic_insert_get_remove() {
-        let mut sm: SlotMap<DefaultKey, i32> = SlotMap::new();
+        let mut sm: SlotMap<DefaultKey, i32> = SlotMap::try_new().unwrap();
         let k = sm.try_insert(42).unwrap();
-        let mut sec: SecondaryMap<DefaultKey, i32> = SecondaryMap::new();
+        let mut sec: SecondaryMap<DefaultKey, i32> = SecondaryMap::try_new().unwrap();
         sec.try_insert(k, 100).unwrap();
         assert_eq!(*sec.get(k).unwrap(), 100);
         assert_eq!(sec.remove(k), Some(100));
@@ -848,20 +924,20 @@ mod tests {
 
     #[test]
     fn entry_api() {
-        let mut sm: SlotMap<DefaultKey, ()> = SlotMap::with_key();
+        let mut sm: SlotMap<DefaultKey, ()> = SlotMap::try_with_key().unwrap();
         let k = sm.try_insert(()).unwrap();
-        let mut sec: SecondaryMap<DefaultKey, i32> = SecondaryMap::new();
-        let v = sec.entry(k).unwrap().or_insert(42);
+        let mut sec: SecondaryMap<DefaultKey, i32> = SecondaryMap::try_new().unwrap();
+        let v = sec.try_entry(k).unwrap().unwrap().or_insert(42);
         assert_eq!(*v, 42);
-        *sec.entry(k).unwrap().or_insert(0) *= 2;
+        *sec.try_entry(k).unwrap().unwrap().or_insert(0) *= 2;
         assert_eq!(sec[k], 84);
     }
 
     #[test]
     fn outdated_key_not_overwritten() {
-        let mut sm: SlotMap<DefaultKey, i32> = SlotMap::new();
+        let mut sm: SlotMap<DefaultKey, i32> = SlotMap::try_new().unwrap();
         let k1 = sm.try_insert(1).unwrap();
-        let mut sec: SecondaryMap<DefaultKey, i32> = SecondaryMap::new();
+        let mut sec: SecondaryMap<DefaultKey, i32> = SecondaryMap::try_new().unwrap();
         sec.try_insert(k1, 100).unwrap();
         // Remove and reinsert — same slot index, new version.
         sm.remove(k1);
@@ -877,10 +953,10 @@ mod tests {
 
     #[test]
     fn iteration_works() {
-        let mut sm: SlotMap<DefaultKey, ()> = SlotMap::with_key();
+        let mut sm: SlotMap<DefaultKey, ()> = SlotMap::try_with_key().unwrap();
         let k1 = sm.try_insert(()).unwrap();
         let k2 = sm.try_insert(()).unwrap();
-        let mut sec: SecondaryMap<DefaultKey, i32> = SecondaryMap::new();
+        let mut sec: SecondaryMap<DefaultKey, i32> = SecondaryMap::try_new().unwrap();
         sec.try_insert(k1, 10).unwrap();
         sec.try_insert(k2, 20).unwrap();
         let vals: Vec<_> = sec.values().copied().collect();
@@ -891,7 +967,7 @@ mod tests {
 
     #[test]
     fn from_iterator() {
-        let mut sm: SlotMap<DefaultKey, ()> = SlotMap::with_key();
+        let mut sm: SlotMap<DefaultKey, ()> = SlotMap::try_with_key().unwrap();
         let k1 = sm.try_insert(()).unwrap();
         let k2 = sm.try_insert(()).unwrap();
         let sec: SecondaryMap<DefaultKey, i32> = [(k1, 10), (k2, 20)].into_iter().collect();

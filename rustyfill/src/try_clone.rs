@@ -243,8 +243,8 @@ impl<T: TryClone, E: TryClone> TryClone for Result<T, E> {
     #[cfg(test)]
 mod tests {
     use super::*;
-    use lang_std::f32::consts::E as F32_E;
-    use lang_std::f64::consts::PI as F64_PI;
+    use lang_core::f32::consts::E as F32_E;
+    use lang_core::f64::consts::PI as F64_PI;
 
     // ── Unsigned integers ──────────────────────────────────────────────────────
 

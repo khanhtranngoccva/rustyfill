@@ -777,17 +777,6 @@ impl<K: Eq + Hash, V, S: BuildHasher> ConcurrentHashMap<K, V, S> {
     }
 }
 
-impl<K, V, S> Drop for ConcurrentHashMap<K, V, S> {
-    fn drop(&mut self) {
-        let count = self.shards.len();
-        for i in 0..count {
-            let shard = self.shards.get_shard(i);
-            let mut table = shard.write_table();
-            table.clear();
-        }
-    }
-}
-
 // ── Debug for ConcurrentHashMap ────────────────────────────────────────────────
 
 impl<K, V, S> fmt::Debug for ConcurrentHashMap<K, V, S>

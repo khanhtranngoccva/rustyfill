@@ -2,9 +2,10 @@
 //!
 //! Every operation that may allocate returns a [`Result`] instead of panicking.
 
+use crate::alloc::vec::TryVec;
 use crate::alloc::AllocError;
 use crate::alloc::TryReserveError;
-use crate::collections::slotmap::key::{DefaultKey, Key, KeyData};
+use crate::collections::slotmap::key::{DANGLING_SENTINEL, DefaultKey, Key, KeyData, MAX_SLOTS_LEN};
 use lang_alloc::vec::Vec;
 use lang_core::fmt::{self, Debug};
 use lang_core::hash::Hash;
@@ -12,6 +13,8 @@ use lang_core::iter::{Enumerate, FusedIterator};
 use lang_core::marker::PhantomData;
 use lang_core::mem::{ManuallyDrop, MaybeUninit};
 use lang_core::ops::{Index, IndexMut};
+use crate::try_clone::{TryClone, TryCloneError};
+use crate::try_default::{TryDefault, TryDefaultError};
 use crate::try_fmt::helpers::FormatterExt;
 use crate::try_fmt::TryDebug;
 
@@ -109,6 +112,20 @@ impl<T: Clone> Clone for Slot<T> {
     }
 }
 
+impl<T: TryClone> TryClone for Slot<T> {
+    fn try_clone(&self) -> Result<Self, TryCloneError> {
+        Ok(Self {
+            u: match self.get() {
+                Occupied(value) => SlotUnion {
+                    value: ManuallyDrop::new(value.try_clone()?),
+                },
+                Vacant(&next_free) => SlotUnion { next_free },
+            },
+            version: self.version,
+        })
+    }
+}
+
 impl<T: Debug> Debug for Slot<T> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let mut builder = f.debug_struct("Slot");
@@ -203,15 +220,10 @@ pub struct SlotMap<K: Key, V> {
 
 impl<V> SlotMap<DefaultKey, V> {
     /// Constructs a new, empty [`SlotMap`].
-    pub fn new() -> Self {
-        Self::with_capacity_and_key(0)
-    }
-
-    /// Creates an empty [`SlotMap`] with room for at least `capacity` elements.
     ///
-    /// Does not allocate if `capacity == 0`. May panic on overflow.
-    pub fn with_capacity(capacity: usize) -> Self {
-        Self::with_capacity_and_key(capacity)
+    /// Fallible because even an empty map allocates space for the sentinel slot.
+    pub fn try_new() -> Result<Self, SlotMapError> {
+        Self::try_with_capacity_and_key(0)
     }
 
     /// Creates a [`SlotMap`] with the given capacity.
@@ -222,40 +234,27 @@ impl<V> SlotMap<DefaultKey, V> {
 
 impl<K: Key, V> SlotMap<K, V> {
     /// Constructs a new, empty [`SlotMap`] with a custom key type.
-    pub fn with_key() -> Self {
-        Self::with_capacity_and_key(0)
-    }
-
-    /// Creates an empty [`SlotMap`] with the given capacity and key type.
-    pub fn with_capacity_and_key(capacity: usize) -> Self {
-        let mut slots = Vec::with_capacity(capacity + 1);
-        slots.push(Slot {
-            u: SlotUnion { next_free: 0 },
-            version: 0,
-        });
-        Self {
-            slots,
-            free_head: 1,
-            num_elems: 0,
-            _k: PhantomData,
-        }
+    ///
+    /// Fallible because even an empty map allocates space for the sentinel slot.
+    pub fn try_with_key() -> Result<Self, SlotMapError> {
+        Self::try_with_capacity_and_key(0)
     }
 
     /// Creates a [`SlotMap`] with the given capacity and key type.
+    ///
+    /// Returns [`SlotMapError::Full`] if `capacity` would exceed the maximum
+    /// number of usable slots ([`MAX_SLOTS_LEN`] – 1), accounting for the
+    /// sentinel that always occupies index 0.
     pub fn try_with_capacity_and_key(capacity: usize) -> Result<Self, SlotMapError> {
-        if capacity == 0 {
-            return Ok(Self::with_key());
+        if capacity >= MAX_SLOTS_LEN.saturating_sub(1) {
+            return Err(SlotMapError::Full);
         }
-        // We need capacity+1 for the sentinel. Use try_reserve on an empty vec
-        // with a pushed sentinel.
-        let mut slots = Vec::new();
-        slots.push(Slot {
+        let mut slots = Vec::<Slot<V>>::try_with_capacity(capacity + 1)
+            .map_err(SlotMapError::from)?;
+        slots.try_push(Slot {
             u: SlotUnion { next_free: 0 },
             version: 0,
-        });
-        // Reserve remaining slots.
-        let needed = capacity;
-        slots.try_reserve(needed).map_err(SlotMapError::from)?;
+        }).map_err(SlotMapError::from)?;
         Ok(Self {
             slots,
             free_head: 1,
@@ -282,8 +281,19 @@ impl<K: Key, V> SlotMap<K, V> {
     }
 
     /// Reserves capacity for at least `additional` more elements.
+    ///
+    /// Returns [`SlotMapError::Full`] if the resulting size would exceed the
+    /// maximum number of slots ([`MAX_SLOTS_LEN`] – 1 usable entries), ensuring
+    /// callers can rely on subsequent [`Self::try_insert`] calls succeeding
+    /// (barring allocation failure).
     pub fn try_reserve(&mut self, additional: usize) -> Result<(), SlotMapError> {
-        let needed = (self.len() + additional).saturating_sub(self.slots.len() - 1);
+        let total = self.len().checked_add(additional)
+            .ok_or(SlotMapError::Full)?;
+        if total >= MAX_SLOTS_LEN.saturating_sub(1) {
+            return Err(SlotMapError::Full);
+        }
+        // One slot is reserved for the sentinel.
+        let needed = total.saturating_sub(self.slots.len() - 1);
         self.slots.try_reserve(needed).map_err(SlotMapError::from)?;
         Ok(())
     }
@@ -330,7 +340,7 @@ impl<K: Key, V> SlotMap<K, V> {
         }
 
         // No free slot — grow the vector.
-        if self.slots.len() >= u32::MAX as usize {
+        if self.slots.len() >= MAX_SLOTS_LEN {
             return Err(SlotMapError::Full);
         }
 
@@ -338,9 +348,8 @@ impl<K: Key, V> SlotMap<K, V> {
         let version = 1u32;
         let kd = KeyData::new(idx, version);
 
-        // Allocate first, then push — order matters for panic safety.
+        // Allocate first, then push.
         self.slots.try_reserve(1).map_err(SlotMapError::from)?;
-
         let value = f(kd.into()).map_err(Into::into)?;
         self.slots.push(Slot {
             u: SlotUnion {
@@ -372,7 +381,7 @@ impl<K: Key, V> SlotMap<K, V> {
             unsafe {
                 let slot = self.slots.get_unchecked_mut(kd.idx() as usize);
                 let value = ManuallyDrop::take(&mut slot.u.value);
-                slot.u.next_free = u32::MAX;
+                slot.u.next_free = DANGLING_SENTINEL;
                 slot.version = slot.version.wrapping_add(1);
                 self.num_elems -= 1;
                 Some(value)
@@ -394,7 +403,7 @@ impl<K: Key, V> SlotMap<K, V> {
             .slots
             .get_mut(kd.idx() as usize)
             .filter(|s| s.version == kd.version_raw().wrapping_add(1))
-            .filter(|s| unsafe { s.u.next_free == u32::MAX })
+            .filter(|s| unsafe { s.u.next_free == DANGLING_SENTINEL })
             .expect("key is not detached");
 
         slot.u.value = ManuallyDrop::new(value);
@@ -579,9 +588,55 @@ where
     }
 }
 
+impl<K: Key, V> TryClone for SlotMap<K, V>
+where
+    V: TryClone,
+{
+    fn try_clone(&self) -> Result<Self, TryCloneError> {
+        let slots = self.slots.try_clone()?;
+        Ok(Self {
+            slots,
+            free_head: self.free_head,
+            num_elems: self.num_elems,
+            _k: PhantomData,
+        })
+    }
+}
+
+impl<K: Key, V> TryDefault for SlotMap<K, V> {
+    fn try_default() -> Result<Self, TryDefaultError> {
+        Self::try_with_capacity_and_key(0).map_err(|e| match e {
+            SlotMapError::Alloc(a) => TryDefaultError::Alloc(a),
+            SlotMapError::Reserve(r) => TryDefaultError::Reserve(r),
+            SlotMapError::Full => TryDefaultError::Overflow,
+            SlotMapError::Other(m) => TryDefaultError::Other(m),
+        })
+    }
+}
+
+impl<K: Key + TryDebug, V: TryDebug> TryDebug for SlotMap<K, V> {
+    fn try_fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        use crate::try_fmt::helpers::FormatterExt;
+        let mut map = f.try_debug_map();
+        for (k, v) in self.iter() {
+            map.entry(&k, v);
+        }
+        map.finish()
+    }
+}
+
 impl<K: Key, V> Default for SlotMap<K, V> {
+    /// Constructs an empty [`SlotMap`].
+    ///
+    /// # Panics
+    ///
+    /// Panics if the sentinel slot allocation fails. This is only reachable on
+    /// catastrophic OOM and is consistent with Rust's `Default` contract, which
+    /// cannot return errors. Prefer [`Self::try_with_key`] or [`Self::try_new`]
+    /// for fallible construction.
     fn default() -> Self {
-        Self::with_key()
+        Self::try_with_capacity_and_key(0)
+            .expect("SlotMap::default panicked: failed to allocate sentinel slot")
     }
 }
 
@@ -884,7 +939,7 @@ mod tests {
 
     #[test]
     fn basic_insert_get_remove() {
-        let mut sm: SlotMap<DefaultKey, i32> = SlotMap::new();
+        let mut sm: SlotMap<DefaultKey, i32> = SlotMap::try_new().unwrap();
         assert!(sm.is_empty());
 
         let k1 = sm.try_insert(42).unwrap();
@@ -902,7 +957,7 @@ mod tests {
 
     #[test]
     fn insert_reuses_freed_slots() {
-        let mut sm: SlotMap<DefaultKey, i32> = SlotMap::new();
+        let mut sm: SlotMap<DefaultKey, i32> = SlotMap::try_new().unwrap();
         let k1 = sm.try_insert(1).unwrap();
         sm.remove(k1);
         let k2 = sm.try_insert(2).unwrap();
@@ -915,7 +970,7 @@ mod tests {
 
     #[test]
     fn insert_with_key_self_referential() {
-        let mut sm: SlotMap<DefaultKey, (DefaultKey, i32)> = SlotMap::new();
+        let mut sm: SlotMap<DefaultKey, (DefaultKey, i32)> = SlotMap::try_new().unwrap();
         let k = sm.try_insert_with_key::<_, SlotMapError>(|key| Ok((key, 42))).unwrap();
         let (stored_key, val) = *sm.get(k).unwrap();
         assert_eq!(stored_key, k);
@@ -924,7 +979,7 @@ mod tests {
 
     #[test]
     fn detach_and_reattach() {
-        let mut sm: SlotMap<DefaultKey, i32> = SlotMap::new();
+        let mut sm: SlotMap<DefaultKey, i32> = SlotMap::try_new().unwrap();
         let k = sm.try_insert(42).unwrap();
         assert_eq!(sm.detach(k), Some(42));
         assert_eq!(sm.get(k), None);
@@ -941,7 +996,7 @@ mod tests {
 
     #[test]
     fn drain_returns_all_elements() {
-        let mut sm: SlotMap<DefaultKey, i32> = SlotMap::new();
+        let mut sm: SlotMap<DefaultKey, i32> = SlotMap::try_new().unwrap();
         sm.try_insert(1).unwrap();
         sm.try_insert(2).unwrap();
         sm.try_insert(3).unwrap();
@@ -955,7 +1010,7 @@ mod tests {
 
     #[test]
     fn into_iter_moves_values_out() {
-        let mut sm: SlotMap<DefaultKey, String> = SlotMap::new();
+        let mut sm: SlotMap<DefaultKey, String> = SlotMap::try_new().unwrap();
         sm.try_insert(String::from("a")).unwrap();
         sm.try_insert(String::from("b")).unwrap();
         let strings: Vec<_> = sm.into_iter().map(|(_, v)| v).collect();
@@ -965,7 +1020,7 @@ mod tests {
 
     #[test]
     fn retain_predicate() {
-        let mut sm: SlotMap<DefaultKey, i32> = SlotMap::new();
+        let mut sm: SlotMap<DefaultKey, i32> = SlotMap::try_new().unwrap();
         let k0 = sm.try_insert(0).unwrap();
         let k1 = sm.try_insert(1).unwrap();
         let k2 = sm.try_insert(2).unwrap();
@@ -978,7 +1033,7 @@ mod tests {
 
     #[test]
     fn null_key_is_always_invalid() {
-        let mut sm: SlotMap<DefaultKey, i32> = SlotMap::new();
+        let mut sm: SlotMap<DefaultKey, i32> = SlotMap::try_new().unwrap();
         let nk = DefaultKey::null();
         assert!(nk.is_null());
         assert_eq!(sm.get(nk), None);
@@ -989,7 +1044,7 @@ mod tests {
 
     #[test]
     fn capacity_grows_on_insert() {
-        let mut sm: SlotMap<DefaultKey, i32> = SlotMap::new();
+        let mut sm: SlotMap<DefaultKey, i32> = SlotMap::try_new().unwrap();
         let initial_cap = sm.capacity();
         for _ in 0..100 {
             sm.try_insert(0).unwrap();
@@ -999,7 +1054,7 @@ mod tests {
 
     #[test]
     fn try_reserve_works() {
-        let mut sm: SlotMap<DefaultKey, i32> = SlotMap::new();
+        let mut sm: SlotMap<DefaultKey, i32> = SlotMap::try_new().unwrap();
         sm.try_insert(0).unwrap();
         sm.try_reserve(64).unwrap();
         assert!(sm.capacity() >= 65);
@@ -1010,14 +1065,14 @@ mod tests {
         crate::new_key_type! {
             struct MyKey;
         }
-        let mut sm: SlotMap<MyKey, u64> = SlotMap::with_key();
+        let mut sm: SlotMap<MyKey, u64> = SlotMap::try_with_key().unwrap();
         let k = sm.try_insert(42).unwrap();
         assert_eq!(*sm.get(k).unwrap(), 42);
     }
 
     #[test]
     fn get_disjoint_mut_two_keys() {
-        let mut sm: SlotMap<DefaultKey, i32> = SlotMap::new();
+        let mut sm: SlotMap<DefaultKey, i32> = SlotMap::try_new().unwrap();
         let ka = sm.try_insert(10).unwrap();
         let kb = sm.try_insert(20).unwrap();
         let result = sm.get_disjoint_mut([ka, kb]);
@@ -1030,14 +1085,14 @@ mod tests {
 
     #[test]
     fn get_disjoint_mut_duplicate_returns_none() {
-        let mut sm: SlotMap<DefaultKey, i32> = SlotMap::new();
+        let mut sm: SlotMap<DefaultKey, i32> = SlotMap::try_new().unwrap();
         let ka = sm.try_insert(10).unwrap();
         assert!(sm.get_disjoint_mut([ka, ka]).is_none());
     }
 
     #[test]
     fn get_disjoint_mut_invalid_key_returns_none() {
-        let mut sm: SlotMap<DefaultKey, i32> = SlotMap::new();
+        let mut sm: SlotMap<DefaultKey, i32> = SlotMap::try_new().unwrap();
         let ka = sm.try_insert(10).unwrap();
         let kb = sm.try_insert(20).unwrap();
         sm.remove(kb);
@@ -1046,7 +1101,7 @@ mod tests {
 
     #[test]
     fn clone_preserves_state() {
-        let mut sm: SlotMap<DefaultKey, i32> = SlotMap::new();
+        let mut sm: SlotMap<DefaultKey, i32> = SlotMap::try_new().unwrap();
         let k1 = sm.try_insert(1).unwrap();
         let k2 = sm.try_insert(2).unwrap();
         sm.remove(k1);
@@ -1058,7 +1113,7 @@ mod tests {
 
     #[test]
     fn index_trait_panic_on_invalid() {
-        let mut sm: SlotMap<DefaultKey, i32> = SlotMap::new();
+        let mut sm: SlotMap<DefaultKey, i32> = SlotMap::try_new().unwrap();
         let k = sm.try_insert(42).unwrap();
         assert_eq!(sm[k], 42);
         sm.remove(k);
@@ -1074,7 +1129,7 @@ mod tests {
 
     #[test]
     fn values_mut_iteration() {
-        let mut sm: SlotMap<DefaultKey, i32> = SlotMap::new();
+        let mut sm: SlotMap<DefaultKey, i32> = SlotMap::try_new().unwrap();
         sm.try_insert(1).unwrap();
         sm.try_insert(2).unwrap();
         sm.try_insert(3).unwrap();
@@ -1087,7 +1142,7 @@ mod tests {
 
     #[test]
     fn keys_iterator() {
-        let mut sm: SlotMap<DefaultKey, i32> = SlotMap::new();
+        let mut sm: SlotMap<DefaultKey, i32> = SlotMap::try_new().unwrap();
         let expected: Vec<_> = (0..3).map(|i| sm.try_insert(i).unwrap()).collect();
         let actual: Vec<_> = sm.keys().collect();
         assert_eq!(actual.len(), 3);

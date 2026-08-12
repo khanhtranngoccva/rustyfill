@@ -8,12 +8,20 @@
 //!
 //! // Now these all work without qualifying the trait name:
 //! let s = <str as TryStr>::try_to_string("hello").unwrap();
-//! let v = <[i32] as TrySlice<i32>>::try_to_vec(&[1, 2, 3]).unwrap();
 //! let boxed = Box::<i32>::fallible_new(42).unwrap();
 //!
 //! assert_eq!(s, "hello");
-//! assert_eq!(v.as_slice(), &[1, 2, 3]);
 //! assert_eq!(*boxed, 42);
+//! ```
+//!
+//! With the `std` feature enabled, additional traits like `TrySlice`, `TryVec`,
+//! `TryHashMap`, and `TryHashSet` are also available:
+//!
+//! ```rust,ignore
+//! use rustyfill::prelude::*;
+//!
+//! let v = <[i32] as TrySlice<i32>>::try_to_vec(&[1, 2, 3]).unwrap();
+//! assert_eq!(v.as_slice(), &[1, 2, 3]);
 //! ```
 
 // ── Foundational traits (always available, no_std-compatible) ─────────────────

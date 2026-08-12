@@ -23,6 +23,13 @@
 
 use crate::alloc::TryReserveError;
 use crate::collections::chashmap::ConcurrentHashMap;
+use crate::std::arc::{TryArc, TryWeak};
+use crate::try_clone::TryClone;
+use crate::try_clone::TryCloneError;
+use crate::try_default::{TryDefault, TryDefaultError};
+use crate::try_fmt::FormatterExt;
+use crate::try_fmt::TryDebug;
+use crate::try_to_owned::{TryToOwned, TryToOwnedError};
 use lang_alloc::borrow::ToOwned;
 use lang_alloc::string::String;
 use lang_core::fmt;
@@ -34,13 +41,6 @@ use lang_std::ops::Deref;
 use lang_std::path::{Path, PathBuf};
 use lang_std::sync::atomic::{AtomicUsize, Ordering};
 use lang_std::sync::{Arc, Weak};
-use crate::std::arc::{TryArc, TryWeak};
-use crate::try_clone::TryClone;
-use crate::try_clone::TryCloneError;
-use crate::try_default::{TryDefault, TryDefaultError};
-use crate::try_fmt::FormatterExt;
-use crate::try_fmt::TryDebug;
-use crate::try_to_owned::{TryToOwned, TryToOwnedError};
 
 /// Number of intern calls between pruning sweeps of unlocked shards.
 const PRUNE_INTERVAL: usize = 1024;
@@ -351,9 +351,17 @@ where
         let i = unsafe { guard.iter() };
         for bucket in i {
             let InternKey { hash: _, weak } = unsafe { &bucket.as_ref().0 };
-            if weak.strong_count() == 0 {
-                unsafe {
-                    let _removed = guard.remove(bucket);
+            // Use try_upgrade for an atomic check-and-increment: if this succeeds,
+            // a strong reference still exists (or just came back), so we keep the
+            // entry and drop the temporary Arc. If it returns None, the Arc has
+            // been fully dropped and the entry is stale. Some(Err) means refcount
+            // overflow — also treat as stale since we can't verify liveness.
+            match weak.try_upgrade() {
+                Some(Ok(_arc)) => { /* still alive */ }
+                None | Some(Err(_)) => {
+                    unsafe {
+                        let _removed = guard.remove(bucket);
+                    }
                 }
             }
         }

@@ -46,8 +46,8 @@ pub use secondary::{
 ///     (pub struct EntityKey;)
 /// }
 ///
-/// let mut players: SlotMap<PlayerKey, String> = SlotMap::with_key();
-/// let mut entities: SlotMap<EntityKey, u32> = SlotMap::with_key();
+/// let mut players: SlotMap<PlayerKey, String> = SlotMap::try_with_key().unwrap();
+/// let mut entities: SlotMap<EntityKey, u32> = SlotMap::try_with_key().unwrap();
 ///
 /// // Compiles fine — correct key type.
 /// let p = players.try_insert("Alice".to_string()).unwrap();

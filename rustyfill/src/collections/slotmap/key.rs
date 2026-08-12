@@ -9,6 +9,17 @@ use lang_core::hash::{Hash, Hasher};
 use lang_core::num::NonZeroU32;
 use crate::try_fmt::TryDebug;
 
+/// Sentinel value for `next_free` in a vacant slot that marks the slot as
+/// **detached** rather than free-listed. Defined here because both [`basic`]
+/// and [`secondary`] modules need to reference it.
+pub(crate) const DANGLING_SENTINEL: u32 = u32::MAX;
+
+/// Maximum length of the internal slots vector (sentinel at index 0 included).
+/// Because `free_head` is set to `idx + 1` after pushing at index `idx`, and
+/// `DANGLING_SENTINEL` must never appear as a valid freelist pointer, storage
+/// is capped so that `idx + 1 < DANGLING_SENTINEL`.
+pub(crate) const MAX_SLOTS_LEN: usize = DANGLING_SENTINEL as usize - 1;
+
 /// The raw data stored inside any slot-map key.
 ///
 /// A key consists of a slot index (`idx`) and a monotonically increasing

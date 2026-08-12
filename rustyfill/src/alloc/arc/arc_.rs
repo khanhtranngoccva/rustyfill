@@ -933,6 +933,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "std")]
     fn weak_try_upgrade_multiple_roundtrip() {
         use crate::std::arc::TryWeak;
         let arc = <Arc<String> as TryArc<String>>::try_new("hello".into()).unwrap();

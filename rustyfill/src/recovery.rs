@@ -74,7 +74,7 @@ impl<I: IntoIterator> ResumableSource for I {
 ///
 /// # Example
 ///
-/// ```
+/// ```rust,ignore
 /// use rustyfill::prelude::*;
 ///
 /// let mut vec = Vec::<i32>::new();
@@ -95,6 +95,8 @@ impl<I: IntoIterator> ResumableSource for I {
 ///     Err((_err, resumable)) => resumable.into_remainder(),
 /// };
 /// ```
+///
+/// Requires the `std` feature (enabled by default).
 pub struct Resumable<I>
 where
     I: Iterator,
@@ -203,7 +205,7 @@ mod tests {
     use lang_alloc::vec;
     use lang_alloc::vec::Vec;
     use lang_core::ops;
-    use lang_std::format;
+    use lang_alloc::format;
 
     #[test]
     fn retryable_with_head() {

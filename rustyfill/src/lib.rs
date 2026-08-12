@@ -40,7 +40,6 @@ pub mod collections;
 pub mod core;
 #[cfg(feature = "unstable")]
 pub mod dashmap;
-#[cfg(feature = "std")]
 pub mod errors;
 pub mod hashers;
 pub mod prelude;
