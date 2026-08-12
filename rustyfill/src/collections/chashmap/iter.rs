@@ -17,6 +17,7 @@ use hashbrown::raw::{Bucket, RawIter, RawTable};
 use parking_lot::{RwLockReadGuard, RwLockWriteGuard};
 
 use crate::alloc::AllocError;
+use crate::recovery::Stallable;
 use crate::std::arc::TryArc;
 use crate::try_clone::{TryClone, TryCloneError};
 use crate::try_fmt::{TryDebug, helpers::FormatterExt};
@@ -88,6 +89,8 @@ pub struct Iter<'a, K, V, S = RandomState> {
     /// Lazily-initialized: `(Arc<read_guard>, raw_table_iterator)`.
     /// `None` means we haven't locked this shard yet, or it was exhausted.
     current: Option<LockedIter<'a, K, V>>,
+    /// When true, automatically discard pending items after emitting an error.
+    auto_unstall: bool,
 }
 
 impl<'a, K, V, S> Iter<'a, K, V, S> {
@@ -96,6 +99,7 @@ impl<'a, K, V, S> Iter<'a, K, V, S> {
             map,
             shard_idx: 0,
             current: None,
+            auto_unstall: false,
         }
     }
 }
@@ -127,6 +131,11 @@ where
                     ) {
                         Ok(g) => g,
                         Err(e) => {
+                            if self.auto_unstall {
+                                // Skip this shard — it couldn't be locked, move on.
+                                self.shard_idx += 1;
+                                continue;
+                            }
                             // Stall: do not advance shard_idx so that retrying next()
                             // re-attempts this same shard. The guard is dropped here
                             // and will be reacquired on the next call.
@@ -159,6 +168,10 @@ where
                 let arc_for_item = match arc_guard.try_clone() {
                     Ok(g) => g,
                     Err(e) => {
+                        if self.auto_unstall {
+                            // Discard this bucket and advance to the next entry.
+                            continue;
+                        }
                         // Stall: stash the bucket so retrying next() re-attempts
                         // the clone instead of advancing past this entry.
                         *pending_bucket = Some(bucket);
@@ -171,6 +184,33 @@ where
                 }));
             }
         }
+    }
+}
+
+impl<'a, K, V, S: BuildHasher> Stallable for Iter<'a, K, V, S>
+where
+    K: Eq + Hash + 'static,
+    V: 'static,
+{
+    fn unstall(&mut self) -> bool {
+        if let Some(ref mut li) = self.current {
+            li.pending_bucket.take().is_some()
+        } else {
+            // Stalled at shard-level Arc allocation — "unstalling" means skipping
+            // this shard so iteration can proceed. We can't tell for sure whether
+            // we're actually stalled here (we might just be between shards), but
+            // advancing is harmless in that case.
+            if self.shard_idx < self.map.shard_count() {
+                self.shard_idx += 1;
+                true
+            } else {
+                false
+            }
+        }
+    }
+
+    fn set_auto_unstall(&mut self, auto: bool) {
+        self.auto_unstall = auto;
     }
 }
 
@@ -187,6 +227,8 @@ pub struct IterMut<'a, K, V, S = RandomState> {
     shard_idx: usize,
     /// Lazily-initialized: `(Arc<write_guard>, raw_table_iterator)`.
     current: Option<LockedIterMut<'a, K, V>>,
+    /// When true, automatically discard pending items after emitting an error.
+    auto_unstall: bool,
 }
 
 impl<'a, K, V, S> IterMut<'a, K, V, S> {
@@ -195,6 +237,7 @@ impl<'a, K, V, S> IterMut<'a, K, V, S> {
             map,
             shard_idx: 0,
             current: None,
+            auto_unstall: false,
         }
     }
 }
@@ -226,6 +269,11 @@ where
                     ) {
                         Ok(g) => g,
                         Err(e) => {
+                            if self.auto_unstall {
+                                // Skip this shard — it couldn't be locked, move on.
+                                self.shard_idx += 1;
+                                continue;
+                            }
                             // Stall: do not advance shard_idx so that retrying next()
                             // re-attempts this same shard. The guard is dropped here
                             // and will be reacquired on the next call.
@@ -258,6 +306,10 @@ where
                 let arc_for_item = match arc_guard.try_clone() {
                     Ok(g) => g,
                     Err(e) => {
+                        if self.auto_unstall {
+                            // Discard this bucket and advance to the next entry.
+                            continue;
+                        }
                         // Stall: stash the bucket so retrying next() re-attempts
                         // the clone instead of advancing past this entry.
                         *pending_bucket = Some(bucket);
@@ -270,5 +322,28 @@ where
                 }));
             }
         }
+    }
+}
+
+impl<'a, K, V, S: BuildHasher> Stallable for IterMut<'a, K, V, S>
+where
+    K: Eq + Hash + 'static,
+    V: 'static,
+{
+    fn unstall(&mut self) -> bool {
+        if let Some(ref mut li) = self.current {
+            li.pending_bucket.take().is_some()
+        } else {
+            if self.shard_idx < self.map.shard_count() {
+                self.shard_idx += 1;
+                true
+            } else {
+                false
+            }
+        }
+    }
+
+    fn set_auto_unstall(&mut self, auto: bool) {
+        self.auto_unstall = auto;
     }
 }

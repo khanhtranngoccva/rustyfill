@@ -13,7 +13,7 @@ use core::panic::Location;
 use crate::frame::{ContextFrame, DynamicFrame, ItemImpl, StaticFrame};
 use crate::frame::{OpaqueAttachment, PrintableAttachment};
 use rustyfill::alloc::TryReserveError;
-use rustyfill::prelude::{TryBox, TryVec, TryVecDeque};
+use rustyfill::prelude::{Stallable, TryBox, TryVec, TryVecDeque};
 use rustyfill::try_fmt::{TryDebug, TryDisplay, helpers::FormatterExt};
 
 // ── Report ───────────────────────────────────────────────────────────────────
@@ -922,6 +922,8 @@ where
             root_lost_emitted: false,
             root_lost_peers: self.lost_peers,
             pending_frame: None,
+            stalled: false,
+            auto_unstall: false,
         }
     }
 
@@ -942,6 +944,8 @@ where
             root_lost_emitted: false,
             root_lost_peers: self.lost_peers,
             pending_frame: None,
+            stalled: false,
+            auto_unstall: false,
         }
     }
 
@@ -989,6 +993,12 @@ pub struct Frames<'a, C> {
     /// A frame whose children iterator could not be pushed onto the stack.
     /// On the next call, the push is retried at the top of `next()`.
     pending_frame: Option<FrameRef<'a, C>>,
+    /// `true` only when `pending_frame` holds a frame that caused an allocation
+    /// error on push attempt. Distinguishes a genuine stall from a frame that
+    /// was merely queued for its children to be pushed on the next `next()` call.
+    stalled: bool,
+    /// When true, automatically discard pending frames after emitting an error.
+    auto_unstall: bool,
 }
 
 impl<'a, C> Iterator for Frames<'a, C>
@@ -998,6 +1008,9 @@ where
     type Item = (Result<FrameRef<'a, C>, TryReserveError>, usize);
 
     fn next(&mut self) -> Option<Self::Item> {
+        // Clear stalled flag at the start — we'll set it again if an error occurs.
+        self.stalled = false;
+
         // Retry pushing the children iterator for a previously-stalled frame.
         if let Some(frame) = self.pending_frame.take() {
             let (children, lost_children) = match frame {
@@ -1014,7 +1027,12 @@ where
                         lost_children,
                     },
                 ) {
+                    if self.auto_unstall {
+                        // Discard the pending frame and emit the error once.
+                        return Some((Err(e), self.stack.len()));
+                    }
                     self.pending_frame = Some(frame);
+                    self.stalled = true;
                     return Some((Err(e), self.stack.len()));
                 }
             }
@@ -1069,13 +1087,21 @@ where
     }
 }
 
-impl<'a, C> Frames<'a, C> {
-    /// Intentionally abandon a frame that is stalled due to repeated allocation
-    /// failures when trying to push its children iterator onto the DFS stack.
-    ///
-    /// Returns `true` if a pending frame was discarded, `false` if none was pending.
-    pub fn discard_pending(&mut self) -> bool {
-        self.pending_frame.take().is_some()
+impl<'a, C> Stallable for Frames<'a, C>
+where
+    C: Error + Send + Sync + 'static,
+{
+    fn unstall(&mut self) -> bool {
+        if self.stalled {
+            self.stalled = false;
+            self.pending_frame.take().is_some()
+        } else {
+            false
+        }
+    }
+
+    fn set_auto_unstall(&mut self, auto: bool) {
+        self.auto_unstall = auto;
     }
 }
 
@@ -1097,6 +1123,12 @@ pub struct ChronoFrames<'a, C> {
     root_lost_emitted: bool,
     /// A frame whose children iterator is pending a push into the stack.
     pending_frame: Option<FrameRef<'a, C>>,
+    /// `true` only when `pending_frame` holds a frame that caused an allocation
+    /// error on push attempt. Distinguishes a genuine stall from a frame that
+    /// was merely queued for its children to be pushed on the next `next()` call.
+    stalled: bool,
+    /// When true, automatically discard pending frames after emitting an error.
+    auto_unstall: bool,
 }
 
 impl<'a, C> Iterator for ChronoFrames<'a, C>
@@ -1106,6 +1138,9 @@ where
     type Item = (Result<FrameRef<'a, C>, TryReserveError>, usize);
 
     fn next(&mut self) -> Option<Self::Item> {
+        // Clear stalled flag at the start — we'll set it again if an error occurs.
+        self.stalled = false;
+
         // Retry pushing the children iterator for a previously-stalled frame.
         if let Some(frame) = self.pending_frame.take() {
             let (children, lost_children) = match frame {
@@ -1122,7 +1157,12 @@ where
                         lost_children,
                     },
                 ) {
+                    if self.auto_unstall {
+                        // Discard the pending frame and emit the error once.
+                        return Some((Err(e), self.stack.len()));
+                    }
                     self.pending_frame = Some(frame);
+                    self.stalled = true;
                     return Some((Err(e), self.stack.len()));
                 }
             }
@@ -1178,15 +1218,24 @@ where
     }
 }
 
-impl<'a, C> ChronoFrames<'a, C> {
-    /// Intentionally abandon a frame that is stalled due to repeated allocation
-    /// failures when trying to push its children iterator onto the DFS stack.
-    ///
-    /// Returns `true` if a pending frame was discarded, `false` if none was pending.
-    pub fn discard_pending(&mut self) -> bool {
-        self.pending_frame.take().is_some()
+impl<'a, C> Stallable for ChronoFrames<'a, C>
+where
+    C: Error + Send + Sync + 'static,
+{
+    fn unstall(&mut self) -> bool {
+        if self.stalled {
+            self.stalled = false;
+            self.pending_frame.take().is_some()
+        } else {
+            false
+        }
+    }
+
+    fn set_auto_unstall(&mut self, auto: bool) {
+        self.auto_unstall = auto;
     }
 }
+
 
 // ── Peer iterators ───────────────────────────────────────────────────────────
 

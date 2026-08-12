@@ -13,7 +13,7 @@ use alloc::vec::Vec;
 use core::error::Error;
 use core::fmt;
 
-use rustyfill::prelude::TryVec;
+use rustyfill::prelude::{Stallable, TryVec};
 use rustyfill::try_fmt::{TryDebug, TryDisplay};
 
 use super::{FrameRef, Report};
@@ -32,15 +32,11 @@ where
         // Collect frames into a vec so we can look ahead/behind for sibling
         // counts and lost-frame markers. Use fallible collection so that OOM
         // during formatting doesn't panic — we degrade gracefully instead.
-        // When the iterator stalls on repeated allocation errors, record the
-        // first Err (it informs the user about the OOM) and discard the pending
-        // frame so iteration can progress past the stall.
+        // Auto-unstall so that each allocation error is emitted once and the
+        // iterator continues rather than stalling indefinitely.
         let mut frames: Vec<_> = Vec::new();
-        let mut walker = self.frames();
+        let mut walker = self.frames().with_auto_unstall(true);
         while let Some(item) = walker.next() {
-            if let Err(_) = &item.0 {
-                walker.discard_pending();
-            }
             match <Vec<_> as TryVec<_>>::try_push(&mut frames, item) {
                 Ok(()) => {}
                 Err(_) => return write!(f, "<failed to render report, out of memory>"),

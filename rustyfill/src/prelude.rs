@@ -26,7 +26,7 @@
 
 // ── Foundational traits (always available, no_std-compatible) ─────────────────
 
-pub use crate::recovery::{Resumable, ResumableSource};
+pub use crate::recovery::{Resumable, ResumableSource, Stallable};
 pub use crate::try_clone::TryClone;
 pub use crate::try_default::TryDefault;
 pub use crate::try_fmt::{TryDebug, TryDisplay, TryLowerHex, TryUpperHex};

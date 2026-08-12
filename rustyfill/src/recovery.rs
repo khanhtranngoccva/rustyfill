@@ -39,6 +39,50 @@
 use lang_core::fmt;
 use crate::try_fmt::{TryDebug, helpers::FormatterExt};
 
+/// Trait for fallible iterators that may stall on allocation errors.
+///
+/// By default, iterators that implement this trait *stall*: when an internal
+/// allocation fails they emit an `Err` item and hold the pending work so that
+/// retrying [`Iterator::next`] re-attempts the failed operation. This preserves
+/// correctness — no data is silently lost.
+///
+/// Callers that prefer progress over completeness can opt out:
+///
+/// - **Automatic**: call [`with_auto_unstall`](Stallable::with_auto_unstall) to get
+///   back the same iterator configured so that each error is emitted once and the
+///   pending item is automatically discarded. Composable since it consumes and
+///   returns `Self`.
+/// - **Manual**: call [`unstall`](Stallable::unstall) after seeing an `Err` to
+///   discard the stalled item and move on.
+///
+/// Stalling is the default because it never loses data. Skipping is opt-in.
+pub trait Stallable: Iterator {
+    /// Consume a pending/stalled item, if any, so that iteration can proceed past
+    /// the point of failure.
+    ///
+    /// Returns `true` if there was a pending item that was discarded.
+    fn unstall(&mut self) -> bool;
+
+    /// Return `self` with automatic unstalling toggled.
+    ///
+    /// When `auto` is `true`, each error is emitted once and the pending item is
+    /// automatically discarded so iteration continues. When `auto` is `false`
+    /// (the default), errors are repeated until the underlying operation succeeds
+    /// or [`Self::unstall`] is called manually.
+    fn with_auto_unstall(self, auto: bool) -> Self
+    where
+        Self: Sized,
+    {
+        let mut s = self;
+        s.set_auto_unstall(auto);
+        s
+    }
+
+    /// Set whether the iterator automatically discards pending items after emitting
+    /// an error.
+    fn set_auto_unstall(&mut self, auto: bool);
+}
+
 /// A source of items that decomposes into an optional leading element and an
 /// inner iterator.
 ///
