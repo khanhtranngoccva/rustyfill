@@ -4,14 +4,14 @@
 //! but return [`Result`] to handle allocation failures gracefully.
 
 use crate::alloc::AllocError;
+use crate::try_clone::{TryClone, TryCloneError};
+use crate::try_default::{TryDefault, TryDefaultError};
 use lang_alloc::alloc;
 use lang_alloc::boxed::Box;
 use lang_core::alloc::Layout;
 use lang_core::fmt;
 use lang_core::mem::{self, MaybeUninit};
 use lang_core::pin::Pin;
-use crate::try_clone::{TryClone, TryCloneError};
-use crate::try_default::{TryDefault, TryDefaultError};
 /// A trait for fallibly allocating a value on the heap.
 ///
 /// Implemented for `Box<T>`.

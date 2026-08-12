@@ -19,9 +19,9 @@
 //! [`TryDefault`](crate::try_default::TryDefault) which is already implemented
 //! for [`RandomState`] in [`crate::hashers`].
 
+use crate::sys::random::hashmap_random_keys_infallible;
 use lang_core::mem;
 use lang_std::hash::RandomState;
-use crate::sys::random::hashmap_random_keys_infallible;
 
 /// Extension trait for infallible [`RandomState`] construction.
 ///
@@ -99,8 +99,7 @@ mod tests {
     #[test]
     fn try_new_infallible_works_with_hashmap() {
         let state = RandomState::try_new_infallible();
-        let mut map: HashMap<&str, i32> =
-            HashMap::with_hasher(state);
+        let mut map: HashMap<&str, i32> = HashMap::with_hasher(state);
         map.insert("alpha", 1);
         map.insert("beta", 2);
         assert_eq!(map["alpha"], 1);

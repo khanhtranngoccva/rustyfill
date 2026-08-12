@@ -18,11 +18,11 @@
 //! proc macro, which requires every field in every variant to also implement `TryDefault`.
 
 use crate::alloc::{AllocError, TryReserveError};
+use crate::try_fmt::{TryDebug, helpers::FormatterExt};
 use lang_core::array;
 use lang_core::fmt;
 use lang_core::mem;
 use lang_core::ptr;
-use crate::try_fmt::{TryDebug, helpers::FormatterExt};
 
 /// Returned when a fallible default construction fails.
 #[derive(Debug, Clone, PartialEq, Eq)]

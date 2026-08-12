@@ -17,14 +17,14 @@
 
 use crate::alloc::AllocError;
 use crate::alloc::TryReserveError;
+use crate::try_clone::{TryClone, TryCloneError};
+use crate::try_default::{TryDefault, TryDefaultError};
+use crate::try_fmt::{TryDebug, helpers::FormatterExt};
 use lang_core::cmp;
 use lang_core::fmt;
 use lang_std::cmp::Eq;
 use lang_std::collections::{HashSet, TryReserveError as StdTryReserveError};
 use lang_std::hash::{BuildHasher, Hash, RandomState};
-use crate::try_clone::{TryClone, TryCloneError};
-use crate::try_default::{TryDefault, TryDefaultError};
-use crate::try_fmt::{TryDebug, helpers::FormatterExt};
 
 // ── Error type ────────────────────────────────────────────────────────────────
 
@@ -782,10 +782,9 @@ mod tests {
 
     #[test]
     fn try_collect_empty() {
-        let set: HashSet<i32> = <HashSet<i32> as TryHashSet<_, RandomState>>::try_collect(
-            iter::empty::<i32>(),
-        )
-        .unwrap();
+        let set: HashSet<i32> =
+            <HashSet<i32> as TryHashSet<_, RandomState>>::try_collect(iter::empty::<i32>())
+                .unwrap();
         assert!(set.is_empty());
     }
 

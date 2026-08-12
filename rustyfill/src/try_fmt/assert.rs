@@ -25,15 +25,15 @@
 //! write!(f, "{:?}", wrapped)?; // Debug — works because PathBuf: Debug
 //! ```
 
+use crate::try_clone::{TryClone, TryCloneError};
+use crate::try_default::{TryDefault, TryDefaultError};
+use crate::try_fmt::{TryDebug, TryDisplay, TryLowerExp, TryLowerHex, TryUpperExp, TryUpperHex};
 use lang_core::any::Any;
 use lang_core::cmp;
 use lang_core::error;
 use lang_core::fmt;
 use lang_core::hash;
 use lang_core::ops::{Deref, DerefMut};
-use crate::try_clone::{TryClone, TryCloneError};
-use crate::try_default::{TryDefault, TryDefaultError};
-use crate::try_fmt::{TryDebug, TryDisplay, TryLowerExp, TryLowerHex, TryUpperExp, TryUpperHex};
 
 /// Assertion wrapper around a value whose standard formatting implementations
 /// are guaranteed to never implicitly allocate and panic.

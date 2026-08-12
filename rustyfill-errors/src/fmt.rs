@@ -41,7 +41,7 @@ where
                 Ok(()) => {}
                 Err(_) => return write!(f, "<failed to render report, out of memory>"),
             }
-        };
+        }
         let total = frames.len();
 
         let mut i = 0;

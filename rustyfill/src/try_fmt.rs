@@ -810,10 +810,11 @@ mod oom_tests {
     use super::*;
     use crate::try_fmt::{TryDebug, TryDisplay};
     use lang_alloc::boxed::Box;
+    use lang_alloc::collections::VecDeque;
     use lang_alloc::string::String;
+    use lang_alloc::sync::Arc;
     use lang_alloc::vec;
     use lang_alloc::vec::Vec;
-    use lang_alloc::collections::VecDeque;
     use lang_core::f32::consts as f32_consts;
     use lang_core::f64::consts as f64_consts;
     use lang_core::ptr;
@@ -823,7 +824,6 @@ mod oom_tests {
     use lang_std::ffi::{CString, OsString};
     #[cfg(feature = "std")]
     use lang_std::path::PathBuf;
-    use lang_alloc::sync::Arc;
     #[cfg(feature = "std")]
     use lang_std::sync::{self, Mutex, RwLock};
     use rustyfill_test_allocator::{FailPolicy, with_policy};
@@ -925,7 +925,6 @@ mod oom_tests {
     }
 
     // ── VecDeque ───────────────────────────────────────────────────────────
-
 
     #[test]
     fn try_debug_vecdeque_populated_no_alloc() {
@@ -1220,8 +1219,7 @@ mod oom_tests {
 
     #[test]
     fn try_debug_boxed_arc_vec_no_alloc() {
-        let val: Box<Arc<Vec<String>>> =
-            Box::new(Arc::new(vec![String::from("nested")]));
+        let val: Box<Arc<Vec<String>>> = Box::new(Arc::new(vec![String::from("nested")]));
         assert!(assert_try_debug_no_alloc(&val));
     }
 
@@ -1533,10 +1531,10 @@ mod try_write_tests {
     use lang_alloc::string::String;
     use lang_alloc::vec;
     use lang_alloc::vec::Vec;
-    use lang_core::fmt;
-    use lang_core::fmt::Write;
     use lang_core::f32::consts as f32_consts;
     use lang_core::f64::consts as f64_consts;
+    use lang_core::fmt;
+    use lang_core::fmt::Write;
     use lang_core::marker;
     use lang_core::mem;
     use lang_core::ops;

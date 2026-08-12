@@ -5,8 +5,8 @@
 //! [`get_mut`](super::ConcurrentHashMap::get_mut), and the Entry API —
 //! scenarios where exactly one consumer holds the lock.
 
-use lang_core::ops::{Deref, DerefMut};
 use hashbrown::raw::RawTable;
+use lang_core::ops::{Deref, DerefMut};
 use parking_lot::{RwLockReadGuard, RwLockWriteGuard};
 
 // ── Ref (immutable) ─────────────────────────────────────────────────────────────

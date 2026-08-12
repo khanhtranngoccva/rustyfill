@@ -17,15 +17,15 @@
 
 use crate::alloc::AllocError;
 use crate::alloc::TryReserveError;
+use crate::try_clone::{TryClone, TryCloneError};
+use crate::try_default::{TryDefault, TryDefaultError};
+use crate::try_fmt::{TryDebug, helpers::FormatterExt};
 use lang_core::cmp;
 use lang_core::cmp::Eq;
 use lang_core::fmt;
 use lang_std::collections::hash_map;
 use lang_std::collections::{HashMap, TryReserveError as StdTryReserveError};
 use lang_std::hash::{BuildHasher, Hash, RandomState};
-use crate::try_clone::{TryClone, TryCloneError};
-use crate::try_default::{TryDefault, TryDefaultError};
-use crate::try_fmt::{TryDebug, helpers::FormatterExt};
 
 // ── Error type ────────────────────────────────────────────────────────────────
 
@@ -241,10 +241,7 @@ pub trait TryHashMap<K, V, S = RandomState>: Sized {
     /// [`Entry`]: lang_std::collections::hash_map::Entry
     /// [`Entry::or_insert`]: lang_std::collections::hash_map::Entry::or_insert
     /// [`Entry::and_modify`]: lang_std::collections::hash_map::Entry::and_modify
-    fn try_entry<'a>(
-        &'a mut self,
-        key: K,
-    ) -> Result<hash_map::Entry<'a, K, V>, TryHashMapError>
+    fn try_entry<'a>(&'a mut self, key: K) -> Result<hash_map::Entry<'a, K, V>, TryHashMapError>
     where
         K: Eq + Hash;
 
@@ -531,10 +528,7 @@ impl<K: Eq + Hash, V, S: BuildHasher> TryHashMap<K, V, S> for HashMap<K, V, S> {
         }
     }
 
-    fn try_entry<'a>(
-        &'a mut self,
-        key: K,
-    ) -> Result<hash_map::Entry<'a, K, V>, TryHashMapError>
+    fn try_entry<'a>(&'a mut self, key: K) -> Result<hash_map::Entry<'a, K, V>, TryHashMapError>
     where
         K: Eq + Hash,
     {
@@ -856,8 +850,7 @@ mod tests {
     #[test]
     fn try_extend_empty() {
         let mut map: HashMap<i32, i32> = HashMap::new();
-        map.try_extend(iter::empty::<(i32, i32)>())
-            .unwrap();
+        map.try_extend(iter::empty::<(i32, i32)>()).unwrap();
         assert!(map.is_empty());
     }
 
@@ -948,9 +941,10 @@ mod tests {
     #[test]
     fn try_collect_empty() {
         let map: HashMap<i32, i32> =
-            <HashMap<i32, i32> as TryHashMap<_, _, RandomState>>::try_collect(
-                iter::empty::<(i32, i32)>(),
-            )
+            <HashMap<i32, i32> as TryHashMap<_, _, RandomState>>::try_collect(iter::empty::<(
+                i32,
+                i32,
+            )>())
             .unwrap();
         assert!(map.is_empty());
     }

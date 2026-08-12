@@ -18,15 +18,15 @@
 use crate::alloc::AllocError;
 use crate::alloc::TryReserveError;
 use crate::alloc::vec::TryVec;
+use crate::std::ffi::TryOsString;
+use crate::try_clone::{TryClone, TryCloneError};
+use crate::try_default::{TryDefault, TryDefaultError};
+use crate::try_fmt::{TryDebug, helpers::FormatterExt};
 use lang_alloc::vec::Vec;
 use lang_core::fmt;
 use lang_core::mem;
 use lang_std::ffi::{OsStr, OsString};
 use lang_std::path::{Component, MAIN_SEPARATOR_STR, Path, PathBuf, Prefix, is_separator};
-use crate::std::ffi::TryOsString;
-use crate::try_clone::{TryClone, TryCloneError};
-use crate::try_default::{TryDefault, TryDefaultError};
-use crate::try_fmt::{TryDebug, helpers::FormatterExt};
 
 /// Error returned by [`TryPathBuf`] operations.
 ///
@@ -469,9 +469,9 @@ impl TryDefault for PathBuf {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::std::path::TryPath;
     use lang_alloc::string::ToString;
     use lang_std::format;
-    use crate::std::path::TryPath;
 
     // ── Helpers ────────────────────────────────────────────────────────────────
 

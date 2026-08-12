@@ -2,6 +2,9 @@
 
 use crate::alloc::vec::SliceInitGuard;
 use crate::alloc::{AllocError, TryReserveError};
+use crate::try_clone::{TryClone, TryCloneError};
+use crate::try_default::{TryDefault, TryDefaultError};
+use crate::try_fmt::{TryDebug, helpers::FormatterExt};
 use lang_alloc;
 use lang_alloc::boxed::Box;
 use lang_core::borrow::Borrow;
@@ -10,9 +13,6 @@ use lang_core::hash::{BuildHasher, Hash};
 use lang_core::mem::{self, MaybeUninit};
 use lang_core::ptr;
 use lang_std::hash::RandomState;
-use crate::try_clone::{TryClone, TryCloneError};
-use crate::try_default::{TryDefault, TryDefaultError};
-use crate::try_fmt::{TryDebug, helpers::FormatterExt};
 
 use super::entry::{Entry, OccupiedEntry, VacantEntry};
 use super::refs::{Ref, RefMut};

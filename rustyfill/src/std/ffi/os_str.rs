@@ -6,10 +6,10 @@
 //! for consistency with [`TryOsString`](super::os_string::TryOsString).
 
 use crate::alloc::{AllocError, TryReserveError};
-use lang_core::fmt;
-use lang_std::ffi::{OsStr, OsString};
-use lang_std::ffi::os_str::Display;
 use crate::try_fmt::{TryDebug, helpers::FormatterExt};
+use lang_core::fmt;
+use lang_std::ffi::os_str::Display;
+use lang_std::ffi::{OsStr, OsString};
 
 /// Error returned by [`TryOsStr`] operations.
 #[derive(Debug)]

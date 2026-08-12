@@ -18,12 +18,12 @@
 //! which requires every field to also implement `TryClone`.
 
 use crate::alloc::{AllocError, TryReserveError};
+use crate::try_fmt::{TryDebug, helpers::FormatterExt};
 use lang_core::array;
 use lang_core::clone::Clone;
 use lang_core::fmt;
 use lang_core::mem;
 use lang_core::ptr;
-use crate::try_fmt::{TryDebug, helpers::FormatterExt};
 
 /// Returned when a fallible clone operation fails.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -240,7 +240,7 @@ impl<T: TryClone, E: TryClone> TryClone for Result<T, E> {
     }
 }
 
-    #[cfg(test)]
+#[cfg(test)]
 mod tests {
     use super::*;
     use lang_core::f32::consts::E as F32_E;
@@ -318,18 +318,12 @@ mod tests {
 
     #[test]
     fn f32_try_clone() {
-        assert_eq!(
-            F32_E.try_clone().unwrap(),
-            F32_E
-        );
+        assert_eq!(F32_E.try_clone().unwrap(), F32_E);
     }
 
     #[test]
     fn f64_try_clone() {
-        assert_eq!(
-            F64_PI.try_clone().unwrap(),
-            F64_PI
-        );
+        assert_eq!(F64_PI.try_clone().unwrap(), F64_PI);
     }
 
     // ── Other Copy primitives ──────────────────────────────────────────────────

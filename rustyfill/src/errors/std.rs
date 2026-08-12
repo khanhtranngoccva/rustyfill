@@ -12,6 +12,8 @@
 //! `Display` impls are unconditional across all types in this module because
 //! they write fixed strings or delegate to primitive formatting.
 
+use crate::try_fmt::helpers::FormatterExt;
+use crate::try_fmt::{TryDebug, TryDisplay};
 use lang_alloc::borrow::Cow;
 use lang_core::any;
 use lang_core::fmt;
@@ -19,8 +21,6 @@ use lang_std::ffi;
 use lang_std::io;
 use lang_std::sync;
 use lang_std::time;
-use crate::try_fmt::helpers::FormatterExt;
-use crate::try_fmt::{TryDebug, TryDisplay};
 
 // ── ffi::NulError ─────────────────────────────────────────────────────────
 

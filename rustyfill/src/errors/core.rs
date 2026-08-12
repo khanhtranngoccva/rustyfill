@@ -6,12 +6,12 @@
 //!
 //! This module is available in `no_std` environments.
 
+use crate::try_fmt::{TryDebug, TryDisplay};
 use lang_core::array;
 use lang_core::char;
 use lang_core::fmt;
 use lang_core::num;
 use lang_core::str;
-use crate::try_fmt::{TryDebug, TryDisplay};
 
 // ── num::TryFromIntError ──────────────────────────────────────────────────
 

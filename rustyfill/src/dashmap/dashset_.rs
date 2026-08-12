@@ -5,14 +5,14 @@
 
 use crate::alloc::{AllocError, TryReserveError};
 use crate::dashmap::TryDashMap;
+use crate::prelude::{TryClone, TryDefault};
+use crate::try_clone::TryCloneError;
+use crate::try_fmt::{TryDebug, helpers::FormatterExt};
 use lang_core::alloc::Layout;
 use lang_core::fmt;
 use lang_core::mem;
 use lang_std::cmp::Eq;
 use lang_std::hash::{BuildHasher, Hash, RandomState};
-use crate::prelude::{TryClone, TryDefault};
-use crate::try_clone::TryCloneError;
-use crate::try_fmt::{TryDebug, helpers::FormatterExt};
 
 type DashMap<K, V, S = RandomState> = dashmap::DashMap<K, V, S>;
 type DashSet<T, S = RandomState> = dashmap::DashSet<T, S>;
@@ -474,12 +474,12 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::try_clone::TryClone as _;
+    use crate::try_default::TryDefault as _;
     use lang_alloc::string::String;
     use lang_alloc::string::ToString;
     use lang_alloc::vec;
     use lang_std::iter;
-    use crate::try_clone::TryClone as _;
-    use crate::try_default::TryDefault as _;
 
     // ── Construction ─────────────────────────────────────────────────────────
 
@@ -587,10 +587,9 @@ mod tests {
 
     #[test]
     fn try_collect_empty() {
-        let set: DashSet<i32> = <DashSet<i32> as TryDashSet<_, RandomState>>::try_collect(
-            iter::empty::<i32>(),
-        )
-        .unwrap();
+        let set: DashSet<i32> =
+            <DashSet<i32> as TryDashSet<_, RandomState>>::try_collect(iter::empty::<i32>())
+                .unwrap();
         assert!(set.is_empty());
     }
 

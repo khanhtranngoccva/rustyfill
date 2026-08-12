@@ -36,8 +36,8 @@
 //!    inserted. The [`Resumable`] holds that stranded element as the head,
 //!    plus the unconsumed remainder.
 
-use lang_core::fmt;
 use crate::try_fmt::{TryDebug, helpers::FormatterExt};
+use lang_core::fmt;
 
 /// Trait for fallible iterators that may stall on allocation errors.
 ///
@@ -246,10 +246,10 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+    use lang_alloc::format;
     use lang_alloc::vec;
     use lang_alloc::vec::Vec;
     use lang_core::ops;
-    use lang_alloc::format;
 
     #[test]
     fn retryable_with_head() {

@@ -152,7 +152,12 @@ where
             }
 
             // Try to yield the next bucket from the current shard.
-            if let Some(LockedIter { arc_guard, raw_iter, pending_bucket }) = &mut self.current {
+            if let Some(LockedIter {
+                arc_guard,
+                raw_iter,
+                pending_bucket,
+            }) = &mut self.current
+            {
                 let bucket = match pending_bucket.take() {
                     Some(b) => b,
                     None => match raw_iter.next() {
@@ -290,7 +295,12 @@ where
             }
 
             // Try to yield the next bucket from the current shard.
-            if let Some(LockedIterMut { arc_guard, raw_iter, pending_bucket }) = &mut self.current {
+            if let Some(LockedIterMut {
+                arc_guard,
+                raw_iter,
+                pending_bucket,
+            }) = &mut self.current
+            {
                 let bucket = match pending_bucket.take() {
                     Some(b) => b,
                     None => match raw_iter.next() {

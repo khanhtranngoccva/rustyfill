@@ -311,11 +311,9 @@ where
             // overflow — also treat as stale since we can't verify liveness.
             match weak.try_upgrade() {
                 Some(Ok(_arc)) => { /* still alive */ }
-                None | Some(Err(_)) => {
-                    unsafe {
-                        let _removed = guard.remove(bucket);
-                    }
-                }
+                None | Some(Err(_)) => unsafe {
+                    let _removed = guard.remove(bucket);
+                },
             }
         }
     }
@@ -375,7 +373,9 @@ where
     let mut guard = shard.write_table();
 
     if guard
-        .try_reserve(1, |(k, _v): &(u64, Weak<B::Owned>)| map.hasher().hash_one(k))
+        .try_reserve(1, |(k, _v): &(u64, Weak<B::Owned>)| {
+            map.hasher().hash_one(k)
+        })
         .is_err()
     {
         return Err(TryToOwnedError::Reserve(TryReserveError::Other));

@@ -7,15 +7,15 @@
 
 use super::vec_::TryVecError;
 use crate::alloc::AllocError;
+use crate::try_clone::{TryClone, TryCloneError};
+use crate::try_default::{TryDefault, TryDefaultError};
+use crate::try_to_owned::{TryToOwned, TryToOwnedError};
 use lang_alloc::alloc;
 use lang_alloc::boxed::Box;
 use lang_alloc::vec::Vec;
 use lang_core::alloc::Layout;
 use lang_core::mem::{self, MaybeUninit};
 use lang_core::ptr::{self, NonNull};
-use crate::try_clone::{TryClone, TryCloneError};
-use crate::try_default::{TryDefault, TryDefaultError};
-use crate::try_to_owned::{TryToOwned, TryToOwnedError};
 
 /// A trait for fallibly converting a slice into a [`Vec`].
 ///

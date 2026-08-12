@@ -4,10 +4,10 @@
 //! counter. The version ensures that after a slot is freed and reused, old keys
 //! pointing at that slot remain invalid (ABA protection).
 
+use crate::try_fmt::TryDebug;
 use lang_core::fmt::{self, Debug};
 use lang_core::hash::{Hash, Hasher};
 use lang_core::num::NonZeroU32;
-use crate::try_fmt::TryDebug;
 
 /// Sentinel value for `next_free` in a vacant slot that marks the slot as
 /// **detached** rather than free-listed. Defined here because both [`basic`]

@@ -1,14 +1,14 @@
 use crate::alloc::AllocError;
 use crate::alloc::boxed::TryBox;
+use crate::try_clone::{TryClone, TryCloneError};
+use crate::try_default::{TryDefault, TryDefaultError};
 use lang_alloc::boxed::Box;
+use lang_alloc::rc::{Rc, Weak};
 use lang_core::cell::Cell;
 use lang_core::fmt;
 use lang_core::mem::{ManuallyDrop, MaybeUninit};
 use lang_core::pin::Pin;
 use lang_core::ptr;
-use lang_alloc::rc::{Rc, Weak};
-use crate::try_clone::{TryClone, TryCloneError};
-use crate::try_default::{TryDefault, TryDefaultError};
 
 /// Internal representation of an Rc allocation.
 ///
@@ -477,12 +477,12 @@ impl<T: ?Sized + crate::try_fmt::TryDebug> crate::try_fmt::TryDebug for Rc<T> {
 #[allow(deprecated)]
 mod tests {
     use super::*;
+    use lang_alloc::fmt;
+    use lang_alloc::format;
     use lang_alloc::string::String;
     use lang_alloc::string::ToString;
     use lang_alloc::vec;
     use lang_alloc::vec::Vec;
-    use lang_alloc::fmt;
-    use lang_alloc::format;
 
     type PinRcResult<T> = Result<Pin<Rc<T>>, (T, AllocError)>;
 

@@ -6,6 +6,9 @@
 //! for consistency with [`TryString`](super::string_::TryString).
 
 use crate::alloc::{AllocError, TryReserveError};
+use crate::try_clone::{TryClone, TryCloneError};
+use crate::try_default::{TryDefault, TryDefaultError};
+use crate::try_fmt::{TryDebug, helpers::FormatterExt};
 use lang_alloc::alloc;
 use lang_alloc::boxed::Box;
 use lang_alloc::string::String;
@@ -13,9 +16,6 @@ use lang_core::alloc::Layout;
 use lang_core::fmt;
 use lang_core::mem;
 use lang_core::ptr;
-use crate::try_clone::{TryClone, TryCloneError};
-use crate::try_default::{TryDefault, TryDefaultError};
-use crate::try_fmt::{TryDebug, helpers::FormatterExt};
 
 /// Error returned by [`TryStr`] operations.
 #[derive(Debug)]

@@ -1,8 +1,8 @@
 //! Entry API for [`ConcurrentHashMap`](super::ConcurrentHashMap).
 
+use hashbrown::raw::{Bucket, InsertSlot, RawTable};
 use lang_core::hash::Hash;
 use lang_core::mem;
-use hashbrown::raw::{Bucket, InsertSlot, RawTable};
 use parking_lot::RwLockWriteGuard;
 
 use super::refs::RefMut;
