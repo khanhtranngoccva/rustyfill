@@ -6,7 +6,10 @@ use parking_lot::RwLock;
 
 /// One shard of the concurrent hash map, cache-line padded to prevent false sharing.
 pub struct Shard<K, V> {
-    /// FIXME: V must be wrapped in a SharedValue (aka. UnsafeCell ala. dashmap implementation)
+    // NOTE: dashmap had a soundness bug (issue #10) where `&T` was transmuted to
+    // `&mut T`, violating Stacked Borrows even under exclusive locks. Our guards
+    // avoid this: `RefMut` derives its `*mut V` from `bucket.as_mut()` under a
+    // write lock, which provides genuine mutable provenance.
     inner: CachePadded<RwLock<RawTable<(K, V)>>>,
 }
 

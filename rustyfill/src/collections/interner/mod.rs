@@ -121,15 +121,10 @@ where
     }
 }
 
-// FIXME: trivial conversion for owned variant
-// impl<B: InternKind + ?Sized> From<<B as ToOwned>::Owned> for Intern<B>
-// where
-//     <B as ToOwned>::Owned: Hash + Eq + PartialEq<B> + TryClone,
-// {
-//     fn from(value: <B as ToOwned>::Owned) -> Self {
-//         Self::Owned(value)
-//     }
-// }
+// Cannot implement From<<B as ToOwned>::Owned> for Intern<B> because it conflicts
+// with the blanket impl<T> From<T> for T in core (coherence error E0119): the
+// compiler cannot prove that Intern<B> and <B as ToOwned>::Owned are distinct types
+// for all possible B. Use Intern::from_owned() instead.
 
 // Common impls for all Intern variants
 impl<B: InternKind + ?Sized> Intern<B>

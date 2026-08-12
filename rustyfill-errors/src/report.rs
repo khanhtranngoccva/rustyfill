@@ -821,7 +821,7 @@ where
 // ── Iteration ────────────────────────────────────────────────────────────────
 
 /// A view into an error node during tree traversal.
-#[derive(Debug)]
+#[derive(Debug, Clone, Copy)]
 pub enum FrameRef<'a, C> {
     /// A typed static frame (head or peer).
     Static(&'a StaticFrame<C>),
@@ -921,7 +921,7 @@ where
             stack: Vec::new(),
             root_lost_emitted: false,
             root_lost_peers: self.lost_peers,
-            pending_err: None,
+            pending_frame: None,
         }
     }
 
@@ -941,7 +941,7 @@ where
             stack: Vec::new(),
             root_lost_emitted: false,
             root_lost_peers: self.lost_peers,
-            pending_err: None,
+            pending_frame: None,
         }
     }
 
@@ -986,9 +986,11 @@ pub struct Frames<'a, C> {
     root_lost_peers: usize,
     /// Whether we've emitted the final lost-peers marker.
     root_lost_emitted: bool,
-    /// Pending error from a failed stack reservation, queued for emission on the
-    /// next call so that the frame which triggered the failure is not silently skipped.
-    pending_err: Option<(TryReserveError, usize)>,
+    /// Frame whose children iterator failed to push onto the stack. On the next
+    /// call, we retry the push: success means children will be traversed normally,
+    /// failure means we emit another `Err` and keep the frame pending. Cleared by
+    /// [`Self::discard_pending`] if the caller chooses to bail.
+    pending_frame: Option<(FrameRef<'a, C>, usize)>,
 }
 
 impl<'a, C> Iterator for Frames<'a, C>
@@ -998,9 +1000,29 @@ where
     type Item = (Result<FrameRef<'a, C>, TryReserveError>, usize);
 
     fn next(&mut self) -> Option<Self::Item> {
-        // Emit a pending allocation error before continuing iteration.
-        if let Some((e, depth)) = self.pending_err.take() {
-            return Some((Err(e), depth));
+        // Retry pushing the children iterator for a previously-stalled frame.
+        if let Some((frame, depth)) = self.pending_frame.take() {
+            let children_match = match frame {
+                FrameRef::Static(sf) => (sf.children(), sf.lost_children()),
+                FrameRef::Dynamic(df) => (df.children(), df.lost_children()),
+                FrameRef::LostFrames(_) => unreachable!("LostFrames cannot be pending"),
+            };
+            let (children, lost_children) = children_match;
+            if !children.is_empty() {
+                let child_iter = children.iter();
+                if let Err((_, e)) = TryVec::try_push_give_back(
+                    &mut self.stack,
+                    StackEntry {
+                        iter: child_iter,
+                        lost_children,
+                    },
+                ) {
+                    // Still failing — re-stall with the updated error.
+                    self.pending_frame = Some((frame, depth));
+                    return Some((Err(e), depth));
+                }
+            }
+            // Push succeeded (or no children) — clear pending, continue normally.
         }
 
         // Yield head first.
@@ -1008,7 +1030,6 @@ where
             self.head_remaining = false;
             if !self.head_ref.children().is_empty() {
                 let child_iter = self.head_ref.children().iter();
-                // FIXME: this silently skips frame, we should let callers decide
                 if let Err((_, e)) = TryVec::try_push_give_back(
                     &mut self.stack,
                     StackEntry {
@@ -1016,7 +1037,8 @@ where
                         lost_children: self.head_ref.lost_children(),
                     },
                 ) {
-                    self.pending_err = Some((e, 1));
+                    self.pending_frame = Some((FrameRef::Static(self.head_ref), 1));
+                    return Some((Err(e), 1));
                 }
             }
             return Some((Ok(FrameRef::Static(self.head_ref)), 0));
@@ -1025,15 +1047,10 @@ where
         loop {
             if let Some(top) = self.stack.last_mut() {
                 if let Some(df) = top.iter.next() {
-                    // Record depth BEFORE pushing this frame's children onto
-                    // the stack, so that depth reflects the frame's position
-                    // in the tree (not the stack size after descent).
                     let depth = self.stack.len();
 
-                    // Push new stack entry to descend into this child's subtree.
                     if !df.children().is_empty() {
                         let child_iter = df.children().iter();
-                        // FIXME: this silently skips frame, we should let callers decide
                         if let Err((_, e)) = TryVec::try_push_give_back(
                             &mut self.stack,
                             StackEntry {
@@ -1041,12 +1058,12 @@ where
                                 lost_children: df.lost_children(),
                             },
                         ) {
-                            self.pending_err = Some((e, self.stack.len() + 1));
+                            self.pending_frame = Some((FrameRef::Dynamic(df), depth));
+                            return Some((Err(e), depth));
                         }
                     }
                     return Some((Ok(FrameRef::Dynamic(df)), depth));
                 } else {
-                    // Children exhausted — emit lost marker if any.
                     let n = top.lost_children;
                     let depth = self.stack.len();
                     self.stack.pop();
@@ -1068,7 +1085,8 @@ where
                             lost_children: peer.lost_children(),
                         },
                     ) {
-                        self.pending_err = Some((e, self.stack.len() + 1));
+                        self.pending_frame = Some((FrameRef::Static(peer), self.stack.len() + 1));
+                        return Some((Err(e), self.stack.len() + 1));
                     }
                 }
                 return Some((Ok(FrameRef::Static(peer)), 0));
@@ -1083,6 +1101,16 @@ where
 
             return None;
         }
+    }
+}
+
+impl<'a, C> Frames<'a, C> {
+    /// Intentionally abandon a frame that is stalled due to repeated allocation
+    /// failures when trying to push its children iterator onto the DFS stack.
+    ///
+    /// Returns `true` if a pending frame was discarded, `false` if none was pending.
+    pub fn discard_pending(&mut self) -> bool {
+        self.pending_frame.take().is_some()
     }
 }
 
@@ -1102,9 +1130,8 @@ pub struct ChronoFrames<'a, C> {
     root_lost_peers: usize,
     /// Whether we've emitted the final lost-peers marker.
     root_lost_emitted: bool,
-    /// Pending error from a failed stack reservation, queued for emission on the
-    /// next call so that the frame which triggered the failure is not silently skipped.
-    pending_err: Option<(TryReserveError, usize)>,
+    /// Frame whose children iterator failed to push onto the stack.
+    pending_frame: Option<(FrameRef<'a, C>, usize)>,
 }
 
 impl<'a, C> Iterator for ChronoFrames<'a, C>
@@ -1114,9 +1141,27 @@ where
     type Item = (Result<FrameRef<'a, C>, TryReserveError>, usize);
 
     fn next(&mut self) -> Option<Self::Item> {
-        // Emit a pending allocation error before continuing iteration.
-        if let Some((e, depth)) = self.pending_err.take() {
-            return Some((Err(e), depth));
+        // Retry pushing the children iterator for a previously-stalled frame.
+        if let Some((frame, depth)) = self.pending_frame.take() {
+            let children_match = match frame {
+                FrameRef::Static(sf) => (sf.children(), sf.lost_children()),
+                FrameRef::Dynamic(df) => (df.children(), df.lost_children()),
+                FrameRef::LostFrames(_) => unreachable!("LostFrames cannot be pending"),
+            };
+            let (children, lost_children) = children_match;
+            if !children.is_empty() {
+                let child_iter = children.iter();
+                if let Err((_, e)) = TryVec::try_push_give_back(
+                    &mut self.stack,
+                    StackEntry {
+                        iter: child_iter,
+                        lost_children,
+                    },
+                ) {
+                    self.pending_frame = Some((frame, depth));
+                    return Some((Err(e), depth));
+                }
+            }
         }
 
         loop {
@@ -1124,7 +1169,6 @@ where
                 if let Some(df) = top.iter.next() {
                     if !df.children().is_empty() {
                         let child_iter = df.children().iter();
-                        // FIXME: this silently skips frame, we should let callers decide
                         if let Err((_, e)) = TryVec::try_push_give_back(
                             &mut self.stack,
                             StackEntry {
@@ -1132,7 +1176,8 @@ where
                                 lost_children: df.lost_children(),
                             },
                         ) {
-                            self.pending_err = Some((e, self.stack.len() + 1));
+                            self.pending_frame = Some((FrameRef::Dynamic(df), self.stack.len() + 1));
+                            return Some((Err(e), self.stack.len() + 1));
                         }
                     }
                     let depth = self.stack.len();
@@ -1160,7 +1205,8 @@ where
                                 lost_children: peer.lost_children(),
                             },
                         ) {
-                            self.pending_err = Some((e, self.stack.len() + 1));
+                            self.pending_frame = Some((FrameRef::Static(peer), self.stack.len() + 1));
+                            return Some((Err(e), self.stack.len() + 1));
                         }
                     }
                     return Some((Ok(FrameRef::Static(peer)), 0));
@@ -1176,7 +1222,8 @@ where
                                 lost_children: self.head_ref.lost_children(),
                             },
                         ) {
-                            self.pending_err = Some((e, 1));
+                            self.pending_frame = Some((FrameRef::Static(self.head_ref), 1));
+                            return Some((Err(e), 1));
                         }
                     }
                     return Some((Ok(FrameRef::Static(self.head_ref)), 0));
@@ -1193,6 +1240,16 @@ where
             // Head is done, nothing left.
             return None;
         }
+    }
+}
+
+impl<'a, C> ChronoFrames<'a, C> {
+    /// Intentionally abandon a frame that is stalled due to repeated allocation
+    /// failures when trying to push its children iterator onto the DFS stack.
+    ///
+    /// Returns `true` if a pending frame was discarded, `false` if none was pending.
+    pub fn discard_pending(&mut self) -> bool {
+        self.pending_frame.take().is_some()
     }
 }
 

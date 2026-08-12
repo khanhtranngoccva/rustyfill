@@ -56,7 +56,7 @@
 //! [^1]: <https://lwn.net/Articles/606141/>
 //! [^2]: <https://lwn.net/Articles/808575/>
 //!
-// FIXME-OLD(in 2040 or so): once the minimum kernel version is 5.6, remove the
+// TODO: once the minimum supported kernel version is 5.6+, remove the
 // `GRND_NONBLOCK` fallback and use `/dev/random` instead of `/dev/urandom`
 // when secure data is required.
 

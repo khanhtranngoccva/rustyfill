@@ -353,7 +353,9 @@ impl<K: Ord + RefUnwindSafe, V: RefUnwindSafe> TryBTreeMap<K, V> for BTreeMap<K,
         K: Ord + RefUnwindSafe,
         V: RefUnwindSafe,
     {
-        // FIXME: this does not catch aborting panics!
+        // NOTE: `catch_unwind` cannot catch aborting panics (panic = 'abort').
+        // This is a Rust language limitation; if the allocator aborts on OOM,
+        // the process terminates regardless.
         let result: Option<V> = catch_unwind(AssertUnwindSafe(|| self.insert(key, value)))
             .map_err(|payload| TryBTreeMapError::AllocPanic(PayloadBox(payload)))?;
         Ok(result)
@@ -380,7 +382,8 @@ impl<K: Ord + RefUnwindSafe, V: RefUnwindSafe> TryBTreeMap<K, V> for BTreeMap<K,
         // Step 3: Insert into the ManuallyDrop map inside catch_unwind.
         // Use ptr::read to move out of the references without consuming md_key/md_value,
         // so they're still accessible on panic.
-        // FIXME: this does not catch aborting panics!
+        // NOTE: `catch_unwind` cannot catch aborting panics (panic = 'abort').
+        // If the allocator aborts on OOM, the process terminates regardless.
         let result = catch_unwind(AssertUnwindSafe(|| {
             let k = unsafe { ptr::read(&md_key) };
             let v = unsafe { ptr::read(&md_value) };
@@ -436,7 +439,8 @@ impl<K: Ord + RefUnwindSafe, V: RefUnwindSafe> TryBTreeMap<K, V> for BTreeMap<K,
         let md_key = ManuallyDrop::new(key);
 
         // Step 3: Insert into the ManuallyDrop map.
-        // FIXME: this does not catch aborting panics!
+        // NOTE: `catch_unwind` cannot catch aborting panics (panic = 'abort').
+        // If the allocator aborts on OOM, the process terminates regardless.
         let result = catch_unwind(AssertUnwindSafe(|| {
             let k = unsafe { ptr::read(&md_key) };
             let v = unsafe { ptr::read(&md_value) };

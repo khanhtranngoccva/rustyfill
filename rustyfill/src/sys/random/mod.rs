@@ -107,7 +107,7 @@ cfg_select! {
         pub use hermit::fill_bytes;
     }
     any(target_os = "horizon", target_os = "cygwin") => {
-        // FIXME-OLD(horizon): add arc4random_buf to shim-3ds
+        // TODO(horizon): add arc4random_buf to shim-3ds for faster random generation
         mod getrandom;
         pub use getrandom::fill_bytes;
     }
@@ -171,8 +171,8 @@ cfg_select! {
         target_os = "xous",
         target_os = "vexos",
     ) => {
-        // FIXME-OLD: finally remove std support for wasm32-unknown-unknown
-        // FIXME-OLD: add random data generation to xous
+        // TODO: remove std support for wasm32-unknown-unknown when feasible
+        // TODO(xous): add random data generation support
         mod unsupported;
         pub use unsupported::{fill_bytes, hashmap_random_keys};
     }
