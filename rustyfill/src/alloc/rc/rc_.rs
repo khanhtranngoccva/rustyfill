@@ -6,7 +6,7 @@ use lang_core::fmt;
 use lang_core::mem::{ManuallyDrop, MaybeUninit};
 use lang_core::pin::Pin;
 use lang_core::ptr;
-use lang_std::rc::{Rc, Weak};
+use lang_alloc::rc::{Rc, Weak};
 use crate::try_clone::{TryClone, TryCloneError};
 use crate::try_default::{TryDefault, TryDefaultError};
 
@@ -481,7 +481,8 @@ mod tests {
     use lang_alloc::string::ToString;
     use lang_alloc::vec;
     use lang_alloc::vec::Vec;
-    use lang_std::format;
+    use lang_alloc::fmt;
+    use lang_alloc::format;
 
     type PinRcResult<T> = Result<Pin<Rc<T>>, (T, AllocError)>;
 
@@ -869,12 +870,12 @@ mod tests {
     fn rc_dyn_trait_try_clone() {
         use crate::try_clone::TryClone;
         struct Greeter(String);
-        impl ::lang_std::fmt::Display for Greeter {
-            fn fmt(&self, f: &mut ::lang_std::fmt::Formatter<'_>) -> ::lang_std::fmt::Result {
+        impl fmt::Display for Greeter {
+            fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
                 write!(f, "Hello, {}!", self.0)
             }
         }
-        let rc: Rc<dyn ::lang_std::fmt::Display> = Rc::new(Greeter("world".into()));
+        let rc: Rc<dyn fmt::Display> = Rc::new(Greeter("world".into()));
         let rc2 = rc.try_clone().unwrap();
         assert_eq!(Rc::strong_count(&rc), 2);
         assert!(Rc::ptr_eq(&rc, &rc2));
@@ -999,7 +1000,7 @@ mod tests {
 
     #[test]
     fn rc_fallible_new_uninit_fails_on_oom() {
-        let r: Result<Rc<::lang_std::mem::MaybeUninit<i32>>, AllocError> = with_policy(
+        let r: Result<Rc<MaybeUninit<i32>>, AllocError> = with_policy(
             FailPolicy::fail_next_alloc(),
             <Rc<i32> as TryRc<i32>>::fallible_new_uninit,
         );
@@ -1008,7 +1009,7 @@ mod tests {
 
     #[test]
     fn rc_fallible_new_zeroed_fails_on_oom() {
-        let r: Result<Rc<::lang_std::mem::MaybeUninit<[u8; 16]>>, AllocError> = with_policy(
+        let r: Result<Rc<MaybeUninit<[u8; 16]>>, AllocError> = with_policy(
             FailPolicy::fail_next_alloc(),
             <Rc<[u8; 16]> as TryRc<[u8; 16]>>::fallible_new_zeroed,
         );

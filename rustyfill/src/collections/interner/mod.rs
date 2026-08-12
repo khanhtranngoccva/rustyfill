@@ -297,19 +297,19 @@ where
 //        handles. When all handles drop, the Arc is freed and the Weak expires.
 
 crate::collections::chashmap::declare_concurrent_hash_map! {
-    pub(crate) static INTERNER_STR: ConcurrentHashMap<crate::collections::interner::InternKey<::lang_alloc::string::String>, ()> = 64
+    pub(crate) static INTERNER_STR: ConcurrentHashMap<crate::collections::interner::InternKey<lang_alloc::string::String>, ()> = 64
 }
 
 crate::collections::chashmap::declare_concurrent_hash_map! {
-    pub(crate) static INTERNER_OS_STR: ConcurrentHashMap<crate::collections::interner::InternKey<::lang_std::ffi::OsString>, ()> = 64
+    pub(crate) static INTERNER_OS_STR: ConcurrentHashMap<crate::collections::interner::InternKey<lang_std::ffi::OsString>, ()> = 64
 }
 
 crate::collections::chashmap::declare_concurrent_hash_map! {
-    pub(crate) static INTERNER_CSTR: ConcurrentHashMap<crate::collections::interner::InternKey<::lang_std::ffi::CString>, ()> = 64
+    pub(crate) static INTERNER_CSTR: ConcurrentHashMap<crate::collections::interner::InternKey<lang_std::ffi::CString>, ()> = 64
 }
 
 crate::collections::chashmap::declare_concurrent_hash_map! {
-    pub(crate) static INTERNER_PATH: ConcurrentHashMap<crate::collections::interner::InternKey<::lang_std::path::PathBuf>, ()> = 64
+    pub(crate) static INTERNER_PATH: ConcurrentHashMap<crate::collections::interner::InternKey<lang_std::path::PathBuf>, ()> = 64
 }
 
 /// Global monotonic counter tracking total intern calls across all types.

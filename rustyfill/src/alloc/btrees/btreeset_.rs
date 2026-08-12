@@ -11,7 +11,7 @@
 //! on out-of-memory. Read-only accessors delegate directly to `BTreeSet`.
 //!
 //! Because `BTreeSet::try_reserve` does not exist, these methods internally
-//! use [`::lang_std::panic::catch_unwind`] to intercept allocation panics from the
+//! use [`::lang_alloc::panic::catch_unwind`] to intercept allocation panics from the
 //! B-tree's internal node allocator. This means `T` must be
 //! [`RefUnwindSafe`] (panic::RefUnwindSafe) for the fallible mutation methods.
 //!
@@ -19,13 +19,14 @@
 //! [`TryDefault`](crate::try_default::TryDefault) for `BTreeSet<T>` when
 //! `T` satisfies the respective bounds.
 use crate::alloc::{AllocError, PayloadBox};
-use lang_core::fmt;
-use lang_core::mem::ManuallyDrop;
-use lang_core::ptr;
-use lang_std::collections::BTreeSet;
-use lang_std::panic::{AssertUnwindSafe, RefUnwindSafe, catch_unwind};
 use crate::try_clone::TryCloneError;
 use crate::try_fmt::{TryDebug, helpers::FormatterExt};
+use lang_alloc::collections::BTreeSet;
+use lang_core::fmt;
+use lang_core::mem::ManuallyDrop;
+use lang_core::panic::{AssertUnwindSafe, RefUnwindSafe};
+use lang_core::ptr;
+use lang_std::panic::catch_unwind;
 
 // ── Error type ────────────────────────────────────────────────────────────────
 
@@ -112,7 +113,7 @@ impl TryDebug for TryBTreeSetError {
 /// # Note
 ///
 /// Because `BTreeSet::try_reserve` does not exist, mutation methods use
-/// [`lang_std::panic::catch_unwind`] internally to intercept OOM panics.
+/// [`lang_alloc::panic::catch_unwind`] internally to intercept OOM panics.
 /// Elements must be [`RefUnwindSafe`] for these methods.
 pub trait TryBTreeSet<T>: Sized {
     // ── Construction ────────────────────────────────────────────────────────
@@ -410,6 +411,8 @@ impl<T> crate::try_default::TryDefault for BTreeSet<T> {
 mod tests {
 
     use super::*;
+    use crate::try_clone::TryClone;
+    use crate::try_default::TryDefault;
     use lang_alloc::boxed::Box;
     use lang_alloc::format;
     use lang_alloc::string::String;
@@ -417,8 +420,8 @@ mod tests {
     use lang_alloc::vec;
     use lang_alloc::vec::Vec;
     use lang_core::any;
-    use crate::try_clone::TryClone;
-    use crate::try_default::TryDefault;
+    use lang_core::cmp;
+    use lang_core::iter;
 
     // ── Construction ─────────────────────────────────────────────────────────
 
@@ -511,12 +514,12 @@ mod tests {
         }
         impl Eq for TrackedElem {}
         impl PartialOrd for TrackedElem {
-            fn partial_cmp(&self, other: &Self) -> Option<::lang_std::cmp::Ordering> {
+            fn partial_cmp(&self, other: &Self) -> Option<cmp::Ordering> {
                 Some(self.cmp(other))
             }
         }
         impl Ord for TrackedElem {
-            fn cmp(&self, other: &Self) -> ::lang_std::cmp::Ordering {
+            fn cmp(&self, other: &Self) -> cmp::Ordering {
                 self.0.cmp(&other.0)
             }
         }
@@ -554,7 +557,7 @@ mod tests {
     #[test]
     fn try_extend_empty() {
         let mut set: BTreeSet<i32> = BTreeSet::new();
-        set.try_extend(::lang_std::iter::empty::<i32>()).unwrap();
+        set.try_extend(iter::empty::<i32>()).unwrap();
         assert!(set.is_empty());
     }
 
@@ -602,8 +605,7 @@ mod tests {
     #[test]
     fn try_collect_empty() {
         let set: BTreeSet<i32> =
-            <BTreeSet<i32> as TryBTreeSet<_>>::try_collect(::lang_std::iter::empty::<i32>())
-                .unwrap();
+            <BTreeSet<i32> as TryBTreeSet<_>>::try_collect(iter::empty::<i32>()).unwrap();
         assert!(set.is_empty());
     }
 

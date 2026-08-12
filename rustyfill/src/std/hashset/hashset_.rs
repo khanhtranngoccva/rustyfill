@@ -20,7 +20,7 @@ use crate::alloc::TryReserveError;
 use lang_core::cmp;
 use lang_core::fmt;
 use lang_std::cmp::Eq;
-use lang_std::collections::HashSet;
+use lang_std::collections::{HashSet, TryReserveError as StdTryReserveError};
 use lang_std::hash::{BuildHasher, Hash, RandomState};
 use crate::try_clone::{TryClone, TryCloneError};
 use crate::try_default::{TryDefault, TryDefaultError};
@@ -116,8 +116,8 @@ impl From<TryDefaultError> for TryHashSetError {
     }
 }
 
-impl From<::lang_std::collections::TryReserveError> for TryHashSetError {
-    fn from(e: ::lang_std::collections::TryReserveError) -> Self {
+impl From<StdTryReserveError> for TryHashSetError {
+    fn from(e: StdTryReserveError) -> Self {
         Self::Reserve(TryReserveError::from(e))
     }
 }
@@ -603,6 +603,7 @@ mod tests {
     use lang_alloc::vec;
     use lang_alloc::vec::Vec;
     use lang_std::hash::RandomState;
+    use lang_std::iter;
 
     // ── Construction ─────────────────────────────────────────────────────────
 
@@ -697,7 +698,7 @@ mod tests {
     #[test]
     fn try_extend_empty() {
         let mut set: HashSet<i32> = HashSet::new();
-        set.try_extend(::lang_std::iter::empty::<i32>()).unwrap();
+        set.try_extend(iter::empty::<i32>()).unwrap();
         assert!(set.is_empty());
     }
 
@@ -782,7 +783,7 @@ mod tests {
     #[test]
     fn try_collect_empty() {
         let set: HashSet<i32> = <HashSet<i32> as TryHashSet<_, RandomState>>::try_collect(
-            ::lang_std::iter::empty::<i32>(),
+            iter::empty::<i32>(),
         )
         .unwrap();
         assert!(set.is_empty());

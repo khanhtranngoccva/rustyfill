@@ -28,5 +28,5 @@ pub use shard::Shard;
 
 #[cfg(test)]
 mod __test_static_map {
-    crate::declare_concurrent_hash_map!(pub static TEST_CHASHMAP_STATIC: ConcurrentHashMap<i32, ::lang_alloc::string::String> = 4);
+    crate::declare_concurrent_hash_map!(pub static TEST_CHASHMAP_STATIC: ConcurrentHashMap<i32, lang_alloc::string::String> = 4);
 }

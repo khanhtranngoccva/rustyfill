@@ -1,7 +1,9 @@
 {
     "rust-analyzer.cargo.features": [
-        "std",
-        "panic",
-        "unstable"
-    ]
+        // "std",
+        // "panic",
+        // "unstable"
+    ],
+    // Enables no-std
+    "rust-analyzer.cargo.noDefaultFeatures": true
 }

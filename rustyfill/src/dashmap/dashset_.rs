@@ -7,6 +7,7 @@ use crate::alloc::{AllocError, TryReserveError};
 use crate::dashmap::TryDashMap;
 use lang_core::alloc::Layout;
 use lang_core::fmt;
+use lang_core::mem;
 use lang_std::cmp::Eq;
 use lang_std::hash::{BuildHasher, Hash, RandomState};
 use crate::prelude::{TryClone, TryDefault};
@@ -282,13 +283,13 @@ fn convert_ref<T, S>(set: &DashSet<T, S>) -> &DashMap<T, (), S> {
         assert!(map_layout.size() == set_layout.size());
         assert!(map_layout.align() == set_layout.align());
     };
-    unsafe { ::lang_std::mem::transmute(set) }
+    unsafe { mem::transmute(set) }
 }
 
 /// Mutable variant of [`convert_ref`].
 fn convert_mut<T, S>(set: &mut DashSet<T, S>) -> &mut DashMap<T, (), S> {
     // SAFETY: Same layout guarantees as [`convert_ref`], extended to mutable references.
-    unsafe { ::lang_std::mem::transmute(set) }
+    unsafe { mem::transmute(set) }
 }
 
 impl<T: Eq + Hash, S: BuildHasher + TryClone> TryDashSet<T, S> for DashSet<T, S> {
@@ -476,6 +477,7 @@ mod tests {
     use lang_alloc::string::String;
     use lang_alloc::string::ToString;
     use lang_alloc::vec;
+    use lang_std::iter;
     use crate::try_clone::TryClone as _;
     use crate::try_default::TryDefault as _;
 
@@ -556,7 +558,7 @@ mod tests {
     #[test]
     fn try_extend_empty() {
         let set: DashSet<i32> = DashSet::new();
-        set.try_extend(::lang_std::iter::empty::<i32>()).unwrap();
+        set.try_extend(iter::empty::<i32>()).unwrap();
         assert!(set.is_empty());
     }
 
@@ -586,7 +588,7 @@ mod tests {
     #[test]
     fn try_collect_empty() {
         let set: DashSet<i32> = <DashSet<i32> as TryDashSet<_, RandomState>>::try_collect(
-            ::lang_std::iter::empty::<i32>(),
+            iter::empty::<i32>(),
         )
         .unwrap();
         assert!(set.is_empty());

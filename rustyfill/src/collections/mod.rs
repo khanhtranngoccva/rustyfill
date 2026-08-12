@@ -1,7 +1,7 @@
 //! Fallible collections.
 //!
 //! Includes both concurrent data structures (which require the `std` feature)
-//! and standalone fallible containers like [`slotmap::TrySlotMap`].
+//! and standalone fallible containers like [`slotmap::SlotMap`].
 
 #[cfg(feature = "std")]
 pub mod chashmap;

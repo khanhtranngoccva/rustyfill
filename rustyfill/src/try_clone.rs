@@ -240,9 +240,11 @@ impl<T: TryClone, E: TryClone> TryClone for Result<T, E> {
     }
 }
 
-#[cfg(test)]
+    #[cfg(test)]
 mod tests {
     use super::*;
+    use lang_std::f32::consts::E as F32_E;
+    use lang_std::f64::consts::PI as F64_PI;
 
     // ── Unsigned integers ──────────────────────────────────────────────────────
 
@@ -317,16 +319,16 @@ mod tests {
     #[test]
     fn f32_try_clone() {
         assert_eq!(
-            (::lang_std::f32::consts::E).try_clone().unwrap(),
-            ::lang_std::f32::consts::E
+            F32_E.try_clone().unwrap(),
+            F32_E
         );
     }
 
     #[test]
     fn f64_try_clone() {
         assert_eq!(
-            (::lang_std::f64::consts::PI).try_clone().unwrap(),
-            ::lang_std::f64::consts::PI
+            F64_PI.try_clone().unwrap(),
+            F64_PI
         );
     }
 

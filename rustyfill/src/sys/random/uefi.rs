@@ -3,6 +3,8 @@
 // On stable, full support for UEFI is practically out of scope so it practically only works on x86_64.
 #![cfg(target_os = "uefi")]
 use super::RandomError;
+use lang_std::borrow::Cow;
+use lang_std::sync::LazyLock;
 
 pub fn fill_bytes(bytes: &mut [u8]) -> Result<(), RandomError> {
     // Handle zero-byte request
@@ -23,7 +25,7 @@ pub fn fill_bytes(bytes: &mut [u8]) -> Result<(), RandomError> {
         return Ok(());
     }
 
-    Err(RandomError::Platform(::lang_std::borrow::Cow::Borrowed(
+    Err(RandomError::Platform(Cow::Borrowed(
         "no random source available on UEFI",
     )))
 }
@@ -82,7 +84,7 @@ mod rdrand {
         }
     }
 
-    static RDRAND_GOOD: ::lang_std::sync::LazyLock<bool> = ::lang_std::sync::LazyLock::new(is_rdrand_good);
+    static RDRAND_GOOD: LazyLock<bool> = LazyLock::new(is_rdrand_good);
 
     // Recommendation from "Intel® Digital Random Number Generator (DRNG) Software
     // Implementation Guide" - Section 5.2.1 and "Intel® 64 and IA-32 Architectures

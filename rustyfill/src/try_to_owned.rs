@@ -15,6 +15,8 @@ use crate::alloc::{AllocError, TryReserveError};
 use lang_alloc::borrow::ToOwned;
 use lang_core::error;
 use lang_core::fmt;
+#[cfg(feature = "std")]
+use lang_std::collections::TryReserveError as StdTryReserveError;
 use crate::try_clone::TryCloneError;
 use crate::try_fmt::{TryDebug, helpers::FormatterExt};
 
@@ -85,8 +87,8 @@ impl From<TryReserveError> for TryToOwnedError {
 }
 
 #[cfg(feature = "std")]
-impl From<::lang_std::collections::TryReserveError> for TryToOwnedError {
-    fn from(err: ::lang_std::collections::TryReserveError) -> Self {
+impl From<StdTryReserveError> for TryToOwnedError {
+    fn from(err: StdTryReserveError) -> Self {
         Self::Reserve(TryReserveError::from(err))
     }
 }

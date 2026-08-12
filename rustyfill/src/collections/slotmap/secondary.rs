@@ -136,8 +136,8 @@ impl From<TryReserveError> for SecondaryMapError {
     }
 }
 
-impl From<lang_std::collections::TryReserveError> for SecondaryMapError {
-    fn from(e: lang_std::collections::TryReserveError) -> Self {
+impl From<lang_alloc::collections::TryReserveError> for SecondaryMapError {
+    fn from(e: lang_alloc::collections::TryReserveError) -> Self {
         Self::Reserve(TryReserveError::from(e))
     }
 }

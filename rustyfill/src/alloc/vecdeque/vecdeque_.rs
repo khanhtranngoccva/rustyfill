@@ -2,7 +2,7 @@
 //!
 //! Provides the [`TryVecDeque`] trait with methods that mirror common `VecDeque`
 //! constructors and mutating operations but return [`Result`] to handle allocation
-//! failures gracefully, using [`::lang_std::collections::TryReserveError`] as the primary
+//! failures gracefully, using [`::lang_alloc::collections::TryReserveError`] as the primary
 //! error type.
 //!
 //! # Design
@@ -19,14 +19,15 @@
 use crate::alloc::AllocError;
 use crate::alloc::TryReserveError;
 use crate::alloc::vec::{TryVec, TryVecError};
+use crate::try_clone::{TryClone, TryCloneError};
+use crate::try_default::{TryDefault, TryDefaultError};
+use crate::try_fmt::{TryDebug, helpers::FormatterExt};
+use lang_alloc::collections::VecDeque;
 use lang_alloc::vec::Vec;
 use lang_core::cmp;
 use lang_core::fmt;
 use lang_core::mem;
-use lang_std::collections::VecDeque;
-use crate::try_clone::{TryClone, TryCloneError};
-use crate::try_default::{TryDefault, TryDefaultError};
-use crate::try_fmt::{TryDebug, helpers::FormatterExt};
+use lang_core::ops::{Bound, RangeBounds};
 
 /// Panic-safe guard that truncates a `VecDeque` back to its original length on drop
 /// unless disarmed via `forget()`. Used by fallible extend/resize methods so that if
@@ -203,7 +204,7 @@ pub trait TryVecDeque<T>: Sized {
         T: TryClone;
 
     /// Copies elements within the deque itself according to the given range.
-    fn try_extend_from_within<R: ::lang_std::ops::RangeBounds<usize>>(
+    fn try_extend_from_within<R: RangeBounds<usize>>(
         &mut self,
         range: R,
     ) -> Result<(), TryVecDequeError>
@@ -516,15 +517,13 @@ impl<T> TryVecDeque<T> for VecDeque<T> {
         Ok(())
     }
 
-    fn try_extend_from_within<R: ::lang_std::ops::RangeBounds<usize>>(
+    fn try_extend_from_within<R: RangeBounds<usize>>(
         &mut self,
         range: R,
     ) -> Result<(), TryVecDequeError>
     where
         T: TryClone,
     {
-        use lang_std::ops::Bound;
-
         let start = match range.start_bound() {
             Bound::Included(&i) => i,
             Bound::Excluded(&i) => i.checked_add(1).ok_or(TryVecDequeError::Overflow)?,
@@ -620,7 +619,7 @@ impl<T> TryVecDeque<T> for VecDeque<T> {
         // Convert the deque into a contiguous Vec, shrink the Vec's buffer,
         // then convert back. We can't access VecDeque's internal ring-buffer
         // pointers directly, so this round-trip is the safest approach.
-        let mut vec: Vec<T> = ::lang_std::mem::take(self).into();
+        let mut vec: Vec<T> = mem::take(self).into();
         let result = <Vec<T> as TryVec<T>>::fallible_shrink_to(&mut vec, target);
         // Recover the deque before error handling so that a shrink failure
         // does not silently discard the original data.
@@ -683,6 +682,7 @@ mod tests {
     use super::*;
     use lang_alloc::vec;
     use lang_alloc::vec::Vec;
+    use lang_core::iter;
 
     #[test]
     fn try_with_capacity_zero() {
@@ -815,7 +815,7 @@ mod tests {
     #[test]
     fn try_extend_empty() {
         let mut dq: VecDeque<i32> = VecDeque::new();
-        dq.try_extend(::lang_std::iter::empty::<i32>()).unwrap();
+        dq.try_extend(iter::empty::<i32>()).unwrap();
         assert!(dq.is_empty());
     }
 
@@ -960,8 +960,7 @@ mod tests {
     #[test]
     fn try_collect_empty() {
         let dq: VecDeque<i32> =
-            <VecDeque<i32> as TryVecDeque<i32>>::try_collect(::lang_std::iter::empty::<i32>())
-                .unwrap();
+            <VecDeque<i32> as TryVecDeque<i32>>::try_collect(iter::empty::<i32>()).unwrap();
         assert!(dq.is_empty());
     }
 

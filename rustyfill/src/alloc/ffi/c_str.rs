@@ -4,9 +4,10 @@
 //! conversion of a `&CStr` into an owned [`CString`].
 
 use crate::alloc::vec::{TrySlice, TryVecError};
-use lang_core::fmt;
-use lang_std::ffi::{CStr, CString};
 use crate::try_to_owned::{TryToOwned, TryToOwnedError};
+use lang_alloc::ffi::CString;
+use lang_core::ffi::CStr;
+use lang_core::fmt;
 
 impl TryToOwned for CStr {
     fn try_to_owned(&self) -> Result<CString, TryToOwnedError> {
@@ -55,6 +56,7 @@ impl crate::try_fmt::TryDebug for CStr {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use lang_alloc::borrow::ToOwned;
 
     #[test]
     fn try_to_owned_empty() {
@@ -80,7 +82,7 @@ mod tests {
     #[test]
     fn try_to_owned_matches_std() {
         let c = c"rust test";
-        let expected = <CStr as ::lang_std::borrow::ToOwned>::to_owned(c);
+        let expected = <CStr as ToOwned>::to_owned(c);
         let actual: CString = c.try_to_owned().unwrap();
         assert_eq!(actual, expected);
     }
@@ -88,7 +90,7 @@ mod tests {
     #[test]
     fn try_to_owned_implies_to_owned_bound() {
         let c = c"test";
-        let owned: CString = <CStr as ::lang_std::borrow::ToOwned>::to_owned(c);
+        let owned: CString = <CStr as ToOwned>::to_owned(c);
         assert_eq!(owned.to_str().unwrap(), "test");
     }
 }

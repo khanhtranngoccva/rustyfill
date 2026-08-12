@@ -28,11 +28,14 @@
 //!   producing precise compiler diagnostics when a value lacks the expected trait.
 
 use lang_alloc::alloc;
+use lang_alloc::borrow::Cow;
 use lang_core::any;
 use lang_core::fmt;
 use lang_core::marker;
 use lang_core::mem;
 use lang_core::ops;
+#[cfg(feature = "std")]
+use lang_std::collections::TryReserveError as StdTryReserveError;
 
 mod assert;
 pub mod helpers;
@@ -604,7 +607,7 @@ impl TryDebug for alloc::Layout {
 // allocations. Safe to passthrough.
 
 #[cfg(feature = "std")]
-impl TryDebug for ::lang_std::collections::TryReserveError {
+impl TryDebug for StdTryReserveError {
     #[inline]
     fn try_fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         fmt::Debug::fmt(self, f)
@@ -614,7 +617,7 @@ impl TryDebug for ::lang_std::collections::TryReserveError {
 // ── ::lang_alloc::borrow::Cow<'_, str> ────────────────────────────────────────────────
 // Cow's Debug impl delegates to str's Debug which never allocates. Safe to passthrough.
 
-impl TryDebug for ::lang_alloc::borrow::Cow<'_, str> {
+impl TryDebug for Cow<'_, str> {
     #[inline]
     fn try_fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         fmt::Debug::fmt(self, f)
@@ -783,7 +786,13 @@ mod oom_tests {
     use lang_alloc::string::String;
     use lang_alloc::vec;
     use lang_alloc::vec::Vec;
-    use lang_std::sync::{Mutex, RwLock};
+    use lang_std::collections::{HashMap, HashSet, VecDeque};
+    use lang_std::ffi::{CString, OsString};
+    use lang_std::f32::consts as f32_consts;
+    use lang_std::f64::consts as f64_consts;
+    use lang_std::path::PathBuf;
+    use lang_std::ptr;
+    use lang_std::sync::{self, Arc, Mutex, RwLock};
     use crate::try_fmt::{TryDebug, TryDisplay};
     use rustyfill_test_allocator::{FailPolicy, with_policy};
 
@@ -887,13 +896,13 @@ mod oom_tests {
 
     #[test]
     fn try_debug_vecdeque_empty_no_alloc() {
-        let v: ::lang_std::collections::VecDeque<i32> = ::lang_std::collections::VecDeque::new();
+        let v: VecDeque<i32> = VecDeque::new();
         assert!(assert_try_debug_no_alloc(&v));
     }
 
     #[test]
     fn try_debug_vecdeque_populated_no_alloc() {
-        let mut v = ::lang_std::collections::VecDeque::new();
+        let mut v = VecDeque::new();
         v.push_back(1);
         v.push_back(2);
         v.push_front(0);
@@ -904,14 +913,14 @@ mod oom_tests {
 
     #[test]
     fn try_debug_hashmap_empty_no_alloc() {
-        let m: ::lang_std::collections::HashMap<&str, i32> =
-            ::lang_std::collections::HashMap::new();
+        let m: HashMap<&str, i32> =
+            HashMap::new();
         assert!(assert_try_debug_no_alloc(&m));
     }
 
     #[test]
     fn try_debug_hashmap_populated_no_alloc() {
-        let mut m = ::lang_std::collections::HashMap::new();
+        let mut m = HashMap::new();
         m.insert("key", 42);
         m.insert("other", 99);
         assert!(assert_try_debug_no_alloc(&m));
@@ -921,13 +930,13 @@ mod oom_tests {
 
     #[test]
     fn try_debug_hashset_empty_no_alloc() {
-        let s: ::lang_std::collections::HashSet<i32> = ::lang_std::collections::HashSet::new();
+        let s: HashSet<i32> = HashSet::new();
         assert!(assert_try_debug_no_alloc(&s));
     }
 
     #[test]
     fn try_debug_hashset_populated_no_alloc() {
-        let mut s = ::lang_std::collections::HashSet::new();
+        let mut s = HashSet::new();
         s.insert(1);
         s.insert(2);
         s.insert(3);
@@ -958,14 +967,14 @@ mod oom_tests {
 
     #[test]
     fn try_debug_arc_primitive_no_alloc() {
-        let a: ::lang_std::sync::Arc<i32> = ::lang_std::sync::Arc::new(42);
+        let a: Arc<i32> = Arc::new(42);
         assert!(assert_try_debug_no_alloc(&a));
     }
 
     #[test]
     fn try_debug_arc_string_no_alloc() {
-        let a: ::lang_std::sync::Arc<String> =
-            ::lang_std::sync::Arc::new(String::from("arc string"));
+        let a: Arc<String> =
+            Arc::new(String::from("arc string"));
         assert!(assert_try_debug_no_alloc(&a));
     }
 
@@ -973,14 +982,14 @@ mod oom_tests {
 
     #[test]
     fn try_debug_mutex_primitive_no_alloc() {
-        let m: ::lang_std::sync::Mutex<i32> = ::lang_std::sync::Mutex::new(42);
+        let m: Mutex<i32> = Mutex::new(42);
         assert!(assert_try_debug_no_alloc(&m));
     }
 
     #[test]
     fn try_debug_mutex_string_no_alloc() {
-        let m: ::lang_std::sync::Mutex<String> =
-            ::lang_std::sync::Mutex::new(String::from("mutex string"));
+        let m: Mutex<String> =
+            Mutex::new(String::from("mutex string"));
         assert!(assert_try_debug_no_alloc(&m));
     }
 
@@ -992,7 +1001,7 @@ mod oom_tests {
 
     #[test]
     fn try_debug_mutex_locked_no_alloc() {
-        let m: ::lang_std::sync::Mutex<i32> = ::lang_std::sync::Mutex::new(42);
+        let m: Mutex<i32> = Mutex::new(42);
         let _guard = m.lock().unwrap();
         assert!(assert_try_debug_no_alloc(&m));
     }
@@ -1001,14 +1010,14 @@ mod oom_tests {
 
     #[test]
     fn try_debug_rwlock_primitive_no_alloc() {
-        let rw: ::lang_std::sync::RwLock<i32> = ::lang_std::sync::RwLock::new(42);
+        let rw: RwLock<i32> = RwLock::new(42);
         assert!(assert_try_debug_no_alloc(&rw));
     }
 
     #[test]
     fn try_debug_rwlock_string_no_alloc() {
-        let rw: ::lang_std::sync::RwLock<String> =
-            ::lang_std::sync::RwLock::new(String::from("rwlock string"));
+        let rw: RwLock<String> =
+            RwLock::new(String::from("rwlock string"));
         assert!(assert_try_debug_no_alloc(&rw));
     }
 
@@ -1024,14 +1033,14 @@ mod oom_tests {
     #[test]
     fn std_debug_mutex_primitive_no_alloc() {
         use super::AssertDebug;
-        let m: ::lang_std::sync::Mutex<i32> = ::lang_std::sync::Mutex::new(42);
+        let m: sync::Mutex<i32> = sync::Mutex::new(42);
         assert!(assert_try_debug_no_alloc(AssertDebug(&m)));
     }
 
     #[test]
     fn std_debug_rwlock_primitive_no_alloc() {
         use super::AssertDebug;
-        let rw: ::lang_std::sync::RwLock<i32> = ::lang_std::sync::RwLock::new(42);
+        let rw: sync::RwLock<i32> = sync::RwLock::new(42);
         assert!(assert_try_debug_no_alloc(AssertDebug(&rw)));
     }
 
@@ -1039,13 +1048,13 @@ mod oom_tests {
 
     #[test]
     fn try_debug_pathbuf_no_alloc() {
-        let pb = ::lang_std::path::PathBuf::from("/tmp/test/file.txt");
+        let pb = PathBuf::from("/tmp/test/file.txt");
         assert!(assert_try_debug_no_alloc(&pb));
     }
 
     #[test]
     fn try_debug_pathbuf_unicode_no_alloc() {
-        let pb = ::lang_std::path::PathBuf::from("/home/user/docs");
+        let pb = PathBuf::from("/home/user/docs");
         assert!(assert_try_debug_no_alloc(&pb));
     }
 
@@ -1053,7 +1062,7 @@ mod oom_tests {
 
     #[test]
     fn try_debug_osstring_no_alloc() {
-        let s = ::lang_std::ffi::OsString::from("os string data");
+        let s = OsString::from("os string data");
         assert!(assert_try_debug_no_alloc(&s));
     }
 
@@ -1061,7 +1070,7 @@ mod oom_tests {
 
     #[test]
     fn try_debug_cstring_no_alloc() {
-        let cs = ::lang_std::ffi::CString::new("cstring data").unwrap();
+        let cs = CString::new("cstring data").unwrap();
         assert!(assert_try_debug_no_alloc(&cs));
     }
 
@@ -1085,7 +1094,7 @@ mod oom_tests {
 
     #[test]
     fn try_display_f64_default_no_alloc() {
-        assert!(assert_try_display_no_alloc(::lang_std::f64::consts::PI));
+        assert!(assert_try_display_no_alloc(f64_consts::PI));
         assert!(assert_try_display_no_alloc(-0.0_f64));
         assert!(assert_try_display_no_alloc(f64::INFINITY));
         assert!(assert_try_display_no_alloc(f64::NAN));
@@ -1093,7 +1102,7 @@ mod oom_tests {
 
     #[test]
     fn try_display_f32_default_no_alloc() {
-        assert!(assert_try_display_no_alloc(::lang_std::f32::consts::PI));
+        assert!(assert_try_display_no_alloc(f32_consts::PI));
         assert!(assert_try_display_no_alloc(-0.0_f32));
         assert!(assert_try_display_no_alloc(f32::INFINITY));
         assert!(assert_try_display_no_alloc(f32::NAN));
@@ -1101,14 +1110,14 @@ mod oom_tests {
 
     #[test]
     fn try_debug_f64_no_alloc() {
-        assert!(assert_try_debug_no_alloc(::lang_std::f64::consts::PI));
+        assert!(assert_try_debug_no_alloc(f64_consts::PI));
         assert!(assert_try_debug_no_alloc(-0.0_f64));
         assert!(assert_try_debug_no_alloc(f64::INFINITY));
     }
 
     #[test]
     fn try_debug_f32_no_alloc() {
-        assert!(assert_try_debug_no_alloc(::lang_std::f32::consts::PI));
+        assert!(assert_try_debug_no_alloc(f32_consts::PI));
         assert!(assert_try_debug_no_alloc(-0.0_f32));
         assert!(assert_try_debug_no_alloc(f32::NEG_INFINITY));
     }
@@ -1171,8 +1180,8 @@ mod oom_tests {
 
     #[test]
     fn try_debug_boxed_arc_vec_no_alloc() {
-        let val: Box<::lang_std::sync::Arc<Vec<String>>> =
-            Box::new(::lang_std::sync::Arc::new(vec![String::from("nested")]));
+        let val: Box<sync::Arc<Vec<String>>> =
+            Box::new(sync::Arc::new(vec![String::from("nested")]));
         assert!(assert_try_debug_no_alloc(&val));
     }
 
@@ -1180,7 +1189,7 @@ mod oom_tests {
 
     #[test]
     fn try_display_path_display_no_alloc() {
-        let pb = ::lang_std::path::PathBuf::from("/tmp/test/file.txt");
+        let pb = PathBuf::from("/tmp/test/file.txt");
         let display = pb.display();
         assert!(with_policy(FailPolicy::fail_all_alloc(), || {
             let mut w = NoopWriter;
@@ -1190,7 +1199,7 @@ mod oom_tests {
 
     #[test]
     fn try_debug_path_display_no_alloc() {
-        let pb = ::lang_std::path::PathBuf::from("/tmp/test/file.txt");
+        let pb = PathBuf::from("/tmp/test/file.txt");
         let display = pb.display();
         assert!(with_policy(FailPolicy::fail_all_alloc(), || {
             let mut w = NoopWriter;
@@ -1200,7 +1209,7 @@ mod oom_tests {
 
     #[test]
     fn try_display_osstr_display_no_alloc() {
-        let os = ::lang_std::ffi::OsString::from("os string data");
+        let os = OsString::from("os string data");
         let display = os.display();
         assert!(with_policy(FailPolicy::fail_all_alloc(), || {
             let mut w = NoopWriter;
@@ -1210,7 +1219,7 @@ mod oom_tests {
 
     #[test]
     fn try_debug_osstr_display_no_alloc() {
-        let os = ::lang_std::ffi::OsString::from("os string data");
+        let os = OsString::from("os string data");
         let display = os.display();
         assert!(with_policy(FailPolicy::fail_all_alloc(), || {
             let mut w = NoopWriter;
@@ -1302,7 +1311,7 @@ mod oom_tests {
 
     #[test]
     fn try_debug_null_ptr_no_alloc() {
-        let ptr: *const u8 = ::lang_std::ptr::null();
+        let ptr: *const u8 = ptr::null();
         assert!(assert_try_debug_no_alloc(&ptr));
     }
 
@@ -1474,6 +1483,7 @@ mod oom_tests {
 #[allow(clippy::needless_borrows_for_generic_args)]
 mod try_write_tests {
     use super::TryDebug;
+    use lang_alloc::borrow::Cow;
     use lang_alloc::format;
     use lang_alloc::string::String;
     use lang_alloc::vec;
@@ -1482,7 +1492,11 @@ mod try_write_tests {
     use lang_core::marker;
     use lang_core::mem;
     use lang_core::ops;
+    use lang_std::f32::consts as f32_consts;
+    use lang_std::f64::consts as f64_consts;
     use lang_std::io::{Cursor, Write};
+    use lang_std::path::PathBuf;
+    use lang_std::ptr;
     use crate::try_write;
 
     // ── Basic formatting modes ─────────────────────────────────────────────
@@ -1822,13 +1836,13 @@ mod try_write_tests {
     // ── Wrapper construction verification ────────────────────────────────────
 
     struct TryOnlyDebug(i32);
-    impl ::lang_std::fmt::Debug for TryOnlyDebug {
-        fn fmt(&self, f: &mut ::lang_std::fmt::Formatter<'_>) -> ::lang_std::fmt::Result {
+    impl lang_core::fmt::Debug for TryOnlyDebug {
+        fn fmt(&self, f: &mut lang_core::fmt::Formatter<'_>) -> lang_core::fmt::Result {
             write!(f, "TryOnlyDebug({})", self.0)
         }
     }
     impl TryDebug for TryOnlyDebug {
-        fn try_fmt(&self, f: &mut ::lang_std::fmt::Formatter<'_>) -> ::lang_std::fmt::Result {
+        fn try_fmt(&self, f: &mut lang_core::fmt::Formatter<'_>) -> lang_core::fmt::Result {
             write!(f, "TryOnlyDebug({})", self.0)
         }
     }
@@ -2098,7 +2112,7 @@ mod try_write_tests {
 
     #[test]
     fn parity_pathbuf_debug() {
-        let pb = ::lang_std::path::PathBuf::from("/tmp/test");
+        let pb = PathBuf::from("/tmp/test");
         let mut bs = Cursor::new(Vec::new());
         let mut bt = Cursor::new(Vec::new());
         write!(&mut bs, "{:?}", pb).unwrap();
@@ -2108,7 +2122,7 @@ mod try_write_tests {
 
     #[test]
     fn parity_path_display() {
-        let pb = ::lang_std::path::PathBuf::from("/tmp/test");
+        let pb = PathBuf::from("/tmp/test");
         let d = pb.display();
         let mut bs = Cursor::new(Vec::new());
         let mut bt = Cursor::new(Vec::new());
@@ -2123,8 +2137,8 @@ mod try_write_tests {
     fn parity_f64_default_display() {
         let mut bs = Cursor::new(Vec::new());
         let mut bt = Cursor::new(Vec::new());
-        write!(&mut bs, "{}", ::lang_std::f64::consts::PI).unwrap();
-        try_write!(&mut bt, "{}", ::lang_std::f64::consts::PI).unwrap();
+        write!(&mut bs, "{}", f64_consts::PI).unwrap();
+        try_write!(&mut bt, "{}", f64_consts::PI).unwrap();
         assert_eq!(bs.into_inner(), bt.into_inner());
     }
 
@@ -2132,8 +2146,8 @@ mod try_write_tests {
     fn parity_f32_default_display() {
         let mut bs = Cursor::new(Vec::new());
         let mut bt = Cursor::new(Vec::new());
-        write!(&mut bs, "{}", ::lang_std::f32::consts::PI).unwrap();
-        try_write!(&mut bt, "{}", ::lang_std::f32::consts::PI).unwrap();
+        write!(&mut bs, "{}", f32_consts::PI).unwrap();
+        try_write!(&mut bt, "{}", f32_consts::PI).unwrap();
         assert_eq!(bs.into_inner(), bt.into_inner());
     }
 
@@ -2141,8 +2155,8 @@ mod try_write_tests {
     fn parity_f64_debug() {
         let mut bs = Cursor::new(Vec::new());
         let mut bt = Cursor::new(Vec::new());
-        write!(&mut bs, "{:?}", ::lang_std::f64::consts::PI).unwrap();
-        try_write!(&mut bt, "{:?}", ::lang_std::f64::consts::PI).unwrap();
+        write!(&mut bs, "{:?}", f64_consts::PI).unwrap();
+        try_write!(&mut bt, "{:?}", f64_consts::PI).unwrap();
         assert_eq!(bs.into_inner(), bt.into_inner());
     }
 
@@ -2150,8 +2164,8 @@ mod try_write_tests {
     fn parity_f32_debug() {
         let mut bs = Cursor::new(Vec::new());
         let mut bt = Cursor::new(Vec::new());
-        write!(&mut bs, "{:?}", ::lang_std::f32::consts::PI).unwrap();
-        try_write!(&mut bt, "{:?}", ::lang_std::f32::consts::PI).unwrap();
+        write!(&mut bs, "{:?}", f32_consts::PI).unwrap();
+        try_write!(&mut bt, "{:?}", f32_consts::PI).unwrap();
         assert_eq!(bs.into_inner(), bt.into_inner());
     }
 
@@ -2159,8 +2173,8 @@ mod try_write_tests {
     fn parity_f64_precision() {
         let mut bs = Cursor::new(Vec::new());
         let mut bt = Cursor::new(Vec::new());
-        write!(&mut bs, "{:.10}", ::lang_std::f64::consts::PI).unwrap();
-        try_write!(&mut bt, "{:.10}", ::lang_std::f64::consts::PI).unwrap();
+        write!(&mut bs, "{:.10}", f64_consts::PI).unwrap();
+        try_write!(&mut bt, "{:.10}", f64_consts::PI).unwrap();
         assert_eq!(bs.into_inner(), bt.into_inner());
     }
 
@@ -2168,8 +2182,8 @@ mod try_write_tests {
     fn parity_f32_precision() {
         let mut bs = Cursor::new(Vec::new());
         let mut bt = Cursor::new(Vec::new());
-        write!(&mut bs, "{:.5}", ::lang_std::f32::consts::PI).unwrap();
-        try_write!(&mut bt, "{:.5}", ::lang_std::f32::consts::PI).unwrap();
+        write!(&mut bs, "{:.5}", f32_consts::PI).unwrap();
+        try_write!(&mut bt, "{:.5}", f32_consts::PI).unwrap();
         assert_eq!(bs.into_inner(), bt.into_inner());
     }
 
@@ -2236,8 +2250,8 @@ mod try_write_tests {
     fn parity_f64_width_and_padding() {
         let mut bs = Cursor::new(Vec::new());
         let mut bt = Cursor::new(Vec::new());
-        write!(&mut bs, "{:>10.2}", ::lang_std::f64::consts::PI).unwrap();
-        try_write!(&mut bt, "{:>10.2}", ::lang_std::f64::consts::PI).unwrap();
+        write!(&mut bs, "{:>10.2}", f64_consts::PI).unwrap();
+        try_write!(&mut bt, "{:>10.2}", f64_consts::PI).unwrap();
         assert_eq!(bs.into_inner(), bt.into_inner());
     }
 
@@ -2428,14 +2442,14 @@ mod try_write_tests {
         write!(
             &mut bs,
             "{number:.prec$}",
-            number = ::lang_std::f64::consts::PI,
+            number = f64_consts::PI,
             prec = 2_usize
         )
         .unwrap();
         try_write!(
             &mut bt,
             "{number:.prec$}",
-            number = ::lang_std::f64::consts::PI,
+            number = f64_consts::PI,
             prec = 2_usize
         )
         .unwrap();
@@ -2647,7 +2661,7 @@ mod try_write_tests {
 
     #[test]
     fn parity_null_ptr_debug() {
-        let ptr: *const u8 = ::lang_std::ptr::null();
+        let ptr: *const u8 = ptr::null();
         let mut bs = Cursor::new(Vec::new());
         let mut bt = Cursor::new(Vec::new());
         write!(&mut bs, "{:?}", ptr).unwrap();
@@ -2920,8 +2934,6 @@ mod try_write_tests {
     }
 
     // ── try_format_or! tests ───────────────────────────────────────────────
-
-    use lang_std::borrow::Cow;
 
     static DIAGNOSTICS_OOM: &str = "<out of memory>";
     const BUSINESS_LOGIC_FAILED: &str = "business logic A failed";

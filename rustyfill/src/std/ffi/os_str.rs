@@ -8,6 +8,7 @@
 use crate::alloc::{AllocError, TryReserveError};
 use lang_core::fmt;
 use lang_std::ffi::{OsStr, OsString};
+use lang_std::ffi::os_str::Display;
 use crate::try_fmt::{TryDebug, helpers::FormatterExt};
 
 /// Error returned by [`TryOsStr`] operations.
@@ -186,13 +187,13 @@ impl crate::try_fmt::TryDebug for OsStr {
 // ::lang_std::ffi::os_str::Display's canonical Debug and Display impls write the OsStr
 // to the formatter without allocating. Safe to passthrough.
 
-impl crate::try_fmt::TryDebug for ::lang_std::ffi::os_str::Display<'_> {
+impl crate::try_fmt::TryDebug for Display<'_> {
     fn try_fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         fmt::Debug::fmt(self, f)
     }
 }
 
-impl crate::try_fmt::TryDisplay for ::lang_std::ffi::os_str::Display<'_> {
+impl crate::try_fmt::TryDisplay for Display<'_> {
     fn try_fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         fmt::Display::fmt(self, f)
     }
@@ -201,6 +202,7 @@ impl crate::try_fmt::TryDisplay for ::lang_std::ffi::os_str::Display<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use lang_std::borrow::ToOwned;
 
     // ── try_to_os_string ─────────────────────────────────────────────────────
 
@@ -359,7 +361,7 @@ mod tests {
     #[test]
     fn try_to_owned_implies_to_owned_bound() {
         let s = OsStr::new("test");
-        let owned: OsString = <OsStr as ::lang_std::borrow::ToOwned>::to_owned(s);
+        let owned: OsString = <OsStr as ToOwned>::to_owned(s);
         assert_eq!(owned, OsString::from("test"));
     }
 }

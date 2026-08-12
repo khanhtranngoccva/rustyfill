@@ -304,7 +304,7 @@ impl<K: Eq + Hash, V, S: BuildHasher> ConcurrentHashMap<K, V, S> {
         let shift = usize::BITS - shard_count.trailing_zeros();
         let layout = lang_alloc::alloc::Layout::array::<Shard<K, V>>(shard_count)
             .map_err(|_| ConcurrentHashMapError::Overflow)?;
-        let ptr = unsafe { ::lang_alloc::alloc::alloc(layout) };
+        let ptr = unsafe { lang_alloc::alloc::alloc(layout) };
         if ptr.is_null() {
             return Err(ConcurrentHashMapError::Alloc(AllocError { layout }));
         }
@@ -376,7 +376,7 @@ impl<K: Eq + Hash, V, S: BuildHasher> ConcurrentHashMap<K, V, S> {
         let ptr = shards.as_mut_ptr();
         let len = shards.len();
         Self {
-            shards: ShardsStorage::Static(::lang_std::ptr::slice_from_raw_parts_mut(ptr, len)),
+            shards: ShardsStorage::Static(ptr::slice_from_raw_parts_mut(ptr, len)),
             hasher,
             shift,
         }
@@ -904,6 +904,7 @@ mod tests {
     use lang_alloc::string::ToString;
     use lang_alloc::vec;
     use lang_alloc::vec::Vec;
+    use lang_std::cell::Cell;
     use lang_std::sync::Arc;
     use lang_std::thread;
 
@@ -1010,7 +1011,7 @@ mod tests {
     #[test]
     fn entry_or_insert_with() {
         let map: ConcurrentHashMap<&str, usize> = ConcurrentHashMap::try_new().unwrap();
-        let called = ::lang_std::cell::Cell::new(false);
+        let called = Cell::new(false);
         {
             map.try_entry("b").unwrap().or_insert_with(|| {
                 called.set(true);

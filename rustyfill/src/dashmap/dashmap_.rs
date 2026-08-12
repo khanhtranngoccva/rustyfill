@@ -19,14 +19,15 @@
 use hashbrown::raw::RawTable;
 
 use crate::alloc::{AllocError, TryReserveError};
-use lang_core::fmt;
-use lang_core::mem;
-use lang_core::ptr;
-use lang_std::cmp::Eq;
-use lang_std::hash::{BuildHasher, Hash, RandomState};
 use crate::prelude::TryDefault;
 use crate::try_clone::{TryClone, TryCloneError};
 use crate::try_fmt::{TryDebug, helpers::FormatterExt};
+use lang_core::cmp::Eq;
+use lang_core::fmt;
+use lang_core::mem;
+use lang_core::mem::ManuallyDrop;
+use lang_core::ptr;
+use lang_std::hash::{BuildHasher, Hash, RandomState};
 
 type DashMap<K, V, S = RandomState> = dashmap::DashMap<K, V, S>;
 
@@ -998,17 +999,15 @@ impl<K: Eq + Hash, V, S: BuildHasher + TryClone> TryDashMap<K, V, S> for DashMap
 
             // Hydrate the new table into the shard slot.
             let old_table = mem::replace(&mut *shard, unsafe {
-                mem::transmute::<
-                    RawTable<::lang_std::mem::ManuallyDrop<ShardEntry<K, V>>>,
-                    RawTable<ShardEntry<K, V>>,
-                >(new_table)
+                mem::transmute::<RawTable<ManuallyDrop<ShardEntry<K, V>>>, RawTable<ShardEntry<K, V>>>(
+                    new_table,
+                )
             });
             // Values were moved out of the old table above, so we need to dehydrate the table.
             let _dehydrated_table = unsafe {
-                mem::transmute::<
-                    RawTable<ShardEntry<K, V>>,
-                    RawTable<::lang_std::mem::ManuallyDrop<ShardEntry<K, V>>>,
-                >(old_table)
+                mem::transmute::<RawTable<ShardEntry<K, V>>, RawTable<ManuallyDrop<ShardEntry<K, V>>>>(
+                    old_table,
+                )
             };
         }
 
@@ -1117,11 +1116,12 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::try_default::TryDefault as _;
     use lang_alloc::string::String;
     use lang_alloc::string::ToString;
     use lang_alloc::vec;
     use lang_alloc::vec::Vec;
-    use crate::try_default::TryDefault as _;
+    use lang_std::iter;
 
     // ── Construction ─────────────────────────────────────────────────────────
 
@@ -1634,8 +1634,7 @@ mod tests {
     #[test]
     fn try_extend_empty() {
         let map: DashMap<i32, i32> = DashMap::new();
-        map.try_extend(::lang_std::iter::empty::<(i32, i32)>())
-            .unwrap();
+        map.try_extend(iter::empty::<(i32, i32)>()).unwrap();
         assert!(map.is_empty());
     }
 
@@ -1675,9 +1674,10 @@ mod tests {
     #[test]
     fn try_collect_empty() {
         let map: DashMap<i32, i32> =
-            <DashMap<i32, i32> as TryDashMap<_, _, RandomState>>::try_collect(
-                ::lang_std::iter::empty::<(i32, i32)>(),
-            )
+            <DashMap<i32, i32> as TryDashMap<_, _, RandomState>>::try_collect(iter::empty::<(
+                i32,
+                i32,
+            )>())
             .unwrap();
         assert!(map.is_empty());
     }

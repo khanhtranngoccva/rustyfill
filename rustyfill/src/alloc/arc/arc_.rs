@@ -1,14 +1,14 @@
 use crate::alloc::AllocError;
 use crate::alloc::boxed::TryBox;
+use crate::try_clone::{TryClone, TryCloneError};
+use crate::try_default::{TryDefault, TryDefaultError};
 use lang_alloc::boxed::Box;
+use lang_alloc::sync::{Arc, Weak};
 use lang_core::fmt;
 use lang_core::mem::{ManuallyDrop, MaybeUninit};
 use lang_core::pin::Pin;
 use lang_core::ptr;
 use lang_core::sync::atomic::{AtomicUsize, Ordering};
-use lang_std::sync::{Arc, Weak};
-use crate::try_clone::{TryClone, TryCloneError};
-use crate::try_default::{TryDefault, TryDefaultError};
 
 /// Internal representation of an Arc allocation.
 ///
@@ -502,11 +502,13 @@ impl<T: ?Sized + crate::try_fmt::TryDebug> crate::try_fmt::TryDebug for Arc<T> {
 #[allow(deprecated)]
 mod tests {
     use super::*;
+    use lang_alloc::format;
     use lang_alloc::string::String;
     use lang_alloc::string::ToString;
     use lang_alloc::vec;
     use lang_alloc::vec::Vec;
-    use lang_std::format;
+    use lang_core::fmt;
+    use lang_core::mem;
 
     type PinArcResult<T> = Result<Pin<Arc<T>>, (T, AllocError)>;
 
@@ -946,7 +948,7 @@ mod tests {
 
     #[test]
     fn weak_try_upgrade_dyn_trait() {
-        let arc: Arc<dyn ::lang_std::fmt::Debug> = Arc::new(42i32);
+        let arc: Arc<dyn fmt::Debug> = Arc::new(42i32);
         let weak = Arc::downgrade(&arc);
         let upgraded = weak.try_upgrade().unwrap().unwrap();
         assert_eq!(Arc::strong_count(&arc), 2);
@@ -975,12 +977,12 @@ mod tests {
     fn arc_dyn_trait_try_clone() {
         use crate::try_clone::TryClone;
         struct Greeter(String);
-        impl ::lang_std::fmt::Display for Greeter {
-            fn fmt(&self, f: &mut ::lang_std::fmt::Formatter<'_>) -> ::lang_std::fmt::Result {
+        impl fmt::Display for Greeter {
+            fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
                 write!(f, "Hello, {}!", self.0)
             }
         }
-        let arc: Arc<dyn ::lang_std::fmt::Display> = Arc::new(Greeter("world".into()));
+        let arc: Arc<dyn fmt::Display> = Arc::new(Greeter("world".into()));
         let arc2 = arc.try_clone().unwrap();
         assert_eq!(Arc::strong_count(&arc), 2);
         assert!(Arc::ptr_eq(&arc, &arc2));
@@ -989,7 +991,7 @@ mod tests {
     #[test]
     fn arc_dyn_trait_try_clone_multiple() {
         use crate::try_clone::TryClone;
-        let arc: Arc<dyn ::lang_std::fmt::Debug> = Arc::new(42i32);
+        let arc: Arc<dyn fmt::Debug> = Arc::new(42i32);
         let mut clones = Vec::new();
         for i in 0..50 {
             clones.push(arc.try_clone().unwrap());
@@ -1016,7 +1018,7 @@ mod tests {
     #[test]
     fn weak_dyn_trait_try_clone() {
         use crate::try_clone::TryClone;
-        let arc: Arc<dyn ::lang_std::fmt::Display> = Arc::new(99i64);
+        let arc: Arc<dyn fmt::Display> = Arc::new(99i64);
         let weak = Arc::downgrade(&arc);
         assert_eq!(Arc::weak_count(&arc), 1);
         let weak2 = weak.try_clone().unwrap();
@@ -1196,7 +1198,7 @@ mod tests {
 
     #[test]
     fn arc_fallible_new_uninit_fails_on_oom() {
-        let r: Result<Arc<::lang_std::mem::MaybeUninit<i32>>, AllocError> = with_policy(
+        let r: Result<Arc<mem::MaybeUninit<i32>>, AllocError> = with_policy(
             FailPolicy::fail_next_alloc(),
             <Arc<i32> as TryArc<i32>>::fallible_new_uninit,
         );
@@ -1205,7 +1207,7 @@ mod tests {
 
     #[test]
     fn arc_fallible_new_zeroed_fails_on_oom() {
-        let r: Result<Arc<::lang_std::mem::MaybeUninit<[u8; 16]>>, AllocError> = with_policy(
+        let r: Result<Arc<mem::MaybeUninit<[u8; 16]>>, AllocError> = with_policy(
             FailPolicy::fail_next_alloc(),
             <Arc<[u8; 16]> as TryArc<[u8; 16]>>::fallible_new_zeroed,
         );

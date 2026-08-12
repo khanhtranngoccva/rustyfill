@@ -20,6 +20,7 @@ use crate::alloc::TryReserveError;
 use crate::alloc::vec::TryVec;
 use lang_alloc::vec::Vec;
 use lang_core::fmt;
+use lang_core::mem;
 use lang_std::ffi::{OsStr, OsString};
 use lang_std::path::{Component, MAIN_SEPARATOR_STR, Path, PathBuf, Prefix, is_separator};
 use crate::std::ffi::TryOsString;
@@ -310,7 +311,7 @@ pub(crate) fn inner_push(target: &mut PathBuf, path: &Path) -> Result<(), TryRes
     // `path` has a root but no prefix, e.g., `\windows` (Windows only)
     } else if path.has_root() {
         let prefix_len: usize = prefix.as_ref().map(prefix_len).unwrap_or(0);
-        let current = ::lang_std::mem::take(target.as_mut_os_string());
+        let current = mem::take(target.as_mut_os_string());
         // Swap out the string to enable internal access
         let mut current_bytes = current.into_encoded_bytes();
         // The prefix_bytes is always valid
@@ -426,7 +427,7 @@ impl TryPathBuf for PathBuf {
         // OsString::truncate is unstable, so we swap out the bytes, truncate
         // the owned buffer, and reconstruct. At this point reservation has
         // already succeeded, so the following pushes are infallible.
-        let current = ::lang_std::mem::take(self.as_mut_os_string());
+        let current = mem::take(self.as_mut_os_string());
         let mut current_bytes = current.into_encoded_bytes();
         current_bytes.truncate(fname_end_offset);
         *self.as_mut_os_string() = unsafe { OsString::from_encoded_bytes_unchecked(current_bytes) };

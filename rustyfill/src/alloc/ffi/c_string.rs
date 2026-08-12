@@ -7,7 +7,7 @@
 //! # Design
 //!
 //! `CString::new` can fail in two ways: the input may contain an interior nul byte
-//! (returned as [`::lang_std::ffi::NulError`]), or the internal buffer allocation may
+//! (returned as [`::lang_alloc::ffi::NulError`]), or the internal buffer allocation may
 //! panic on out-of-memory. [`TryCString::try_new`] takes ownership of a
 //! [`Vec<u8>`] so that allocation is decoupled from construction — the caller
 //! controls when memory is committed, and the method only needs to validate the
@@ -19,7 +19,8 @@ use crate::alloc::TryReserveError;
 use crate::alloc::vec::{TrySlice, TryVecError};
 use lang_alloc::vec::Vec;
 use lang_core::fmt;
-use lang_std::ffi::CString;
+use lang_alloc::collections::TryReserveError as StdTryReserveError;
+use lang_alloc::ffi::CString;
 use crate::try_clone::{TryClone, TryCloneError};
 use crate::try_default::{TryDefault, TryDefaultError};
 use crate::try_fmt::{TryDebug, helpers::FormatterExt};
@@ -71,8 +72,8 @@ impl From<TryReserveError> for TryCStringError {
     }
 }
 
-impl From<::lang_std::collections::TryReserveError> for TryCStringError {
-    fn from(err: ::lang_std::collections::TryReserveError) -> Self {
+impl From<StdTryReserveError> for TryCStringError {
+    fn from(err: StdTryReserveError) -> Self {
         Self::Reserve(TryReserveError::from(err))
     }
 }
@@ -212,7 +213,7 @@ mod tests {
     use super::*;
     use lang_alloc::vec;
     use lang_alloc::vec::Vec;
-    use lang_std::format;
+    use lang_alloc::format;
 
     // ── Valid inputs ─────────────────────────────────────────────────────────
 

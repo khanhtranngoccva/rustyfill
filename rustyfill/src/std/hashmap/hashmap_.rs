@@ -20,7 +20,8 @@ use crate::alloc::TryReserveError;
 use lang_core::cmp;
 use lang_core::cmp::Eq;
 use lang_core::fmt;
-use lang_std::collections::HashMap;
+use lang_std::collections::hash_map;
+use lang_std::collections::{HashMap, TryReserveError as StdTryReserveError};
 use lang_std::hash::{BuildHasher, Hash, RandomState};
 use crate::try_clone::{TryClone, TryCloneError};
 use crate::try_default::{TryDefault, TryDefaultError};
@@ -116,8 +117,8 @@ impl From<TryDefaultError> for TryHashMapError {
     }
 }
 
-impl From<::lang_std::collections::TryReserveError> for TryHashMapError {
-    fn from(e: ::lang_std::collections::TryReserveError) -> Self {
+impl From<StdTryReserveError> for TryHashMapError {
+    fn from(e: StdTryReserveError) -> Self {
         Self::Reserve(TryReserveError::from(e))
     }
 }
@@ -243,7 +244,7 @@ pub trait TryHashMap<K, V, S = RandomState>: Sized {
     fn try_entry<'a>(
         &'a mut self,
         key: K,
-    ) -> Result<::lang_std::collections::hash_map::Entry<'a, K, V>, TryHashMapError>
+    ) -> Result<hash_map::Entry<'a, K, V>, TryHashMapError>
     where
         K: Eq + Hash;
 
@@ -322,7 +323,7 @@ pub trait TryHashMap<K, V, S = RandomState>: Sized {
     fn fallible_entry<'a>(
         &'a mut self,
         key: K,
-    ) -> Result<::lang_std::collections::hash_map::Entry<'a, K, V>, TryHashMapError>
+    ) -> Result<hash_map::Entry<'a, K, V>, TryHashMapError>
     where
         K: Eq + Hash,
     {
@@ -533,7 +534,7 @@ impl<K: Eq + Hash, V, S: BuildHasher> TryHashMap<K, V, S> for HashMap<K, V, S> {
     fn try_entry<'a>(
         &'a mut self,
         key: K,
-    ) -> Result<::lang_std::collections::hash_map::Entry<'a, K, V>, TryHashMapError>
+    ) -> Result<hash_map::Entry<'a, K, V>, TryHashMapError>
     where
         K: Eq + Hash,
     {
@@ -745,6 +746,7 @@ mod tests {
     use lang_alloc::vec;
     use lang_alloc::vec::Vec;
     use lang_std::collections::hash_map::RandomState;
+    use lang_std::iter;
 
     // ── Construction ─────────────────────────────────────────────────────────
 
@@ -854,7 +856,7 @@ mod tests {
     #[test]
     fn try_extend_empty() {
         let mut map: HashMap<i32, i32> = HashMap::new();
-        map.try_extend(::lang_std::iter::empty::<(i32, i32)>())
+        map.try_extend(iter::empty::<(i32, i32)>())
             .unwrap();
         assert!(map.is_empty());
     }
@@ -947,7 +949,7 @@ mod tests {
     fn try_collect_empty() {
         let map: HashMap<i32, i32> =
             <HashMap<i32, i32> as TryHashMap<_, _, RandomState>>::try_collect(
-                ::lang_std::iter::empty::<(i32, i32)>(),
+                iter::empty::<(i32, i32)>(),
             )
             .unwrap();
         assert!(map.is_empty());

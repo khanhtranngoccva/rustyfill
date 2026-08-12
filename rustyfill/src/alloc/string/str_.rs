@@ -6,6 +6,7 @@
 //! for consistency with [`TryString`](super::string_::TryString).
 
 use crate::alloc::{AllocError, TryReserveError};
+use lang_alloc::alloc;
 use lang_alloc::boxed::Box;
 use lang_alloc::string::String;
 use lang_core::alloc::Layout;
@@ -169,7 +170,7 @@ impl TryClone for Box<str> {
         // Allocate exactly `len` bytes — no excess capacity.
         // Layout::array handles overflow checking internally.
         let layout = Layout::array::<u8>(len).map_err(|_| TryCloneError::Overflow)?;
-        let ptr = unsafe { ::lang_alloc::alloc::alloc(layout) };
+        let ptr = unsafe { alloc::alloc(layout) };
         if ptr.is_null() {
             return Err(TryCloneError::Alloc(AllocError { layout }));
         }
@@ -200,6 +201,7 @@ impl TryDefault for Box<str> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use lang_alloc::borrow::ToOwned;
 
     // ── try_to_string ────────────────────────────────────────────────────────
 
@@ -323,7 +325,7 @@ mod tests {
     #[test]
     fn try_to_owned_implies_to_owned_bound() {
         let s: &str = "test";
-        let owned: String = <str as ::lang_std::borrow::ToOwned>::to_owned(s);
+        let owned: String = <str as ToOwned>::to_owned(s);
         assert_eq!(owned, "test");
     }
 }

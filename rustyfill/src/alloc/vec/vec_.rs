@@ -2,7 +2,7 @@
 //!
 //! Provides the [`TryVec`] trait with methods that mirror common `Vec` constructors
 //! and mutating operations but return [`Result`] to handle allocation failures
-//! gracefully, using [`::lang_std::collections::TryReserveError`] as the primary error type.
+//! gracefully, using [`::lang_alloc::collections::TryReserveError`] as the primary error type.
 //!
 //! # Design
 //!
@@ -17,14 +17,15 @@
 use super::raw_manipulation::RawVecInnerView;
 use crate::alloc::AllocError;
 use crate::alloc::TryReserveError;
+use crate::try_clone::{TryClone, TryCloneError};
+use crate::try_default::{TryDefault, TryDefaultError};
+use crate::try_fmt::{TryDebug, helpers::FormatterExt};
 use lang_alloc::vec::Vec;
 use lang_core::alloc::Layout;
 use lang_core::cmp;
 use lang_core::fmt;
 use lang_core::mem;
-use crate::try_clone::{TryClone, TryCloneError};
-use crate::try_default::{TryDefault, TryDefaultError};
-use crate::try_fmt::{TryDebug, helpers::FormatterExt};
+use lang_core::ops::{Bound, RangeBounds};
 
 /// Panic-safe guard that truncates a `Vec` back to its original length on drop
 /// unless disarmed via `forget()`. Used by fallible extend methods so that if
@@ -230,7 +231,7 @@ pub trait TryVec<T>: Sized {
     /// pre-call state.
     ///
     /// Returns [`TryVecError::Other`] if the range is out of bounds.
-    fn try_extend_from_within<R: ::lang_std::ops::RangeBounds<usize>>(
+    fn try_extend_from_within<R: RangeBounds<usize>>(
         &mut self,
         range: R,
     ) -> Result<(), TryVecError>
@@ -349,7 +350,7 @@ pub trait TryVec<T>: Sized {
     }
 
     /// Alias for [`Self::try_extend_from_within`].
-    fn fallible_extend_from_within<R: ::lang_std::ops::RangeBounds<usize>>(
+    fn fallible_extend_from_within<R: RangeBounds<usize>>(
         &mut self,
         range: R,
     ) -> Result<(), TryVecError>
@@ -580,15 +581,10 @@ impl<T> TryVec<T> for Vec<T> {
         Ok(())
     }
 
-    fn try_extend_from_within<R: ::lang_std::ops::RangeBounds<usize>>(
-        &mut self,
-        range: R,
-    ) -> Result<(), TryVecError>
+    fn try_extend_from_within<R: RangeBounds<usize>>(&mut self, range: R) -> Result<(), TryVecError>
     where
         T: TryClone,
     {
-        use lang_std::ops::Bound;
-
         let start = match range.start_bound() {
             Bound::Included(&i) => i,
             Bound::Excluded(&i) => i.checked_add(1).ok_or(TryVecError::Overflow)?,
@@ -684,7 +680,7 @@ impl<T> TryVec<T> for Vec<T> {
         if self.capacity() <= target {
             return Ok(());
         }
-        let (mut current_raw, current_len) = RawVecInnerView::from_vec(::lang_std::mem::take(self));
+        let (mut current_raw, current_len) = RawVecInnerView::from_vec(mem::take(self));
         // SAFETY: target < self.capacity() (guaranteed by the early-return guard
         // above), and elem_layout matches the type T that was used to allocate the original buffer.
         // Should not panic here - the shrink_unchecked does not invoke user code.

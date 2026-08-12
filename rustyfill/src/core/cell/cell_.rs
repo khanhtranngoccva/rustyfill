@@ -1,8 +1,8 @@
-use lang_core::cell::{BorrowError, BorrowMutError, Ref, RefCell, RefMut};
-use lang_core::fmt;
 use crate::try_clone::{TryClone, TryCloneError};
 use crate::try_default::{TryDefault, TryDefaultError};
 use crate::try_fmt::{AssertDebug, TryDebug, helpers::FormatterExt};
+use lang_core::cell::{BorrowError, BorrowMutError, Ref, RefCell, RefMut};
+use lang_core::fmt;
 
 /// Error returned when a fallible borrow operation fails.
 #[derive(Debug)]
@@ -133,9 +133,9 @@ impl<T: ?Sized + crate::try_fmt::TryDebug> crate::try_fmt::TryDebug for RefCell<
 #[cfg(test)]
 mod tests {
     use super::*;
+    use lang_alloc::format;
     use lang_alloc::string::String;
     use lang_alloc::vec;
-    use lang_std::format;
 
     #[test]
     fn try_borrow_success() {

@@ -22,6 +22,7 @@ use crate::alloc::vec::{TryVec, TryVecError};
 use lang_alloc::string::String;
 use lang_alloc::vec::Vec;
 use lang_core::fmt;
+use lang_core::mem;
 use lang_std::ffi::{OsStr, OsString};
 use crate::try_clone::{TryClone, TryCloneError};
 use crate::try_default::{TryDefault, TryDefaultError};
@@ -252,7 +253,7 @@ impl TryOsString for OsString {
         // Convert to encoded bytes (Vec<u8>), shrink via TryVec, then convert
         // back. Only the spare capacity portion is reallocated — the OS string
         // data bytes are never copied or revalidated.
-        let mut v = ::lang_std::mem::replace(self, OsString::new()).into_encoded_bytes();
+        let mut v = mem::replace(self, OsString::new()).into_encoded_bytes();
         let result = <Vec<u8> as TryVec<u8>>::fallible_shrink_to(&mut v, min_capacity);
         // SAFETY: the bytes originated from a valid OsString via into_encoded_bytes.
         *self = unsafe { OsString::from_encoded_bytes_unchecked(v) };

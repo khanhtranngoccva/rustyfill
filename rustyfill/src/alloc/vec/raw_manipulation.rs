@@ -1,4 +1,5 @@
 use crate::alloc::AllocError;
+use lang_alloc::alloc;
 use lang_alloc::vec::Vec;
 use lang_core::alloc::Layout;
 use lang_core::ptr::{self, NonNull};
@@ -59,7 +60,7 @@ impl RawVecInnerView {
         // None.
         if cap == 0 {
             unsafe {
-                ::lang_alloc::alloc::dealloc(ptr.as_ptr(), layout);
+                alloc::dealloc(ptr.as_ptr(), layout);
             }
             self.ptr = NonNull::new(ptr::without_provenance_mut(elem_layout.align()))
                 .expect("alignment should not be zero");
@@ -73,7 +74,7 @@ impl RawVecInnerView {
                 let new_size = elem_layout.size().unchecked_mul(cap);
                 let new_layout = Layout::from_size_align_unchecked(new_size, layout.align());
                 // SAFETY: new_layout.align() == elem_layout.align()
-                NonNull::new(::lang_alloc::alloc::realloc(ptr.as_ptr(), layout, new_size))
+                NonNull::new(alloc::realloc(ptr.as_ptr(), layout, new_size))
                     .ok_or(AllocError { layout: new_layout })?
             };
             // SAFETY: if the allocation is valid, then the capacity is too

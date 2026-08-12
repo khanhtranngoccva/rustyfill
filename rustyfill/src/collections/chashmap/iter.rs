@@ -10,6 +10,7 @@
 
 use lang_core::fmt;
 use lang_core::hash::{BuildHasher, Hash};
+use lang_std::hash::RandomState;
 use lang_std::sync::Arc;
 
 use hashbrown::raw::{RawIter, RawTable};
@@ -68,7 +69,7 @@ struct LockedIterMut<'a, K, V>(Arc<RwLockWriteGuard<'a, RawTable<(K, V)>>>, RawI
 /// Produced by [`ConcurrentHashMap::iter`]. Lazily acquires a read lock per
 /// shard via an `Arc`, then streams through buckets cloning the Arc into each
 /// yielded [`RefMulti`].
-pub struct Iter<'a, K, V, S = ::lang_std::hash::RandomState> {
+pub struct Iter<'a, K, V, S = RandomState> {
     map: &'a ConcurrentHashMap<K, V, S>,
     /// Index of the shard we are currently draining.
     shard_idx: usize,
@@ -151,7 +152,7 @@ where
 /// Produced by [`ConcurrentHashMap::iter_mut`]. Lazily acquires a write lock
 /// per shard via an `Arc`, then streams through buckets cloning the Arc into
 /// each yielded [`RefMutMulti`].
-pub struct IterMut<'a, K, V, S = ::lang_std::hash::RandomState> {
+pub struct IterMut<'a, K, V, S = RandomState> {
     map: &'a ConcurrentHashMap<K, V, S>,
     /// Index of the shard we are currently draining.
     shard_idx: usize,

@@ -6,20 +6,20 @@
 //! `catch_unwind`, and [`TryReserveError`], a unified polyfill for
 //! capacity-reservation failures across different collection backends.
 
-#[cfg(feature = "std")]
-use lang_alloc::borrow::Cow;
-#[cfg(feature = "std")]
-use lang_alloc::boxed::Box;
-use lang_core::alloc::Layout;
-use lang_core::any;
-use lang_core::fmt;
-#[cfg(feature = "std")]
 use crate::try_fmt::AssertDebug;
 use crate::try_fmt::{TryDebug, helpers::FormatterExt};
+use lang_alloc::borrow::Cow;
+use lang_alloc::boxed::Box;
+use lang_alloc::collections;
+use lang_alloc::string::String as AllocString;
+use lang_core::alloc::Layout;
+use lang_core::any;
+use lang_core::error;
+use lang_core::fmt;
 
 pub mod arc;
 pub mod boxed;
-#[cfg(feature = "panic")]
+#[cfg(all(feature = "std", feature = "panic"))]
 pub mod btrees;
 pub mod ffi;
 pub mod rc;
@@ -39,8 +39,6 @@ impl fmt::Display for AllocError {
     }
 }
 
-// Not impling `::lang_std::error::Error` to stay no_std compatible by default.
-
 impl TryDebug for AllocError {
     fn try_fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.try_debug_struct("AllocError")
@@ -49,20 +47,21 @@ impl TryDebug for AllocError {
     }
 }
 
+impl error::Error for AllocError {}
+
 /// Unified error for fallible capacity reservation.
 ///
 /// Different collection types return different reserve-error types:
-/// standard collections expose [`lang_std::collections::TryReserveError`] which carries
+/// standard collections expose [`lang_alloc::collections::TryReserveError`] which carries
 /// diagnostic information, while third-party collections like `dashmap` provide an
 /// empty non-exhaustive struct with no usable fields. This enum unifies both cases
 /// so that error types across this crate can use a single `Reserve` variant.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TryReserveError {
-    /// The underlying collection provided a [`lang_std::collections::TryReserveError`]
+    /// The underlying collection provided a [`lang_alloc::collections::TryReserveError`]
     /// with diagnostic details about the failed allocation. Only available when
     /// the `std` feature is enabled.
-    #[cfg(feature = "std")]
-    Std(::lang_std::collections::TryReserveError),
+    Std(collections::TryReserveError),
     /// The underlying collection provided no diagnostic information.
     Other,
 }
@@ -90,9 +89,8 @@ impl TryDebug for TryReserveError {
     }
 }
 
-#[cfg(feature = "std")]
-impl From<::lang_std::collections::TryReserveError> for TryReserveError {
-    fn from(e: ::lang_std::collections::TryReserveError) -> Self {
+impl From<collections::TryReserveError> for TryReserveError {
+    fn from(e: collections::TryReserveError) -> Self {
         Self::Std(e)
     }
 }
@@ -104,9 +102,8 @@ impl From<dashmap::TryReserveError> for TryReserveError {
     }
 }
 
-#[cfg(feature = "std")]
-impl ::lang_std::error::Error for TryReserveError {
-    fn source(&self) -> Option<&(dyn ::lang_std::error::Error + 'static)> {
+impl error::Error for TryReserveError {
+    fn source(&self) -> Option<&(dyn error::Error + 'static)> {
         match self {
             Self::Std(e) => Some(e),
             Self::Other => None,
@@ -118,11 +115,9 @@ impl ::lang_std::error::Error for TryReserveError {
 ///
 /// Holds the `Box<dyn Any + Send>` verbatim so that constructing the error
 /// after catching a panic performs zero additional allocations.
-#[cfg(feature = "std")]
 #[derive(Debug)]
 pub struct PayloadBox(pub Box<dyn any::Any + Send>);
 
-#[cfg(feature = "std")]
 impl PayloadBox {
     /// Extract a human-readable message from the payload.
     ///
@@ -132,7 +127,7 @@ impl PayloadBox {
     pub fn message(&self) -> Cow<'_, str> {
         if let Some(s) = self.0.downcast_ref::<&str>() {
             Cow::Borrowed(*s)
-        } else if let Some(s) = self.0.downcast_ref::<::lang_alloc::string::String>() {
+        } else if let Some(s) = self.0.downcast_ref::<AllocString>() {
             Cow::Borrowed(s.as_str())
         } else {
             Cow::Borrowed("allocation panic (non-string payload)")
@@ -140,7 +135,6 @@ impl PayloadBox {
     }
 }
 
-#[cfg(feature = "std")]
 impl TryDebug for PayloadBox {
     fn try_fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.try_debug_struct("PayloadBox")

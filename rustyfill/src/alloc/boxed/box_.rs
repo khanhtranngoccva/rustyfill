@@ -4,6 +4,7 @@
 //! but return [`Result`] to handle allocation failures gracefully.
 
 use crate::alloc::AllocError;
+use lang_alloc::alloc;
 use lang_alloc::boxed::Box;
 use lang_core::alloc::Layout;
 use lang_core::fmt;
@@ -149,7 +150,7 @@ mod alloc_inner {
 
         let layout = Layout::new::<T>();
         let ptr = unsafe {
-            let raw = ::lang_alloc::alloc::alloc(layout);
+            let raw = alloc::alloc(layout);
             if raw.is_null() {
                 return Err(AllocError { layout });
             }
@@ -165,7 +166,7 @@ mod alloc_inner {
 
         let layout = Layout::new::<T>();
         let ptr = unsafe {
-            let raw = ::lang_alloc::alloc::alloc_zeroed(layout);
+            let raw = alloc::alloc_zeroed(layout);
             if raw.is_null() {
                 return Err(AllocError { layout });
             }

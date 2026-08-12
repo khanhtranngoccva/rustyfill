@@ -21,6 +21,7 @@ use crate::alloc::TryReserveError;
 use lang_core::fmt;
 use lang_std::ffi::OsStr;
 use lang_std::path::{Path, PathBuf};
+use lang_std::path::Display;
 use crate::std::path::path_buf::inner_push;
 use crate::std::path::{TryPathBuf, TryPathBufError};
 use crate::try_clone::{TryClone, TryCloneError};
@@ -242,13 +243,13 @@ impl crate::try_fmt::TryDebug for PathBuf {
 // ::lang_std::path::Display's canonical Debug and Display impls write the path to the
 // formatter without allocating. Safe to passthrough.
 
-impl crate::try_fmt::TryDebug for ::lang_std::path::Display<'_> {
+impl crate::try_fmt::TryDebug for Display<'_> {
     fn try_fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         fmt::Debug::fmt(self, f)
     }
 }
 
-impl crate::try_fmt::TryDisplay for ::lang_std::path::Display<'_> {
+impl crate::try_fmt::TryDisplay for Display<'_> {
     fn try_fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         fmt::Display::fmt(self, f)
     }
@@ -258,6 +259,7 @@ impl crate::try_fmt::TryDisplay for ::lang_std::path::Display<'_> {
 mod tests {
     use super::*;
     use lang_alloc::vec::Vec;
+    use lang_std::borrow::ToOwned;
     use lang_std::format;
     use crate::std::path::TryPathBuf;
 
@@ -398,7 +400,7 @@ mod tests {
     #[test]
     fn try_to_owned_implies_to_owned_bound() {
         let p = Path::new("/test");
-        let owned: PathBuf = <Path as ::lang_std::borrow::ToOwned>::to_owned(p);
+        let owned: PathBuf = <Path as ToOwned>::to_owned(p);
         assert_eq!(owned, Path::new("/test"));
     }
 

@@ -72,7 +72,7 @@ impl TryRandomState for RandomState {
 mod tests {
     use super::*;
     use lang_alloc::vec::Vec;
-    use lang_std::collections::HashSet;
+    use lang_std::collections::{HashMap, HashSet};
     use lang_std::hash::{BuildHasher, Hasher};
 
     #[test]
@@ -99,8 +99,8 @@ mod tests {
     #[test]
     fn try_new_infallible_works_with_hashmap() {
         let state = RandomState::try_new_infallible();
-        let mut map: ::lang_std::collections::HashMap<&str, i32> =
-            ::lang_std::collections::HashMap::with_hasher(state);
+        let mut map: HashMap<&str, i32> =
+            HashMap::with_hasher(state);
         map.insert("alpha", 1);
         map.insert("beta", 2);
         assert_eq!(map["alpha"], 1);
@@ -154,7 +154,7 @@ mod tests {
     #[test]
     fn try_new_infallible_stress_diversity() {
         // Check that consecutive calls yield diverse seeds by hashing the same value.
-        let hashes: ::lang_std::collections::HashSet<u64> = (0..50)
+        let hashes: HashSet<u64> = (0..50)
             .map(|_| RandomState::try_new_infallible().hash_one(12345u64))
             .collect();
 

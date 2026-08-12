@@ -9,6 +9,7 @@
 
 // Module verified
 use super::RandomError;
+use lang_std::io;
 
 pub fn fill_bytes(bytes: &mut [u8]) -> Result<(), RandomError> {
     // GETENTROPY_MAX isn't defined yet on most platforms, but it's mandated
@@ -17,7 +18,7 @@ pub fn fill_bytes(bytes: &mut [u8]) -> Result<(), RandomError> {
         let r = unsafe { libc::getentropy(chunk.as_mut_ptr().cast(), chunk.len()) };
         if r == -1 {
             return Err(RandomError::Syscall(
-                ::lang_std::io::Error::last_os_error().raw_os_error().unwrap_or(-1),
+                io::Error::last_os_error().raw_os_error().unwrap_or(-1),
             ));
         }
     }

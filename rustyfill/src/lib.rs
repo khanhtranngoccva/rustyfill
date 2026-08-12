@@ -24,7 +24,7 @@
 // Register `std` and `alloc` under alias names so they're accessible via absolute
 // paths (`::lang_std`, `::lang_alloc`) without clashing with our own `pub mod std`
 // and `pub mod alloc` modules that re-export fallible wrappers. Made `pub` so that
-// `#[macro_export]` macros in downstream crates can reference them via `$lang_std`.
+// `#[macro_export]` macros used in downstream crates can reference them.
 pub extern crate alloc as lang_alloc;
 pub extern crate core as lang_core;
 #[cfg(feature = "std")]

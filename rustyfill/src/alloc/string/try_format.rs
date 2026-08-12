@@ -6,11 +6,8 @@
 //!
 //! # Warning: Display implementations that allocate
 //!
-//! Some `Display` or `Debug` implementations in the standard library perform
-//! hidden allocations (e.g. `Duration`, `SystemTime`, `PathBuf`). If such a
-//! value is formatted through `try_format!` while using a constrained allocator,
-//! the allocation will happen *inside* the formatter callback and will panic
-//! rather than return an error. Floating-point types (`f32`, `f64`) are safe —
-//! their formatting uses stack buffers even with precision specifiers. Run the
-//! `display-allocation-tests` binary crate (`cargo run -p display-allocation-tests`)
+//! Some `Display` or `Debug` implementations perform hidden allocations. If such a
+//! value is formatted, the allocation will happen *inside* the formatter callback and will
+//! panic or abort rather than return an error. Run the `display-allocation-tests` binary crate
+//! (`cargo run -p display-allocation-tests`)
 //! for a full matrix of which types are safe under zero-allocation conditions.

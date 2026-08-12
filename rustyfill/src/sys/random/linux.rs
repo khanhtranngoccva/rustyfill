@@ -62,10 +62,11 @@
 
 use lang_std::borrow::Cow;
 use lang_std::fs::File;
-use lang_std::io::Read;
+use lang_std::io::{self, Read};
 use lang_std::os::fd::AsRawFd;
 use lang_std::sync::atomic::AtomicBool;
 use lang_std::sync::atomic::Ordering::{Acquire, Relaxed, Release};
+use lang_core::mem;
 // Fallback for get_or_try_init API
 use once_cell::sync::OnceCell;
 
@@ -92,7 +93,7 @@ fn resolve_getrandom() -> Option<GetrandomFn> {
         if sym.is_null() {
             None
         } else {
-            Some(unsafe { ::lang_std::mem::transmute::<*mut _, GetrandomFn>(sym) })
+            Some(unsafe { mem::transmute::<*mut _, GetrandomFn>(sym) })
         }
     });
     // Function pointers are Copy, so we can safely copy out of the reference.
@@ -128,7 +129,7 @@ fn getrandom_impl(mut bytes: &mut [u8], insecure: bool) -> Result<(), RandomErro
             if ret != -1 {
                 bytes = &mut bytes[ret as usize..];
             } else {
-                let err = ::lang_std::io::Error::last_os_error()
+                let err = io::Error::last_os_error()
                     .raw_os_error()
                     .unwrap_or(libc::EIO);
                 match err {
@@ -173,7 +174,7 @@ fn getrandom_impl(mut bytes: &mut [u8], insecure: bool) -> Result<(), RandomErro
                     URANDOM_READY.store(true, Release);
                     break;
                 }
-                -1 if ::lang_std::io::Error::last_os_error().raw_os_error() == Some(libc::EINTR) => {
+                -1 if io::Error::last_os_error().raw_os_error() == Some(libc::EINTR) => {
                     continue;
                 }
                 _ => {

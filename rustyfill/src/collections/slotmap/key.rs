@@ -104,7 +104,7 @@ impl Hash for KeyData {
 /// Implementations must be thin wrappers around [`KeyData`] and delegate every
 /// method identically to operating on `KeyData` directly. Internal unsafe code
 /// relies on this contract, which is why the trait is `unsafe`. Prefer using
-/// [`new_key_type!`](crate::collections::slotmap::new_key_type!) instead of
+/// [`new_key_type!`](crate::new_key_type!) instead of
 /// implementing manually.
 ///
 /// # Safety
@@ -138,7 +138,7 @@ pub unsafe trait Key:
 
 /// The default slot-map key type.
 ///
-/// Equivalent to any key created by [`new_key_type!`](crate::collections::slotmap::new_key_type!),
+/// Equivalent to any key created by [`new_key_type!`](crate::new_key_type!),
 /// just with a predefined name.
 #[derive(Copy, Clone, Default, Eq, PartialEq, Ord, PartialOrd, Hash, Debug)]
 #[repr(transparent)]

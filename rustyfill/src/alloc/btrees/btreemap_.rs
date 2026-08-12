@@ -11,7 +11,7 @@
 //! on out-of-memory. Read-only accessors delegate directly to `BTreeMap`.
 //!
 //! Because `BTreeMap::try_reserve` does not exist, these methods internally
-//! use [`::lang_std::panic::catch_unwind`] to intercept allocation panics from the
+//! use [`lang_std::panic::catch_unwind`] to intercept allocation panics from the
 //! B-tree's internal node allocator. This means `K` and `V` must be
 //! [`RefUnwindSafe`] (panic::RefUnwindSafe) for the fallible mutation methods.
 //!
@@ -20,13 +20,15 @@
 //! `K` and `V` satisfy the respective bounds.
 
 use crate::alloc::{AllocError, PayloadBox};
-use lang_core::fmt;
-use lang_core::mem::ManuallyDrop;
-use lang_core::ptr;
-use lang_std::collections::BTreeMap;
-use lang_std::panic::{AssertUnwindSafe, RefUnwindSafe, catch_unwind};
 use crate::try_clone::TryCloneError;
 use crate::try_fmt::{TryDebug, helpers::FormatterExt};
+use lang_alloc::collections::BTreeMap;
+use lang_alloc::collections::btree_map;
+use lang_core::fmt;
+use lang_core::mem::ManuallyDrop;
+use lang_core::panic::{AssertUnwindSafe, RefUnwindSafe};
+use lang_core::ptr;
+use lang_std::panic::catch_unwind;
 
 // ── Error type ────────────────────────────────────────────────────────────────
 
@@ -111,13 +113,13 @@ impl TryDebug for TryBTreeMapError {
 /// # Note
 ///
 /// Because `BTreeMap::try_reserve` does not exist, mutation methods use
-/// [`lang_std::panic::catch_unwind`] internally to intercept OOM panics.
+/// [`lang_alloc::panic::catch_unwind`] internally to intercept OOM panics.
 /// This is only possible due to the BTreeMap itself being UnwindSafe. Keys and
 /// values must be [`RefUnwindSafe`] for these methods.
 ///
 /// # Note on `try_insert`
 ///
-/// The inherent [`BTreeMap::try_insert`](lang_std::collections::BTreeMap::try_insert) on
+/// The inherent [`BTreeMap::try_insert`](lang_alloc::collections::BTreeMap::try_insert) on
 /// nightly Rust returns `Err(old_value)` when a key already exists, but may *panic*
 /// on allocation failure. Our [`Self::try_insert`] catches allocation panics so it
 /// never propagates one — it returns [`TryBTreeMapError::AllocPanic`] instead, but it
@@ -186,13 +188,10 @@ pub trait TryBTreeMap<K, V>: Sized {
     /// that inserting through the entry will not allocate again. The entry API
     /// itself may still panic on OOM after this method returns `Ok`.
     ///
-    /// [`Entry`]: lang_std::collections::btree_map::Entry
-    /// [`Entry::or_insert`]: lang_std::collections::btree_map::Entry::or_insert
-    /// [`Entry::and_modify`]: lang_std::collections::btree_map::Entry::and_modify
-    fn try_entry<'a>(
-        &'a mut self,
-        key: K,
-    ) -> Result<::lang_std::collections::btree_map::Entry<'a, K, V>, TryBTreeMapError>
+    /// [`Entry`]: lang_alloc::collections::btree_map::Entry
+    /// [`Entry::or_insert`]: lang_alloc::collections::btree_map::Entry::or_insert
+    /// [`Entry::and_modify`]: lang_alloc::collections::btree_map::Entry::and_modify
+    fn try_entry<'a>(&'a mut self, key: K) -> Result<btree_map::Entry<'a, K, V>, TryBTreeMapError>
     where
         K: Ord + RefUnwindSafe,
         V: RefUnwindSafe;
@@ -255,7 +254,7 @@ pub trait TryBTreeMap<K, V>: Sized {
     fn fallible_entry<'a>(
         &'a mut self,
         key: K,
-    ) -> Result<::lang_std::collections::btree_map::Entry<'a, K, V>, TryBTreeMapError>
+    ) -> Result<btree_map::Entry<'a, K, V>, TryBTreeMapError>
     where
         K: Ord + RefUnwindSafe,
         V: RefUnwindSafe,
@@ -459,10 +458,7 @@ impl<K: Ord + RefUnwindSafe, V: RefUnwindSafe> TryBTreeMap<K, V> for BTreeMap<K,
         }
     }
 
-    fn try_entry<'a>(
-        &'a mut self,
-        key: K,
-    ) -> Result<::lang_std::collections::btree_map::Entry<'a, K, V>, TryBTreeMapError>
+    fn try_entry<'a>(&'a mut self, key: K) -> Result<btree_map::Entry<'a, K, V>, TryBTreeMapError>
     where
         K: Ord + RefUnwindSafe,
         V: RefUnwindSafe,
@@ -598,6 +594,8 @@ mod tests {
 
     use super::*;
 
+    use crate::try_clone::TryClone;
+    use crate::try_default::TryDefault;
     use lang_alloc::boxed::Box;
     use lang_alloc::format;
     use lang_alloc::string::String;
@@ -605,8 +603,8 @@ mod tests {
     use lang_alloc::vec;
     use lang_alloc::vec::Vec;
     use lang_core::any::Any;
-    use crate::try_clone::TryClone;
-    use crate::try_default::TryDefault;
+    use lang_core::cmp;
+    use lang_core::iter;
 
     // ── Construction ─────────────────────────────────────────────────────────
 
@@ -737,12 +735,12 @@ mod tests {
         }
         impl Eq for DroppedKey {}
         impl PartialOrd for DroppedKey {
-            fn partial_cmp(&self, other: &Self) -> Option<::lang_std::cmp::Ordering> {
+            fn partial_cmp(&self, other: &Self) -> Option<cmp::Ordering> {
                 Some(self.cmp(other))
             }
         }
         impl Ord for DroppedKey {
-            fn cmp(&self, other: &Self) -> ::lang_std::cmp::Ordering {
+            fn cmp(&self, other: &Self) -> cmp::Ordering {
                 self.0.cmp(&other.0)
             }
         }
@@ -797,12 +795,12 @@ mod tests {
         }
         impl Eq for TrackedKey {}
         impl PartialOrd for TrackedKey {
-            fn partial_cmp(&self, other: &Self) -> Option<::lang_std::cmp::Ordering> {
+            fn partial_cmp(&self, other: &Self) -> Option<cmp::Ordering> {
                 Some(self.cmp(other))
             }
         }
         impl Ord for TrackedKey {
-            fn cmp(&self, other: &Self) -> ::lang_std::cmp::Ordering {
+            fn cmp(&self, other: &Self) -> cmp::Ordering {
                 self.0.cmp(&other.0)
             }
         }
@@ -864,8 +862,7 @@ mod tests {
     #[test]
     fn try_extend_empty() {
         let mut map: BTreeMap<i32, i32> = BTreeMap::new();
-        map.try_extend(::lang_std::iter::empty::<(i32, i32)>())
-            .unwrap();
+        map.try_extend(iter::empty::<(i32, i32)>()).unwrap();
         assert!(map.is_empty());
     }
 
@@ -914,10 +911,9 @@ mod tests {
 
     #[test]
     fn try_collect_empty() {
-        let map: BTreeMap<i32, i32> = <BTreeMap<i32, i32> as TryBTreeMap<_, _>>::try_collect(
-            ::lang_std::iter::empty::<(i32, i32)>(),
-        )
-        .unwrap();
+        let map: BTreeMap<i32, i32> =
+            <BTreeMap<i32, i32> as TryBTreeMap<_, _>>::try_collect(iter::empty::<(i32, i32)>())
+                .unwrap();
         assert!(map.is_empty());
     }
 

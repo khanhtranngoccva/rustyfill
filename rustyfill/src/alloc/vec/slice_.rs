@@ -7,6 +7,7 @@
 
 use super::vec_::TryVecError;
 use crate::alloc::AllocError;
+use lang_alloc::alloc;
 use lang_alloc::boxed::Box;
 use lang_alloc::vec::Vec;
 use lang_core::alloc::Layout;
@@ -188,7 +189,7 @@ impl<T: TryClone> TryClone for Box<[T]> {
 
         // Allocate exactly `len` elements — no excess capacity, no shrinking.
         let layout = Layout::array::<T>(len).map_err(|_| TryCloneError::Overflow)?;
-        let ptr = unsafe { ::lang_alloc::alloc::alloc(layout) };
+        let ptr = unsafe { alloc::alloc(layout) };
         if ptr.is_null() {
             return Err(TryCloneError::Alloc(AllocError { layout }));
         }

@@ -13,7 +13,7 @@
 //! - [`SlotMap`] — the primary slot map
 //! - [`SecondaryMap`] — associates extra data with keys from a [`SlotMap`]
 //! - [`KeyData`] / [`Key`] / [`DefaultKey`] — key representation and trait
-//! - [`new_key_type!`] — macro for creating distinct key types
+//! - [`new_key_type!`](crate::new_key_type) — macro for creating distinct key types
 //!
 //! [`slotmap`]: https://crates.io/crates/slotmap
 

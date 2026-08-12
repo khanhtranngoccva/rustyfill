@@ -2,7 +2,7 @@
 //!
 //! Provides the [`TryString`] trait with methods that mirror common `String`
 //! constructors and mutating operations but return [`Result`] to handle allocation
-//! failures gracefully, using [`::lang_std::collections::TryReserveError`] as the primary
+//! failures gracefully, using [`::lang_alloc::collections::TryReserveError`] as the primary
 //! error type.
 //!
 //! # Design
@@ -20,6 +20,8 @@ use crate::alloc::vec::{TryVec, TryVecError};
 use lang_alloc::string::String;
 use lang_alloc::vec::Vec;
 use lang_core::fmt;
+use lang_core::mem;
+use lang_alloc::collections::TryReserveError as StdTryReserveError;
 use crate::try_clone::{TryClone, TryCloneError};
 use crate::try_default::{TryDefault, TryDefaultError};
 use crate::try_fmt::{TryDebug, helpers::FormatterExt};
@@ -67,8 +69,8 @@ impl From<TryReserveError> for TryStringError {
     }
 }
 
-impl From<::lang_std::collections::TryReserveError> for TryStringError {
-    fn from(err: ::lang_std::collections::TryReserveError) -> Self {
+impl From<StdTryReserveError> for TryStringError {
+    fn from(err: StdTryReserveError) -> Self {
         Self::Reserve(TryReserveError::from(err))
     }
 }
@@ -307,7 +309,7 @@ impl TryString for String {
         // Convert to Vec<u8> (identical layout to String), shrink via TryVec,
         // then convert back. Only the spare capacity portion is reallocated —
         // the UTF-8 data bytes are never copied or revalidated.
-        let mut v = ::lang_std::mem::take(self).into_bytes();
+        let mut v = mem::take(self).into_bytes();
         let result = <Vec<u8> as TryVec<u8>>::try_shrink_to(&mut v, min_capacity);
         // The bytes originated from a valid String, so they remain valid UTF-8.
         *self = String::from_utf8(v).unwrap();
