@@ -52,20 +52,33 @@ fn read_snapshot(name: &str) -> Option<alloc::string::String> {
     std::fs::read_to_string(path).ok()
 }
 
+/// Normalize CRLF to LF so that snapshots pass on Windows where
+/// outputting may emit `\r\n` instead of `\n`.
+fn normalize_newlines(s: &str) -> alloc::borrow::Cow<'_, str> {
+    if s.contains('\r') {
+        alloc::borrow::Cow::Owned(s.replace("\r\n", "\n"))
+    } else {
+        alloc::borrow::Cow::Borrowed(s)
+    }
+}
+
 #[cfg_attr(miri, ignore)]
 fn assert_snapshot(name: &str, actual: &str) {
     let allow_update = std::env::var("UPDATE_SNAPSHOTS").is_ok();
-    match read_snapshot(name) {
-        Some(expected) if expected == actual => {} // matches
+    let actual_norm = normalize_newlines(actual);
+    let snapshot_str = read_snapshot(name);
+    let expected_opt = snapshot_str.as_deref().map(normalize_newlines);
+    match expected_opt {
+        Some(ref expected) if **expected == *actual_norm => {} // matches
         Some(expected) => {
             if allow_update {
-                write_snapshot(name, actual);
+                write_snapshot(name, &actual_norm);
             }
             panic!(
                 "Snapshot mismatch for '{}'.\nExpected:\n---\n{}---\nActual:\n---\n{}---{}",
                 name,
                 expected,
-                actual,
+                actual_norm,
                 if allow_update {
                     "\nSnapshot file updated."
                 } else {
@@ -75,7 +88,7 @@ fn assert_snapshot(name: &str, actual: &str) {
         }
         None => {
             if allow_update {
-                write_snapshot(name, actual);
+                write_snapshot(name, &actual_norm);
             }
             panic!(
                 "No snapshot found for '{}'.{}\nOutput:\n---\n{}---",
@@ -85,7 +98,7 @@ fn assert_snapshot(name: &str, actual: &str) {
                 } else {
                     "Set UPDATE_SNAPSHOTS=1 to create one."
                 },
-                actual,
+                actual_norm,
             );
         }
     }

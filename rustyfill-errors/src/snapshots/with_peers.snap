@@ -1,8 +1,8 @@
 first
-╰╴at rustyfill-errors/tests/test_debug_and_display.rs:131:18
+╰╴at rustyfill-errors/tests/test_debug_and_display.rs:144:18
 
 third
-╰╴at rustyfill-errors/tests/test_debug_and_display.rs:133:10
+╰╴at rustyfill-errors/tests/test_debug_and_display.rs:146:10
 
 second
-╰╴at rustyfill-errors/tests/test_debug_and_display.rs:132:10
+╰╴at rustyfill-errors/tests/test_debug_and_display.rs:145:10

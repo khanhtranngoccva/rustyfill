@@ -25,7 +25,6 @@ use crate::try_fmt::{TryDebug, helpers::FormatterExt};
 use lang_core::cmp::Eq;
 use lang_core::fmt;
 use lang_core::mem;
-use lang_core::mem::ManuallyDrop;
 use lang_core::ptr;
 use lang_std::hash::{BuildHasher, Hash, RandomState};
 
