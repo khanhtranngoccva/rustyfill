@@ -55,6 +55,22 @@ jobs:
           components: miri
       - run: cargo +nightly miri test --workspace
 
+  # ── no_std checks ───────────────────────────────────────────────────────
+  no-std:
+    name: no_std (${{ matrix.package }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        package: [rustyfill, rustyfill-errors]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Check ${{ matrix.package }} compiles without std
+        run: cargo check --package ${{ matrix.package }} --no-default-features
+      - name: Test ${{ matrix.package }} without std
+        run: cargo test --package ${{ matrix.package }} --no-default-features
+
   # ── Sanitizers ──────────────────────────────────────────────────────────
   sanitize:
     name: Sanitizer (${{ matrix.sanitizer }})

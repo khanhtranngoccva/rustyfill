@@ -1,6 +1,6 @@
 [package]
 name = "rustyfill-errors"
-version = "0.1.0"
+version.workspace = true
 edition = "2024"
 
 # Context-aware error handling with frame stacks inspired by error-stack,
@@ -8,7 +8,7 @@ edition = "2024"
 # if allocation fails while building a report.
 
 [dependencies]
-rustyfill = { path = "../rustyfill" }
+rustyfill = { workspace = true }
 
 [dev-dependencies]
-rustyfill-test-allocator = { path = "../rustyfill-test-allocator" }
+rustyfill-test-allocator = { workspace = true }

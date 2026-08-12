@@ -1,6 +1,6 @@
 [package]
 name = "rustyfill-test-allocator"
-version = "0.1.0"
+version.workspace = true
 edition = "2024"
 description = "Test-time global allocator for injecting OOM conditions"
 
@@ -9,4 +9,4 @@ static_assertions = { workspace = true, optional = true }
 
 [dev-dependencies]
 static_assertions = { workspace = true }
-rustyfill = { path = "../rustyfill" }
+rustyfill = { workspace = true }

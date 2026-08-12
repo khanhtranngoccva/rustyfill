@@ -13,5 +13,5 @@ name = "ap-format-in-trydebug"
 path = "src/bin/ap-format-in-trydebug.rs"
 
 [dependencies]
-rustyfill = { path = "../rustyfill" }
-rustyfill-test-allocator = { path = "../rustyfill-test-allocator" }
+rustyfill = { workspace = true }
+rustyfill-test-allocator = { workspace = true }

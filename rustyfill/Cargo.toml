@@ -1,6 +1,6 @@
 [package]
 name = "rustyfill"
-version = "0.1.0"
+version.workspace = true
 edition = "2024"
 
 [dependencies]
@@ -69,7 +69,7 @@ unstable = ["dep:dashmap", "std"]
 
 [dev-dependencies]
 no-panic = { workspace = true }
-rustyfill-test-allocator = { path = "../rustyfill-test-allocator" }
+rustyfill-test-allocator = { workspace = true }
 
 [build-dependencies]
 cargo-build = { workspace = true }

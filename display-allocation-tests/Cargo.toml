@@ -9,4 +9,4 @@ name = "display-allocation-tests"
 path = "src/main.rs"
 
 [dependencies]
-rustyfill-test-allocator = { path = "../rustyfill-test-allocator" }
+rustyfill-test-allocator = { workspace = true }
