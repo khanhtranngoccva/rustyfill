@@ -15,7 +15,7 @@ use lang_alloc::string::String as AllocString;
 use lang_core::alloc::Layout;
 use lang_core::any;
 use lang_core::error;
-use lang_core::fmt;
+use lang_core::fmt::{self, Debug};
 
 pub mod arc;
 pub mod boxed;
@@ -69,17 +69,21 @@ pub enum TryReserveError {
 impl fmt::Display for TryReserveError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            #[cfg(feature = "std")]
             Self::Std(e) => write!(f, "{}", e),
             Self::Other => write!(f, "capacity reservation failed"),
         }
     }
 }
 
+impl TryDebug for lang_alloc::collections::TryReserveError {
+    fn try_fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        Debug::fmt(&self, f)
+    }
+}
+
 impl TryDebug for TryReserveError {
     fn try_fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            #[cfg(feature = "std")]
             Self::Std(e) => f
                 .try_debug_struct("TryReserveError::Std")
                 .field("0", e)

@@ -10,13 +10,13 @@ use lang_core::pin::Pin;
 use lang_core::ptr;
 use lang_core::sync::atomic::{AtomicUsize, Ordering};
 
-/// Internal representation of an Arc allocation.
+/// Internal representation of an [`Arc`] allocation.
 ///
-/// Layout matches `::std::sync::Arc`: two atomic counters followed by the data.
-/// `#[repr(C)]` is required so the compiler does not reorder fields — std's Arc
+/// Layout matches [`Arc`]: two atomic counters followed by the data.
+/// `#[repr(C)]` is required so the compiler does not reorder fields — [`Arc`]
 /// computes counter offsets relative to the data pointer and expects this exact
-/// ordering. `align(2)` ensures that `Weak::new()`'s dangling sentinel
-/// (`usize::MAX`) can never be a valid payload address, since all real allocations
+/// ordering. `align(2)` ensures that [`Weak::new`]'s dangling sentinel
+/// [`usize::MAX`] can never be a valid payload address, since all real allocations
 /// are aligned to at least 2.
 #[repr(C, align(2))]
 struct ArcInner<T: ?Sized> {
@@ -27,14 +27,14 @@ struct ArcInner<T: ?Sized> {
 
 /// A trait for fallibly constructing an [`Arc`].
 ///
-/// Implemented for `Arc<T>`. Mirrors the [`TryBox`](crate::alloc::boxed::TryBox) pattern:
+/// Implemented for [`Arc<T>`]. Mirrors the [`TryBox`](crate::alloc::boxed::TryBox) pattern:
 /// only the allocating constructors are fallible; all other Arc behaviour
 /// (cloning, downgrading, dropping) delegates to the standard library.
 ///
 /// # Construction strategy
 ///
 /// Allocation is delegated to [`TryBox::try_new_uninit`] via a boxed
-/// `MaybeUninit<ArcInner<T>>`. After initialising the strong/weak counters
+/// [`MaybeUninit<ArcInner<T>>`]. After initialising the strong/weak counters
 /// and the data in place, ownership transfers to std's `Arc` through
 /// [`Arc::from_raw`] — no second allocation is performed.
 pub trait TryArc<T>: Sized {

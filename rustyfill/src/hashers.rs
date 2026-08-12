@@ -45,6 +45,7 @@ use crate::{
 use lang_core::fmt;
 use lang_core::hash;
 use lang_core::hash::BuildHasher;
+#[cfg_attr(not(feature = "std"), expect(unused))]
 use lang_core::mem;
 #[cfg(feature = "std")]
 use lang_std::panic;

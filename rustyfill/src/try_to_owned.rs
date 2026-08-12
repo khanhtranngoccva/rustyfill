@@ -12,13 +12,12 @@
 //! returned as errors instead.
 
 use crate::alloc::{AllocError, TryReserveError};
-use lang_alloc::borrow::ToOwned;
-use lang_core::error;
-use lang_core::fmt;
-#[cfg(feature = "std")]
-use lang_std::collections::TryReserveError as StdTryReserveError;
 use crate::try_clone::TryCloneError;
 use crate::try_fmt::{TryDebug, helpers::FormatterExt};
+use lang_alloc::borrow::ToOwned;
+use lang_alloc::collections::TryReserveError as StdTryReserveError;
+use lang_core::error;
+use lang_core::fmt;
 
 /// Error returned by [`TryToOwned::try_to_owned`].
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -64,7 +63,6 @@ impl TryDebug for TryToOwnedError {
     }
 }
 
-#[cfg(feature = "std")]
 impl error::Error for TryToOwnedError {
     fn source(&self) -> Option<&(dyn error::Error + 'static)> {
         match self {
@@ -86,7 +84,6 @@ impl From<TryReserveError> for TryToOwnedError {
     }
 }
 
-#[cfg(feature = "std")]
 impl From<StdTryReserveError> for TryToOwnedError {
     fn from(err: StdTryReserveError) -> Self {
         Self::Reserve(TryReserveError::from(err))

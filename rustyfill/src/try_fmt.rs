@@ -602,18 +602,6 @@ impl TryDebug for alloc::Layout {
     }
 }
 
-// ── ::lang_std::collections::TryReserveError ──────────────────────────────────────────
-// TryReserveError's Debug impl prints the error kind and layout — no hidden
-// allocations. Safe to passthrough.
-
-#[cfg(feature = "std")]
-impl TryDebug for StdTryReserveError {
-    #[inline]
-    fn try_fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        fmt::Debug::fmt(self, f)
-    }
-}
-
 // ── ::lang_alloc::borrow::Cow<'_, str> ────────────────────────────────────────────────
 // Cow's Debug impl delegates to str's Debug which never allocates. Safe to passthrough.
 
@@ -782,18 +770,18 @@ macro_rules! upperexp_passthrough {
 #[allow(clippy::needless_borrows_for_generic_args)]
 mod oom_tests {
     use super::*;
+    use crate::try_fmt::{TryDebug, TryDisplay};
     use lang_alloc::boxed::Box;
     use lang_alloc::string::String;
     use lang_alloc::vec;
     use lang_alloc::vec::Vec;
     use lang_std::collections::{HashMap, HashSet, VecDeque};
-    use lang_std::ffi::{CString, OsString};
     use lang_std::f32::consts as f32_consts;
     use lang_std::f64::consts as f64_consts;
+    use lang_std::ffi::{CString, OsString};
     use lang_std::path::PathBuf;
     use lang_std::ptr;
     use lang_std::sync::{self, Arc, Mutex, RwLock};
-    use crate::try_fmt::{TryDebug, TryDisplay};
     use rustyfill_test_allocator::{FailPolicy, with_policy};
 
     /// Minimal writer that discards everything without allocating.
@@ -913,8 +901,7 @@ mod oom_tests {
 
     #[test]
     fn try_debug_hashmap_empty_no_alloc() {
-        let m: HashMap<&str, i32> =
-            HashMap::new();
+        let m: HashMap<&str, i32> = HashMap::new();
         assert!(assert_try_debug_no_alloc(&m));
     }
 
@@ -973,8 +960,7 @@ mod oom_tests {
 
     #[test]
     fn try_debug_arc_string_no_alloc() {
-        let a: Arc<String> =
-            Arc::new(String::from("arc string"));
+        let a: Arc<String> = Arc::new(String::from("arc string"));
         assert!(assert_try_debug_no_alloc(&a));
     }
 
@@ -988,8 +974,7 @@ mod oom_tests {
 
     #[test]
     fn try_debug_mutex_string_no_alloc() {
-        let m: Mutex<String> =
-            Mutex::new(String::from("mutex string"));
+        let m: Mutex<String> = Mutex::new(String::from("mutex string"));
         assert!(assert_try_debug_no_alloc(&m));
     }
 
@@ -1016,8 +1001,7 @@ mod oom_tests {
 
     #[test]
     fn try_debug_rwlock_string_no_alloc() {
-        let rw: RwLock<String> =
-            RwLock::new(String::from("rwlock string"));
+        let rw: RwLock<String> = RwLock::new(String::from("rwlock string"));
         assert!(assert_try_debug_no_alloc(&rw));
     }
 
@@ -1483,6 +1467,7 @@ mod oom_tests {
 #[allow(clippy::needless_borrows_for_generic_args)]
 mod try_write_tests {
     use super::TryDebug;
+    use crate::{try_write, try_writeln};
     use lang_alloc::borrow::Cow;
     use lang_alloc::format;
     use lang_alloc::string::String;
@@ -1497,7 +1482,6 @@ mod try_write_tests {
     use lang_std::io::{Cursor, Write};
     use lang_std::path::PathBuf;
     use lang_std::ptr;
-    use crate::{try_write, try_writeln};
 
     // ── Basic formatting modes ─────────────────────────────────────────────
 
@@ -3027,38 +3011,10 @@ mod try_write_tests {
         let result: Cow<'static, str> = rustyfill_macros::try_format_or!("standalone");
         assert_eq!(result, "standalone");
     }
-
-    // ── try_println! / try_print! / try_writeln! / try_write! output tests ───
-
-    #[test]
-    fn try_println_appends_newline() {
-        let mut buf = Cursor::new(Vec::new());
-        try_write!(&mut buf, "{}\n", 42).unwrap();
-        assert_eq!(buf.into_inner(), b"42\n");
-    }
-
-    #[test]
-    fn try_println_multiple_args_appends_newline() {
-        let mut buf = Cursor::new(Vec::new());
-        try_write!(&mut buf, "{} + {} = {}\n", 1, 2, 3).unwrap();
-        assert_eq!(buf.into_inner(), b"1 + 2 = 3\n");
-    }
-
-    #[test]
-    fn try_println_debug_arg_appends_newline() {
-        let v = vec![1, 2];
-        let mut buf = Cursor::new(Vec::new());
-        try_write!(&mut buf, "{:?}\n", &v).unwrap();
-        assert_eq!(buf.into_inner(), b"[1, 2]\n");
-    }
-
-    #[test]
-    fn try_println_empty_args_is_just_newline() {
-        // try_println!() with no format args writes just a newline.
-        let mut buf = Cursor::new(Vec::new());
-        core::write!(&mut buf, "\n").unwrap();
-        assert_eq!(buf.into_inner(), b"\n");
-    }
+    // ── try_writeln! / try_write! output tests ──────────────────────────────
+    // try_println! delegates to the same code path as try_writeln! (stdout as
+    // the destination), and try_print! delegates to the same code path as
+    // try_write!. Testing try_writeln!/try_write! covers both families.
 
     #[test]
     fn try_writeln_appends_newline() {
@@ -3085,7 +3041,13 @@ mod try_write_tests {
     #[test]
     fn try_writeln_named_args_appends_newline() {
         let mut buf = Cursor::new(Vec::new());
-        try_writeln!(&mut buf, "{greeting}, {name}!", greeting = "Hi", name = "Alice").unwrap();
+        try_writeln!(
+            &mut buf,
+            "{greeting}, {name}!",
+            greeting = "Hi",
+            name = "Alice"
+        )
+        .unwrap();
         assert_eq!(buf.into_inner(), b"Hi, Alice!\n");
     }
 
@@ -3105,10 +3067,16 @@ mod try_write_tests {
 
     #[test]
     fn try_writeln_no_format_args_is_just_newline() {
-        // try_writeln!(writer) with no format string writes just a newline.
         let mut buf = Cursor::new(Vec::new());
         try_writeln!(&mut buf).unwrap();
         assert_eq!(buf.into_inner(), b"\n");
+    }
+
+    #[test]
+    fn try_writeln_complex_format_spec_appends_newline() {
+        let mut buf = Cursor::new(Vec::new());
+        try_writeln!(&mut buf, "{:.2} {:>10}", f64_consts::PI, "hi").unwrap();
+        assert_eq!(buf.into_inner(), b"3.14         hi\n");
     }
 
     #[test]
@@ -3120,39 +3088,19 @@ mod try_write_tests {
 
     #[test]
     fn try_write_no_format_args_returns_ok() {
-        // try_write!(writer) with no format string returns Ok(()).
         let mut buf = Cursor::new(Vec::<u8>::new());
         try_write!(&mut buf).unwrap();
         assert!(buf.into_inner().is_empty());
     }
 
     #[test]
-    fn try_println_vs_try_print_newline_difference() {
-        // try_print doesn't append newline, try_println does.
-        let mut buf_print = Cursor::new(Vec::new());
-        try_write!(&mut buf_print, "{}", "hello").unwrap();
-        let mut buf_println = Cursor::new(Vec::new());
-        try_write!(&mut buf_println, "{}\n", "hello").unwrap();
-        assert_eq!(buf_print.into_inner(), b"hello");
-        assert_eq!(buf_println.into_inner(), b"hello\n");
-    }
-
-    #[test]
-    fn try_writeln_vs_try_write_newline_difference() {
-        // try_write doesn't append newline, try_writeln does.
+    fn try_write_vs_try_writeln_newline_difference() {
         let mut buf_write = Cursor::new(Vec::new());
         try_write!(&mut buf_write, "{}", "world").unwrap();
         let mut buf_writeln = Cursor::new(Vec::new());
         try_writeln!(&mut buf_writeln, "{}", "world").unwrap();
         assert_eq!(buf_write.into_inner(), b"world");
         assert_eq!(buf_writeln.into_inner(), b"world\n");
-    }
-
-    #[test]
-    fn try_writeln_complex_format_spec_appends_newline() {
-        let mut buf = Cursor::new(Vec::new());
-        try_writeln!(&mut buf, "{:.2} {:>10}", f64_consts::PI, "hi").unwrap();
-        assert_eq!(buf.into_inner(), b"3.14         hi\n");
     }
 }
 

@@ -77,36 +77,26 @@ pub fn try_format_args(input: TokenStream) -> TokenStream {
 }
 
 /// Fallibly print with a newline, writing to `std::io::stdout()`.
+///
+/// Delegates to [`try_writeln!`] with `::lang_std::io::stdout()` as the destination.
 #[proc_macro]
 pub fn try_println(input: TokenStream) -> TokenStream {
-    let tokens: proc_macro2::TokenStream = input.clone().into();
-    if tokens.is_empty() {
-        return quote! { core::write!(::lang_std::io::stdout(), "\n") }.into();
+    let tokens: proc_macro2::TokenStream = input.into();
+    quote! {
+        ::rustyfill::try_writeln!(::lang_std::io::stdout(), #tokens)
     }
-    quote! {{
-        let mut out = ::lang_std::io::stdout().lock();
-        ::lang_std::io::Write::write_fmt(
-            &mut out,
-            ::rustyfill::try_format_args!(#tokens),
-        ).and_then(|()| ::lang_std::io::Write::write_all(&mut out, b"\n"))
-    }}
     .into()
 }
 
 /// Fallibly print without a newline, writing to `std::io::stdout()`.
+///
+/// Delegates to [`try_write!`] with `::lang_std::io::stdout()` as the destination.
 #[proc_macro]
 pub fn try_print(input: TokenStream) -> TokenStream {
-    let tokens: proc_macro2::TokenStream = input.clone().into();
-    if tokens.is_empty() {
-        return quote! { Ok::<_, ::lang_std::io::Error>(()) }.into();
+    let tokens: proc_macro2::TokenStream = input.into();
+    quote! {
+        ::rustyfill::try_write!(::lang_std::io::stdout(), #tokens)
     }
-    quote! {{
-        let mut out = ::lang_std::io::stdout().lock();
-        ::lang_std::io::Write::write_fmt(
-            &mut out,
-            ::rustyfill::try_format_args!(#tokens),
-        )
-    }}
     .into()
 }
 
