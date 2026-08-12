@@ -66,7 +66,11 @@ fn assert_snapshot(name: &str, actual: &str) {
                 name,
                 expected,
                 actual,
-                if allow_update { "\nSnapshot file updated." } else { "\nSet UPDATE_SNAPSHOTS=1 to update." },
+                if allow_update {
+                    "\nSnapshot file updated."
+                } else {
+                    "\nSet UPDATE_SNAPSHOTS=1 to update."
+                },
             );
         }
         None => {
