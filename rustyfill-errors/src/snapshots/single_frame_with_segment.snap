@@ -1,2 +1,2 @@
 parse failed [parsing config]
-╰╴at rustyfill-errors/src/report.rs:1650:22
+╰╴at rustyfill-errors/tests/test_debug_and_display.rs:101:18

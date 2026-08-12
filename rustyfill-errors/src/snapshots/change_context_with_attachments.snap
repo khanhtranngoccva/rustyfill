@@ -1,6 +1,6 @@
 outer
-├╴at rustyfill-errors/src/report.rs:1706:48
+├╴at rustyfill-errors/tests/test_debug_and_display.rs:157:44
 │
 ╰─▶ inner
-    ├╴at rustyfill-errors/src/report.rs:1705:21
+    ├╴at rustyfill-errors/tests/test_debug_and_display.rs:156:17
     ╰╴inner-attach
