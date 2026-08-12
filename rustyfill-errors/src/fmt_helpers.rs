@@ -6,6 +6,7 @@ use core::fmt;
 
 use rustyfill::alloc::TryReserveError;
 use rustyfill::prelude::TryVec;
+use rustyfill::{try_write, try_writeln};
 
 use crate::ItemImpl;
 
@@ -105,7 +106,7 @@ pub(super) fn write_sibling_separator(
         }
     }
     f.write_str(" \u{2502}")?; // " │" = 2 chars
-    writeln!(f)?;
+    try_writeln!(f)?;
     Ok(())
 }
 
@@ -137,20 +138,18 @@ pub(super) fn render_attachments(
             THIN_BRANCH
         };
         f.write_str(connector)?;
-        att.display_fmt(f)?;
-        writeln!(f)?;
+        att.try_display_fmt(f)?;
+        try_writeln!(f)?;
     }
 
     if opaque_count > 0 {
         write_indent(f, continuing, sub_depth)?;
         f.write_str(THIN_LAST)?;
-        write!(
-            f,
-            "{} additional opaque attachment{}",
-            opaque_count,
-            if opaque_count == 1 { "" } else { "s" }
-        )?;
-        writeln!(f)?;
+        let suffix = if opaque_count == 1 { "" } else { "s" };
+        try_write!(f, "{}", opaque_count)?;
+        f.write_str(" additional opaque attachment")?;
+        try_write!(f, "{}", suffix)?;
+        try_writeln!(f)?;
     }
 
     Ok(())

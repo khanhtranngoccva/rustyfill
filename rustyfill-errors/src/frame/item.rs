@@ -68,14 +68,6 @@ pub trait ItemImpl: TryDisplay + TryDebug + Send + Sync + 'static {
         TryDisplay::try_fmt(self, f)
     }
 
-    /// Formats this item for human-readable display output (infallible path).
-    ///
-    /// For printable attachments, delegates to [`fmt::Display`].
-    /// For opaque attachments and context items, writes nothing.
-    fn display_fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        self.try_display_fmt(f)
-    }
-
     /// Writes the "at file:line:col" location line for context items.
     ///
     /// Returns `Ok(())` if a location was written, does nothing for non-context items.
@@ -160,7 +152,13 @@ impl<C: core::error::Error + TryDebug + TryDisplay + Send + Sync + 'static> Item
 
     fn write_location(&self, f: &mut fmt::Formatter<'_>) {
         let loc = &self.location;
-        let _ = write!(f, "at {}:{}:{}", loc.file(), loc.line(), loc.column());
+        let _ = f
+            .write_str("at ")
+            .and_then(|_| rustyfill::try_write!(f, "{}", loc.file()))
+            .and_then(|_| f.write_str(":"))
+            .and_then(|_| rustyfill::try_write!(f, "{}", loc.line()))
+            .and_then(|_| f.write_str(":"))
+            .and_then(|_| rustyfill::try_write!(f, "{}", loc.column()));
     }
 }
 
@@ -178,10 +176,14 @@ impl<C: TryDisplay> TryDisplay for ContextFrame<C> {
     }
 }
 
+/// Graceful-degradation [`Debug`] implementation: avoids delegating to `C`'s
+/// [`Debug`] which may implicitly allocate (e.g. on macOS with types like
+/// `PathBuf`, `Duration`, or floats with precision specifiers). Instead prints
+/// only the context type name and structural metadata.
 impl<C: fmt::Debug> fmt::Debug for ContextFrame<C> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let mut debug = f.debug_struct("ContextFrame");
-        debug.field("context", &self.context);
+        debug.field("context_type", &core::any::type_name::<C>());
         if let Some(ref seg) = self.segment {
             debug.field("segment", seg);
         }

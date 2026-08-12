@@ -9,6 +9,7 @@
 //!
 //! [`error-stack`]: https://crates.io/crates/error-stack
 use alloc::vec::Vec;
+use rustyfill::{try_write, try_writeln};
 
 use core::error::Error;
 use core::fmt;
@@ -39,7 +40,7 @@ where
         for item in walker {
             match <Vec<_> as TryVec<_>>::try_push(&mut frames, item) {
                 Ok(()) => {}
-                Err(_) => return write!(f, "<failed to render report, out of memory>"),
+                Err(_) => return try_write!(f, "<failed to render report, out of memory>"),
             }
         }
         let total = frames.len();
@@ -62,13 +63,13 @@ where
                             /* is_last — unused by render_static_frame */ false,
                         )?;
                         if has_own_children {
-                            writeln!(f, "{SEP_CHAR}")?;
+                            try_writeln!(f, "{}", SEP_CHAR)?;
                         }
                         extend_continuing(&mut continuing_below, 1).ok();
                     } else {
                         // Blank line before every peer, separating it from the
                         // preceding frame group.
-                        writeln!(f)?;
+                        try_writeln!(f)?;
 
                         // Check if a LostFrames marker immediately follows at
                         // depth 0 — that requires a branch connector on the
@@ -88,7 +89,7 @@ where
                             /* is_last — unused by render_static_frame */ true,
                         )?;
                         if has_own_children {
-                            writeln!(f, "{SEP_CHAR}")?;
+                            try_writeln!(f, "{}", SEP_CHAR)?;
                         }
                         extend_continuing(&mut continuing_below, 1).ok();
                     }
@@ -128,9 +129,9 @@ where
 
                     if TryDisplay::try_fmt(df.context_item(), f).is_err() {
                         // Formatting failed (OOM during display) — fall back to debug.
-                        let _ = write!(f, "<failed to format context>");
+                        let _ = try_write!(f, "<failed to format context>");
                     }
-                    writeln!(f)?;
+                    try_writeln!(f)?;
 
                     // --- Sub-items at depth d+1 ---
                     let sub_depth = *depth + 1;
@@ -151,7 +152,7 @@ where
                         f.write_str(THIN_BRANCH)?;
                     }
                     df.context_item().write_location(f);
-                    writeln!(f)?;
+                    try_writeln!(f)?;
 
                     // Attachments.
                     if has_atts {
@@ -175,13 +176,13 @@ where
                     if has_lost {
                         write_indent(f, &continuing_below, sub_depth)?;
                         f.write_str(THIN_LAST)?;
-                        write!(
-                            f,
-                            "<{} frame{} lost>",
-                            df.lost_children(),
-                            if df.lost_children() == 1 { "" } else { "s" }
-                        )?;
-                        writeln!(f)?;
+                        f.write_str("<")?;
+                        try_write!(f, "{}", df.lost_children())?;
+                        f.write_str(" frame")?;
+                        let suffix = if df.lost_children() == 1 { "" } else { "s" };
+                        try_write!(f, "{}", suffix)?;
+                        f.write_str(" lost>")?;
+                        try_writeln!(f)?;
                     }
 
                     // Separator between sibling source frames at the same depth.
@@ -195,7 +196,7 @@ where
                     // sub_depth so the bar aligns with child sub-items.
                     if has_child_sources {
                         write_indent(f, &continuing_below, sub_depth)?;
-                        writeln!(f, "{SEP_CHAR}")?;
+                        try_writeln!(f, "{}", SEP_CHAR)?;
                     }
 
                     extend_continuing(&mut continuing_below, sub_depth).ok();
@@ -204,14 +205,19 @@ where
                     extend_continuing(&mut continuing_below, *depth).ok();
                     write_indent(f, &continuing_below, *depth)?;
                     f.write_str(THIN_LAST)?;
-                    write!(f, "<{} frame{} lost>", n, if *n == 1 { "" } else { "s" })?;
-                    writeln!(f)?;
+                    f.write_str("<")?;
+                    try_write!(f, "{}", n)?;
+                    f.write_str(" frame")?;
+                    let suffix = if *n == 1 { "" } else { "s" };
+                    try_write!(f, "{}", suffix)?;
+                    f.write_str(" lost>")?;
+                    try_writeln!(f)?;
                 }
                 Err(_) => {
                     extend_continuing(&mut continuing_below, *depth).ok();
                     write_indent(f, &continuing_below, *depth)?;
                     f.write_str(THIN_LAST)?;
-                    writeln!(f, "<failed to display, out of memory>")?;
+                    try_writeln!(f, "<failed to display, out of memory>")?;
                 }
             }
 
@@ -235,13 +241,18 @@ fn render_static_frame<C>(
     _is_last: bool,
 ) -> fmt::Result
 where
-    C: core::fmt::Display,
+    C: core::fmt::Display + TryDisplay,
 {
-    write!(f, "{}", sf.context())?;
-    if let Some(seg) = sf.context().segment() {
-        write!(f, " [{seg}]")?;
+    // Use fallible Display so that OOM during formatting degrades gracefully
+    // instead of panicking (e.g. on macOS where some Display impls implicitly
+    // allocate and abort rather than return an error).
+    if TryDisplay::try_fmt(sf.context(), f).is_err() {
+        let _ = try_write!(f, "<failed to format context>");
     }
-    writeln!(f)?;
+    if let Some(seg) = sf.context().segment() {
+        try_write!(f, " [{}]", seg)?;
+    }
+    try_writeln!(f)?;
 
     let atts = sf.attachments();
     let has_atts = !atts.is_empty();
@@ -254,15 +265,14 @@ where
     };
 
     let loc = sf.context().location();
-    write!(
-        f,
-        "{}at {}:{}:{}",
-        loc_connector,
-        loc.file(),
-        loc.line(),
-        loc.column()
-    )?;
-    writeln!(f)?;
+    try_write!(f, "{}", loc_connector)?;
+    f.write_str("at ")?;
+    try_write!(f, "{}", loc.file())?;
+    f.write_str(":")?;
+    try_write!(f, "{}", loc.line())?;
+    f.write_str(":")?;
+    try_write!(f, "{}", loc.column())?;
+    try_writeln!(f)?;
 
     // Attachments.
     if has_atts {

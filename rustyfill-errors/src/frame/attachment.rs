@@ -133,14 +133,14 @@ impl<T: Send + Sync + 'static> TryDisplay for OpaqueAttachment<T> {
 impl<T: Send + Sync + 'static> fmt::Debug for OpaqueAttachment<T> {
     #[inline]
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "<opaque>")
+        f.write_str("<opaque>")
     }
 }
 
 impl<T: Send + Sync + 'static> fmt::Display for OpaqueAttachment<T> {
     #[inline]
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "<opaque>")
+        f.write_str("<opaque>")
     }
 }
 

@@ -179,10 +179,17 @@ impl<C> From<C> for StaticFrame<C> {
     }
 }
 
+/// Graceful-degradation [`Debug`] implementation: avoids delegating to `C`'s
+/// [`Debug`] which may implicitly allocate (e.g. on macOS with types like
+/// `PathBuf`, `Duration`, or floats with precision specifiers). Instead prints
+/// only the context type name and structural metadata.
 impl<C: core::fmt::Debug> core::fmt::Debug for StaticFrame<C> {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.debug_struct("StaticFrame")
-            .field("context", &self.context)
+            .field(
+                "context_type",
+                &core::any::type_name::<C>(),
+            )
             .field("attachments_len", &self.attachments.len())
             .field("children_len", &self.children.len())
             .field("lost_attachments", &self.lost_attachments)

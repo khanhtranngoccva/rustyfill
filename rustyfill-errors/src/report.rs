@@ -386,6 +386,9 @@ pub struct ChangeContextError<C, T> {
     pub context: T,
 }
 
+/// Graceful-degradation [`Debug`] implementation: avoids delegating to `T`'s
+/// [`Debug`] which may implicitly allocate. Prints the report via its own
+/// [`Debug`] (which degrades gracefully) and only the context type name.
 impl<
     C: core::fmt::Debug + Error + TryDebug + TryDisplay + Send + Sync + 'static,
     T: core::fmt::Debug,
@@ -394,7 +397,10 @@ impl<
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.debug_struct("ChangeContextError")
             .field("report", &self.report)
-            .field("context", &self.context)
+            .field(
+                "context_type",
+                &core::any::type_name::<T>(),
+            )
             .finish()
     }
 }

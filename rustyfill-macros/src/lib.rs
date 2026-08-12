@@ -125,8 +125,7 @@ pub fn try_write(input: TokenStream) -> TokenStream {
         None => {
             let dst_ts: proc_macro2::TokenStream = tts.into_iter().collect();
             quote! {{
-                let _ = #dst_ts;
-                Ok::<_, ::core::fmt::Error>(())
+                (#dst_ts).write_str("")
             }}
             .into()
         }
@@ -134,8 +133,7 @@ pub fn try_write(input: TokenStream) -> TokenStream {
             let dst_ts: proc_macro2::TokenStream = tts[..idx].iter().cloned().collect();
             let fmt_ts: proc_macro2::TokenStream = tts[idx + 1..].iter().cloned().collect();
             quote! {{
-                let mut dst = #dst_ts;
-                dst.write_fmt(::rustyfill::try_format_args!(#fmt_ts))
+                (#dst_ts).write_fmt(::rustyfill::try_format_args!(#fmt_ts))
             }}
             .into()
         }
@@ -167,8 +165,7 @@ pub fn try_writeln(input: TokenStream) -> TokenStream {
         None => {
             let dst_ts: proc_macro2::TokenStream = tts.into_iter().collect();
             quote! {{
-                let mut dst = #dst_ts;
-                dst.write_str("\n")
+                (#dst_ts).write_str("\n")
             }}
             .into()
         }
@@ -176,9 +173,8 @@ pub fn try_writeln(input: TokenStream) -> TokenStream {
             let dst_ts: proc_macro2::TokenStream = tts[..idx].iter().cloned().collect();
             let fmt_ts: proc_macro2::TokenStream = tts[idx + 1..].iter().cloned().collect();
             quote! {{
-                let mut dst = #dst_ts;
-                dst.write_fmt(::rustyfill::try_format_args!(#fmt_ts))
-                    .and_then(|()| dst.write_str("\n"))
+                (#dst_ts).write_fmt(::rustyfill::try_format_args!(#fmt_ts))
+                    .and_then(|()| (#dst_ts).write_str("\n"))
             }}
             .into()
         }
