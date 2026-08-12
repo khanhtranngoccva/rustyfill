@@ -1,10 +1,10 @@
 service unavailable
-├╴at rustyfill-errors/tests/test_debug_and_display.rs:219:10
+├╴at rustyfill-errors/tests/test_debug_and_display.rs:223:10
 │
 ╰┬▶ network timeout
- │  ├╴at rustyfill-errors/tests/test_debug_and_display.rs:216:37
+ │  ├╴at rustyfill-errors/tests/test_debug_and_display.rs:220:37
  │  │
  │  ╰─▶ io error
- │      ╰╴at rustyfill-errors/tests/test_debug_and_display.rs:215:14
+ │      ╰╴at rustyfill-errors/tests/test_debug_and_display.rs:219:14
  ╰▶ retry exhausted
-    ╰╴at rustyfill-errors/tests/test_debug_and_display.rs:218:10
+    ╰╴at rustyfill-errors/tests/test_debug_and_display.rs:222:10
