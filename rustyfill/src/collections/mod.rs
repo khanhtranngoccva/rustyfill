@@ -1,13 +1,13 @@
-//! Fallible concurrent collections.
+//! Fallible collections.
 //!
-//! **Note:** The `collections` module requires the `std` feature, as concurrent
-//! data structures depend on threading primitives (`parking_lot`, `crossbeam_utils`,
-//! `once_cell::sync`).
+//! Includes both concurrent data structures (which require the `std` feature)
+//! and standalone fallible containers like [`slotmap::TrySlotMap`].
 
 #[cfg(feature = "std")]
 pub mod chashmap;
 #[cfg(feature = "std")]
 pub mod interner;
+pub mod slotmap;
 
 #[cfg(feature = "std")]
 pub use chashmap::{ConcurrentHashMap, ConcurrentHashMapError, ConcurrentHashMapNonblockError};

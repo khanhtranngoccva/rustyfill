@@ -60,7 +60,7 @@ where
                         if has_own_children {
                             writeln!(f, "{SEP_CHAR}")?;
                         }
-                        extend_continuing(&mut continuing_below, 1);
+                        extend_continuing(&mut continuing_below, 1).ok();
                     } else {
                         // Blank line before every peer, separating it from the
                         // preceding frame group.
@@ -86,7 +86,7 @@ where
                         if has_own_children {
                             writeln!(f, "{SEP_CHAR}")?;
                         }
-                        extend_continuing(&mut continuing_below, 1);
+                        extend_continuing(&mut continuing_below, 1).ok();
                     }
                 }
                 Ok(FrameRef::Dynamic(df)) => {
@@ -99,7 +99,7 @@ where
                     let is_first = siblings_before == 0;
                     let is_last = siblings_after == 0;
 
-                    extend_continuing(&mut continuing_below, *depth);
+                    extend_continuing(&mut continuing_below, *depth).ok();
 
                     // Mark terminated before rendering sub-items so deeper
                     // levels use space-only indentation.
@@ -194,17 +194,17 @@ where
                         writeln!(f, "{SEP_CHAR}")?;
                     }
 
-                    extend_continuing(&mut continuing_below, sub_depth);
+                    extend_continuing(&mut continuing_below, sub_depth).ok();
                 }
                 Ok(FrameRef::LostFrames(n)) => {
-                    extend_continuing(&mut continuing_below, *depth);
+                    extend_continuing(&mut continuing_below, *depth).ok();
                     write_indent(f, &continuing_below, *depth)?;
                     f.write_str(THIN_LAST)?;
                     write!(f, "<{} frame{} lost>", n, if *n == 1 { "" } else { "s" })?;
                     writeln!(f)?;
                 }
                 Err(_) => {
-                    extend_continuing(&mut continuing_below, *depth);
+                    extend_continuing(&mut continuing_below, *depth).ok();
                     write_indent(f, &continuing_below, *depth)?;
                     f.write_str(THIN_LAST)?;
                     writeln!(f, "<failed to display, out of memory>")?;

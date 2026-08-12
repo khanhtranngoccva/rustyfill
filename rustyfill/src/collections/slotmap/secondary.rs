@@ -1,0 +1,901 @@
+//! Secondary map — associate extra data with slot-map keys.
+//!
+//! A [`SecondaryMap`] stores additional information keyed by handles from a
+//! [`SlotMap`](crate::collections::slotmap::SlotMap). Unlike a `HashMap`,
+//! it uses direct indexing: the key's slot index is used as the array offset,
+//! so lookups are O(1) without hashing.
+
+use crate::alloc::AllocError;
+use crate::alloc::TryReserveError;
+use crate::collections::slotmap::key::{Key, KeyData};
+use crate::lang_alloc::vec::Vec;
+use crate::lang_core::fmt::{self, Debug};
+use crate::lang_core::iter::{Enumerate, Extend, FromIterator, FusedIterator};
+use crate::lang_core::marker::PhantomData;
+use crate::lang_core::mem::replace;
+use crate::lang_core::num::NonZeroU32;
+use crate::lang_core::ops::{Index, IndexMut};
+use crate::try_fmt::helpers::FormatterExt;
+use crate::try_fmt::TryDebug;
+
+/// Returns true if `a` is an older version than `b`, accounting for wraparound.
+fn is_older_version(a: u32, b: u32) -> bool {
+    let diff = a.wrapping_sub(b);
+    diff >= (1 << 31)
+}
+
+// ── Internal slot ───────────────────────────────────────────────────────────────
+
+#[derive(Debug, Clone)]
+enum Slot<T> {
+    Occupied { value: T, version: NonZeroU32 },
+    Vacant,
+}
+
+use self::Slot::{Occupied, Vacant};
+
+impl<T> Slot<T> {
+    fn new_occupied(version: u32, value: T) -> Self {
+        Occupied {
+            value,
+            version: unsafe { NonZeroU32::new_unchecked(version | 1u32) },
+        }
+    }
+
+    fn new_vacant() -> Self {
+        Vacant
+    }
+
+    #[inline(always)]
+    fn occupied(&self) -> bool {
+        matches!(self, Occupied { .. })
+    }
+
+    #[inline(always)]
+    fn version(&self) -> u32 {
+        match self {
+            Occupied { version, .. } => version.get(),
+            Vacant => 0,
+        }
+    }
+
+    pub(crate) unsafe fn get_unchecked(&self) -> &T {
+        unsafe {
+            match self {
+                Occupied { value, .. } => value,
+                Vacant => crate::lang_core::hint::unreachable_unchecked(),
+            }
+        }
+    }
+
+    pub(crate) unsafe fn get_unchecked_mut(&mut self) -> &mut T {
+        unsafe {
+            match self {
+                Occupied { value, .. } => value,
+                Vacant => crate::lang_core::hint::unreachable_unchecked(),
+            }
+        }
+    }
+
+    fn into_option(self) -> Option<T> {
+        match self {
+            Occupied { value, .. } => Some(value),
+            Vacant => None,
+        }
+    }
+}
+
+// ── Error type ──────────────────────────────────────────────────────────────────
+
+/// Error returned by [`SecondaryMap`] operations.
+#[derive(Debug)]
+pub enum SecondaryMapError {
+    /// A raw heap allocation failed.
+    Alloc(AllocError),
+    /// Capacity reservation failed.
+    Reserve(TryReserveError),
+    /// The secondary map has grown too large.
+    Overflow,
+}
+
+impl fmt::Display for SecondaryMapError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Alloc(e) => write!(f, "secondary map allocation failed: {}", e),
+            Self::Reserve(e) => write!(f, "secondary map capacity reservation failed: {}", e),
+            Self::Overflow => f.write_str("secondary map overflow"),
+        }
+    }
+}
+
+impl TryDebug for SecondaryMapError {
+    fn try_fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Alloc(e) => f
+                .try_debug_struct("SecondaryMapError::Alloc")
+                .field("0", e)
+                .finish(),
+            Self::Reserve(e) => f
+                .try_debug_struct("SecondaryMapError::Reserve")
+                .field("0", e)
+                .finish(),
+            Self::Overflow => f.write_str("SecondaryMapError::Overflow"),
+        }
+    }
+}
+
+impl From<AllocError> for SecondaryMapError {
+    fn from(e: AllocError) -> Self {
+        Self::Alloc(e)
+    }
+}
+
+impl From<TryReserveError> for SecondaryMapError {
+    fn from(e: TryReserveError) -> Self {
+        Self::Reserve(e)
+    }
+}
+
+impl From<crate::lang_std::collections::TryReserveError> for SecondaryMapError {
+    fn from(e: crate::lang_std::collections::TryReserveError) -> Self {
+        Self::Reserve(TryReserveError::from(e))
+    }
+}
+
+// ── SecondaryMap ────────────────────────────────────────────────────────────────
+
+/// Secondary map that associates extra data with keys from a [`SlotMap`](crate::collections::slotmap::SlotMap).
+///
+/// Uses direct indexing (no hashing) so lookups are O(1). Outdated entries are
+/// cleaned up lazily when their slot is reused in the primary map.
+#[derive(Debug, Clone)]
+pub struct SecondaryMap<K: Key, V> {
+    slots: Vec<Slot<V>>,
+    num_elems: usize,
+    _k: PhantomData<fn(K) -> K>,
+}
+
+impl<K: Key, V> SecondaryMap<K, V> {
+    /// Constructs a new, empty [`SecondaryMap`].
+    pub fn new() -> Self {
+        Self::with_capacity(0)
+    }
+
+    /// Creates an empty [`SecondaryMap`] with room for at least `capacity` slots.
+    pub fn with_capacity(capacity: usize) -> Self {
+        let mut slots = Vec::with_capacity(capacity + 1); // sentinel
+        slots.push(Slot::new_vacant());
+        Self {
+            slots,
+            num_elems: 0,
+            _k: PhantomData,
+        }
+    }
+
+    /// Creates a [`SecondaryMap`] with the given capacity.
+    pub fn try_with_capacity(capacity: usize) -> Result<Self, SecondaryMapError> {
+        if capacity == 0 {
+            return Ok(Self::new());
+        }
+        let mut slots = Vec::new();
+        slots.push(Slot::new_vacant());
+        slots.try_reserve(capacity).map_err(SecondaryMapError::from)?;
+        Ok(Self {
+            slots,
+            num_elems: 0,
+            _k: PhantomData,
+        })
+    }
+
+    /// Returns the number of elements in the secondary map.
+    pub fn len(&self) -> usize {
+        self.num_elems
+    }
+
+    /// Returns `true` if the secondary map contains no elements.
+    pub fn is_empty(&self) -> bool {
+        self.num_elems == 0
+    }
+
+    /// Returns the number of elements the secondary map can hold without reallocating.
+    pub fn capacity(&self) -> usize {
+        self.slots.capacity().saturating_sub(1)
+    }
+
+    /// Tries to set the capacity to at least `new_capacity`.
+    pub fn try_set_capacity(&mut self, new_capacity: usize) -> Result<(), SecondaryMapError> {
+        let target = new_capacity + 1; // sentinel
+        if target > self.slots.capacity() {
+            let needed = target.saturating_sub(self.slots.len());
+            self.slots.try_reserve(needed).map_err(SecondaryMapError::from)?;
+        }
+        Ok(())
+    }
+
+    /// Returns `true` if the secondary map contains the given key.
+    pub fn contains_key(&self, key: K) -> bool {
+        let kd = key.data();
+        self.slots
+            .get(kd.idx() as usize)
+            .is_some_and(|slot| slot.version() == kd.version_raw())
+    }
+
+    /// Inserts a value at the given key.
+    ///
+    /// Returns `Err` if the underlying allocation fails. Returns `Ok(None)` if
+    /// this is a new entry, `Ok(Some(old_value))` if the key was already present.
+    ///
+    /// Silently returns `Ok(None)` if the key was removed from the originating
+    /// slot map and its slot has been reused with a newer version.
+    pub fn try_insert(&mut self, key: K, value: V) -> Result<Option<V>, SecondaryMapError> {
+        if key.is_null() {
+            return Ok(None);
+        }
+
+        let kd = key.data();
+        let idx = kd.idx() as usize;
+
+        // Grow slots if needed.
+        while self.slots.len() <= idx {
+            self.slots.try_reserve(1).map_err(SecondaryMapError::from)?;
+            self.slots.push(Slot::new_vacant());
+        }
+
+        let slot = &mut self.slots[idx];
+        if slot.version() == kd.version_raw() {
+            // Already occupied with matching version.
+            return Ok(replace(unsafe { slot.get_unchecked_mut() }, value).into());
+        }
+
+        if slot.occupied() {
+            // Existing newer value — don't overwrite.
+            if is_older_version(kd.version_raw(), slot.version()) {
+                return Ok(None);
+            }
+        } else {
+            self.num_elems += 1;
+        }
+
+        *slot = Slot::new_occupied(kd.version_raw(), value);
+        Ok(None)
+    }
+
+    /// Removes a key, returning the value if present.
+    pub fn remove(&mut self, key: K) -> Option<V> {
+        let kd = key.data();
+        if let Some(slot) = self.slots.get_mut(kd.idx() as usize)
+            && slot.version() == kd.version_raw()
+        {
+            self.num_elems -= 1;
+            return replace(slot, Slot::new_vacant()).into_option();
+        }
+        None
+    }
+
+    /// Retains only elements satisfying the predicate.
+    pub fn retain<F>(&mut self, mut f: F)
+    where
+        F: FnMut(K, &mut V) -> bool,
+    {
+        for (i, slot) in self.slots.iter_mut().enumerate() {
+            if let Occupied { value, version } = slot {
+                let key = KeyData::new(i as u32, version.get()).into();
+                if !f(key, value) {
+                    self.num_elems -= 1;
+                    *slot = Slot::new_vacant();
+                }
+            }
+        }
+    }
+
+    /// Clears the secondary map, keeping allocated memory.
+    pub fn clear(&mut self) {
+        self.drain();
+    }
+
+    /// Drains all elements, returning them as an iterator.
+    pub fn drain(&mut self) -> Drain<'_, K, V> {
+        Drain { cur: 1, sm: self }
+    }
+
+    // ── Accessors ──────────────────────────────────────────────────────────────
+
+    /// Returns a reference to the value for the given key.
+    pub fn get(&self, key: K) -> Option<&V> {
+        let kd = key.data();
+        self.slots
+            .get(kd.idx() as usize)
+            .filter(|slot| slot.version() == kd.version_raw())
+            .map(|slot| unsafe { slot.get_unchecked() })
+    }
+
+    /// Returns a mutable reference to the value for the given key.
+    pub fn get_mut(&mut self, key: K) -> Option<&mut V> {
+        let kd = key.data();
+        self.slots
+            .get_mut(kd.idx() as usize)
+            .filter(|slot| slot.version() == kd.version_raw())
+            .map(|slot| unsafe { slot.get_unchecked_mut() })
+    }
+
+    /// Unchecked access.
+    ///
+    /// # Safety
+    /// Caller must ensure `contains_key(key)` is true.
+    pub unsafe fn get_unchecked(&self, key: K) -> &V {
+        debug_assert!(self.contains_key(key));
+        unsafe { self.slots.get_unchecked(key.data().idx() as usize).get_unchecked() }
+    }
+
+    /// Unchecked mutable access.
+    ///
+    /// # Safety
+    /// Caller must ensure `contains_key(key)` is true.
+    pub unsafe fn get_unchecked_mut(&mut self, key: K) -> &mut V {
+        debug_assert!(self.contains_key(key));
+        unsafe { self.slots.get_unchecked_mut(key.data().idx() as usize).get_unchecked_mut() }
+    }
+
+    /// Entry API — returns `None` if the key was removed from the originating map.
+    pub fn entry(&mut self, key: K) -> Option<Entry<'_, K, V>> {
+        if key.is_null() {
+            return None;
+        }
+
+        let kd = key.data();
+        let idx = kd.idx() as usize;
+
+        // Ensure slot exists.
+        while self.slots.len() <= idx {
+            self.slots.push(Slot::new_vacant());
+        }
+
+        let slot = unsafe { self.slots.get_unchecked(idx) };
+        if kd.version_raw() == slot.version() {
+            Some(Entry::Occupied(OccupiedEntry {
+                map: self,
+                kd,
+                _k: PhantomData,
+            }))
+        } else if is_older_version(kd.version_raw(), slot.version()) {
+            None
+        } else {
+            Some(Entry::Vacant(VacantEntry {
+                map: self,
+                kd,
+                _k: PhantomData,
+            }))
+        }
+    }
+
+    // ── Iterators ──────────────────────────────────────────────────────────────
+
+    /// Immutable iterator over all key-value pairs.
+    pub fn iter(&self) -> Iter<'_, K, V> {
+        Iter {
+            num_left: self.num_elems,
+            slots: self.slots.iter().enumerate(),
+            _k: PhantomData,
+        }
+    }
+
+    /// Mutable iterator over all key-value pairs.
+    pub fn iter_mut(&mut self) -> IterMut<'_, K, V> {
+        IterMut {
+            num_left: self.num_elems,
+            slots: self.slots.iter_mut().enumerate(),
+            _k: PhantomData,
+        }
+    }
+
+    /// Iterator over all keys.
+    pub fn keys(&self) -> Keys<'_, K, V> {
+        Keys { inner: self.iter() }
+    }
+
+    /// Iterator over all values (immutable).
+    pub fn values(&self) -> Values<'_, K, V> {
+        Values { inner: self.iter() }
+    }
+
+    /// Iterator over all values (mutable).
+    pub fn values_mut(&mut self) -> ValuesMut<'_, K, V> {
+        ValuesMut {
+            inner: self.iter_mut(),
+        }
+    }
+}
+
+impl<K: Key, V> Default for SecondaryMap<K, V> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl<K: Key, V> Index<K> for SecondaryMap<K, V> {
+    type Output = V;
+
+    fn index(&self, key: K) -> &V {
+        match self.get(key) {
+            Some(r) => r,
+            None => panic!("invalid SecondaryMap key used"),
+        }
+    }
+}
+
+impl<K: Key, V> IndexMut<K> for SecondaryMap<K, V> {
+    fn index_mut(&mut self, key: K) -> &mut V {
+        match self.get_mut(key) {
+            Some(r) => r,
+            None => panic!("invalid SecondaryMap key used"),
+        }
+    }
+}
+
+impl<K: Key, V: PartialEq> PartialEq for SecondaryMap<K, V> {
+    fn eq(&self, other: &Self) -> bool {
+        if self.len() != other.len() {
+            return false;
+        }
+        self.iter().all(|(key, value)| {
+            other
+                .get(key)
+                .is_some_and(|ov| *value == *ov)
+        })
+    }
+}
+
+impl<K: Key, V: Eq> Eq for SecondaryMap<K, V> {}
+
+impl<K: Key, V> FromIterator<(K, V)> for SecondaryMap<K, V> {
+    fn from_iter<I: IntoIterator<Item = (K, V)>>(iter: I) -> Self {
+        let mut sec = Self::new();
+        sec.extend(iter);
+        sec
+    }
+}
+
+impl<K: Key, V> Extend<(K, V)> for SecondaryMap<K, V> {
+    fn extend<I: IntoIterator<Item = (K, V)>>(&mut self, iter: I) {
+        for (k, v) in iter {
+            let _ = self.try_insert(k, v);
+        }
+    }
+}
+
+impl<'a, K: Key, V: 'a + Copy> Extend<(K, &'a V)> for SecondaryMap<K, V> {
+    fn extend<I: IntoIterator<Item = (K, &'a V)>>(&mut self, iter: I) {
+        for (k, v) in iter {
+            let _ = self.try_insert(k, *v);
+        }
+    }
+}
+
+// ── Entry API ───────────────────────────────────────────────────────────────────
+
+/// View into an occupied entry in a [`SecondaryMap`].
+#[derive(Debug)]
+pub struct OccupiedEntry<'a, K: Key, V> {
+    map: &'a mut SecondaryMap<K, V>,
+    kd: KeyData,
+    _k: PhantomData<fn(K) -> K>,
+}
+
+/// View into a vacant entry in a [`SecondaryMap`].
+#[derive(Debug)]
+pub struct VacantEntry<'a, K: Key, V> {
+    map: &'a mut SecondaryMap<K, V>,
+    kd: KeyData,
+    _k: PhantomData<fn(K) -> K>,
+}
+
+/// Entry enum for in-place manipulation.
+#[derive(Debug)]
+pub enum Entry<'a, K: Key, V> {
+    Occupied(OccupiedEntry<'a, K, V>),
+    Vacant(VacantEntry<'a, K, V>),
+}
+
+impl<'a, K: Key, V> Entry<'a, K, V> {
+    pub fn or_insert(self, default: V) -> &'a mut V {
+        self.or_insert_with(|| default)
+    }
+
+    pub fn or_insert_with<F: FnOnce() -> V>(self, default: F) -> &'a mut V {
+        match self {
+            Entry::Occupied(x) => x.into_mut(),
+            Entry::Vacant(x) => x.insert(default()),
+        }
+    }
+
+    pub fn key(&self) -> K {
+        match self {
+            Entry::Occupied(e) => e.kd.into(),
+            Entry::Vacant(e) => e.kd.into(),
+        }
+    }
+
+    pub fn and_modify<F>(self, f: F) -> Self
+    where
+        F: FnOnce(&mut V),
+    {
+        match self {
+            Entry::Occupied(mut e) => {
+                f(e.get_mut());
+                Entry::Occupied(e)
+            },
+            Entry::Vacant(e) => Entry::Vacant(e),
+        }
+    }
+}
+
+impl<'a, K: Key, V: Default> Entry<'a, K, V> {
+    pub fn or_default(self) -> &'a mut V {
+        self.or_insert_with(Default::default)
+    }
+}
+
+impl<'a, K: Key, V> OccupiedEntry<'a, K, V> {
+    pub fn key(&self) -> K {
+        self.kd.into()
+    }
+
+    pub fn remove_entry(self) -> (K, V) {
+        (self.kd.into(), self.remove())
+    }
+
+    pub fn get(&self) -> &V {
+        unsafe { self.map.get_unchecked(self.kd.into()) }
+    }
+
+    pub fn get_mut(&mut self) -> &mut V {
+        unsafe { self.map.get_unchecked_mut(self.kd.into()) }
+    }
+
+    pub fn into_mut(self) -> &'a mut V {
+        unsafe { self.map.get_unchecked_mut(self.kd.into()) }
+    }
+
+    pub fn insert(&mut self, value: V) -> V {
+        replace(self.get_mut(), value)
+    }
+
+    pub fn remove(self) -> V {
+        let slot = unsafe { self.map.slots.get_unchecked_mut(self.kd.idx() as usize) };
+        self.map.num_elems -= 1;
+        unsafe {
+            match replace(slot, Slot::new_vacant()) {
+                Occupied { value, .. } => value,
+                Vacant => crate::lang_core::hint::unreachable_unchecked(),
+            }
+        }
+    }
+}
+
+impl<'a, K: Key, V> VacantEntry<'a, K, V> {
+    pub fn key(&self) -> K {
+        self.kd.into()
+    }
+
+    pub fn insert(self, value: V) -> &'a mut V {
+        let slot = unsafe { self.map.slots.get_unchecked_mut(self.kd.idx() as usize) };
+        match replace(slot, Slot::new_occupied(self.kd.version_raw(), value)) {
+            Occupied { .. } => {},
+            Vacant => self.map.num_elems += 1,
+        }
+        unsafe { slot.get_unchecked_mut() }
+    }
+}
+
+// ── Iterators ───────────────────────────────────────────────────────────────────
+
+#[derive(Debug)]
+pub struct Drain<'a, K: Key + 'a, V: 'a> {
+    sm: &'a mut SecondaryMap<K, V>,
+    cur: usize,
+}
+
+#[derive(Debug)]
+pub struct IntoIter<K: Key, V> {
+    num_left: usize,
+    slots: Enumerate<crate::lang_alloc::vec::IntoIter<Slot<V>>>,
+    _k: PhantomData<fn(K) -> K>,
+}
+
+#[derive(Debug)]
+pub struct Iter<'a, K: Key + 'a, V: 'a> {
+    num_left: usize,
+    slots: Enumerate<crate::lang_core::slice::Iter<'a, Slot<V>>>,
+    _k: PhantomData<fn(K) -> K>,
+}
+
+impl<'a, K: 'a + Key, V: 'a> Clone for Iter<'a, K, V> {
+    fn clone(&self) -> Self {
+        Iter {
+            num_left: self.num_left,
+            slots: self.slots.clone(),
+            _k: self._k,
+        }
+    }
+}
+
+#[derive(Debug)]
+pub struct IterMut<'a, K: Key + 'a, V: 'a> {
+    num_left: usize,
+    slots: Enumerate<crate::lang_core::slice::IterMut<'a, Slot<V>>>,
+    _k: PhantomData<fn(K) -> K>,
+}
+
+#[derive(Debug)]
+pub struct Keys<'a, K: Key + 'a, V: 'a> {
+    inner: Iter<'a, K, V>,
+}
+
+impl<'a, K: 'a + Key, V: 'a> Clone for Keys<'a, K, V> {
+    fn clone(&self) -> Self {
+        Keys {
+            inner: self.inner.clone(),
+        }
+    }
+}
+
+#[derive(Debug)]
+pub struct Values<'a, K: Key + 'a, V: 'a> {
+    inner: Iter<'a, K, V>,
+}
+
+impl<'a, K: 'a + Key, V: 'a> Clone for Values<'a, K, V> {
+    fn clone(&self) -> Self {
+        Values {
+            inner: self.inner.clone(),
+        }
+    }
+}
+
+#[derive(Debug)]
+pub struct ValuesMut<'a, K: Key + 'a, V: 'a> {
+    inner: IterMut<'a, K, V>,
+}
+
+impl<'a, K: Key, V> Iterator for Drain<'a, K, V> {
+    type Item = (K, V);
+
+    fn next(&mut self) -> Option<(K, V)> {
+        while let Some(slot) = self.sm.slots.get_mut(self.cur) {
+            let idx = self.cur;
+            self.cur += 1;
+            if let Occupied { value, version } = replace(slot, Slot::new_vacant()) {
+                self.sm.num_elems -= 1;
+                let key = KeyData::new(idx as u32, version.get()).into();
+                return Some((key, value));
+            }
+        }
+        None
+    }
+
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        (self.sm.len(), Some(self.sm.len()))
+    }
+}
+
+impl<'a, K: Key, V> Drop for Drain<'a, K, V> {
+    fn drop(&mut self) {
+        self.for_each(|_| {});
+    }
+}
+
+impl<K: Key, V> Iterator for IntoIter<K, V> {
+    type Item = (K, V);
+
+    fn next(&mut self) -> Option<(K, V)> {
+        for (idx, mut slot) in self.slots.by_ref() {
+            if let Occupied { value, version } = replace(&mut slot, Slot::new_vacant()) {
+                self.num_left -= 1;
+                let key = KeyData::new(idx as u32, version.get()).into();
+                return Some((key, value));
+            }
+        }
+        None
+    }
+
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        (self.num_left, Some(self.num_left))
+    }
+}
+
+impl<'a, K: Key, V> Iterator for Iter<'a, K, V> {
+    type Item = (K, &'a V);
+
+    fn next(&mut self) -> Option<(K, &'a V)> {
+        for (idx, slot) in self.slots.by_ref() {
+            if let Occupied { value, version } = slot {
+                self.num_left -= 1;
+                let key = KeyData::new(idx as u32, version.get()).into();
+                return Some((key, value));
+            }
+        }
+        None
+    }
+
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        (self.num_left, Some(self.num_left))
+    }
+}
+
+impl<'a, K: Key, V> Iterator for IterMut<'a, K, V> {
+    type Item = (K, &'a mut V);
+
+    fn next(&mut self) -> Option<(K, &'a mut V)> {
+        for (idx, slot) in self.slots.by_ref() {
+            if let Occupied { value, version } = slot {
+                let key = KeyData::new(idx as u32, version.get()).into();
+                self.num_left -= 1;
+                return Some((key, value));
+            }
+        }
+        None
+    }
+
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        (self.num_left, Some(self.num_left))
+    }
+}
+
+impl<'a, K: Key, V> Iterator for Keys<'a, K, V> {
+    type Item = K;
+
+    fn next(&mut self) -> Option<K> {
+        self.inner.next().map(|(key, _)| key)
+    }
+
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        self.inner.size_hint()
+    }
+}
+
+impl<'a, K: Key, V> Iterator for Values<'a, K, V> {
+    type Item = &'a V;
+
+    fn next(&mut self) -> Option<&'a V> {
+        self.inner.next().map(|(_, value)| value)
+    }
+
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        self.inner.size_hint()
+    }
+}
+
+impl<'a, K: Key, V> Iterator for ValuesMut<'a, K, V> {
+    type Item = &'a mut V;
+
+    fn next(&mut self) -> Option<&'a mut V> {
+        self.inner.next().map(|(_, value)| value)
+    }
+
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        self.inner.size_hint()
+    }
+}
+
+impl<'a, K: Key, V> IntoIterator for &'a SecondaryMap<K, V> {
+    type Item = (K, &'a V);
+    type IntoIter = Iter<'a, K, V>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.iter()
+    }
+}
+
+impl<'a, K: Key, V> IntoIterator for &'a mut SecondaryMap<K, V> {
+    type Item = (K, &'a mut V);
+    type IntoIter = IterMut<'a, K, V>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.iter_mut()
+    }
+}
+
+impl<K: Key, V> IntoIterator for SecondaryMap<K, V> {
+    type Item = (K, V);
+    type IntoIter = IntoIter<K, V>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        let len = self.len();
+        let mut it = self.slots.into_iter().enumerate();
+        it.next(); // skip sentinel
+        IntoIter {
+            num_left: len,
+            slots: it,
+            _k: PhantomData,
+        }
+    }
+}
+
+impl<'a, K: Key, V> FusedIterator for Iter<'a, K, V> {}
+impl<'a, K: Key, V> FusedIterator for IterMut<'a, K, V> {}
+impl<'a, K: Key, V> FusedIterator for Keys<'a, K, V> {}
+impl<'a, K: Key, V> FusedIterator for Values<'a, K, V> {}
+impl<'a, K: Key, V> FusedIterator for ValuesMut<'a, K, V> {}
+impl<'a, K: Key, V> FusedIterator for Drain<'a, K, V> {}
+impl<K: Key, V> FusedIterator for IntoIter<K, V> {}
+
+impl<'a, K: Key, V> ExactSizeIterator for Iter<'a, K, V> {}
+impl<'a, K: Key, V> ExactSizeIterator for IterMut<'a, K, V> {}
+impl<'a, K: Key, V> ExactSizeIterator for Keys<'a, K, V> {}
+impl<'a, K: Key, V> ExactSizeIterator for Values<'a, K, V> {}
+impl<'a, K: Key, V> ExactSizeIterator for ValuesMut<'a, K, V> {}
+impl<'a, K: Key, V> ExactSizeIterator for Drain<'a, K, V> {}
+impl<K: Key, V> ExactSizeIterator for IntoIter<K, V> {}
+
+// ── Tests ───────────────────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::collections::slotmap::SlotMap;
+    use crate::collections::slotmap::DefaultKey;
+
+    #[test]
+    fn basic_insert_get_remove() {
+        let mut sm: SlotMap<DefaultKey, i32> = SlotMap::new();
+        let k = sm.try_insert(42).unwrap();
+        let mut sec: SecondaryMap<DefaultKey, i32> = SecondaryMap::new();
+        sec.try_insert(k, 100).unwrap();
+        assert_eq!(*sec.get(k).unwrap(), 100);
+        assert_eq!(sec.remove(k), Some(100));
+        assert_eq!(sec.get(k), None);
+    }
+
+    #[test]
+    fn entry_api() {
+        let mut sm: SlotMap<DefaultKey, ()> = SlotMap::with_key();
+        let k = sm.try_insert(()).unwrap();
+        let mut sec: SecondaryMap<DefaultKey, i32> = SecondaryMap::new();
+        let v = sec.entry(k).unwrap().or_insert(42);
+        assert_eq!(*v, 42);
+        *sec.entry(k).unwrap().or_insert(0) *= 2;
+        assert_eq!(sec[k], 84);
+    }
+
+    #[test]
+    fn outdated_key_not_overwritten() {
+        let mut sm: SlotMap<DefaultKey, i32> = SlotMap::new();
+        let k1 = sm.try_insert(1).unwrap();
+        let mut sec: SecondaryMap<DefaultKey, i32> = SecondaryMap::new();
+        sec.try_insert(k1, 100).unwrap();
+        // Remove and reinsert — same slot index, new version.
+        sm.remove(k1);
+        let k2 = sm.try_insert(2).unwrap();
+        assert_eq!(k1.data().idx(), k2.data().idx());
+        // Inserting k2 into the secondary map evicts the stale k1 entry
+        // because k2's version is newer.
+        sec.try_insert(k2, 200).unwrap();
+        // After eviction, old key is no longer visible.
+        assert_eq!(sec.get(k1), None);
+        assert_eq!(*sec.get(k2).unwrap(), 200);
+    }
+
+    #[test]
+    fn iteration_works() {
+        let mut sm: SlotMap<DefaultKey, ()> = SlotMap::with_key();
+        let k1 = sm.try_insert(()).unwrap();
+        let k2 = sm.try_insert(()).unwrap();
+        let mut sec: SecondaryMap<DefaultKey, i32> = SecondaryMap::new();
+        sec.try_insert(k1, 10).unwrap();
+        sec.try_insert(k2, 20).unwrap();
+        let vals: Vec<_> = sec.values().copied().collect();
+        assert_eq!(vals.len(), 2);
+        assert!(vals.contains(&10));
+        assert!(vals.contains(&20));
+    }
+
+    #[test]
+    fn from_iterator() {
+        let mut sm: SlotMap<DefaultKey, ()> = SlotMap::with_key();
+        let k1 = sm.try_insert(()).unwrap();
+        let k2 = sm.try_insert(()).unwrap();
+        let sec: SecondaryMap<DefaultKey, i32> = [(k1, 10), (k2, 20)].into_iter().collect();
+        assert_eq!(*sec.get(k1).unwrap(), 10);
+        assert_eq!(*sec.get(k2).unwrap(), 20);
+    }
+}

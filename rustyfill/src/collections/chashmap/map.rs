@@ -493,7 +493,7 @@ impl<K: Eq + Hash, V, S: BuildHasher> ConcurrentHashMap<K, V, S> {
         K: Borrow<Q>,
     {
         let hash = self.hasher.hash_one(key);
-        let idx = self.fast_shard_index(hash as usize);
+        let idx = self.shard_index_internal(hash);
         let shard = self.shards.get_shard(idx);
         let guard = shard.read_table();
         guard
@@ -510,7 +510,7 @@ impl<K: Eq + Hash, V, S: BuildHasher> ConcurrentHashMap<K, V, S> {
         K: Borrow<Q>,
     {
         let hash = self.hasher.hash_one(key);
-        let idx = self.fast_shard_index(hash as usize);
+        let idx = self.shard_index_internal(hash);
         let shard = self.shards.get_shard(idx);
         let guard = shard.write_table();
         guard
@@ -658,8 +658,7 @@ impl<K: Eq + Hash, V, S: BuildHasher> ConcurrentHashMap<K, V, S> {
 
     // ── Fast shard index ──────────────────────────────────────────────────
 
-    /// Compute shard index using bit rotation: left-shift by 7 to rotate upper bits,
-    /// then right-shift to extract log2(shard_count) bits.
+    /// Compute shard index using bit rotation.
     fn fast_shard_index(&self, hash: usize) -> usize {
         (hash << 7) >> self.shift
     }
@@ -673,7 +672,10 @@ impl<K: Eq + Hash, V, S: BuildHasher> ConcurrentHashMap<K, V, S> {
 
     /// Compute shard index from a pre-computed hash.
     pub(crate) fn shard_index_internal(&self, hash: u64) -> usize {
-        self.fast_shard_index(hash as usize)
+        // Fold upper 32 bits into lower half before truncating to usize,
+        // so that 32-bit targets still benefit from full 64-bit entropy.
+        let folded = hash ^ (hash >> 32);
+        self.fast_shard_index(folded as usize)
     }
 
     /// Get a reference to the shards slice. Used by the interner module.

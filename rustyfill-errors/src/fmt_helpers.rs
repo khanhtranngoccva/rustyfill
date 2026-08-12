@@ -4,6 +4,9 @@ use alloc::vec::Vec;
 
 use core::fmt;
 
+use rustyfill::alloc::TryReserveError;
+use rustyfill::prelude::TryVec;
+
 use crate::ItemImpl;
 
 // ── Connector constants ────────────────────────────────────────────────────────
@@ -34,12 +37,19 @@ pub(super) const SEP_CHAR: &str = "\u{2502}";
 /// Extend the `continuing_below` tracker so it covers the ancestor slot for
 /// `depth` (index = depth - 1). Newly added slots default to `true`. Depth 0
 /// is a no-op.
-pub(super) fn extend_continuing(continuing: &mut Vec<bool>, depth: usize) {
+///
+/// Returns [`Err`] if allocating capacity for new slots fails. The vector is
+/// left in a valid (shorter) state; callers treat missing slots as `true` via
+/// [`write_indent`] and friends, so rendering degrades gracefully.
+pub(super) fn extend_continuing(
+    continuing: &mut Vec<bool>,
+    depth: usize,
+) -> Result<(), TryReserveError> {
     let needed = depth.saturating_sub(1);
-    // FIXME: implicitly allocates
     while continuing.len() <= needed {
-        continuing.push(true);
+        continuing.try_push(true)?;
     }
+    Ok(())
 }
 
 /// Mark that the ancestor at `ancestor_depth` (1-based) was the last or

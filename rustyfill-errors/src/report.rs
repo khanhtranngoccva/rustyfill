@@ -170,10 +170,10 @@ impl<C> Report<C> {
         self.peer_count()
     }
 
-    /// Checks if the report is empty. Always return `false` because the head exists.
+    /// Checks if the report is empty. Always returns `false` because the head exists.
     #[must_use]
     pub fn is_empty(&self) -> bool {
-        self.peer_count() != 0
+        false
     }
 
     // ── Attachments (printable, lossy) ───────────────────────────────────

@@ -72,7 +72,7 @@ use crate::{
 /// Because the trait requires [`Copy`], it is not object-safe and cannot be used
 /// as `&dyn CopyBuildHasher`. It is intended solely as a generic bound:
 ///
-/// ```
+/// ```ignore
 /// fn process<H: CopyBuildHasher>(hasher: H) {
 /// }
 /// ```
