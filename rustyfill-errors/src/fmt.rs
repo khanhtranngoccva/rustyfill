@@ -266,12 +266,7 @@ where
 
     let loc = sf.context().location();
     try_write!(f, "{}", loc_connector)?;
-    f.write_str("at ")?;
-    try_write!(f, "{}", loc.file())?;
-    f.write_str(":")?;
-    try_write!(f, "{}", loc.line())?;
-    f.write_str(":")?;
-    try_write!(f, "{}", loc.column())?;
+    super::fmt_helpers::write_location(f, loc)?;
     try_writeln!(f)?;
 
     // Attachments.

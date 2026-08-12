@@ -1,6 +1,9 @@
 use core::error::Error;
 use rustyfill_errors::Report;
 
+#[cfg(feature = "std")]
+use rustyfill_errors::ForceForwardSlashes;
+
 extern crate alloc;
 extern crate std;
 
@@ -53,13 +56,25 @@ fn read_snapshot(name: &str) -> Option<alloc::string::String> {
 }
 
 /// Normalize CRLF to LF so that snapshots pass on Windows where
-/// outputting may emit `\r\n` instead of `\n`.
+/// file I/O may emit `\r\n` instead of `\n`.
 fn normalize_newlines(s: &str) -> alloc::borrow::Cow<'_, str> {
     if s.contains('\r') {
         alloc::borrow::Cow::Owned(s.replace("\r\n", "\n"))
     } else {
         alloc::borrow::Cow::Borrowed(s)
     }
+}
+
+macro_rules! snapshot_test {
+    ($name:ident, $body:expr) => {
+        #[cfg_attr(miri, ignore)]
+        #[test]
+        fn $name() {
+            #[cfg(feature = "std")]
+            let _guard = ForceForwardSlashes::default();
+            $body
+        }
+    };
 }
 
 #[cfg_attr(miri, ignore)]
@@ -104,131 +119,103 @@ fn assert_snapshot(name: &str, actual: &str) {
     }
 }
 
-#[cfg_attr(miri, ignore)]
-#[test]
-fn display_single_frame() {
+snapshot_test!(display_single_frame, {
     let report = Report::new(TestError("something went wrong"));
     let output = alloc::format!("{}", report);
     assert_snapshot("single_frame", &output);
-}
+});
 
-#[cfg_attr(miri, ignore)]
-#[test]
-fn display_single_frame_with_segment() {
+snapshot_test!(display_single_frame_with_segment, {
     let report = Report::with_segment(TestError("parse failed"), "parsing config");
     let output = alloc::format!("{}", report);
     assert_snapshot("single_frame_with_segment", &output);
-}
+});
 
-#[cfg_attr(miri, ignore)]
-#[test]
-fn display_with_attachment() {
+snapshot_test!(display_with_attachment, {
     let report = Report::new(TestError("root error")).attach("extra context");
     let output = alloc::format!("{}", report);
     assert_snapshot("with_attachment", &output);
-}
+});
 
-#[cfg_attr(miri, ignore)]
-#[test]
-fn display_with_multiple_attachments() {
+snapshot_test!(display_with_multiple_attachments, {
     let report = Report::new(TestError("root error"))
         .attach("detail one")
         .attach(42i32);
     let output = alloc::format!("{}", report);
     assert_snapshot("with_multiple_attachments", &output);
-}
+});
 
-#[cfg_attr(miri, ignore)]
-#[test]
-fn display_with_peers() {
+snapshot_test!(display_with_peers, {
     let report = Report::new(TestError("first"))
         .push(TestError("second"))
         .push(TestError("third"));
     let output = alloc::format!("{}", report);
     assert_snapshot("with_peers", &output);
-}
+});
 
-#[cfg_attr(miri, ignore)]
-#[test]
-fn display_after_change_context() {
+snapshot_test!(display_after_change_context, {
     let report: Report<OtherError> =
         Report::new(TestError("inner error")).change_context(OtherError("outer error"));
     let output = alloc::format!("{}", report);
     assert_snapshot("after_change_context", &output);
-}
+});
 
-#[cfg_attr(miri, ignore)]
-#[test]
-fn display_deeply_nested_change_context() {
+snapshot_test!(display_deeply_nested_change_context, {
     let r1 = Report::new(TestError("level 1"));
     let r2: Report<OtherError> = r1.change_context(OtherError("level 2"));
     let r3: Report<TestError> = r2.change_context(TestError("level 3"));
     let output = alloc::format!("{}", r3);
     assert_snapshot("deeply_nested_change_context", &output);
-}
+});
 
-#[cfg_attr(miri, ignore)]
-#[test]
-fn display_change_context_with_attachments() {
+snapshot_test!(display_change_context_with_attachments, {
     let inner = Report::new(TestError("inner")).attach("inner-attach");
     let report: Report<OtherError> = inner.change_context(OtherError("outer"));
     let output = alloc::format!("{}", report);
     assert_snapshot("change_context_with_attachments", &output);
-}
+});
 
-#[cfg_attr(miri, ignore)]
-#[test]
-fn display_peers_then_change_context() {
+snapshot_test!(display_peers_then_change_context, {
     let report: Report<OtherError> = Report::new(TestError("base"))
         .push(TestError("peer"))
         .change_context(OtherError("top"));
     let output = alloc::format!("{}", report);
     assert_snapshot("peers_then_change_context", &output);
-}
+});
 
-#[cfg_attr(miri, ignore)]
-#[test]
-fn display_with_capacity_eviction() {
+snapshot_test!(display_with_capacity_eviction, {
     let report = Report::new(TestError("first"))
         .with_capacity(2)
         .push(TestError("second"))
         .push(TestError("third"));
     let output = alloc::format!("{}", report);
     assert_snapshot("with_capacity_eviction", &output);
-}
+});
 
-#[cfg_attr(miri, ignore)]
-#[test]
-fn display_minimal_report() {
+snapshot_test!(display_minimal_report, {
     let report = Report::new(TestError("minimal"));
     let output = alloc::format!("{}", report);
     assert!(!output.is_empty());
     assert_snapshot("minimal_report", &output);
-}
+});
 
-#[cfg_attr(miri, ignore)]
-#[test]
-fn display_debug_delegates_to_display() {
+snapshot_test!(display_debug_delegates_to_display, {
     let report = Report::with_segment(TestError("debug test"), "checking debug");
     let display_output = alloc::format!("{}", report);
     let debug_output = alloc::format!("{:?}", report);
     assert_eq!(display_output, debug_output);
-}
+});
 
-#[cfg_attr(miri, ignore)]
-#[test]
-fn display_multilevel_tree_with_segments() {
+snapshot_test!(display_multilevel_tree_with_segments, {
     let r1 = Report::with_segment(TestError("database connection failed"), "db.connect");
     let r2: Report<OtherError> = r1.change_context(OtherError("query execution failed"));
     let r3: Report<TestError> = Report::with_segment(TestError("transaction aborted"), "tx.commit");
     let _ = r2;
     let output = alloc::format!("{}", r3);
     assert_snapshot("multilevel_tree_with_segments", &output);
-}
+});
 
-#[cfg(not(miri))]
-#[test]
-fn display_mixed_error_types_in_tree() {
+snapshot_test!(display_mixed_error_types_in_tree, {
     let r1 = Report::new(TestError("io error"));
     let r2: Report<OtherError> = r1.change_context(OtherError("network timeout"));
     let r3: Report<TestError> = r2
@@ -236,4 +223,4 @@ fn display_mixed_error_types_in_tree() {
         .change_context(TestError("service unavailable"));
     let output = alloc::format!("{}", r3);
     assert_snapshot("mixed_error_types_in_tree", &output);
-}
+});

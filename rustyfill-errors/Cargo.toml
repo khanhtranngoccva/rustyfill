@@ -7,6 +7,10 @@ edition = "2024"
 # optimized for OOM resilience — the tail of dynamic frames can be discarded
 # if allocation fails while building a report.
 
+[features]
+default = ["std"]
+std = ["rustyfill/std"]
+
 [dependencies]
 rustyfill = { workspace = true }
 

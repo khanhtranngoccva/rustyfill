@@ -1,6 +1,6 @@
 first
-╰╴at rustyfill-errors/tests/test_debug_and_display.rs:192:18
+╰╴at rustyfill-errors/tests/test_debug_and_display.rs:187:18
 
 third
-├╴at rustyfill-errors/tests/test_debug_and_display.rs:195:10
+├╴at rustyfill-errors/tests/test_debug_and_display.rs:190:10
 ╰╴<1 frame lost>

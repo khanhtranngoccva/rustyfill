@@ -3,6 +3,7 @@ use alloc::boxed::Box;
 use alloc::vec::Vec;
 
 use core::fmt;
+use core::panic::Location;
 
 use rustyfill::alloc::TryReserveError;
 use rustyfill::prelude::TryVec;
@@ -115,6 +116,40 @@ pub(super) fn count_attachments(attachments: &[Box<dyn ItemImpl>]) -> (usize, us
     let printable = attachments.iter().filter(|a| a.is_printable()).count();
     let opaque = attachments.len().saturating_sub(printable);
     (printable, opaque)
+}
+
+/// Write `at <file>:<line>:<col>` to the formatter, splitting backslash
+/// path components into forward slashes when the test guard is active.
+/// No allocation occurs even under normalization.
+pub(super) fn write_location(f: &mut fmt::Formatter<'_>, loc: &Location<'_>) -> fmt::Result {
+    f.write_str("at ")?;
+    let file = loc.file();
+
+    #[cfg(feature = "std")]
+    {
+        if crate::FORCE_FORWARD_SLASHES.with(|fl| fl.get()) && file.contains('\\') {
+            let mut parts = file.split('\\');
+            if let Some(first) = parts.next() {
+                f.write_str(first)?;
+            }
+            for part in parts {
+                f.write_str("/")?;
+                f.write_str(part)?;
+            }
+        } else {
+            f.write_str(file)?;
+        }
+    }
+    #[cfg(not(feature = "std"))]
+    {
+        f.write_str(file)?;
+    }
+
+    f.write_str(":")?;
+    try_write!(f, "{}", loc.line())?;
+    f.write_str(":")?;
+    try_write!(f, "{}", loc.column())?;
+    Ok(())
 }
 
 /// Renders attachments for a frame at the given sub-depth.

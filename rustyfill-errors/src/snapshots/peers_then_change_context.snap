@@ -1,8 +1,8 @@
 top
-├╴at rustyfill-errors/tests/test_debug_and_display.rs:184:10
+├╴at rustyfill-errors/tests/test_debug_and_display.rs:181:10
 │
 ╰┬▶ base
- │  ╰╴at rustyfill-errors/tests/test_debug_and_display.rs:182:38
+ │  ╰╴at rustyfill-errors/tests/test_debug_and_display.rs:179:38
  │
  ╰▶ peer
-    ╰╴at rustyfill-errors/tests/test_debug_and_display.rs:183:10
+    ╰╴at rustyfill-errors/tests/test_debug_and_display.rs:180:10

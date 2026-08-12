@@ -1,8 +1,8 @@
 level 3
-├╴at rustyfill-errors/tests/test_debug_and_display.rs:165:36
+├╴at rustyfill-errors/tests/test_debug_and_display.rs:166:36
 │
 ╰─▶ level 2
-    ├╴at rustyfill-errors/tests/test_debug_and_display.rs:164:37
+    ├╴at rustyfill-errors/tests/test_debug_and_display.rs:165:37
     │
     ╰─▶ level 1
-        ╰╴at rustyfill-errors/tests/test_debug_and_display.rs:163:14
+        ╰╴at rustyfill-errors/tests/test_debug_and_display.rs:164:14

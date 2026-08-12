@@ -1,5 +1,5 @@
 outer error
-├╴at rustyfill-errors/tests/test_debug_and_display.rs:155:47
+├╴at rustyfill-errors/tests/test_debug_and_display.rs:158:47
 │
 ╰─▶ inner error
-    ╰╴at rustyfill-errors/tests/test_debug_and_display.rs:155:9
+    ╰╴at rustyfill-errors/tests/test_debug_and_display.rs:158:9

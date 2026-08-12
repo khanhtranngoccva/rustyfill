@@ -1,4 +1,4 @@
 root error
-├╴at rustyfill-errors/tests/test_debug_and_display.rs:134:18
+├╴at rustyfill-errors/tests/test_debug_and_display.rs:141:18
 ├╴detail one
 ╰╴42

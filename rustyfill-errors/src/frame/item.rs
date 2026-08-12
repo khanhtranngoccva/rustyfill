@@ -151,14 +151,7 @@ impl<C: core::error::Error + TryDebug + TryDisplay + Send + Sync + 'static> Item
     }
 
     fn write_location(&self, f: &mut fmt::Formatter<'_>) {
-        let loc = &self.location;
-        let _ = f
-            .write_str("at ")
-            .and_then(|_| rustyfill::try_write!(f, "{}", loc.file()))
-            .and_then(|_| f.write_str(":"))
-            .and_then(|_| rustyfill::try_write!(f, "{}", loc.line()))
-            .and_then(|_| f.write_str(":"))
-            .and_then(|_| rustyfill::try_write!(f, "{}", loc.column()));
+        let _ = crate::fmt_helpers::write_location(f, &self.location);
     }
 }
 

@@ -306,7 +306,6 @@ impl crate::try_fmt::TryDebug for OsString {
 mod tests {
     use super::*;
     use lang_alloc::string::String;
-    use lang_alloc::vec;
 
     // ── Construction ─────────────────────────────────────────────────────────
 
@@ -442,6 +441,7 @@ mod tests {
         // On Unix, OsString can hold arbitrary bytes.
         #[cfg(unix)]
         {
+            use lang_alloc::vec;
             use lang_std::os::unix::ffi::OsStringExt;
             let s = OsString::from_vec(vec![0xFF, 0xFE]);
             let result = s.try_into_string();

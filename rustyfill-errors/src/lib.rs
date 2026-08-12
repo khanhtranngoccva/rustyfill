@@ -26,6 +26,8 @@
 #![warn(missing_docs)]
 
 extern crate alloc;
+#[cfg(feature = "std")]
+extern crate std;
 
 mod fmt;
 mod fmt_helpers;
@@ -38,3 +40,54 @@ pub use report::{
     ChangeContextError, ChronoFrames, FrameRef, FrameRefMut, Frames, PeerIter, PeerIterMut, Report,
 };
 pub use result_ext::ResultExt;
+
+// ── Cross-platform path separator control (test support) ─────────────────────
+
+#[cfg(feature = "std")]
+pub(crate) use self::__force_forward_slashes::FORCE_FORWARD_SLASHES;
+
+#[cfg(feature = "std")]
+mod __force_forward_slashes {
+    std::thread_local! {
+        pub static FORCE_FORWARD_SLASHES: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    }
+}
+
+/// Scoped guard that forces forward-slash path separators in location output.
+///
+/// On Windows, `Location::file()` returns paths with backslashes. Wrapping
+/// `format!("{}", report)` inside this guard normalizes them to `/`, making
+/// snapshot tests portable across platforms.
+#[cfg(feature = "std")]
+#[must_use]
+pub struct ForceForwardSlashes {
+    active: bool,
+}
+
+#[cfg(feature = "std")]
+impl ForceForwardSlashes {
+    /// Create a new guard, enabling forward-slash normalization.
+    pub fn new() -> Self {
+        FORCE_FORWARD_SLASHES.with(|flag| flag.set(true));
+        Self { active: false }
+    }
+}
+
+#[cfg(feature = "std")]
+impl Drop for ForceForwardSlashes {
+    fn drop(&mut self) {
+        if !self.active {
+            FORCE_FORWARD_SLASHES.with(|flag| flag.set(false));
+            self.active = true;
+        }
+    }
+}
+
+#[cfg(feature = "std")]
+impl Default for ForceForwardSlashes {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+
