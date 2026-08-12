@@ -2,7 +2,7 @@
 //!
 //! Provides the [`TryDefault`] trait, a drop-in analogue of [`Default`] that can
 //! fail when the default value requires allocating memory (e.g. constructing a
-//! default [`crate::lang_alloc::string::String`] or [`crate::lang_alloc::vec::Vec`]).
+//! default [`lang_alloc::string::String`] or [`lang_alloc::vec::Vec`]).
 //!
 //! # Design
 //!
@@ -12,16 +12,16 @@
 //!
 //! All well-known [`Copy`] types (numbers, booleans, characters, unit type,
 //! tuples, and arrays) are implemented explicitly below. Non-`Copy` compound
-//! types ([`crate::lang_core::option::Option`], [`crate::lang_core::result::Result`]) delegate to their inner values via `TryDefault`.
+//! types ([`lang_core::option::Option`], [`lang_core::result::Result`]) delegate to their inner values via `TryDefault`.
 //!
 //! Structs and enums can derive `TryDefault` via the [`rustyfill_macros::TryDefault`]
 //! proc macro, which requires every field in every variant to also implement `TryDefault`.
 
 use crate::alloc::{AllocError, TryReserveError};
-use crate::lang_core::array;
-use crate::lang_core::fmt;
-use crate::lang_core::mem;
-use crate::lang_core::ptr;
+use lang_core::array;
+use lang_core::fmt;
+use lang_core::mem;
+use lang_core::ptr;
 use crate::try_fmt::{TryDebug, helpers::FormatterExt};
 
 /// Returned when a fallible default construction fails.
@@ -80,14 +80,14 @@ impl From<TryReserveError> for TryDefaultError {
     }
 }
 
-/// A fallible analogue of [`crate::lang_core::default::Default`].
+/// A fallible analogue of [`lang_core::default::Default`].
 ///
-/// Unlike [`crate::lang_core::default::Default`], which panics on allocation failure,
+/// Unlike [`lang_core::default::Default`], which panics on allocation failure,
 /// [`TryDefault`] returns a [`Result`] so callers can handle out-of-memory
 /// gracefully.
 ///
 /// Implementors must ensure that `try_default` never panics — inner values should
-/// also be constructed via [`TryDefault`] rather than [`crate::lang_core::default::Default`].
+/// also be constructed via [`TryDefault`] rather than [`lang_core::default::Default`].
 ///
 /// # Laziness
 ///

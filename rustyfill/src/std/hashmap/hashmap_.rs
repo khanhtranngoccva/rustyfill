@@ -17,11 +17,11 @@
 
 use crate::alloc::AllocError;
 use crate::alloc::TryReserveError;
-use crate::lang_core::cmp;
-use crate::lang_core::cmp::Eq;
-use crate::lang_core::fmt;
-use crate::lang_std::collections::HashMap;
-use crate::lang_std::hash::{BuildHasher, Hash, RandomState};
+use lang_core::cmp;
+use lang_core::cmp::Eq;
+use lang_core::fmt;
+use lang_std::collections::HashMap;
+use lang_std::hash::{BuildHasher, Hash, RandomState};
 use crate::try_clone::{TryClone, TryCloneError};
 use crate::try_default::{TryDefault, TryDefaultError};
 use crate::try_fmt::{TryDebug, helpers::FormatterExt};
@@ -132,7 +132,7 @@ impl From<::lang_std::collections::TryReserveError> for TryHashMapError {
 ///
 /// # Note on `try_insert`
 ///
-/// The inherent [`HashMap::try_insert`](crate::lang_std::collections::HashMap::try_insert) on
+/// The inherent [`HashMap::try_insert`](lang_std::collections::HashMap::try_insert) on
 /// stable Rust returns `Err(old_value)` when a key already exists, but may *panic*
 /// on allocation failure. Our [`Self::try_insert`] reserves capacity first so it
 /// never panics on OOM — it returns [`TryHashMapError::Reserve`] instead, but it
@@ -237,9 +237,9 @@ pub trait TryHashMap<K, V, S = RandomState>: Sized {
     /// Unlike the inherent [`HashMap::entry`], this method guarantees that
     /// inserting through the entry will not allocate again.
     ///
-    /// [`Entry`]: crate::lang_std::collections::hash_map::Entry
-    /// [`Entry::or_insert`]: crate::lang_std::collections::hash_map::Entry::or_insert
-    /// [`Entry::and_modify`]: crate::lang_std::collections::hash_map::Entry::and_modify
+    /// [`Entry`]: lang_std::collections::hash_map::Entry
+    /// [`Entry::or_insert`]: lang_std::collections::hash_map::Entry::or_insert
+    /// [`Entry::and_modify`]: lang_std::collections::hash_map::Entry::and_modify
     fn try_entry<'a>(
         &'a mut self,
         key: K,
@@ -740,11 +740,11 @@ impl<K: crate::try_fmt::TryDebug, V: crate::try_fmt::TryDebug, S> crate::try_fmt
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::lang_alloc::string::String;
-    use crate::lang_alloc::string::ToString;
-    use crate::lang_alloc::vec;
-    use crate::lang_alloc::vec::Vec;
-    use crate::lang_std::collections::hash_map::RandomState;
+    use lang_alloc::string::String;
+    use lang_alloc::string::ToString;
+    use lang_alloc::vec;
+    use lang_alloc::vec::Vec;
+    use lang_std::collections::hash_map::RandomState;
 
     // ── Construction ─────────────────────────────────────────────────────────
 
@@ -763,8 +763,8 @@ mod tests {
 
     #[test]
     fn try_with_capacity_and_hasher() {
-        use crate::lang_std::collections::hash_map::DefaultHasher;
-        use crate::lang_std::hash::BuildHasherDefault;
+        use lang_std::collections::hash_map::DefaultHasher;
+        use lang_std::hash::BuildHasherDefault;
 
         let hasher = BuildHasherDefault::<DefaultHasher>::default();
         let map: HashMap<&str, i32, _> = HashMap::try_with_capacity_and_hasher(5, hasher).unwrap();
@@ -964,8 +964,8 @@ mod tests {
 
     #[test]
     fn try_collect_with_hasher() {
-        use crate::lang_std::collections::hash_map::DefaultHasher;
-        use crate::lang_std::hash::BuildHasherDefault;
+        use lang_std::collections::hash_map::DefaultHasher;
+        use lang_std::hash::BuildHasherDefault;
 
         let hasher = BuildHasherDefault::<DefaultHasher>::default();
         let map: HashMap<i32, i32, _> =
@@ -1081,8 +1081,8 @@ mod tests {
 
     #[test]
     fn try_default_map_with_custom_hasher() {
-        use crate::lang_std::collections::hash_map::DefaultHasher;
-        use crate::lang_std::hash::BuildHasherDefault;
+        use lang_std::collections::hash_map::DefaultHasher;
+        use lang_std::hash::BuildHasherDefault;
 
         let map: HashMap<i32, i32, BuildHasherDefault<DefaultHasher>> =
             HashMap::try_default().unwrap();

@@ -5,10 +5,10 @@
 
 use crate::alloc::{AllocError, TryReserveError};
 use crate::dashmap::TryDashMap;
-use crate::lang_core::alloc::Layout;
-use crate::lang_core::fmt;
-use crate::lang_std::cmp::Eq;
-use crate::lang_std::hash::{BuildHasher, Hash, RandomState};
+use lang_core::alloc::Layout;
+use lang_core::fmt;
+use lang_std::cmp::Eq;
+use lang_std::hash::{BuildHasher, Hash, RandomState};
 use crate::prelude::{TryClone, TryDefault};
 use crate::try_clone::TryCloneError;
 use crate::try_fmt::{TryDebug, helpers::FormatterExt};
@@ -473,9 +473,9 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::lang_alloc::string::String;
-    use crate::lang_alloc::string::ToString;
-    use crate::lang_alloc::vec;
+    use lang_alloc::string::String;
+    use lang_alloc::string::ToString;
+    use lang_alloc::vec;
     use crate::try_clone::TryClone as _;
     use crate::try_default::TryDefault as _;
 

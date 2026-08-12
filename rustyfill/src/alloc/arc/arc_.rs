@@ -1,12 +1,12 @@
 use crate::alloc::AllocError;
 use crate::alloc::boxed::TryBox;
-use crate::lang_alloc::boxed::Box;
-use crate::lang_core::fmt;
-use crate::lang_core::mem::{ManuallyDrop, MaybeUninit};
-use crate::lang_core::pin::Pin;
-use crate::lang_core::ptr;
-use crate::lang_core::sync::atomic::{AtomicUsize, Ordering};
-use crate::lang_std::sync::{Arc, Weak};
+use lang_alloc::boxed::Box;
+use lang_core::fmt;
+use lang_core::mem::{ManuallyDrop, MaybeUninit};
+use lang_core::pin::Pin;
+use lang_core::ptr;
+use lang_core::sync::atomic::{AtomicUsize, Ordering};
+use lang_std::sync::{Arc, Weak};
 use crate::try_clone::{TryClone, TryCloneError};
 use crate::try_default::{TryDefault, TryDefaultError};
 
@@ -84,7 +84,7 @@ pub trait TryArc<T>: Sized {
     /// This is a panic-free analogue of [`Arc::unwrap_or_clone`]. When there are
     /// other strong references, the inner value is cloned via [`TryClone`] rather
     /// than [`Clone`], so allocation failures during cloning (e.g. cloning a
-    /// [`crate::lang_alloc::string::String`]) return an error instead of panicking.
+    /// [`lang_alloc::string::String`]) return an error instead of panicking.
     ///
     /// On failure, returns the original `Arc` alongside the clone error so the
     /// caller retains access to the shared data.
@@ -502,11 +502,11 @@ impl<T: ?Sized + crate::try_fmt::TryDebug> crate::try_fmt::TryDebug for Arc<T> {
 #[allow(deprecated)]
 mod tests {
     use super::*;
-    use crate::lang_alloc::string::String;
-    use crate::lang_alloc::string::ToString;
-    use crate::lang_alloc::vec;
-    use crate::lang_alloc::vec::Vec;
-    use crate::lang_std::format;
+    use lang_alloc::string::String;
+    use lang_alloc::string::ToString;
+    use lang_alloc::vec;
+    use lang_alloc::vec::Vec;
+    use lang_std::format;
 
     type PinArcResult<T> = Result<Pin<Arc<T>>, (T, AllocError)>;
 

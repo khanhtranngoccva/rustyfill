@@ -8,9 +8,9 @@
 //! Because `Arc::new` (initialization) and `Arc::clone` (cloning into yielded
 //! items) are fallible, iteration returns [`Result`] items.
 
-use crate::lang_core::fmt;
-use crate::lang_core::hash::{BuildHasher, Hash};
-use crate::lang_std::sync::Arc;
+use lang_core::fmt;
+use lang_core::hash::{BuildHasher, Hash};
+use lang_std::sync::Arc;
 
 use hashbrown::raw::{RawIter, RawTable};
 use parking_lot::{RwLockReadGuard, RwLockWriteGuard};

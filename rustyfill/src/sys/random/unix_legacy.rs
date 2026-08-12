@@ -8,8 +8,8 @@
 
 // Module verified
 use super::RandomError;
-use crate::lang_std::fs::File;
-use crate::lang_std::io::Read;
+use lang_std::fs::File;
+use lang_std::io::Read;
 // Fallback for get_or_try_init API
 use once_cell::sync::OnceCell;
 

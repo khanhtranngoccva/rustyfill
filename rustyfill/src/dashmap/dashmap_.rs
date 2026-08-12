@@ -19,11 +19,11 @@
 use hashbrown::raw::RawTable;
 
 use crate::alloc::{AllocError, TryReserveError};
-use crate::lang_core::fmt;
-use crate::lang_core::mem;
-use crate::lang_core::ptr;
-use crate::lang_std::cmp::Eq;
-use crate::lang_std::hash::{BuildHasher, Hash, RandomState};
+use lang_core::fmt;
+use lang_core::mem;
+use lang_core::ptr;
+use lang_std::cmp::Eq;
+use lang_std::hash::{BuildHasher, Hash, RandomState};
 use crate::prelude::TryDefault;
 use crate::try_clone::{TryClone, TryCloneError};
 use crate::try_fmt::{TryDebug, helpers::FormatterExt};
@@ -954,7 +954,7 @@ impl<K: Eq + Hash, V, S: BuildHasher + TryClone> TryDashMap<K, V, S> for DashMap
     // ── Capacity / shrink ───────────────────────────────────────────────────
 
     fn try_shrink_to_fit(&self) -> Result<(), TryDashMapError> {
-        use crate::lang_core::mem::ManuallyDrop;
+        use lang_core::mem::ManuallyDrop;
 
         let hf = self.hasher().clone();
 
@@ -1117,10 +1117,10 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::lang_alloc::string::String;
-    use crate::lang_alloc::string::ToString;
-    use crate::lang_alloc::vec;
-    use crate::lang_alloc::vec::Vec;
+    use lang_alloc::string::String;
+    use lang_alloc::string::ToString;
+    use lang_alloc::vec;
+    use lang_alloc::vec::Vec;
     use crate::try_default::TryDefault as _;
 
     // ── Construction ─────────────────────────────────────────────────────────
@@ -1140,8 +1140,8 @@ mod tests {
 
     #[test]
     fn try_with_capacity_and_hasher() {
-        use crate::lang_std::collections::hash_map::DefaultHasher;
-        use crate::lang_std::hash::BuildHasherDefault;
+        use lang_std::collections::hash_map::DefaultHasher;
+        use lang_std::hash::BuildHasherDefault;
 
         let hasher = BuildHasherDefault::<DefaultHasher>::default();
         let map: DashMap<&str, i32, _> = DashMap::try_with_capacity_and_hasher(5, hasher).unwrap();
@@ -1684,8 +1684,8 @@ mod tests {
 
     #[test]
     fn try_collect_with_hasher() {
-        use crate::lang_std::collections::hash_map::DefaultHasher;
-        use crate::lang_std::hash::BuildHasherDefault;
+        use lang_std::collections::hash_map::DefaultHasher;
+        use lang_std::hash::BuildHasherDefault;
 
         let hasher = BuildHasherDefault::<DefaultHasher>::default();
         let map: DashMap<i32, i32, _> =

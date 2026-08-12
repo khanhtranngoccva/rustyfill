@@ -4,8 +4,8 @@
 //! conversion of a `&CStr` into an owned [`CString`].
 
 use crate::alloc::vec::{TrySlice, TryVecError};
-use crate::lang_core::fmt;
-use crate::lang_std::ffi::{CStr, CString};
+use lang_core::fmt;
+use lang_std::ffi::{CStr, CString};
 use crate::try_to_owned::{TryToOwned, TryToOwnedError};
 
 impl TryToOwned for CStr {

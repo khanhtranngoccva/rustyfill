@@ -15,8 +15,8 @@
 //!   allocation**.
 
 use crate::alloc::AllocError;
-use crate::lang_alloc::boxed::Box;
-use crate::lang_core::fmt;
+use lang_alloc::boxed::Box;
+use lang_core::fmt;
 use crate::prelude::TryBox;
 
 /// Extension trait for fallible `::std::io::Error` construction.

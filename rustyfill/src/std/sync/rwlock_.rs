@@ -1,5 +1,5 @@
-use crate::lang_core::fmt;
-use crate::lang_std::sync::RwLock;
+use lang_core::fmt;
+use lang_std::sync::RwLock;
 
 impl<T: crate::try_fmt::TryDebug> crate::try_fmt::TryDebug for RwLock<T> {
     fn try_fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {

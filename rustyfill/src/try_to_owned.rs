@@ -12,9 +12,9 @@
 //! returned as errors instead.
 
 use crate::alloc::{AllocError, TryReserveError};
-use crate::lang_alloc::borrow::ToOwned;
-use crate::lang_core::error;
-use crate::lang_core::fmt;
+use lang_alloc::borrow::ToOwned;
+use lang_core::error;
+use lang_core::fmt;
 use crate::try_clone::TryCloneError;
 use crate::try_fmt::{TryDebug, helpers::FormatterExt};
 

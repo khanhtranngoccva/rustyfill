@@ -17,9 +17,9 @@
 use crate::alloc::AllocError;
 use crate::alloc::TryReserveError;
 use crate::alloc::vec::{TryVec, TryVecError};
-use crate::lang_alloc::string::String;
-use crate::lang_alloc::vec::Vec;
-use crate::lang_core::fmt;
+use lang_alloc::string::String;
+use lang_alloc::vec::Vec;
+use lang_core::fmt;
 use crate::try_clone::{TryClone, TryCloneError};
 use crate::try_default::{TryDefault, TryDefaultError};
 use crate::try_fmt::{TryDebug, helpers::FormatterExt};
@@ -365,7 +365,7 @@ impl crate::try_fmt::TryDisplay for String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::lang_alloc::boxed::Box;
+    use lang_alloc::boxed::Box;
 
     // ── Construction ─────────────────────────────────────────────────────────
 

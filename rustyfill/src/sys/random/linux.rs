@@ -60,12 +60,12 @@
 // `GRND_NONBLOCK` fallback and use `/dev/random` instead of `/dev/urandom`
 // when secure data is required.
 
-use crate::lang_std::borrow::Cow;
-use crate::lang_std::fs::File;
-use crate::lang_std::io::Read;
-use crate::lang_std::os::fd::AsRawFd;
-use crate::lang_std::sync::atomic::AtomicBool;
-use crate::lang_std::sync::atomic::Ordering::{Acquire, Relaxed, Release};
+use lang_std::borrow::Cow;
+use lang_std::fs::File;
+use lang_std::io::Read;
+use lang_std::os::fd::AsRawFd;
+use lang_std::sync::atomic::AtomicBool;
+use lang_std::sync::atomic::Ordering::{Acquire, Relaxed, Release};
 // Fallback for get_or_try_init API
 use once_cell::sync::OnceCell;
 

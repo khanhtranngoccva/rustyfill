@@ -4,11 +4,11 @@
 //! but return [`Result`] to handle allocation failures gracefully.
 
 use crate::alloc::AllocError;
-use crate::lang_alloc::boxed::Box;
-use crate::lang_core::alloc::Layout;
-use crate::lang_core::fmt;
-use crate::lang_core::mem::{self, MaybeUninit};
-use crate::lang_core::pin::Pin;
+use lang_alloc::boxed::Box;
+use lang_core::alloc::Layout;
+use lang_core::fmt;
+use lang_core::mem::{self, MaybeUninit};
+use lang_core::pin::Pin;
 use crate::try_clone::{TryClone, TryCloneError};
 use crate::try_default::{TryDefault, TryDefaultError};
 /// A trait for fallibly allocating a value on the heap.
@@ -261,10 +261,10 @@ impl<T: crate::try_fmt::TryDebug> crate::try_fmt::TryDebug for Box<T> {
 #[allow(deprecated)]
 mod tests {
     use super::*;
-    use crate::lang_alloc::string::String;
-    use crate::lang_alloc::string::ToString;
-    use crate::lang_alloc::vec;
-    use crate::lang_alloc::vec::Vec;
+    use lang_alloc::string::String;
+    use lang_alloc::string::ToString;
+    use lang_alloc::vec;
+    use lang_alloc::vec::Vec;
 
     type PinBoxResult<T> = Result<Pin<Box<T>>, (T, AllocError)>;
 

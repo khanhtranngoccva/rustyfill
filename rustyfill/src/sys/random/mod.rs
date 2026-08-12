@@ -11,8 +11,8 @@
 //! Both the platform-specific backend functions and the public API return
 //! [`Result`] instead of panicking.
 
-use crate::lang_alloc::borrow::Cow;
-use crate::lang_core::fmt;
+use lang_alloc::borrow::Cow;
+use lang_core::fmt;
 
 use crate::try_fmt::{TryDebug, helpers::FormatterExt};
 

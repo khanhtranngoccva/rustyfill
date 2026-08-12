@@ -19,11 +19,11 @@
 //! [`TryDefault`](crate::try_default::TryDefault) for `BTreeSet<T>` when
 //! `T` satisfies the respective bounds.
 use crate::alloc::{AllocError, PayloadBox};
-use crate::lang_core::fmt;
-use crate::lang_core::mem::ManuallyDrop;
-use crate::lang_core::ptr;
-use crate::lang_std::collections::BTreeSet;
-use crate::lang_std::panic::{AssertUnwindSafe, RefUnwindSafe, catch_unwind};
+use lang_core::fmt;
+use lang_core::mem::ManuallyDrop;
+use lang_core::ptr;
+use lang_std::collections::BTreeSet;
+use lang_std::panic::{AssertUnwindSafe, RefUnwindSafe, catch_unwind};
 use crate::try_clone::TryCloneError;
 use crate::try_fmt::{TryDebug, helpers::FormatterExt};
 
@@ -112,7 +112,7 @@ impl TryDebug for TryBTreeSetError {
 /// # Note
 ///
 /// Because `BTreeSet::try_reserve` does not exist, mutation methods use
-/// [`crate::lang_std::panic::catch_unwind`] internally to intercept OOM panics.
+/// [`lang_std::panic::catch_unwind`] internally to intercept OOM panics.
 /// Elements must be [`RefUnwindSafe`] for these methods.
 pub trait TryBTreeSet<T>: Sized {
     // ── Construction ────────────────────────────────────────────────────────
@@ -410,13 +410,13 @@ impl<T> crate::try_default::TryDefault for BTreeSet<T> {
 mod tests {
 
     use super::*;
-    use crate::lang_alloc::boxed::Box;
-    use crate::lang_alloc::format;
-    use crate::lang_alloc::string::String;
-    use crate::lang_alloc::string::ToString;
-    use crate::lang_alloc::vec;
-    use crate::lang_alloc::vec::Vec;
-    use crate::lang_core::any;
+    use lang_alloc::boxed::Box;
+    use lang_alloc::format;
+    use lang_alloc::string::String;
+    use lang_alloc::string::ToString;
+    use lang_alloc::vec;
+    use lang_alloc::vec::Vec;
+    use lang_core::any;
     use crate::try_clone::TryClone;
     use crate::try_default::TryDefault;
 

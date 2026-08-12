@@ -27,12 +27,12 @@
 //!   the fallible paths. Each wrapper carries a hard bound on construction,
 //!   producing precise compiler diagnostics when a value lacks the expected trait.
 
-use crate::lang_alloc::alloc;
-use crate::lang_core::any;
-use crate::lang_core::fmt;
-use crate::lang_core::marker;
-use crate::lang_core::mem;
-use crate::lang_core::ops;
+use lang_alloc::alloc;
+use lang_core::any;
+use lang_core::fmt;
+use lang_core::marker;
+use lang_core::mem;
+use lang_core::ops;
 
 mod assert;
 pub mod helpers;
@@ -779,11 +779,11 @@ macro_rules! upperexp_passthrough {
 #[allow(clippy::needless_borrows_for_generic_args)]
 mod oom_tests {
     use super::*;
-    use crate::lang_alloc::boxed::Box;
-    use crate::lang_alloc::string::String;
-    use crate::lang_alloc::vec;
-    use crate::lang_alloc::vec::Vec;
-    use crate::lang_std::sync::{Mutex, RwLock};
+    use lang_alloc::boxed::Box;
+    use lang_alloc::string::String;
+    use lang_alloc::vec;
+    use lang_alloc::vec::Vec;
+    use lang_std::sync::{Mutex, RwLock};
     use crate::try_fmt::{TryDebug, TryDisplay};
     use rustyfill_test_allocator::{FailPolicy, with_policy};
 
@@ -1474,15 +1474,15 @@ mod oom_tests {
 #[allow(clippy::needless_borrows_for_generic_args)]
 mod try_write_tests {
     use super::TryDebug;
-    use crate::lang_alloc::format;
-    use crate::lang_alloc::string::String;
-    use crate::lang_alloc::vec;
-    use crate::lang_alloc::vec::Vec;
-    use crate::lang_core::fmt;
-    use crate::lang_core::marker;
-    use crate::lang_core::mem;
-    use crate::lang_core::ops;
-    use crate::lang_std::io::{Cursor, Write};
+    use lang_alloc::format;
+    use lang_alloc::string::String;
+    use lang_alloc::vec;
+    use lang_alloc::vec::Vec;
+    use lang_core::fmt;
+    use lang_core::marker;
+    use lang_core::mem;
+    use lang_core::ops;
+    use lang_std::io::{Cursor, Write};
     use crate::try_write;
 
     // ── Basic formatting modes ─────────────────────────────────────────────
@@ -2921,7 +2921,7 @@ mod try_write_tests {
 
     // ── try_format_or! tests ───────────────────────────────────────────────
 
-    use crate::lang_std::borrow::Cow;
+    use lang_std::borrow::Cow;
 
     static DIAGNOSTICS_OOM: &str = "<out of memory>";
     const BUSINESS_LOGIC_FAILED: &str = "business logic A failed";
@@ -3021,7 +3021,7 @@ mod try_write_tests {
 /// the `::rustyfill` path to resolve from within the crate itself.
 #[cfg(test)]
 mod quick_path_test {
-    use crate::lang_alloc::format;
+    use lang_alloc::format;
 
     #[test]
     fn absolute_path_resolves() {

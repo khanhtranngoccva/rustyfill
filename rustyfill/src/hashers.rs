@@ -37,11 +37,11 @@
 //!
 //! # Notes
 //! - These types only guard against panics during creation of hasher factories. The user must ensure that the invocation via build_hasher does not implicitly panic, although it is practically never the case for the sake of performance.
-use crate::lang_core::fmt;
-use crate::lang_core::hash::BuildHasher;
-use crate::lang_core::mem;
+use lang_core::fmt;
+use lang_core::hash::BuildHasher;
+use lang_core::mem;
 #[cfg(feature = "std")]
-use crate::lang_std::thread_local;
+use lang_std::thread_local;
 use crate::{
     try_clone::{TryClone, TryCloneError},
     try_default::{TryDefault, TryDefaultError},
@@ -215,7 +215,7 @@ where
 /// Popular third-party hashers like `ahash::RandomState`, FxHash, FNV, DJB2, and
 /// similar integer-only builders typically satisfy this bound.
 ///
-/// For hashers that allocate internally (e.g. [`RandomState`](crate::lang_std::hash::RandomState)),
+/// For hashers that allocate internally (e.g. [`RandomState`](lang_std::hash::RandomState)),
 /// use [`ArbitraryHasherFactory`] instead.
 ///
 /// # Example
@@ -315,7 +315,7 @@ impl<H: CopyBuildHasher + Eq> Eq for CopyHasherFactory<H> {}
 /// Unlike [`CopyHasherFactory`], which requires the inner hasher to be [`Copy`],
 /// `ArbitraryHasherFactory<H>` only requires `H: BuildHasher`. This makes it
 /// compatible with any hasher factory, including those that allocate or open system
-/// resources internally (e.g. [`RandomState`](crate::lang_std::hash::RandomState) opens a file in
+/// resources internally (e.g. [`RandomState`](lang_std::hash::RandomState) opens a file in
 /// the kernel for every thread and panics if it fails).
 ///
 /// # Ergonomic integration with fallible collections
@@ -329,7 +329,7 @@ impl<H: CopyBuildHasher + Eq> Eq for CopyHasherFactory<H> {}
 ///
 /// Because cloning or defaulting an arbitrary hasher may panic (e.g. on OOM
 /// during internal allocation), these implementations wrap the call in
-/// [`crate::lang_std::panic::catch_unwind`] as a best-effort safety net. If `clone()` or
+/// [`lang_std::panic::catch_unwind`] as a best-effort safety net. If `clone()` or
 /// [`Default::default()`] panics, the panic is caught and returned as an error
 /// rather than unwinding through the caller. This keeps fallible collection
 /// operations non-panicking even with allocating hashers.
@@ -355,7 +355,7 @@ impl<H: CopyBuildHasher + Eq> Eq for CopyHasherFactory<H> {}
 /// # When to use
 ///
 /// Use `ArbitraryHasherFactory` when your hasher doesn't satisfy [`Copy`] (most
-/// notably [`RandomState`](crate::lang_std::hash::RandomState)) but you still want fallible
+/// notably [`RandomState`](lang_std::hash::RandomState)) but you still want fallible
 /// collection operations. Prefer [`CopyHasherFactory`] when the hasher is
 /// stack-only, since it avoids allocation entirely and provides stronger compile-time
 /// guarantees.
@@ -388,7 +388,7 @@ impl<H: BuildHasher> ArbitraryHasherFactory<H> {
     ///
     /// - Cloning the inner hasher may panic at runtime (e.g. on OOM during
     ///   internal allocation). The [`TryClone`] implementation uses
-    ///   [`crate::lang_std::panic::catch_unwind`] to catch such panics and return them as
+    ///   [`lang_std::panic::catch_unwind`] to catch such panics and return them as
     ///   errors, so fallible collection operations remain non-panicking.
     /// - Default construction may panic similarly; [`TryDefault`] applies the
     ///   same best-effort panic-catching strategy.
@@ -493,10 +493,10 @@ impl<H: BuildHasher + Eq> Eq for ArbitraryHasherFactory<H> {}
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::lang_alloc::format;
-    use crate::lang_alloc::vec::Vec;
-    use crate::lang_core::ptr;
-    use crate::lang_std::hash::Hasher;
+    use lang_alloc::format;
+    use lang_alloc::vec::Vec;
+    use lang_core::ptr;
+    use lang_std::hash::Hasher;
 
     // ── Custom trivially-copyable hashers ─────────────────────────────────────
 
@@ -772,7 +772,7 @@ mod tests {
     #[test]
     fn factory_works_in_hashmap_signature() {
         // Prove that CopyHasherFactory satisfies the bounds needed for HashMap.
-        use crate::lang_std::collections::HashMap;
+        use lang_std::collections::HashMap;
         let factory = CopyHasherFactory::new(Fnv1aBuilder);
         let mut map: HashMap<&str, i32, _> = HashMap::with_hasher(factory);
         map.insert("key", 42);
@@ -797,7 +797,7 @@ mod tests {
 
     #[test]
     fn build_hasher_default_try_clone_succeeds() {
-        use crate::lang_std::hash::{BuildHasherDefault, DefaultHasher};
+        use lang_std::hash::{BuildHasherDefault, DefaultHasher};
         let h: BuildHasherDefault<DefaultHasher> = BuildHasherDefault::default();
         let cloned = h.try_clone().unwrap();
         assert_eq!(h.hash_one("x"), cloned.hash_one("x"));
@@ -874,7 +874,7 @@ mod tests {
 
     #[test]
     fn arbitrary_factory_works_in_hashmap() {
-        use crate::lang_std::collections::HashMap;
+        use lang_std::collections::HashMap;
         let factory = unsafe { ArbitraryHasherFactory::new(::lang_std::hash::RandomState::new()) };
         let mut map: HashMap<&str, i32, _> = HashMap::with_hasher(factory);
         map.insert("key", 42);

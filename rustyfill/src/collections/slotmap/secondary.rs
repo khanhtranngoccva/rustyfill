@@ -8,13 +8,13 @@
 use crate::alloc::AllocError;
 use crate::alloc::TryReserveError;
 use crate::collections::slotmap::key::{Key, KeyData};
-use crate::lang_alloc::vec::Vec;
-use crate::lang_core::fmt::{self, Debug};
-use crate::lang_core::iter::{Enumerate, Extend, FromIterator, FusedIterator};
-use crate::lang_core::marker::PhantomData;
-use crate::lang_core::mem::replace;
-use crate::lang_core::num::NonZeroU32;
-use crate::lang_core::ops::{Index, IndexMut};
+use lang_alloc::vec::Vec;
+use lang_core::fmt::{self, Debug};
+use lang_core::iter::{Enumerate, Extend, FromIterator, FusedIterator};
+use lang_core::marker::PhantomData;
+use lang_core::mem::replace;
+use lang_core::num::NonZeroU32;
+use lang_core::ops::{Index, IndexMut};
 use crate::try_fmt::helpers::FormatterExt;
 use crate::try_fmt::TryDebug;
 
@@ -63,7 +63,7 @@ impl<T> Slot<T> {
         unsafe {
             match self {
                 Occupied { value, .. } => value,
-                Vacant => crate::lang_core::hint::unreachable_unchecked(),
+                Vacant => lang_core::hint::unreachable_unchecked(),
             }
         }
     }
@@ -72,7 +72,7 @@ impl<T> Slot<T> {
         unsafe {
             match self {
                 Occupied { value, .. } => value,
-                Vacant => crate::lang_core::hint::unreachable_unchecked(),
+                Vacant => lang_core::hint::unreachable_unchecked(),
             }
         }
     }
@@ -136,8 +136,8 @@ impl From<TryReserveError> for SecondaryMapError {
     }
 }
 
-impl From<crate::lang_std::collections::TryReserveError> for SecondaryMapError {
-    fn from(e: crate::lang_std::collections::TryReserveError) -> Self {
+impl From<lang_std::collections::TryReserveError> for SecondaryMapError {
+    fn from(e: lang_std::collections::TryReserveError) -> Self {
         Self::Reserve(TryReserveError::from(e))
     }
 }
@@ -566,7 +566,7 @@ impl<'a, K: Key, V> OccupiedEntry<'a, K, V> {
         unsafe {
             match replace(slot, Slot::new_vacant()) {
                 Occupied { value, .. } => value,
-                Vacant => crate::lang_core::hint::unreachable_unchecked(),
+                Vacant => lang_core::hint::unreachable_unchecked(),
             }
         }
     }
@@ -598,14 +598,14 @@ pub struct Drain<'a, K: Key + 'a, V: 'a> {
 #[derive(Debug)]
 pub struct IntoIter<K: Key, V> {
     num_left: usize,
-    slots: Enumerate<crate::lang_alloc::vec::IntoIter<Slot<V>>>,
+    slots: Enumerate<lang_alloc::vec::IntoIter<Slot<V>>>,
     _k: PhantomData<fn(K) -> K>,
 }
 
 #[derive(Debug)]
 pub struct Iter<'a, K: Key + 'a, V: 'a> {
     num_left: usize,
-    slots: Enumerate<crate::lang_core::slice::Iter<'a, Slot<V>>>,
+    slots: Enumerate<lang_core::slice::Iter<'a, Slot<V>>>,
     _k: PhantomData<fn(K) -> K>,
 }
 
@@ -622,7 +622,7 @@ impl<'a, K: 'a + Key, V: 'a> Clone for Iter<'a, K, V> {
 #[derive(Debug)]
 pub struct IterMut<'a, K: Key + 'a, V: 'a> {
     num_left: usize,
-    slots: Enumerate<crate::lang_core::slice::IterMut<'a, Slot<V>>>,
+    slots: Enumerate<lang_core::slice::IterMut<'a, Slot<V>>>,
     _k: PhantomData<fn(K) -> K>,
 }
 

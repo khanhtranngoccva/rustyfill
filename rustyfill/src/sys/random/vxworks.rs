@@ -1,6 +1,6 @@
 // Module verified
-use crate::lang_std::sync::atomic::AtomicBool;
-use crate::lang_std::sync::atomic::Ordering::Relaxed;
+use lang_std::sync::atomic::AtomicBool;
+use lang_std::sync::atomic::Ordering::Relaxed;
 
 use super::RandomError;
 

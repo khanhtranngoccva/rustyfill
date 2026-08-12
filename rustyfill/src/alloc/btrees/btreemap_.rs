@@ -20,11 +20,11 @@
 //! `K` and `V` satisfy the respective bounds.
 
 use crate::alloc::{AllocError, PayloadBox};
-use crate::lang_core::fmt;
-use crate::lang_core::mem::ManuallyDrop;
-use crate::lang_core::ptr;
-use crate::lang_std::collections::BTreeMap;
-use crate::lang_std::panic::{AssertUnwindSafe, RefUnwindSafe, catch_unwind};
+use lang_core::fmt;
+use lang_core::mem::ManuallyDrop;
+use lang_core::ptr;
+use lang_std::collections::BTreeMap;
+use lang_std::panic::{AssertUnwindSafe, RefUnwindSafe, catch_unwind};
 use crate::try_clone::TryCloneError;
 use crate::try_fmt::{TryDebug, helpers::FormatterExt};
 
@@ -111,13 +111,13 @@ impl TryDebug for TryBTreeMapError {
 /// # Note
 ///
 /// Because `BTreeMap::try_reserve` does not exist, mutation methods use
-/// [`crate::lang_std::panic::catch_unwind`] internally to intercept OOM panics.
+/// [`lang_std::panic::catch_unwind`] internally to intercept OOM panics.
 /// This is only possible due to the BTreeMap itself being UnwindSafe. Keys and
 /// values must be [`RefUnwindSafe`] for these methods.
 ///
 /// # Note on `try_insert`
 ///
-/// The inherent [`BTreeMap::try_insert`](crate::lang_std::collections::BTreeMap::try_insert) on
+/// The inherent [`BTreeMap::try_insert`](lang_std::collections::BTreeMap::try_insert) on
 /// nightly Rust returns `Err(old_value)` when a key already exists, but may *panic*
 /// on allocation failure. Our [`Self::try_insert`] catches allocation panics so it
 /// never propagates one — it returns [`TryBTreeMapError::AllocPanic`] instead, but it
@@ -186,9 +186,9 @@ pub trait TryBTreeMap<K, V>: Sized {
     /// that inserting through the entry will not allocate again. The entry API
     /// itself may still panic on OOM after this method returns `Ok`.
     ///
-    /// [`Entry`]: crate::lang_std::collections::btree_map::Entry
-    /// [`Entry::or_insert`]: crate::lang_std::collections::btree_map::Entry::or_insert
-    /// [`Entry::and_modify`]: crate::lang_std::collections::btree_map::Entry::and_modify
+    /// [`Entry`]: lang_std::collections::btree_map::Entry
+    /// [`Entry::or_insert`]: lang_std::collections::btree_map::Entry::or_insert
+    /// [`Entry::and_modify`]: lang_std::collections::btree_map::Entry::and_modify
     fn try_entry<'a>(
         &'a mut self,
         key: K,
@@ -598,13 +598,13 @@ mod tests {
 
     use super::*;
 
-    use crate::lang_alloc::boxed::Box;
-    use crate::lang_alloc::format;
-    use crate::lang_alloc::string::String;
-    use crate::lang_alloc::string::ToString;
-    use crate::lang_alloc::vec;
-    use crate::lang_alloc::vec::Vec;
-    use crate::lang_core::any::Any;
+    use lang_alloc::boxed::Box;
+    use lang_alloc::format;
+    use lang_alloc::string::String;
+    use lang_alloc::string::ToString;
+    use lang_alloc::vec;
+    use lang_alloc::vec::Vec;
+    use lang_core::any::Any;
     use crate::try_clone::TryClone;
     use crate::try_default::TryDefault;
 

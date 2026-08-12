@@ -19,8 +19,8 @@
 //! [`TryDefault`](crate::try_default::TryDefault) which is already implemented
 //! for [`RandomState`] in [`crate::hashers`].
 
-use crate::lang_core::mem;
-use crate::lang_std::hash::RandomState;
+use lang_core::mem;
+use lang_std::hash::RandomState;
 use crate::sys::random::hashmap_random_keys_infallible;
 
 /// Extension trait for infallible [`RandomState`] construction.
@@ -71,9 +71,9 @@ impl TryRandomState for RandomState {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::lang_alloc::vec::Vec;
-    use crate::lang_std::collections::HashSet;
-    use crate::lang_std::hash::{BuildHasher, Hasher};
+    use lang_alloc::vec::Vec;
+    use lang_std::collections::HashSet;
+    use lang_std::hash::{BuildHasher, Hasher};
 
     #[test]
     fn try_new_infallible_produces_valid_state() {

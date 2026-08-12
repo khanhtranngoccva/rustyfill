@@ -4,9 +4,9 @@
 //! counter. The version ensures that after a slot is freed and reused, old keys
 //! pointing at that slot remain invalid (ABA protection).
 
-use crate::lang_core::fmt::{self, Debug};
-use crate::lang_core::hash::{Hash, Hasher};
-use crate::lang_core::num::NonZeroU32;
+use lang_core::fmt::{self, Debug};
+use lang_core::hash::{Hash, Hasher};
+use lang_core::num::NonZeroU32;
 use crate::try_fmt::TryDebug;
 
 /// The raw data stored inside any slot-map key.
@@ -111,7 +111,7 @@ impl Hash for KeyData {
 ///
 /// All methods must behave exactly as if operating on a [`KeyData`] directly.
 pub unsafe trait Key:
-    crate::lang_core::convert::From<KeyData>
+    lang_core::convert::From<KeyData>
     + Copy
     + Clone
     + Default

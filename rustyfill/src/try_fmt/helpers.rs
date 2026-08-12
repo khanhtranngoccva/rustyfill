@@ -16,7 +16,7 @@
 //! }
 //! ```
 
-use crate::lang_core::fmt;
+use lang_core::fmt;
 
 use super::TryDebug;
 

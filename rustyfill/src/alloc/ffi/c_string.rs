@@ -17,9 +17,9 @@
 use crate::alloc::AllocError;
 use crate::alloc::TryReserveError;
 use crate::alloc::vec::{TrySlice, TryVecError};
-use crate::lang_alloc::vec::Vec;
-use crate::lang_core::fmt;
-use crate::lang_std::ffi::CString;
+use lang_alloc::vec::Vec;
+use lang_core::fmt;
+use lang_std::ffi::CString;
 use crate::try_clone::{TryClone, TryCloneError};
 use crate::try_default::{TryDefault, TryDefaultError};
 use crate::try_fmt::{TryDebug, helpers::FormatterExt};
@@ -210,9 +210,9 @@ impl crate::try_fmt::TryDebug for CString {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::lang_alloc::vec;
-    use crate::lang_alloc::vec::Vec;
-    use crate::lang_std::format;
+    use lang_alloc::vec;
+    use lang_alloc::vec::Vec;
+    use lang_std::format;
 
     // ── Valid inputs ─────────────────────────────────────────────────────────
 

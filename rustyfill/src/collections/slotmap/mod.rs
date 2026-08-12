@@ -21,15 +21,12 @@ mod basic;
 mod key;
 mod secondary;
 
-pub use basic::{
-    Drain, IntoIter, Iter, IterMut, Keys, SlotMap, SlotMapError, Values, ValuesMut,
-};
+pub use basic::{Drain, IntoIter, Iter, IterMut, Keys, SlotMap, SlotMapError, Values, ValuesMut};
 pub use key::{DefaultKey, Key, KeyData};
 pub use secondary::{
-    Drain as SecondaryDrain, Entry, IntoIter as SecondaryIntoIter,
-    Iter as SecondaryIter, IterMut as SecondaryIterMut, Keys as SecondaryKeys,
-    OccupiedEntry, SecondaryMap, SecondaryMapError, VacantEntry, Values as SecondaryValues,
-    ValuesMut as SecondaryValuesMut,
+    Drain as SecondaryDrain, Entry, IntoIter as SecondaryIntoIter, Iter as SecondaryIter,
+    IterMut as SecondaryIterMut, Keys as SecondaryKeys, OccupiedEntry, SecondaryMap,
+    SecondaryMapError, VacantEntry, Values as SecondaryValues, ValuesMut as SecondaryValuesMut,
 };
 
 /// Creates one or more new key types, preventing accidental cross-slot-map usage.

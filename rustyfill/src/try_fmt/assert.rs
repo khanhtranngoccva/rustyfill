@@ -25,12 +25,12 @@
 //! write!(f, "{:?}", wrapped)?; // Debug — works because PathBuf: Debug
 //! ```
 
-use crate::lang_core::any::Any;
-use crate::lang_core::cmp;
-use crate::lang_core::error;
-use crate::lang_core::fmt;
-use crate::lang_core::hash;
-use crate::lang_core::ops::{Deref, DerefMut};
+use lang_core::any::Any;
+use lang_core::cmp;
+use lang_core::error;
+use lang_core::fmt;
+use lang_core::hash;
+use lang_core::ops::{Deref, DerefMut};
 use crate::try_clone::{TryClone, TryCloneError};
 use crate::try_default::{TryDefault, TryDefaultError};
 use crate::try_fmt::{TryDebug, TryDisplay, TryLowerExp, TryLowerHex, TryUpperExp, TryUpperHex};

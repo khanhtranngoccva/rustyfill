@@ -19,10 +19,10 @@
 use crate::alloc::AllocError;
 use crate::alloc::TryReserveError;
 use crate::alloc::vec::{TryVec, TryVecError};
-use crate::lang_alloc::string::String;
-use crate::lang_alloc::vec::Vec;
-use crate::lang_core::fmt;
-use crate::lang_std::ffi::{OsStr, OsString};
+use lang_alloc::string::String;
+use lang_alloc::vec::Vec;
+use lang_core::fmt;
+use lang_std::ffi::{OsStr, OsString};
 use crate::try_clone::{TryClone, TryCloneError};
 use crate::try_default::{TryDefault, TryDefaultError};
 use crate::try_fmt::{TryDebug, helpers::FormatterExt};
@@ -304,8 +304,8 @@ impl crate::try_fmt::TryDebug for OsString {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::lang_alloc::string::String;
-    use crate::lang_alloc::vec;
+    use lang_alloc::string::String;
+    use lang_alloc::vec;
 
     // ── Construction ─────────────────────────────────────────────────────────
 
@@ -441,7 +441,7 @@ mod tests {
         // On Unix, OsString can hold arbitrary bytes.
         #[cfg(unix)]
         {
-            use crate::lang_std::os::unix::ffi::OsStringExt;
+            use lang_std::os::unix::ffi::OsStringExt;
             let s = OsString::from_vec(vec![0xFF, 0xFE]);
             let result = s.try_into_string();
             assert!(result.is_err());

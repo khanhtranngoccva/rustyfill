@@ -1,7 +1,7 @@
 //! Entry API for [`ConcurrentHashMap`](super::ConcurrentHashMap).
 
-use crate::lang_core::hash::Hash;
-use crate::lang_core::mem;
+use lang_core::hash::Hash;
+use lang_core::mem;
 use hashbrown::raw::{Bucket, InsertSlot, RawTable};
 use parking_lot::RwLockWriteGuard;
 

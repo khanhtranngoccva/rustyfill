@@ -5,13 +5,13 @@
 use crate::alloc::AllocError;
 use crate::alloc::TryReserveError;
 use crate::collections::slotmap::key::{DefaultKey, Key, KeyData};
-use crate::lang_alloc::vec::Vec;
-use crate::lang_core::fmt::{self, Debug};
-use crate::lang_core::hash::Hash;
-use crate::lang_core::iter::{Enumerate, FusedIterator};
-use crate::lang_core::marker::PhantomData;
-use crate::lang_core::mem::{ManuallyDrop, MaybeUninit};
-use crate::lang_core::ops::{Index, IndexMut};
+use lang_alloc::vec::Vec;
+use lang_core::fmt::{self, Debug};
+use lang_core::hash::Hash;
+use lang_core::iter::{Enumerate, FusedIterator};
+use lang_core::marker::PhantomData;
+use lang_core::mem::{ManuallyDrop, MaybeUninit};
+use lang_core::ops::{Index, IndexMut};
 use crate::try_fmt::helpers::FormatterExt;
 use crate::try_fmt::TryDebug;
 
@@ -70,7 +70,7 @@ impl<T> Slot<T> {
 
 impl<T> Drop for Slot<T> {
     fn drop(&mut self) {
-        if crate::lang_core::mem::needs_drop::<T>() && self.occupied() {
+        if lang_core::mem::needs_drop::<T>() && self.occupied() {
             unsafe {
                 ManuallyDrop::drop(&mut self.u.value);
             }
@@ -175,8 +175,8 @@ impl From<TryReserveError> for SlotMapError {
     }
 }
 
-impl From<crate::lang_std::collections::TryReserveError> for SlotMapError {
-    fn from(e: crate::lang_std::collections::TryReserveError) -> Self {
+impl From<lang_std::collections::TryReserveError> for SlotMapError {
+    fn from(e: lang_std::collections::TryReserveError) -> Self {
         Self::Reserve(TryReserveError::from(e))
     }
 }
@@ -609,7 +609,7 @@ impl<K: Key, V> Hash for SlotMap<K, V>
 where
     V: Hash,
 {
-    fn hash<H: crate::lang_core::hash::Hasher>(&self, state: &mut H) {
+    fn hash<H: lang_core::hash::Hasher>(&self, state: &mut H) {
         for (_k, v) in self.iter() {
             v.hash(state);
         }
@@ -629,7 +629,7 @@ pub struct Drain<'a, K: 'a + Key, V: 'a> {
 #[derive(Debug, Clone)]
 pub struct IntoIter<K: Key, V> {
     num_left: usize,
-    slots: Enumerate<crate::lang_alloc::vec::IntoIter<Slot<V>>>,
+    slots: Enumerate<lang_alloc::vec::IntoIter<Slot<V>>>,
     _k: PhantomData<fn(K) -> K>,
 }
 
@@ -637,7 +637,7 @@ pub struct IntoIter<K: Key, V> {
 #[derive(Debug)]
 pub struct Iter<'a, K: 'a + Key, V: 'a> {
     num_left: usize,
-    slots: Enumerate<crate::lang_core::slice::Iter<'a, Slot<V>>>,
+    slots: Enumerate<lang_core::slice::Iter<'a, Slot<V>>>,
     _k: PhantomData<fn(K) -> K>,
 }
 
@@ -655,7 +655,7 @@ impl<'a, K: 'a + Key, V: 'a> Clone for Iter<'a, K, V> {
 #[derive(Debug)]
 pub struct IterMut<'a, K: 'a + Key, V: 'a> {
     num_left: usize,
-    slots: Enumerate<crate::lang_core::slice::IterMut<'a, Slot<V>>>,
+    slots: Enumerate<lang_core::slice::IterMut<'a, Slot<V>>>,
     _k: PhantomData<fn(K) -> K>,
 }
 
@@ -880,7 +880,7 @@ impl<K: Key, V> ExactSizeIterator for IntoIter<K, V> {}
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::lang_alloc::string::String;
+    use lang_alloc::string::String;
 
     #[test]
     fn basic_insert_get_remove() {
@@ -934,7 +934,7 @@ mod tests {
 
     #[test]
     fn error_display_messages() {
-        use crate::lang_alloc::string::ToString;
+        use lang_alloc::string::ToString;
         let err_full = SlotMapError::Full;
         assert!(err_full.to_string().contains("full"));
     }
@@ -1023,7 +1023,7 @@ mod tests {
         let result = sm.get_disjoint_mut([ka, kb]);
         assert!(result.is_some());
         let [a, b] = result.unwrap();
-        crate::lang_core::mem::swap(a, b);
+        lang_core::mem::swap(a, b);
         assert_eq!(sm[ka], 20);
         assert_eq!(sm[kb], 10);
     }

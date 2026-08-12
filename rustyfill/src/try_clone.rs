@@ -2,7 +2,7 @@
 //!
 //! Provides the [`TryClone`] trait, a drop-in analogue of [`Clone`] that can
 //! fail when the clone operation requires allocating memory (e.g. cloning a
-//! [`crate::lang_alloc::string::String`] or [`crate::lang_alloc::vec::Vec`]).
+//! [`lang_alloc::string::String`] or [`lang_alloc::vec::Vec`]).
 //!
 //! # Design
 //!
@@ -12,17 +12,17 @@
 //!
 //! All well-known [`Copy`] types (numbers, booleans, characters, unit type,
 //! tuples, and arrays) are implemented explicitly below. Non-`Copy` compound
-//! types ([`crate::lang_core::option::Option`], [`crate::lang_core::result::Result`]) delegate to their inner values via `TryClone`.
+//! types ([`lang_core::option::Option`], [`lang_core::result::Result`]) delegate to their inner values via `TryClone`.
 //!
 //! Structs can derive `TryClone` via the [`rustyfill_macros::TryClone`] proc macro,
 //! which requires every field to also implement `TryClone`.
 
 use crate::alloc::{AllocError, TryReserveError};
-use crate::lang_core::array;
-use crate::lang_core::clone::Clone;
-use crate::lang_core::fmt;
-use crate::lang_core::mem;
-use crate::lang_core::ptr;
+use lang_core::array;
+use lang_core::clone::Clone;
+use lang_core::fmt;
+use lang_core::mem;
+use lang_core::ptr;
 use crate::try_fmt::{TryDebug, helpers::FormatterExt};
 
 /// Returned when a fallible clone operation fails.

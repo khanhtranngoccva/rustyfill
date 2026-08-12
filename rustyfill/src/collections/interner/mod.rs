@@ -23,17 +23,17 @@
 
 use crate::alloc::TryReserveError;
 use crate::collections::chashmap::ConcurrentHashMap;
-use crate::lang_alloc::borrow::ToOwned;
-use crate::lang_alloc::string::String;
-use crate::lang_core::fmt;
-use crate::lang_core::hash;
-use crate::lang_core::hash::Hash;
-use crate::lang_std::ffi::{CStr, CString, OsStr, OsString};
-use crate::lang_std::hash::{BuildHasher as _, RandomState};
-use crate::lang_std::ops::Deref;
-use crate::lang_std::path::{Path, PathBuf};
-use crate::lang_std::sync::atomic::{AtomicUsize, Ordering};
-use crate::lang_std::sync::{Arc, Weak};
+use lang_alloc::borrow::ToOwned;
+use lang_alloc::string::String;
+use lang_core::fmt;
+use lang_core::hash;
+use lang_core::hash::Hash;
+use lang_std::ffi::{CStr, CString, OsStr, OsString};
+use lang_std::hash::{BuildHasher as _, RandomState};
+use lang_std::ops::Deref;
+use lang_std::path::{Path, PathBuf};
+use lang_std::sync::atomic::{AtomicUsize, Ordering};
+use lang_std::sync::{Arc, Weak};
 use crate::std::arc::{TryArc, TryWeak};
 use crate::try_clone::TryClone;
 use crate::try_clone::TryCloneError;
@@ -712,10 +712,10 @@ impl fmt::Display for InternPath {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::lang_alloc::string::String;
-    use crate::lang_alloc::string::ToString;
-    use crate::lang_alloc::vec::Vec;
-    use crate::lang_std::format;
+    use lang_alloc::string::String;
+    use lang_alloc::string::ToString;
+    use lang_alloc::vec::Vec;
+    use lang_std::format;
 
     #[test]
     fn intern_basic() {
@@ -798,7 +798,7 @@ mod tests {
 
     #[test]
     fn intern_concurrent_access() {
-        use crate::lang_std::thread;
+        use lang_std::thread;
         let handles: Vec<_> = (0..8)
             .map(|i| {
                 thread::spawn(move || {

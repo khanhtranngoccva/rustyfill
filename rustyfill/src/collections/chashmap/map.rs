@@ -2,14 +2,14 @@
 
 use crate::alloc::vec::SliceInitGuard;
 use crate::alloc::{AllocError, TryReserveError};
-use crate::lang_alloc;
-use crate::lang_alloc::boxed::Box;
-use crate::lang_core::borrow::Borrow;
-use crate::lang_core::fmt;
-use crate::lang_core::hash::{BuildHasher, Hash};
-use crate::lang_core::mem::{self, MaybeUninit};
-use crate::lang_core::ptr;
-use crate::lang_std::hash::RandomState;
+use lang_alloc;
+use lang_alloc::boxed::Box;
+use lang_core::borrow::Borrow;
+use lang_core::fmt;
+use lang_core::hash::{BuildHasher, Hash};
+use lang_core::mem::{self, MaybeUninit};
+use lang_core::ptr;
+use lang_std::hash::RandomState;
 use crate::try_clone::{TryClone, TryCloneError};
 use crate::try_default::{TryDefault, TryDefaultError};
 use crate::try_fmt::{TryDebug, helpers::FormatterExt};
@@ -900,12 +900,12 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::lang_alloc::string::String;
-    use crate::lang_alloc::string::ToString;
-    use crate::lang_alloc::vec;
-    use crate::lang_alloc::vec::Vec;
-    use crate::lang_std::sync::Arc;
-    use crate::lang_std::thread;
+    use lang_alloc::string::String;
+    use lang_alloc::string::ToString;
+    use lang_alloc::vec;
+    use lang_alloc::vec::Vec;
+    use lang_std::sync::Arc;
+    use lang_std::thread;
 
     #[test]
     fn try_new_creates_map() {
@@ -1256,8 +1256,8 @@ mod tests {
 
     #[test]
     fn with_hasher_api() {
-        use crate::lang_std::collections::hash_map::DefaultHasher;
-        use crate::lang_std::hash::BuildHasherDefault;
+        use lang_std::collections::hash_map::DefaultHasher;
+        use lang_std::hash::BuildHasherDefault;
         let hasher = BuildHasherDefault::<DefaultHasher>::default();
         let map: ConcurrentHashMap<&str, i32, _> =
             ConcurrentHashMap::try_with_hasher(hasher).unwrap();
@@ -1267,8 +1267,8 @@ mod tests {
 
     #[test]
     fn with_capacity_and_hasher_api() {
-        use crate::lang_std::collections::hash_map::DefaultHasher;
-        use crate::lang_std::hash::BuildHasherDefault;
+        use lang_std::collections::hash_map::DefaultHasher;
+        use lang_std::hash::BuildHasherDefault;
         let hasher = BuildHasherDefault::<DefaultHasher>::default();
         let map: ConcurrentHashMap<&str, i32, _> =
             ConcurrentHashMap::try_with_capacity_and_hasher(50, hasher).unwrap();

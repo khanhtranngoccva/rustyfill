@@ -1,15 +1,15 @@
 //! Partial port for the PAL module, sufficient for dealing with random. There are sharp edges!
 #![allow(unused)]
 
-use crate::lang_std::io::{self};
-use crate::lang_std::mem::MaybeUninit;
+use lang_std::io::{self};
+use lang_std::mem::MaybeUninit;
 use crate::vec::TryVec;
 use r_efi::efi::{self, Guid, Status};
 
 #[rustversion::nightly]
-use crate::lang_std::io::const_error;
+use lang_std::io::const_error;
 #[rustversion::nightly]
-use crate::lang_std::os::uefi::env::{boot_services, image_handle};
+use lang_std::os::uefi::env::{boot_services, image_handle};
 
 use  ptr::{self, NonNull};
 

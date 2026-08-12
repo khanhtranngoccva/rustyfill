@@ -12,17 +12,17 @@
 //! `Display` impls are unconditional across all types in this module because
 //! they write fixed strings or delegate to primitive formatting.
 
-use crate::lang_alloc::borrow::Cow;
-use crate::lang_core::any;
-use crate::lang_core::array;
-use crate::lang_core::char;
-use crate::lang_core::fmt;
-use crate::lang_core::num;
-use crate::lang_core::str;
-use crate::lang_std::ffi;
-use crate::lang_std::io;
-use crate::lang_std::sync;
-use crate::lang_std::time;
+use lang_alloc::borrow::Cow;
+use lang_core::any;
+use lang_core::array;
+use lang_core::char;
+use lang_core::fmt;
+use lang_core::num;
+use lang_core::str;
+use lang_std::ffi;
+use lang_std::io;
+use lang_std::sync;
+use lang_std::time;
 use crate::try_fmt::helpers::FormatterExt;
 use crate::try_fmt::{TryDebug, TryDisplay};
 

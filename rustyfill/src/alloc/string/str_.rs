@@ -6,12 +6,12 @@
 //! for consistency with [`TryString`](super::string_::TryString).
 
 use crate::alloc::{AllocError, TryReserveError};
-use crate::lang_alloc::boxed::Box;
-use crate::lang_alloc::string::String;
-use crate::lang_core::alloc::Layout;
-use crate::lang_core::fmt;
-use crate::lang_core::mem;
-use crate::lang_core::ptr;
+use lang_alloc::boxed::Box;
+use lang_alloc::string::String;
+use lang_core::alloc::Layout;
+use lang_core::fmt;
+use lang_core::mem;
+use lang_core::ptr;
 use crate::try_clone::{TryClone, TryCloneError};
 use crate::try_default::{TryDefault, TryDefaultError};
 use crate::try_fmt::{TryDebug, helpers::FormatterExt};
@@ -72,7 +72,7 @@ impl TryDebug for TryStrError {
     }
 }
 
-/// A trait for fallibly converting a string slice into an owned [`crate::lang_alloc::string::String`].
+/// A trait for fallibly converting a string slice into an owned [`lang_alloc::string::String`].
 ///
 /// Implemented for [`str`]. Methods reserve capacity upfront so that allocation
 /// failures are returned as errors rather than panicking or aborting.

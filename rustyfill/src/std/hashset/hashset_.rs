@@ -17,11 +17,11 @@
 
 use crate::alloc::AllocError;
 use crate::alloc::TryReserveError;
-use crate::lang_core::cmp;
-use crate::lang_core::fmt;
-use crate::lang_std::cmp::Eq;
-use crate::lang_std::collections::HashSet;
-use crate::lang_std::hash::{BuildHasher, Hash, RandomState};
+use lang_core::cmp;
+use lang_core::fmt;
+use lang_std::cmp::Eq;
+use lang_std::collections::HashSet;
+use lang_std::hash::{BuildHasher, Hash, RandomState};
 use crate::try_clone::{TryClone, TryCloneError};
 use crate::try_default::{TryDefault, TryDefaultError};
 use crate::try_fmt::{TryDebug, helpers::FormatterExt};
@@ -598,11 +598,11 @@ impl<T: crate::try_fmt::TryDebug, S> crate::try_fmt::TryDebug for HashSet<T, S> 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::lang_alloc::string::String;
-    use crate::lang_alloc::string::ToString;
-    use crate::lang_alloc::vec;
-    use crate::lang_alloc::vec::Vec;
-    use crate::lang_std::hash::RandomState;
+    use lang_alloc::string::String;
+    use lang_alloc::string::ToString;
+    use lang_alloc::vec;
+    use lang_alloc::vec::Vec;
+    use lang_std::hash::RandomState;
 
     // ── Construction ─────────────────────────────────────────────────────────
 
@@ -621,8 +621,8 @@ mod tests {
 
     #[test]
     fn try_with_capacity_and_hasher() {
-        use crate::lang_std::collections::hash_map::DefaultHasher;
-        use crate::lang_std::hash::BuildHasherDefault;
+        use lang_std::collections::hash_map::DefaultHasher;
+        use lang_std::hash::BuildHasherDefault;
 
         let hasher = BuildHasherDefault::<DefaultHasher>::default();
         let set: HashSet<&str, _> = HashSet::try_with_capacity_and_hasher(5, hasher).unwrap();
@@ -806,8 +806,8 @@ mod tests {
 
     #[test]
     fn try_collect_with_hasher() {
-        use crate::lang_std::collections::hash_map::DefaultHasher;
-        use crate::lang_std::hash::BuildHasherDefault;
+        use lang_std::collections::hash_map::DefaultHasher;
+        use lang_std::hash::BuildHasherDefault;
 
         let hasher = BuildHasherDefault::<DefaultHasher>::default();
         let set: HashSet<i32, _> = HashSet::try_collect_with_hasher([1, 2, 3], hasher).unwrap();
@@ -851,8 +851,8 @@ mod tests {
 
     #[test]
     fn try_default_set_with_custom_hasher() {
-        use crate::lang_std::collections::hash_map::DefaultHasher;
-        use crate::lang_std::hash::BuildHasherDefault;
+        use lang_std::collections::hash_map::DefaultHasher;
+        use lang_std::hash::BuildHasherDefault;
 
         let set: HashSet<i32, BuildHasherDefault<DefaultHasher>> = HashSet::try_default().unwrap();
         assert!(set.is_empty());

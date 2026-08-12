@@ -17,11 +17,11 @@
 use super::raw_manipulation::RawVecInnerView;
 use crate::alloc::AllocError;
 use crate::alloc::TryReserveError;
-use crate::lang_alloc::vec::Vec;
-use crate::lang_core::alloc::Layout;
-use crate::lang_core::cmp;
-use crate::lang_core::fmt;
-use crate::lang_core::mem;
+use lang_alloc::vec::Vec;
+use lang_core::alloc::Layout;
+use lang_core::cmp;
+use lang_core::fmt;
+use lang_core::mem;
 use crate::try_clone::{TryClone, TryCloneError};
 use crate::try_default::{TryDefault, TryDefaultError};
 use crate::try_fmt::{TryDebug, helpers::FormatterExt};
@@ -587,7 +587,7 @@ impl<T> TryVec<T> for Vec<T> {
     where
         T: TryClone,
     {
-        use crate::lang_std::ops::Bound;
+        use lang_std::ops::Bound;
 
         let start = match range.start_bound() {
             Bound::Included(&i) => i,
@@ -785,10 +785,10 @@ impl<T: crate::try_fmt::TryDebug> crate::try_fmt::TryDebug for Vec<T> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::lang_alloc::string::String;
-    use crate::lang_alloc::string::ToString;
-    use crate::lang_alloc::vec;
-    use crate::lang_core::iter;
+    use lang_alloc::string::String;
+    use lang_alloc::string::ToString;
+    use lang_alloc::vec;
+    use lang_core::iter;
 
     // ── Construction ─────────────────────────────────────────────────────────
 

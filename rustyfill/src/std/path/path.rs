@@ -18,9 +18,9 @@
 
 use crate::alloc::AllocError;
 use crate::alloc::TryReserveError;
-use crate::lang_core::fmt;
-use crate::lang_std::ffi::OsStr;
-use crate::lang_std::path::{Path, PathBuf};
+use lang_core::fmt;
+use lang_std::ffi::OsStr;
+use lang_std::path::{Path, PathBuf};
 use crate::std::path::path_buf::inner_push;
 use crate::std::path::{TryPathBuf, TryPathBufError};
 use crate::try_clone::{TryClone, TryCloneError};
@@ -257,8 +257,8 @@ impl crate::try_fmt::TryDisplay for ::lang_std::path::Display<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::lang_alloc::vec::Vec;
-    use crate::lang_std::format;
+    use lang_alloc::vec::Vec;
+    use lang_std::format;
     use crate::std::path::TryPathBuf;
 
     /// Assert that `try_join(base, child)` produces the same result as

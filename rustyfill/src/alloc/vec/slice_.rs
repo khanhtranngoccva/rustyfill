@@ -7,11 +7,11 @@
 
 use super::vec_::TryVecError;
 use crate::alloc::AllocError;
-use crate::lang_alloc::boxed::Box;
-use crate::lang_alloc::vec::Vec;
-use crate::lang_core::alloc::Layout;
-use crate::lang_core::mem::{self, MaybeUninit};
-use crate::lang_core::ptr::{self, NonNull};
+use lang_alloc::boxed::Box;
+use lang_alloc::vec::Vec;
+use lang_core::alloc::Layout;
+use lang_core::mem::{self, MaybeUninit};
+use lang_core::ptr::{self, NonNull};
 use crate::try_clone::{TryClone, TryCloneError};
 use crate::try_default::{TryDefault, TryDefaultError};
 use crate::try_to_owned::{TryToOwned, TryToOwnedError};
@@ -236,8 +236,8 @@ impl<T> TryDefault for Box<[T]> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::lang_alloc::borrow::ToOwned;
-    use crate::lang_alloc::vec;
+    use lang_alloc::borrow::ToOwned;
+    use lang_alloc::vec;
 
     #[test]
     fn try_to_vec_empty() {

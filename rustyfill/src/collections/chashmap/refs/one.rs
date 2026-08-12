@@ -5,7 +5,7 @@
 //! [`get_mut`](super::ConcurrentHashMap::get_mut), and the Entry API —
 //! scenarios where exactly one consumer holds the lock.
 
-use crate::lang_core::ops::{Deref, DerefMut};
+use lang_core::ops::{Deref, DerefMut};
 use hashbrown::raw::RawTable;
 use parking_lot::{RwLockReadGuard, RwLockWriteGuard};
 

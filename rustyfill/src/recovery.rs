@@ -36,7 +36,7 @@
 //!    inserted. The [`Resumable`] holds that stranded element as the head,
 //!    plus the unconsumed remainder.
 
-use crate::lang_core::fmt;
+use lang_core::fmt;
 use crate::try_fmt::{TryDebug, helpers::FormatterExt};
 
 /// A source of items that decomposes into an optional leading element and an
@@ -200,10 +200,10 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::lang_alloc::vec;
-    use crate::lang_alloc::vec::Vec;
-    use crate::lang_core::ops;
-    use crate::lang_std::format;
+    use lang_alloc::vec;
+    use lang_alloc::vec::Vec;
+    use lang_core::ops;
+    use lang_std::format;
 
     #[test]
     fn retryable_with_head() {
