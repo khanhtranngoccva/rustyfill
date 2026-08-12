@@ -1236,7 +1236,6 @@ where
     }
 }
 
-
 // ── Peer iterators ───────────────────────────────────────────────────────────
 
 /// Iterator over references to all peers in a report (head first, then most

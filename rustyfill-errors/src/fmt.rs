@@ -35,8 +35,8 @@ where
         // Auto-unstall so that each allocation error is emitted once and the
         // iterator continues rather than stalling indefinitely.
         let mut frames: Vec<_> = Vec::new();
-        let mut walker = self.frames().with_auto_unstall(true);
-        while let Some(item) = walker.next() {
+        let walker = self.frames().with_auto_unstall(true);
+        for item in walker {
             match <Vec<_> as TryVec<_>>::try_push(&mut frames, item) {
                 Ok(()) => {}
                 Err(_) => return write!(f, "<failed to render report, out of memory>"),

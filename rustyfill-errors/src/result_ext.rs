@@ -222,7 +222,7 @@ mod tests {
     #[test]
     fn attach_lazy_only_evaluates_on_err() {
         let result: Result<i32, Report<IoError>> = Ok(42);
-        let evaluated = std::cell::Cell::new(false);
+        let evaluated = core::cell::Cell::new(false);
         let result = result.attach_lazy(|| {
             evaluated.set(true);
             "should not evaluate"
@@ -234,7 +234,7 @@ mod tests {
     #[test]
     fn attach_lazy_evaluates_on_err() {
         let result: Result<i32, Report<IoError>> = Err(Report::new(IoError("timeout")));
-        let evaluated = std::cell::Cell::new(false);
+        let evaluated = core::cell::Cell::new(false);
         let result = result.attach_lazy(|| {
             evaluated.set(true);
             "lazy context"

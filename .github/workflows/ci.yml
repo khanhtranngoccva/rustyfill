@@ -71,6 +71,80 @@ jobs:
       - name: Test ${{ matrix.package }} without std
         run: cargo test --package ${{ matrix.package }} --no-default-features
 
+  # ── CRAP complexity analysis ────────────────────────────────────────────
+  crap:
+    name: CRAP (complexity)
+    runs-on: ubuntu-latest
+    permissions:
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@nightly
+      - name: Install cargo-llvm-cov
+        run: cargo install cargo-llvm-cov
+      - name: Install cargo-crap
+        run: cargo install cargo-crap
+      - name: Generate coverage report
+        run: cargo llvm-cov --workspace --lcov --output-path lcov.info
+
+      # On pushes to main, generate the baseline artifact for PRs to compare against.
+      - name: Generate baseline on main
+        if: github.event_name == 'push'
+        run: >
+          cargo crap --workspace --lcov lcov.info
+          --format json --sort file --output crap-baseline.json
+      - name: Upload baseline artifact
+        if: github.event_name == 'push'
+        uses: actions/upload-artifact@v4
+        with:
+          name: crap-baseline
+          path: crap-baseline.json
+          retention-days: 1
+
+      # On pull requests, download the baseline from the target branch and compare.
+      - name: Download baseline from base branch
+        if: github.event_name == 'pull_request'
+        uses: actions/download-artifact@v4
+        with:
+          name: crap-baseline
+          path: baseline
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          repository: ${{ github.repository }}
+          ref: ${{ github.event.pull_request.base.sha }}
+
+      - name: Run CRAP regression check
+        if: github.event_name == 'pull_request'
+        run: >
+          cargo crap --workspace --lcov lcov.info
+          --baseline baseline/crap-baseline.json
+          --format pr-comment --output crap-comment.md
+          --fail-regression --fail-above
+
+      - name: Post CRAP report as PR comment
+        if: github.event_name == 'pull_request'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            const body = fs.readFileSync('crap-comment.md', 'utf8');
+            const marker = '<!-- cargo-crap-report -->';
+            const { data: comments } = await github.rest.issues.listComments({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+            });
+            const existing = comments.find(c => c.body.startsWith(marker));
+            const payload = {
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: marker + '\n' + body,
+            };
+            if (existing) {
+              await github.rest.issues.updateComment({ ...payload, comment_id: existing.id });
+            } else {
+              await github.rest.issues.createComment({ ...payload, issue_number: context.issue.number });
+            }
+
   # ── Sanitizers ──────────────────────────────────────────────────────────
   sanitize:
     name: Sanitizer (${{ matrix.sanitizer }})
