@@ -2,10 +2,16 @@
 //!
 //! Every operation that may allocate returns a [`Result`] instead of panicking.
 
-use crate::alloc::vec::TryVec;
 use crate::alloc::AllocError;
 use crate::alloc::TryReserveError;
-use crate::collections::slotmap::key::{DANGLING_SENTINEL, DefaultKey, Key, KeyData, MAX_SLOTS_LEN};
+use crate::alloc::vec::TryVec;
+use crate::collections::slotmap::key::{
+    DANGLING_SENTINEL, DefaultKey, Key, KeyData, MAX_SLOTS_LEN,
+};
+use crate::try_clone::{TryClone, TryCloneError};
+use crate::try_default::{TryDefault, TryDefaultError};
+use crate::try_fmt::TryDebug;
+use crate::try_fmt::helpers::FormatterExt;
 use lang_alloc::vec::Vec;
 use lang_core::fmt::{self, Debug};
 use lang_core::hash::Hash;
@@ -13,10 +19,6 @@ use lang_core::iter::{Enumerate, FusedIterator};
 use lang_core::marker::PhantomData;
 use lang_core::mem::{ManuallyDrop, MaybeUninit};
 use lang_core::ops::{Index, IndexMut};
-use crate::try_clone::{TryClone, TryCloneError};
-use crate::try_default::{TryDefault, TryDefaultError};
-use crate::try_fmt::helpers::FormatterExt;
-use crate::try_fmt::TryDebug;
 
 // ── Internal slot representation ────────────────────────────────────────────────
 
@@ -106,7 +108,7 @@ impl<T: Clone> Clone for Slot<T> {
                 self.u = SlotUnion {
                     value: ManuallyDrop::new(value.clone()),
                 };
-            },
+            }
         }
         self.version = source.version;
     }
@@ -249,12 +251,13 @@ impl<K: Key, V> SlotMap<K, V> {
         if capacity >= MAX_SLOTS_LEN.saturating_sub(1) {
             return Err(SlotMapError::Full);
         }
-        let mut slots = Vec::<Slot<V>>::try_with_capacity(capacity + 1)
+        let mut slots = Vec::fallible_with_capacity(capacity + 1).map_err(SlotMapError::from)?;
+        slots
+            .try_push(Slot {
+                u: SlotUnion { next_free: 0 },
+                version: 0,
+            })
             .map_err(SlotMapError::from)?;
-        slots.try_push(Slot {
-            u: SlotUnion { next_free: 0 },
-            version: 0,
-        }).map_err(SlotMapError::from)?;
         Ok(Self {
             slots,
             free_head: 1,
@@ -287,7 +290,9 @@ impl<K: Key, V> SlotMap<K, V> {
     /// callers can rely on subsequent [`Self::try_insert`] calls succeeding
     /// (barring allocation failure).
     pub fn try_reserve(&mut self, additional: usize) -> Result<(), SlotMapError> {
-        let total = self.len().checked_add(additional)
+        let total = self
+            .len()
+            .checked_add(additional)
             .ok_or(SlotMapError::Full)?;
         if total >= MAX_SLOTS_LEN.saturating_sub(1) {
             return Err(SlotMapError::Full);
@@ -492,7 +497,13 @@ impl<K: Key, V> SlotMap<K, V> {
     /// Undefined behavior if the key is invalid.
     pub unsafe fn get_unchecked_mut(&mut self, key: K) -> &mut V {
         debug_assert!(self.contains_key(key));
-        unsafe { &mut self.slots.get_unchecked_mut(key.data().idx() as usize).u.value }
+        unsafe {
+            &mut self
+                .slots
+                .get_unchecked_mut(key.data().idx() as usize)
+                .u
+                .value
+        }
     }
 
     /// Returns disjoint mutable references for multiple keys.
@@ -516,7 +527,9 @@ impl<K: Key, V> SlotMap<K, V> {
         }
         for k in &keys[..i] {
             let idx = k.data().idx() as usize;
-            unsafe { (*slots_ptr.add(idx)).version ^= 1; }
+            unsafe {
+                (*slots_ptr.add(idx)).version ^= 1;
+            }
         }
         if i == N {
             Some(ptrs.map(|p| unsafe { &mut *p.assume_init() }))
@@ -971,7 +984,9 @@ mod tests {
     #[test]
     fn insert_with_key_self_referential() {
         let mut sm: SlotMap<DefaultKey, (DefaultKey, i32)> = SlotMap::try_new().unwrap();
-        let k = sm.try_insert_with_key::<_, SlotMapError>(|key| Ok((key, 42))).unwrap();
+        let k = sm
+            .try_insert_with_key::<_, SlotMapError>(|key| Ok((key, 42)))
+            .unwrap();
         let (stored_key, val) = *sm.get(k).unwrap();
         assert_eq!(stored_key, k);
         assert_eq!(val, 42);
@@ -1122,8 +1137,7 @@ mod tests {
 
     #[test]
     fn try_with_capacity_zero_succeeds() {
-        let sm: SlotMap<DefaultKey, i32> =
-            SlotMap::try_with_capacity(0).unwrap();
+        let sm: SlotMap<DefaultKey, i32> = SlotMap::try_with_capacity(0).unwrap();
         assert!(sm.is_empty());
     }
 

@@ -5,10 +5,14 @@
 //! it uses direct indexing: the key's slot index is used as the array offset,
 //! so lookups are O(1) without hashing.
 
-use crate::alloc::vec::TryVec;
 use crate::alloc::AllocError;
 use crate::alloc::TryReserveError;
+use crate::alloc::vec::TryVec;
 use crate::collections::slotmap::key::{Key, KeyData, MAX_SLOTS_LEN};
+use crate::try_clone::{TryClone, TryCloneError};
+use crate::try_default::{TryDefault, TryDefaultError};
+use crate::try_fmt::TryDebug;
+use crate::try_fmt::helpers::FormatterExt;
 use lang_alloc::vec::Vec;
 use lang_core::fmt::{self, Debug};
 use lang_core::iter::{Enumerate, Extend, FromIterator, FusedIterator};
@@ -16,10 +20,6 @@ use lang_core::marker::PhantomData;
 use lang_core::mem::replace;
 use lang_core::num::NonZeroU32;
 use lang_core::ops::{Index, IndexMut};
-use crate::try_clone::{TryClone, TryCloneError};
-use crate::try_default::{TryDefault, TryDefaultError};
-use crate::try_fmt::helpers::FormatterExt;
-use crate::try_fmt::TryDebug;
 
 /// Returns true if `a` is an older version than `b`, accounting for wraparound.
 fn is_older_version(a: u32, b: u32) -> bool {
@@ -47,11 +47,6 @@ impl<T> Slot<T> {
 
     fn new_vacant() -> Self {
         Vacant
-    }
-
-    #[inline(always)]
-    fn occupied(&self) -> bool {
-        matches!(self, Occupied { .. })
     }
 
     #[inline(always)]
@@ -187,9 +182,10 @@ impl<K: Key, V> SecondaryMap<K, V> {
         if capacity >= MAX_SLOTS_LEN.saturating_sub(1) {
             return Err(SecondaryMapError::Overflow);
         }
-        let mut slots = Vec::<Slot<V>>::try_with_capacity(capacity + 1)
+        let mut slots = Vec::<Slot<V>>::fallible_with_capacity(capacity + 1)
             .map_err(SecondaryMapError::from)?;
-        slots.try_push(Slot::new_vacant())
+        slots
+            .try_push(Slot::new_vacant())
             .map_err(SecondaryMapError::from)?;
         Ok(Self {
             slots,
@@ -224,7 +220,9 @@ impl<K: Key, V> SecondaryMap<K, V> {
         let target = new_capacity + 1; // sentinel
         if target > self.slots.capacity() {
             let needed = target.saturating_sub(self.slots.len());
-            self.slots.try_reserve(needed).map_err(SecondaryMapError::from)?;
+            self.slots
+                .try_reserve(needed)
+                .map_err(SecondaryMapError::from)?;
         }
         Ok(())
     }
@@ -239,47 +237,50 @@ impl<K: Key, V> SecondaryMap<K, V> {
 
     /// Inserts a value at the given key.
     ///
-    /// Returns `Err` if the underlying allocation fails. Returns `Ok(None)` if
-    /// this is a new entry, `Ok(Some(old_value))` if the key was already present.
+    /// Returns `Err` if the underlying allocation fails or the index exceeds the
+    /// storage limit. On failure, `value` is dropped. For a variant that gives
+    /// `value` back, use [`Self::try_insert_give_back`].
+    ///
+    /// Returns `Ok(None)` if this is a new entry, `Ok(Some(old_value))` if the
+    /// key was already present. Silently returns `Ok(None)` if the key was
+    /// removed from the originating slot map and its slot has been reused with a
+    /// newer version—in that case `value` is dropped as the insert was logically
+    /// successful (a no-op).
+    pub fn try_insert(&mut self, key: K, value: V) -> Result<Option<V>, SecondaryMapError> {
+        match self.try_insert_give_back(key, value) {
+            Ok(v) => Ok(v),
+            Err((_, e)) => Err(e),
+        }
+    }
+
+    /// Like [`Self::try_insert`] but returns ownership of `value` back on failure.
+    ///
+    /// Returns `Err((value, error))` if the underlying allocation fails or the
+    /// index exceeds the storage limit, giving the unconsumed `value` back to the
+    /// caller. Returns `Ok(None)` if this is a new entry, `Ok(Some(old_value))`
+    /// if the key was already present.
     ///
     /// Silently returns `Ok(None)` if the key was removed from the originating
-    /// slot map and its slot has been reused with a newer version.
-    pub fn try_insert(&mut self, key: K, value: V) -> Result<Option<V>, SecondaryMapError> {
-        if key.is_null() {
-            return Ok(None);
-        }
-
-        let kd = key.data();
-        let idx = kd.idx() as usize;
-
-        // Guard against indices that would exceed our storage limit.
-        if idx >= MAX_SLOTS_LEN.saturating_sub(1) {
-            return Err(SecondaryMapError::Overflow);
-        }
-
-        // Grow slots if needed.
-        while self.slots.len() <= idx {
-            self.slots.try_reserve(1).map_err(SecondaryMapError::from)?;
-            self.slots.push(Slot::new_vacant());
-        }
-
-        let slot = &mut self.slots[idx];
-        if slot.version() == kd.version_raw() {
-            // Already occupied with matching version.
-            return Ok(replace(unsafe { slot.get_unchecked_mut() }, value).into());
-        }
-
-        if slot.occupied() {
-            // Existing newer value — don't overwrite.
-            if is_older_version(kd.version_raw(), slot.version()) {
-                return Ok(None);
+    /// slot map and its slot has been reused with a newer version. In this case
+    /// `value` is dropped, as the insert was logically successful (a no-op).
+    pub fn try_insert_give_back(
+        &mut self,
+        key: K,
+        value: V,
+    ) -> Result<Option<V>, (V, SecondaryMapError)> {
+        match self.try_entry(key) {
+            Ok(None) => {
+                // Key was removed from the primary map and its slot reused.
+                // Drop the value — this is a logical no-op, not an error.
+                Ok(None)
             }
-        } else {
-            self.num_elems += 1;
+            Ok(Some(Entry::Occupied(mut entry))) => Ok(Some(entry.insert(value))),
+            Ok(Some(Entry::Vacant(entry))) => {
+                entry.insert(value);
+                Ok(None)
+            }
+            Err(e) => Err((value, e)),
         }
-
-        *slot = Slot::new_occupied(kd.version_raw(), value);
-        Ok(None)
     }
 
     /// Removes a key, returning the value if present.
@@ -346,7 +347,11 @@ impl<K: Key, V> SecondaryMap<K, V> {
     /// Caller must ensure `contains_key(key)` is true.
     pub unsafe fn get_unchecked(&self, key: K) -> &V {
         debug_assert!(self.contains_key(key));
-        unsafe { self.slots.get_unchecked(key.data().idx() as usize).get_unchecked() }
+        unsafe {
+            self.slots
+                .get_unchecked(key.data().idx() as usize)
+                .get_unchecked()
+        }
     }
 
     /// Unchecked mutable access.
@@ -355,7 +360,11 @@ impl<K: Key, V> SecondaryMap<K, V> {
     /// Caller must ensure `contains_key(key)` is true.
     pub unsafe fn get_unchecked_mut(&mut self, key: K) -> &mut V {
         debug_assert!(self.contains_key(key));
-        unsafe { self.slots.get_unchecked_mut(key.data().idx() as usize).get_unchecked_mut() }
+        unsafe {
+            self.slots
+                .get_unchecked_mut(key.data().idx() as usize)
+                .get_unchecked_mut()
+        }
     }
 
     /// Fallible entry API — returns `None` if the key was removed from the
@@ -373,10 +382,12 @@ impl<K: Key, V> SecondaryMap<K, V> {
             return Err(SecondaryMapError::Overflow);
         }
 
-        // Ensure slot exists, growing fallibly.
-        while self.slots.len() <= idx {
-            self.slots.try_reserve(1).map_err(SecondaryMapError::from)?;
-            self.slots.push(Slot::new_vacant());
+        // Ensure slot exists, growing fallibly in a single allocation.
+        let target_len = idx + 1;
+        if self.slots.len() < target_len {
+            self.slots
+                .try_resize_with(target_len, Slot::new_vacant)
+                .map_err(SecondaryMapError::from)?;
         }
 
         let slot = &self.slots[idx];
@@ -510,11 +521,8 @@ impl<K: Key, V: PartialEq> PartialEq for SecondaryMap<K, V> {
         if self.len() != other.len() {
             return false;
         }
-        self.iter().all(|(key, value)| {
-            other
-                .get(key)
-                .is_some_and(|ov| *value == *ov)
-        })
+        self.iter()
+            .all(|(key, value)| other.get(key).is_some_and(|ov| *value == *ov))
     }
 }
 
@@ -599,7 +607,7 @@ impl<'a, K: Key, V> Entry<'a, K, V> {
             Entry::Occupied(mut e) => {
                 f(e.get_mut());
                 Entry::Occupied(e)
-            },
+            }
             Entry::Vacant(e) => Entry::Vacant(e),
         }
     }
@@ -656,7 +664,7 @@ impl<'a, K: Key, V> VacantEntry<'a, K, V> {
     pub fn insert(self, value: V) -> &'a mut V {
         let slot = unsafe { self.map.slots.get_unchecked_mut(self.kd.idx() as usize) };
         match replace(slot, Slot::new_occupied(self.kd.version_raw(), value)) {
-            Occupied { .. } => {},
+            Occupied { .. } => {}
             Vacant => self.map.num_elems += 1,
         }
         unsafe { slot.get_unchecked_mut() }
@@ -908,8 +916,8 @@ impl<K: Key, V> ExactSizeIterator for IntoIter<K, V> {}
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::collections::slotmap::SlotMap;
     use crate::collections::slotmap::DefaultKey;
+    use crate::collections::slotmap::SlotMap;
 
     #[test]
     fn basic_insert_get_remove() {

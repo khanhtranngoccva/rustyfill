@@ -1008,6 +1008,7 @@ where
             self.head_remaining = false;
             if !self.head_ref.children().is_empty() {
                 let child_iter = self.head_ref.children().iter();
+                // FIXME: this silently skips frame, we should let callers decide
                 if let Err((_, e)) = TryVec::try_push_give_back(
                     &mut self.stack,
                     StackEntry {
@@ -1032,6 +1033,7 @@ where
                     // Push new stack entry to descend into this child's subtree.
                     if !df.children().is_empty() {
                         let child_iter = df.children().iter();
+                        // FIXME: this silently skips frame, we should let callers decide
                         if let Err((_, e)) = TryVec::try_push_give_back(
                             &mut self.stack,
                             StackEntry {
@@ -1122,6 +1124,7 @@ where
                 if let Some(df) = top.iter.next() {
                     if !df.children().is_empty() {
                         let child_iter = df.children().iter();
+                        // FIXME: this silently skips frame, we should let callers decide
                         if let Err((_, e)) = TryVec::try_push_give_back(
                             &mut self.stack,
                             StackEntry {

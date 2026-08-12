@@ -6,6 +6,7 @@ use parking_lot::RwLock;
 
 /// One shard of the concurrent hash map, cache-line padded to prevent false sharing.
 pub struct Shard<K, V> {
+    /// FIXME: V must be wrapped in a SharedValue (aka. UnsafeCell ala. dashmap implementation)
     inner: CachePadded<RwLock<RawTable<(K, V)>>>,
 }
 

@@ -33,7 +33,6 @@ use crate::try_to_owned::{TryToOwned, TryToOwnedError};
 use lang_alloc::borrow::ToOwned;
 use lang_alloc::string::String;
 use lang_core::fmt;
-use lang_core::hash;
 use lang_core::hash::Hash;
 use lang_std::ffi::{CStr, CString, OsStr, OsString};
 use lang_std::hash::{BuildHasher as _, RandomState};
@@ -44,47 +43,6 @@ use lang_std::sync::{Arc, Weak};
 
 /// Number of intern calls between pruning sweeps of unlocked shards.
 const PRUNE_INTERVAL: usize = 1024;
-
-// ── InternKey ──────────────────────────────────────────────────────────────────
-
-/// Composite key stored in each backing [`ConcurrentHashMap`].
-///
-/// The `hash` field is the pre-computed hash of the borrowed value, used for shard
-/// routing and bucket probing. The `weak` field is a [`Weak`] pointer to the owned
-/// type that lets us detect when all external [`Intern::Shared`] handles have been
-/// dropped, so the entry can be pruned.
-///
-/// **Important:** [`Hash`] and [`Eq`] are stubs to satisfy the [`ConcurrentHashMap`],
-/// since the interning function rolls its own low-level checks.
-pub(crate) struct InternKey<Owned> {
-    hash: u64,
-    weak: Weak<Owned>,
-}
-
-impl<Owned> Clone for InternKey<Owned> {
-    fn clone(&self) -> Self {
-        Self {
-            hash: self.hash,
-            weak: self.weak.clone(),
-        }
-    }
-}
-
-impl<Owned> Hash for InternKey<Owned> {
-    fn hash<H: hash::Hasher>(&self, state: &mut H) {
-        // Only hash the u64 — the Weak component is irrelevant for bucket placement.
-        self.hash.hash(state);
-    }
-}
-
-impl<Owned> Eq for InternKey<Owned> {}
-
-impl<Owned> PartialEq for InternKey<Owned> {
-    fn eq(&self, other: &Self) -> bool {
-        // Only compare the hash — value equality is handled by the find() closure.
-        self.hash == other.hash
-    }
-}
 
 // ── Intern enum ────────────────────────────────────────────────────────────────
 
@@ -291,25 +249,27 @@ where
 
 // ── Global interner state ──────────────────────────────────────────────────────
 //
-// Key:   InternKey<Owned> — precomputed hash + weak pointer to owned data.
-//        The Weak does not keep the allocation alive; Hash/Eq only consider the u64.
-// Value: () — empty unit. The Arc<Owned> is held solely by external Intern::Shared
-//        handles. When all handles drop, the Arc is freed and the Weak expires.
+// Key:   u64 — precomputed hash of the borrowed value. Standard Hash/Eq on u64,
+//        no stubs needed. Actual value equality is checked in find() closures
+//        by upgrading the Weak and comparing against the borrowed input.
+// Value: Weak<Owned> — does not keep the Arc alive. When all external
+//        Intern::Shared handles drop, the Arc is freed and the Weak expires,
+//        allowing the entry to be pruned.
 
 crate::collections::chashmap::declare_concurrent_hash_map! {
-    pub(crate) static INTERNER_STR: ConcurrentHashMap<crate::collections::interner::InternKey<lang_alloc::string::String>, ()> = 64
+    pub(crate) static INTERNER_STR: ConcurrentHashMap<u64, lang_std::sync::Weak<lang_alloc::string::String>> = 64
 }
 
 crate::collections::chashmap::declare_concurrent_hash_map! {
-    pub(crate) static INTERNER_OS_STR: ConcurrentHashMap<crate::collections::interner::InternKey<lang_std::ffi::OsString>, ()> = 64
+    pub(crate) static INTERNER_OS_STR: ConcurrentHashMap<u64, lang_std::sync::Weak<lang_std::ffi::OsString>> = 64
 }
 
 crate::collections::chashmap::declare_concurrent_hash_map! {
-    pub(crate) static INTERNER_CSTR: ConcurrentHashMap<crate::collections::interner::InternKey<lang_std::ffi::CString>, ()> = 64
+    pub(crate) static INTERNER_CSTR: ConcurrentHashMap<u64, lang_std::sync::Weak<lang_std::ffi::CString>> = 64
 }
 
 crate::collections::chashmap::declare_concurrent_hash_map! {
-    pub(crate) static INTERNER_PATH: ConcurrentHashMap<crate::collections::interner::InternKey<lang_std::path::PathBuf>, ()> = 64
+    pub(crate) static INTERNER_PATH: ConcurrentHashMap<u64, lang_std::sync::Weak<lang_std::path::PathBuf>> = 64
 }
 
 /// Global monotonic counter tracking total intern calls across all types.
@@ -332,12 +292,10 @@ fn maybe_prune_all_maps() {
 /// Scan unlocked shards of a map and remove entries whose `Weak` has expired.
 ///
 /// When all external [`Intern::Shared`] handles are dropped, the last strong ref
-/// to the `Arc<Owned>` is released. The `Weak` in the key can no longer upgrade.
-/// We detect this by checking `strong_count() == 0` — if true, the entry is stale
-/// and removed.
+/// to the `Arc<Owned>` is released. The `Weak` value can no longer upgrade.
 ///
 /// Uses `try_write_table` so we never block waiting for a contended shard.
-fn prune_unlocked_shards<Owned>(map: &ConcurrentHashMap<InternKey<Owned>, (), RandomState>)
+fn prune_unlocked_shards<Owned>(map: &ConcurrentHashMap<u64, Weak<Owned>, RandomState>)
 where
     Owned: 'static,
 {
@@ -350,7 +308,7 @@ where
 
         let i = unsafe { guard.iter() };
         for bucket in i {
-            let InternKey { hash: _, weak } = unsafe { &bucket.as_ref().0 };
+            let weak = unsafe { &bucket.as_ref().1 };
             // Use try_upgrade for an atomic check-and-increment: if this succeeds,
             // a strong reference still exists (or just came back), so we keep the
             // entry and drop the temporary Arc. If it returns None, the Arc has
@@ -375,11 +333,16 @@ where
 /// to allocate the `Arc`. All hashing, allocation, locking, and comparison happen
 /// inside this function.
 ///
+/// The backing map stores `u64 -> Weak<Owned>`. The precomputed hash of the
+/// borrowed value serves as both the map key and the RawTable probe hash. Value
+/// equality is checked in `find()` closures by upgrading the `Weak` and comparing
+/// the resulting `Arc` against the borrowed input.
+///
 /// # Return
 /// - `Ok(Arc<Owned>)` on success
 /// - `Err(e)` if `try_to_owned` failed for any reason
 fn do_intern_with_key<B>(
-    map: &ConcurrentHashMap<InternKey<B::Owned>, (), RandomState>,
+    map: &ConcurrentHashMap<u64, Weak<B::Owned>, RandomState>,
     borrowed: &B,
 ) -> Result<Arc<B::Owned>, TryToOwnedError>
 where
@@ -396,18 +359,15 @@ where
         let shard = &map.get_shards()[idx];
         let guard = shard.read_table();
 
-        if let Some(bucket) = guard.find(hash, |kv| {
-            let (InternKey { hash: h, weak }, ()): &(InternKey<B::Owned>, ()) = kv;
-            if *h != hash {
-                return false;
-            }
-            let inner: Arc<<B as ToOwned>::Owned> = match weak.try_upgrade() {
+        if let Some(bucket) = guard.find(hash, |kv: &(u64, Weak<B::Owned>)| {
+            let (_, weak) = kv;
+            let inner: Arc<B::Owned> = match weak.try_upgrade() {
                 Some(Err(_)) | None => return false,
                 Some(Ok(s)) => s,
             };
             inner.as_ref() == borrowed
         }) {
-            let InternKey { hash: _, weak } = unsafe { &bucket.as_ref().0 };
+            let weak = unsafe { &bucket.as_ref().1 };
             if let Some(Ok(arc)) = weak.try_upgrade() {
                 return Ok(arc);
             }
@@ -420,9 +380,7 @@ where
     let mut guard = shard.write_table();
 
     if guard
-        .try_reserve(1, |kv: &(InternKey<B::Owned>, ())| {
-            map.hasher().hash_one(&kv.0)
-        })
+        .try_reserve(1, |(k, _v): &(u64, Weak<B::Owned>)| map.hasher().hash_one(k))
         .is_err()
     {
         return Err(TryToOwnedError::Reserve(TryReserveError::Other));
@@ -439,37 +397,31 @@ where
 
     // Re-check under write lock: another thread may have inserted between
     // our read-check dropping and this write lock acquiring.
-    if let Some(bucket) = guard.find(hash, |kv| {
-        let (InternKey { hash: h, weak }, ()): &(InternKey<B::Owned>, ()) = kv;
-        if *h != hash {
-            return false;
-        }
-        let inner: Arc<<B as ToOwned>::Owned> = match weak.try_upgrade() {
+    if let Some(bucket) = guard.find(hash, |kv: &(u64, Weak<B::Owned>)| {
+        let (_, weak) = kv;
+        let inner: Arc<B::Owned> = match weak.try_upgrade() {
             Some(Err(_)) | None => return false,
             Some(Ok(s)) => s,
         };
         inner.as_ref() == borrowed
     }) {
-        let InternKey { hash: _, weak } = unsafe { &bucket.as_ref().0 };
+        let weak = unsafe { &bucket.as_ref().1 };
         if let Some(Ok(upgraded)) = weak.try_upgrade() {
             return Ok(upgraded);
         }
         let arc = create_new_arc()?;
         // Downgrading here cannot cause overflow.
-        unsafe { bucket.as_mut().0.weak = Arc::downgrade(&arc) };
+        unsafe { bucket.as_mut().1 = Arc::downgrade(&arc) };
         return Ok(arc);
     }
 
     let arc = create_new_arc()?;
     // Truly new — insert. Downgrading here cannot cause overflow.
-    let key: InternKey<B::Owned> = InternKey {
-        hash,
-        weak: Arc::downgrade(&arc),
-    };
+    let weak: Weak<B::Owned> = Arc::downgrade(&arc);
 
     // SAFETY: We already reserved space above with try_reserve(1).
     unsafe {
-        guard.insert_no_grow(hash, (key, ()));
+        guard.insert_no_grow(hash, (hash, weak));
     }
 
     Ok(arc)
@@ -494,14 +446,12 @@ where
 impl InternExt for str {
     fn intern(&self) -> Result<Intern<Self>, TryToOwnedError> {
         maybe_prune_all_maps();
-        let map = &*INTERNER_STR;
-        do_intern_with_key::<str>(map, self).map(InternStr::from)
+        do_intern_with_key::<str>(&*INTERNER_STR, self).map(InternStr::from)
     }
 
     fn intern_owned(owned: String) -> Result<Intern<Self>, TryToOwnedError> {
         maybe_prune_all_maps();
-        let map = &*INTERNER_STR;
-        do_intern_with_key::<str>(map, &owned).map(InternStr::from)
+        do_intern_with_key::<str>(&*INTERNER_STR, &owned).map(InternStr::from)
     }
 }
 
@@ -513,8 +463,7 @@ impl InternStr {
             Self::Shared(_) => self,
             Self::Owned(owned) => {
                 maybe_prune_all_maps();
-                let map = &*INTERNER_STR;
-                match do_intern_with_key::<str>(map, &owned) {
+                match do_intern_with_key::<str>(&*INTERNER_STR, &owned) {
                     Ok(arc) => Self::Shared(arc),
                     Err(_) => Self::Owned(owned),
                 }
@@ -558,14 +507,12 @@ impl fmt::Display for InternStr {
 impl InternExt for OsStr {
     fn intern(&self) -> Result<InternOsStr, TryToOwnedError> {
         maybe_prune_all_maps();
-        let map = &*INTERNER_OS_STR;
-        do_intern_with_key::<OsStr>(map, self).map(InternOsStr::from)
+        do_intern_with_key::<OsStr>(&*INTERNER_OS_STR, self).map(InternOsStr::from)
     }
 
     fn intern_owned(owned: OsString) -> Result<InternOsStr, TryToOwnedError> {
         maybe_prune_all_maps();
-        let map = &*INTERNER_OS_STR;
-        do_intern_with_key::<OsStr>(map, &owned).map(InternOsStr::from)
+        do_intern_with_key::<OsStr>(&*INTERNER_OS_STR, &owned).map(InternOsStr::from)
     }
 }
 
@@ -575,8 +522,7 @@ impl InternOsStr {
             Self::Shared(_) => self,
             Self::Owned(owned) => {
                 maybe_prune_all_maps();
-                let map = &*INTERNER_OS_STR;
-                match do_intern_with_key::<OsStr>(map, &owned) {
+                match do_intern_with_key::<OsStr>(&*INTERNER_OS_STR, &owned) {
                     Ok(arc) => Self::Shared(arc),
                     Err(_) => Self::Owned(owned),
                 }
@@ -614,14 +560,12 @@ impl fmt::Display for InternOsStr {
 impl InternExt for CStr {
     fn intern(&self) -> Result<InternCStr, TryToOwnedError> {
         maybe_prune_all_maps();
-        let map = &*INTERNER_CSTR;
-        do_intern_with_key::<CStr>(map, self).map(InternCStr::from)
+        do_intern_with_key::<CStr>(&*INTERNER_CSTR, self).map(InternCStr::from)
     }
 
     fn intern_owned(owned: CString) -> Result<InternCStr, TryToOwnedError> {
         maybe_prune_all_maps();
-        let map = &*INTERNER_CSTR;
-        do_intern_with_key::<CStr>(map, &owned).map(InternCStr::from)
+        do_intern_with_key::<CStr>(&*INTERNER_CSTR, &owned).map(InternCStr::from)
     }
 }
 
@@ -631,8 +575,7 @@ impl InternCStr {
             Self::Shared(_) => self,
             Self::Owned(owned) => {
                 maybe_prune_all_maps();
-                let map = &*INTERNER_CSTR;
-                match do_intern_with_key::<CStr>(map, &owned) {
+                match do_intern_with_key::<CStr>(&*INTERNER_CSTR, &owned) {
                     Ok(arc) => Self::Shared(arc),
                     Err(_) => Self::Owned(owned),
                 }
@@ -664,14 +607,12 @@ impl fmt::Display for InternCStr {
 impl InternExt for Path {
     fn intern(&self) -> Result<InternPath, TryToOwnedError> {
         maybe_prune_all_maps();
-        let map = &*INTERNER_PATH;
-        do_intern_with_key::<Path>(map, self).map(InternPath::from)
+        do_intern_with_key::<Path>(&*INTERNER_PATH, self).map(InternPath::from)
     }
 
     fn intern_owned(owned: PathBuf) -> Result<InternPath, TryToOwnedError> {
         maybe_prune_all_maps();
-        let map = &*INTERNER_PATH;
-        do_intern_with_key::<Path>(map, &owned).map(InternPath::from)
+        do_intern_with_key::<Path>(&*INTERNER_PATH, &owned).map(InternPath::from)
     }
 }
 
@@ -681,8 +622,7 @@ impl InternPath {
             Self::Shared(_) => self,
             Self::Owned(owned) => {
                 maybe_prune_all_maps();
-                let map = &*INTERNER_PATH;
-                match do_intern_with_key::<Path>(map, &owned) {
+                match do_intern_with_key::<Path>(&*INTERNER_PATH, &owned) {
                     Ok(arc) => Self::Shared(arc),
                     Err(_) => Self::Owned(owned),
                 }

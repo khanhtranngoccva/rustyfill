@@ -13,7 +13,7 @@ use lang_core::hash::{BuildHasher, Hash};
 use lang_std::hash::RandomState;
 use lang_std::sync::Arc;
 
-use hashbrown::raw::{RawIter, RawTable};
+use hashbrown::raw::{Bucket, RawIter, RawTable};
 use parking_lot::{RwLockReadGuard, RwLockWriteGuard};
 
 use crate::alloc::AllocError;
@@ -59,8 +59,20 @@ impl TryDebug for IterError {
     }
 }
 
-struct LockedIter<'a, K, V>(Arc<RwLockReadGuard<'a, RawTable<(K, V)>>>, RawIter<(K, V)>);
-struct LockedIterMut<'a, K, V>(Arc<RwLockWriteGuard<'a, RawTable<(K, V)>>>, RawIter<(K, V)>);
+struct LockedIter<'a, K, V> {
+    arc_guard: Arc<RwLockReadGuard<'a, RawTable<(K, V)>>>,
+    raw_iter: RawIter<(K, V)>,
+    /// Bucket already popped from `raw_iter` but not yet yielded because
+    /// `Arc::try_clone` failed. Stored here so retrying `next()` re-attempts
+    /// the clone instead of advancing past this entry.
+    pending_bucket: Option<Bucket<(K, V)>>,
+}
+struct LockedIterMut<'a, K, V> {
+    arc_guard: Arc<RwLockWriteGuard<'a, RawTable<(K, V)>>>,
+    raw_iter: RawIter<(K, V)>,
+    /// Same as [`LockedIter::pending_bucket`] but for mutable iteration.
+    pending_bucket: Option<Bucket<(K, V)>>,
+}
 
 // ── Iter (immutable) ────────────────────────────────────────────────────────────
 
@@ -115,31 +127,48 @@ where
                     ) {
                         Ok(g) => g,
                         Err(e) => {
-                            self.shard_idx += 1;
+                            // Stall: do not advance shard_idx so that retrying next()
+                            // re-attempts this same shard. The guard is dropped here
+                            // and will be reacquired on the next call.
                             return Some(Err(IterError::Alloc(e)));
                         }
                     };
                 // SAFETY: arc_guard holds the read lock so the table is stable.
                 let iter = unsafe { arc_guard.iter() };
-                self.current = Some(LockedIter(arc_guard, iter));
+                self.current = Some(LockedIter {
+                    arc_guard,
+                    raw_iter: iter,
+                    pending_bucket: None,
+                });
             }
 
             // Try to yield the next bucket from the current shard.
-            if let Some(LockedIter(arc_guard, raw_iter)) = &mut self.current {
-                if let Some(bucket) = raw_iter.next() {
-                    let arc_for_item = match arc_guard.try_clone() {
-                        Ok(g) => g,
-                        Err(e) => return Some(Err(IterError::Clone(e))),
-                    };
-                    let kv = unsafe { bucket.as_ref() };
-                    return Some(Ok(unsafe {
-                        RefMulti::new(arc_for_item, &kv.0 as *const K, &kv.1 as *const V)
-                    }));
-                } else {
-                    // Shard exhausted.
-                    self.current = None;
-                    self.shard_idx += 1;
-                }
+            if let Some(LockedIter { arc_guard, raw_iter, pending_bucket }) = &mut self.current {
+                let bucket = match pending_bucket.take() {
+                    Some(b) => b,
+                    None => match raw_iter.next() {
+                        Some(b) => b,
+                        None => {
+                            // Shard exhausted.
+                            self.current = None;
+                            self.shard_idx += 1;
+                            continue;
+                        }
+                    },
+                };
+                let arc_for_item = match arc_guard.try_clone() {
+                    Ok(g) => g,
+                    Err(e) => {
+                        // Stall: stash the bucket so retrying next() re-attempts
+                        // the clone instead of advancing past this entry.
+                        *pending_bucket = Some(bucket);
+                        return Some(Err(IterError::Clone(e)));
+                    }
+                };
+                let kv = unsafe { bucket.as_ref() };
+                return Some(Ok(unsafe {
+                    RefMulti::new(arc_for_item, &kv.0 as *const K, &kv.1 as *const V)
+                }));
             }
         }
     }
@@ -197,31 +226,48 @@ where
                     ) {
                         Ok(g) => g,
                         Err(e) => {
-                            self.shard_idx += 1;
+                            // Stall: do not advance shard_idx so that retrying next()
+                            // re-attempts this same shard. The guard is dropped here
+                            // and will be reacquired on the next call.
                             return Some(Err(IterError::Alloc(e)));
                         }
                     };
                 // SAFETY: arc_guard holds the write lock so the table is stable.
                 let iter = unsafe { arc_guard.iter() };
-                self.current = Some(LockedIterMut(arc_guard, iter));
+                self.current = Some(LockedIterMut {
+                    arc_guard,
+                    raw_iter: iter,
+                    pending_bucket: None,
+                });
             }
 
             // Try to yield the next bucket from the current shard.
-            if let Some(LockedIterMut(arc_guard, raw_iter)) = &mut self.current {
-                if let Some(bucket) = raw_iter.next() {
-                    let arc_for_item = match arc_guard.try_clone() {
-                        Ok(g) => g,
-                        Err(e) => return Some(Err(IterError::Clone(e))),
-                    };
-                    let kv = unsafe { bucket.as_mut() };
-                    return Some(Ok(unsafe {
-                        RefMutMulti::new(arc_for_item, &kv.0, &mut kv.1)
-                    }));
-                } else {
-                    // Shard exhausted.
-                    self.current = None;
-                    self.shard_idx += 1;
-                }
+            if let Some(LockedIterMut { arc_guard, raw_iter, pending_bucket }) = &mut self.current {
+                let bucket = match pending_bucket.take() {
+                    Some(b) => b,
+                    None => match raw_iter.next() {
+                        Some(b) => b,
+                        None => {
+                            // Shard exhausted.
+                            self.current = None;
+                            self.shard_idx += 1;
+                            continue;
+                        }
+                    },
+                };
+                let arc_for_item = match arc_guard.try_clone() {
+                    Ok(g) => g,
+                    Err(e) => {
+                        // Stall: stash the bucket so retrying next() re-attempts
+                        // the clone instead of advancing past this entry.
+                        *pending_bucket = Some(bucket);
+                        return Some(Err(IterError::Clone(e)));
+                    }
+                };
+                let kv = unsafe { bucket.as_mut() };
+                return Some(Ok(unsafe {
+                    RefMutMulti::new(arc_for_item, &kv.0, &mut kv.1)
+                }));
             }
         }
     }

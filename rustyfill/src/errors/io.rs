@@ -3,16 +3,16 @@
 //! `io::Error::new(kind, source)` boxes the source into a
 //! `Box<dyn Error + Send + Sync>` — if that allocation fails, the process
 //! aborts. This module provides fallible constructors that use
-//! [`Box::fallible_new`] so callers can handle out-of-memory gracefully
+//! [`TryBox::fallible_new`] so callers can handle out-of-memory gracefully
 //! instead of crashing mid-recovery.
 //!
 //! # Double-boxing avoidance
 //!
 //! - [`IoErrorExt::try_new`] takes a concrete error `E` and boxes it once via
-//!   [`Box::fallible_new`].
+//!   [`TryBox::fallible_new`].
 //! - [`IoErrorExt::new_boxed`] takes an already-boxed
-//!   `Box<dyn Error + Send + Sync>` and reuses it directly with **no extra
-//!   allocation**.
+//!   [`Box<dyn Error + Send + Sync>`] and reuses it directly with no extra
+//!   allocation.
 
 use crate::alloc::AllocError;
 use crate::prelude::TryBox;
