@@ -88,7 +88,7 @@ pub fn try_println(input: TokenStream) -> TokenStream {
         ::lang_std::io::Write::write_fmt(
             &mut out,
             ::rustyfill::try_format_args!(#tokens),
-        )
+        ).and_then(|()| ::lang_std::io::Write::write_all(&mut out, b"\n"))
     }}
     .into()
 }
@@ -269,8 +269,8 @@ pub fn try_format_or(input: TokenStream) -> TokenStream {
                 ::rustyfill::alloc::string::TryString::try_write_fmt(
                     &mut buf,
                     ::rustyfill::try_format_args!(#fmt_ts),
-                ).map(|()| ::lang_std::borrow::Cow::Owned(buf))
-                 .unwrap_or(::lang_std::borrow::Cow::Borrowed(""))
+                ).map(|()| ::lang_alloc::borrow::Cow::Owned(buf))
+                .unwrap_or(::lang_alloc::borrow::Cow::Borrowed(""))
             }}
             .into()
         }
@@ -283,8 +283,8 @@ pub fn try_format_or(input: TokenStream) -> TokenStream {
                 ::rustyfill::alloc::string::TryString::try_write_fmt(
                     &mut buf,
                     ::rustyfill::try_format_args!(#fmt_part),
-                ).map(|()| ::lang_std::borrow::Cow::Owned(buf))
-                 .unwrap_or(::lang_std::borrow::Cow::Borrowed(#fb_part))
+                ).map(|()| ::lang_alloc::borrow::Cow::Owned(buf))
+                  .unwrap_or(::lang_alloc::borrow::Cow::Borrowed(#fb_part))
             }}
             .into()
         }

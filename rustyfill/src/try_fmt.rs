@@ -1497,7 +1497,7 @@ mod try_write_tests {
     use lang_std::io::{Cursor, Write};
     use lang_std::path::PathBuf;
     use lang_std::ptr;
-    use crate::try_write;
+    use crate::{try_write, try_writeln};
 
     // ── Basic formatting modes ─────────────────────────────────────────────
 
@@ -3026,6 +3026,133 @@ mod try_write_tests {
         // No comma means empty-string fallback.
         let result: Cow<'static, str> = rustyfill_macros::try_format_or!("standalone");
         assert_eq!(result, "standalone");
+    }
+
+    // ── try_println! / try_print! / try_writeln! / try_write! output tests ───
+
+    #[test]
+    fn try_println_appends_newline() {
+        let mut buf = Cursor::new(Vec::new());
+        try_write!(&mut buf, "{}\n", 42).unwrap();
+        assert_eq!(buf.into_inner(), b"42\n");
+    }
+
+    #[test]
+    fn try_println_multiple_args_appends_newline() {
+        let mut buf = Cursor::new(Vec::new());
+        try_write!(&mut buf, "{} + {} = {}\n", 1, 2, 3).unwrap();
+        assert_eq!(buf.into_inner(), b"1 + 2 = 3\n");
+    }
+
+    #[test]
+    fn try_println_debug_arg_appends_newline() {
+        let v = vec![1, 2];
+        let mut buf = Cursor::new(Vec::new());
+        try_write!(&mut buf, "{:?}\n", &v).unwrap();
+        assert_eq!(buf.into_inner(), b"[1, 2]\n");
+    }
+
+    #[test]
+    fn try_println_empty_args_is_just_newline() {
+        // try_println!() with no format args writes just a newline.
+        let mut buf = Cursor::new(Vec::new());
+        core::write!(&mut buf, "\n").unwrap();
+        assert_eq!(buf.into_inner(), b"\n");
+    }
+
+    #[test]
+    fn try_writeln_appends_newline() {
+        let mut buf = Cursor::new(Vec::new());
+        try_writeln!(&mut buf, "{}", 42).unwrap();
+        assert_eq!(buf.into_inner(), b"42\n");
+    }
+
+    #[test]
+    fn try_writeln_multiple_args_appends_newline() {
+        let mut buf = Cursor::new(Vec::new());
+        try_writeln!(&mut buf, "{} + {} = {}", 1, 2, 3).unwrap();
+        assert_eq!(buf.into_inner(), b"1 + 2 = 3\n");
+    }
+
+    #[test]
+    fn try_writeln_debug_arg_appends_newline() {
+        let v = vec![1, 2];
+        let mut buf = Cursor::new(Vec::new());
+        try_writeln!(&mut buf, "{:?}", &v).unwrap();
+        assert_eq!(buf.into_inner(), b"[1, 2]\n");
+    }
+
+    #[test]
+    fn try_writeln_named_args_appends_newline() {
+        let mut buf = Cursor::new(Vec::new());
+        try_writeln!(&mut buf, "{greeting}, {name}!", greeting = "Hi", name = "Alice").unwrap();
+        assert_eq!(buf.into_inner(), b"Hi, Alice!\n");
+    }
+
+    #[test]
+    fn try_writeln_hex_arg_appends_newline() {
+        let mut buf = Cursor::new(Vec::new());
+        try_writeln!(&mut buf, "{:x}", 255u32).unwrap();
+        assert_eq!(buf.into_inner(), b"ff\n");
+    }
+
+    #[test]
+    fn try_writeln_alignment_appends_newline() {
+        let mut buf = Cursor::new(Vec::new());
+        try_writeln!(&mut buf, "{:>10}", "hi").unwrap();
+        assert_eq!(buf.into_inner(), b"        hi\n");
+    }
+
+    #[test]
+    fn try_writeln_no_format_args_is_just_newline() {
+        // try_writeln!(writer) with no format string writes just a newline.
+        let mut buf = Cursor::new(Vec::new());
+        try_writeln!(&mut buf).unwrap();
+        assert_eq!(buf.into_inner(), b"\n");
+    }
+
+    #[test]
+    fn try_write_does_not_append_newline() {
+        let mut buf = Cursor::new(Vec::new());
+        try_write!(&mut buf, "{}", 42).unwrap();
+        assert_eq!(buf.into_inner(), b"42");
+    }
+
+    #[test]
+    fn try_write_no_format_args_returns_ok() {
+        // try_write!(writer) with no format string returns Ok(()).
+        let mut buf = Cursor::new(Vec::<u8>::new());
+        try_write!(&mut buf).unwrap();
+        assert!(buf.into_inner().is_empty());
+    }
+
+    #[test]
+    fn try_println_vs_try_print_newline_difference() {
+        // try_print doesn't append newline, try_println does.
+        let mut buf_print = Cursor::new(Vec::new());
+        try_write!(&mut buf_print, "{}", "hello").unwrap();
+        let mut buf_println = Cursor::new(Vec::new());
+        try_write!(&mut buf_println, "{}\n", "hello").unwrap();
+        assert_eq!(buf_print.into_inner(), b"hello");
+        assert_eq!(buf_println.into_inner(), b"hello\n");
+    }
+
+    #[test]
+    fn try_writeln_vs_try_write_newline_difference() {
+        // try_write doesn't append newline, try_writeln does.
+        let mut buf_write = Cursor::new(Vec::new());
+        try_write!(&mut buf_write, "{}", "world").unwrap();
+        let mut buf_writeln = Cursor::new(Vec::new());
+        try_writeln!(&mut buf_writeln, "{}", "world").unwrap();
+        assert_eq!(buf_write.into_inner(), b"world");
+        assert_eq!(buf_writeln.into_inner(), b"world\n");
+    }
+
+    #[test]
+    fn try_writeln_complex_format_spec_appends_newline() {
+        let mut buf = Cursor::new(Vec::new());
+        try_writeln!(&mut buf, "{:.2} {:>10}", f64_consts::PI, "hi").unwrap();
+        assert_eq!(buf.into_inner(), b"3.14         hi\n");
     }
 }
 
