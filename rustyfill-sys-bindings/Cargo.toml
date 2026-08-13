@@ -1,0 +1,9 @@
+[package]
+name = "rustyfill-sys-bindings"
+version.workspace = true
+edition = "2024"
+
+[dependencies]
+syn = { workspace = true }
+quote = { workspace = true }
+proc-macro2 = { workspace = true }
