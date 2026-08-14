@@ -90,6 +90,11 @@ pub use crate::dashmap::{TryDashMap, TryDashSet};
 #[allow(deprecated)]
 pub use crate::alloc::btrees::{TryBTreeMap, TryBTreeSet};
 
+// ── BTreeMap entry API (requires `btree-entry` feature) ───────────────────────
+
+#[cfg(feature = "btree-entry")]
+pub use crate::alloc::btrees::entry::{TryBTreeMapEntry, TryBTreeMapEntryError};
+
 // ── RefCell ──────────────────────────────────────────
 
 pub use crate::core::cell::TryRefCell;

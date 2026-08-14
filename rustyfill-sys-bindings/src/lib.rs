@@ -14,7 +14,7 @@ pub mod resolver;
 pub mod spec;
 pub mod validator;
 
-pub use parser::{parse_file, parse_item, parse_mod_declarations, parse_source, parse_source_with_cfg, parse_use_statements, CfgContext, ParsedItem, ParsedSource};
+pub use parser::{parse_file, parse_item, parse_mod_declarations, parse_source, parse_source_with_cfg, parse_use_statements, CfgContext, ModDeclaration, ParsedItem, ParsedSource};
 pub use emitter::{emit_binding_file, emit_glob_reexport_aliases, emit_hierarchical_manifest, emit_parsed_items};
 pub use loader_spec::{LoaderSpec, BindingTarget};
 pub use resolver::{ModuleResolver, UseStatement, Resolution};

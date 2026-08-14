@@ -90,5 +90,22 @@ fn alloc_target() -> BindingTarget {
     target.ignore_struct("collections::btree::map::Range");
     target.ignore_struct("collections::btree::map::Cursor");
 
+    // These types reference each other across map/set modules in ways that break
+    // when the text scanner (used as fallback on nightly) can't extract all
+    // definitions from map.rs. They're internal cursor/extraction types not needed
+    // by the main polyfill. ExtractIf depends on ExtractIfInner, so both must be
+    // ignored together.
+    target.ignore_struct("collections::btree::map::ExtractIf");
+    target.ignore_struct("collections::btree::map::ExtractIfInner");
+    target.ignore_struct("collections::btree::map::CursorMut");
+    target.ignore_struct("collections::btree::map::CursorMutKey");
+    target.ignore_struct("collections::btree::set::ExtractIf");
+    target.ignore_struct("collections::btree::set::CursorMut");
+    target.ignore_struct("collections::btree::set::CursorMutKey");
+
+    // BoxedArrayIntoIter requires unstable allocator_api feature and references
+    // vec::IntoIter which needs Allocator bounds we can't satisfy in no_std.
+    target.ignore_struct("boxed::iter::BoxedArrayIntoIter");
+
     target
 }

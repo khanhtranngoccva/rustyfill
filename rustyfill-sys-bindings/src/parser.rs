@@ -38,6 +38,16 @@ pub enum ItemKind {
     TypeAlias,
 }
 
+/// An external module declaration (`mod X;` / `pub mod X;`) carrying its
+/// cfg attributes so consumers can decide whether the module is active.
+#[derive(Clone)]
+pub struct ModDeclaration {
+    /// Module name (e.g., `"entry"`, `"tests"`).
+    pub name: String,
+    /// Attributes on the mod declaration (`#[cfg(test)]`, `#[cfg(unix)]`, etc.).
+    pub attrs: Vec<Attribute>,
+}
+
 /// Results of parsing a single `.rs` source file in one pass.
 #[derive(Clone)]
 pub struct ParsedSource {
@@ -47,7 +57,7 @@ pub struct ParsedSource {
     pub use_statements: Vec<UseStatement>,
     /// External module declarations (`mod X;` / `pub mod X;`) that reference
     /// separate files. Inline modules (`mod X { ... }`) are excluded.
-    pub mod_declarations: Vec<String>,
+    pub mod_declarations: Vec<ModDeclaration>,
     /// Inline modules (`mod X { ... }`) that contain type-defining items.
     /// Each entry is `(module_name, items)` so the emitter can write them
     /// to a separate `<parent>/<name>/mod.rs` file.
@@ -139,6 +149,27 @@ impl CfgContext {
     }
 }
 
+/// Check whether any `#[cfg(...)]` attribute on a module declaration evaluates
+/// to false under the given build context. Returns `true` if the module should
+/// be skipped (e.g., `#[cfg(test)]` on a non-test build). Modules with no cfg
+/// attributes or whose all cfg predicates evaluate to true are considered active.
+pub fn is_cfg_inactive(attrs: &[Attribute], cfg: &CfgContext) -> bool {
+    for attr in attrs {
+        // We only care about `#[cfg(...)]`, not `#[cfg_attr(...)]`.
+        let meta = match &attr.meta {
+            syn::Meta::List(ml) if ml.path.is_ident("cfg") => ml,
+            _ => continue,
+        };
+
+        // Token-stream the inner predicate and evaluate it as text.
+        let pred_text = meta.tokens.to_string();
+        if !cfg.eval_predicate(&pred_text) {
+            return true;
+        }
+    }
+    false
+}
+
 /// Split a string by commas, respecting parentheses nesting.
 fn split_commas(s: &str) -> Vec<String> {
     let mut parts = Vec::new();
@@ -201,7 +232,10 @@ pub fn parse_source_with_cfg(source: &str, cfg: &CfgContext) -> ParsedSource {
                     Item::Const(ic) => items.push(parse_const(ic.clone())),
                     Item::Type(it) => items.push(parse_type_alias(it.clone())),
                     Item::Mod(im) if im.content.is_none() => {
-                        mod_declarations_from_ast.push(im.ident.to_string());
+                        mod_declarations_from_ast.push(ModDeclaration {
+                            name: im.ident.to_string(),
+                            attrs: im.attrs.clone(),
+                        });
                     }
                     Item::Mod(im) if im.content.is_some() => {
                         // Inline module — extract type-defining items from it
@@ -324,7 +358,7 @@ pub fn parse_use_statements(source: &str) -> Vec<UseStatement> {
 }
 
 /// Extract external module declarations (`mod X;`). Prefer [`parse_source`].
-pub fn parse_mod_declarations(source: &str) -> Vec<String> {
+pub fn parse_mod_declarations(source: &str) -> Vec<ModDeclaration> {
     parse_source(source).mod_declarations
 }
 
@@ -595,7 +629,7 @@ fn ident_to_segment(ident: &syn::Ident) -> PathSegment {
 
 /// Scan raw source text for `mod X;` declarations, handling `cfg_select!`
 /// blocks by evaluating cfg predicates against the build target.
-fn scan_mod_declarations_with_cfg(source: &str, cfg: &CfgContext) -> Vec<String> {
+fn scan_mod_declarations_with_cfg(source: &str, cfg: &CfgContext) -> Vec<ModDeclaration> {
     // Check if this file uses cfg_select!.
     if source.contains("cfg_select!")
         && let Some(body) = extract_cfg_select_body(source)
@@ -639,9 +673,9 @@ fn extract_cfg_select_body(source: &str) -> Option<String> {
 
 /// Parse cfg_select! branches and extract mod declarations from the matching one.
 /// Each branch has the form: `predicate => { ... }` or `_ => { ... }` (fallback).
-fn scan_cfg_select_branches(body: &str, cfg: &CfgContext) -> Vec<String> {
-    let mut best_match: Option<Vec<String>> = None;
-    let mut fallback: Option<Vec<String>> = None;
+fn scan_cfg_select_branches(body: &str, cfg: &CfgContext) -> Vec<ModDeclaration> {
+    let mut best_match: Option<Vec<ModDeclaration>> = None;
+    let mut fallback: Option<Vec<ModDeclaration>> = None;
 
     // Split branches by `=>` at the top level (depth 0).
     let branches = split_cfg_select_branches(body);
@@ -727,10 +761,15 @@ fn split_cfg_select_branches(body: &str) -> Vec<(String, String)> {
 }
 
 /// Simple line-by-line scan for `mod X;` / `pub mod X;` declarations.
-fn scan_mod_declarations_simple(source: &str) -> Vec<String> {
+/// Captures `#[cfg(...)]` attributes from lines immediately preceding each
+/// mod declaration so that inactive modules (e.g., `#[cfg(test)]`) can be
+/// filtered by consumers like [`is_cfg_inactive`].
+fn scan_mod_declarations_simple(source: &str) -> Vec<ModDeclaration> {
+    let lines: Vec<&str> = source.lines().collect();
     let mut results = Vec::new();
-    for line in source.lines() {
-        let trimmed = line.trim();
+
+    for i in 0..lines.len() {
+        let trimmed = lines[i].trim();
         if trimmed.ends_with('{') || trimmed.contains('=') {
             continue;
         }
@@ -745,7 +784,12 @@ fn scan_mod_declarations_simple(source: &str) -> Vec<String> {
                 let name = words[idx + 1];
                 let cleaned = name.trim_end_matches(';').trim_end_matches('{');
                 if !cleaned.is_empty() && cleaned.chars().all(|c| c.is_alphanumeric() || c == '_') {
-                    results.push(cleaned.to_string());
+                    // Collect #[cfg(...)] attributes from preceding lines.
+                    let attrs = collect_preceding_cfg_attrs(&lines, i);
+                    results.push(ModDeclaration {
+                        name: cleaned.to_string(),
+                        attrs,
+                    });
                 }
                 break;
             }
@@ -754,11 +798,42 @@ fn scan_mod_declarations_simple(source: &str) -> Vec<String> {
     results
 }
 
+/// Walk backwards from line `index` collecting `#[cfg(...)]` attribute lines.
+/// Stops at the first line that is neither a cfg attribute nor blank/comment-only.
+fn collect_preceding_cfg_attrs(lines: &[&str], index: usize) -> Vec<Attribute> {
+    let mut attrs = Vec::new();
+    let mut j = index;
+
+    while j > 0 {
+        j -= 1;
+        let prev = lines[j].trim();
+
+        // Accept #[cfg(...)] or #[cfg_attr(...)] on the preceding line.
+        if prev.starts_with("#[cfg") {
+            // Parse the attribute from text by wrapping in a dummy item so that
+            // syn can tokenize it as an attribute.
+            let dummy = format!("{} fn _f() {}", prev, "{}");
+            if let Ok(item) = syn::parse_str::<syn::ItemFn>(&dummy) {
+                attrs.extend(item.attrs);
+            }
+        } else if prev.is_empty() || prev.starts_with("//") {
+            // Blank line or comment — stop scanning backwards.
+            break;
+        } else {
+            // Some other code — stop.
+            break;
+        }
+    }
+
+    attrs.reverse();
+    attrs
+}
+
 /// Result of text-based source scanning (fallback when syn can't parse).
 struct TextScanResult {
     items: Vec<ParsedItem>,
     use_statements: Vec<UseStatement>,
-    mod_declarations: Vec<String>,
+    mod_declarations: Vec<ModDeclaration>,
     inline_modules: Vec<(String, Vec<ParsedItem>)>,
 }
 
@@ -788,7 +863,8 @@ fn text_scan_source(source: &str, cfg: &CfgContext) -> TextScanResult {
             continue;
         }
 
-        // Check indentation - we only want top-level items (minimal or no leading whitespace)
+        // Check indentation - we only want truly top-level items (no leading whitespace).
+        // Items inside impl blocks, functions, or modules will be indented.
         let leading_spaces = line.len() - line.trim_start_matches(' ').len();
         let leading_tabs = line.len() - line.trim_start_matches('\t').len();
         let indent = if leading_tabs > 0 {
@@ -797,8 +873,8 @@ fn text_scan_source(source: &str, cfg: &CfgContext) -> TextScanResult {
             leading_spaces / 4
         };
 
-        // Only consider near-top-level items (indent <= 1)
-        if indent > 1 {
+        // Only consider top-level items (indent == 0)
+        if indent > 0 {
             i += 1;
             continue;
         }
@@ -890,7 +966,7 @@ fn text_scan_source(source: &str, cfg: &CfgContext) -> TextScanResult {
                     name,
                 });
             }
-        } else if trimmed.starts_with("use ") {
+        } else if trimmed.starts_with("use ") || trimmed.starts_with("pub use ") {
             // Extract use statements via text scan
             let use_line = trimmed.strip_suffix(';').unwrap_or(trimmed);
             if let Some(stmt) = text_parse_use_statement(use_line) {
@@ -988,6 +1064,8 @@ fn strip_comments_and_strings(source: &str) -> String {
 }
 
 /// Attempt to parse a use statement from text into a UseStatement.
+/// Handles simple paths, glob imports, and grouped imports (treating grouped
+/// imports as glob imports of the base path for resolution purposes).
 fn text_parse_use_statement(text: &str) -> Option<UseStatement> {
     let visibility = if text.starts_with("pub use") {
         Visibility::Public
@@ -1009,6 +1087,22 @@ fn text_parse_use_statement(text: &str) -> Option<UseStatement> {
             visibility,
             kind: UseKind::Glob(plist),
         });
+    }
+
+    // Handle grouped imports: `use foo::bar::{a, b, c}` → treat as glob of `foo::bar`
+    // for resolution purposes. Extract the base path before `{`.
+    if let Some(brace_pos) = path_str.find('{') {
+        let base_path = path_str[..brace_pos].trim();
+        if !base_path.is_empty() {
+            let segments = parse_path_segments_text(base_path);
+            if !segments.is_empty() {
+                let plist = PathSegmentList { segments };
+                return Some(UseStatement {
+                    visibility,
+                    kind: UseKind::Glob(plist),
+                });
+            }
+        }
     }
 
     // Handle simple path imports
@@ -1041,6 +1135,11 @@ fn parse_path_segments_text(path: &str) -> Vec<PathSegment> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn assert_mod_names(mods: &[ModDeclaration], expected: &[&str]) {
+        let names: Vec<&str> = mods.iter().map(|m| m.name.as_str()).collect();
+        assert_eq!(names, expected);
+    }
 
     fn linux_cfg() -> CfgContext {
         CfgContext {
@@ -1153,7 +1252,7 @@ mod tests {
             }
         }"#;
         let mods = scan_mod_declarations_with_cfg(source, &linux_cfg());
-        assert_eq!(mods, vec!["unix"]);
+        assert_mod_names(&mods, &["unix"]);
     }
 
     #[test]
@@ -1167,7 +1266,7 @@ mod tests {
             }
         }"#;
         let mods = scan_mod_declarations_with_cfg(source, &windows_cfg());
-        assert_eq!(mods, vec!["windows"]);
+        assert_mod_names(&mods, &["windows"]);
     }
 
     #[test]
@@ -1190,7 +1289,7 @@ mod tests {
                 ..Default::default()
             },
         );
-        assert_eq!(mods, vec!["linux"]);
+        assert_mod_names(&mods, &["linux"]);
     }
 
     #[test]
@@ -1204,7 +1303,7 @@ mod tests {
             }
         }"#;
         let mods = scan_mod_declarations_with_cfg(source, &linux_cfg());
-        assert_eq!(mods, vec!["gnu_linux"]);
+        assert_mod_names(&mods, &["gnu_linux"]);
     }
 
     #[test]
@@ -1218,7 +1317,7 @@ mod tests {
             }
         }"#;
         let mods = scan_mod_declarations_with_cfg(source, &linux_cfg());
-        assert_eq!(mods, vec!["bsd_like"]);
+        assert_mod_names(&mods, &["bsd_like"]);
     }
 
     #[test]
@@ -1232,7 +1331,7 @@ mod tests {
             }
         }"#;
         let mods = scan_mod_declarations_with_cfg(source, &linux_cfg());
-        assert_eq!(mods, vec!["not_win"]);
+        assert_mod_names(&mods, &["not_win"]);
     }
 
     #[test]
@@ -1246,7 +1345,7 @@ mod tests {
             }
         }"#;
         let mods = scan_mod_declarations_with_cfg(source, &linux_cfg());
-        assert_eq!(mods, vec!["hermit"]);
+        assert_mod_names(&mods, &["hermit"]);
     }
 
     // ── Recursive use statement extraction ───────────────────────────────
@@ -1317,7 +1416,7 @@ fn outer() {
             }
         }"#;
         let parsed = parse_source_with_cfg(source, &linux_cfg());
-        assert_eq!(parsed.mod_declarations, vec!["unix"]);
+        assert_mod_names(&parsed.mod_declarations, &["unix"]);
         assert!(parsed.items.is_empty());
     }
 
@@ -1335,7 +1434,7 @@ mod child;
         let parsed = parse_source_with_cfg(source, &linux_cfg());
         assert_eq!(parsed.items.len(), 1);
         assert_eq!(parsed.use_statements.len(), 1);
-        assert_eq!(parsed.mod_declarations, vec!["child"]);
+        assert_mod_names(&parsed.mod_declarations, &["child"]);
     }
 
     // ── CfgContext predicate evaluation ──────────────────────────────────

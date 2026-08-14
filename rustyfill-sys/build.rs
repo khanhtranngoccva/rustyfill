@@ -57,10 +57,6 @@ fn main() {
         .iter()
         .map(|(k, v)| (k.clone(), v.as_deref()))
         .collect();
-    let ignored_name_refs: Vec<&str> = replacement_entries_slice
-        .iter()
-        .map(|(k, _)| k.as_str())
-        .collect();
 
     // Build per-library ignored struct lists.
     let ignored_structs_by_lib: HashMap<String, Vec<String>> = spec
@@ -68,6 +64,25 @@ fn main() {
         .iter()
         .map(|t| (t.lib_name.clone(), t.ignored_structs.clone()))
         .collect();
+
+    // Collect all ignored names: both path replacement leaves AND ignored struct
+    // leaf names, so the resolver can skip re-exports of items that won't be emitted.
+    let mut all_ignored_names: HashSet<String> = replacement_entries_slice
+        .iter()
+        .map(|(k, _)| k.clone())
+        .collect();
+    for structs in ignored_structs_by_lib.values() {
+        for s in structs {
+            if let Some(leaf) = s.rsplit_once("::").map(|(_, l)| l.to_string()) {
+                all_ignored_names.insert(leaf);
+            } else {
+                all_ignored_names.insert(s.clone());
+            }
+        }
+    }
+    let mut ignored_name_vec: Vec<String> = all_ignored_names.into_iter().collect();
+    ignored_name_vec.sort();
+    let ignored_name_refs: Vec<&str> = ignored_name_vec.iter().map(|s| s.as_str()).collect();
 
     // ── Pre-flight: validate spec paths ────────────────────────────────────
     let mut validator = ValidationBuilder::new();
@@ -106,6 +121,11 @@ fn main() {
         }
     }
 
+    // Mark all Phase 1 files as emittable.
+    for file_path in parsed_cache.keys() {
+        resolver.mark_emittable(file_path);
+    }
+
     // ── Phase 1b: Register structural parents ──────────────────────────────
     for target in &spec.targets {
         let lib_src = rust_src.join(&target.lib_name).join("src");
@@ -125,6 +145,136 @@ fn main() {
                 if let Ok(parent_text) = fs::read_to_string(&parent_path) {
                     let parsed = parse_source_with_cfg(&parent_text, &cfg);
                     resolver.register_source(&parent_mod, parsed);
+                    resolver.mark_emittable(&parent_mod);
+                }
+            }
+        }
+    }
+
+    // ── Phase 1c: Discover modules referenced by use statements ──────────────
+    // After registering canonical files and their parents, walk through all
+    // registered sources and discover any modules referenced by their use
+    // statements (e.g., sys/pal/unix/futex.rs references crate::sys::fd,
+    // which means std/sys/fd/mod.rs needs to be registered too).
+    //
+    // Constraint: only discover a file if its parent directory already has
+    // at least one registered file. This prevents unbounded expansion into
+    // the entire stdlib while still catching sibling modules that were missed
+    // because they weren't declared via `mod X;` in our canonical tree.
+    //
+    // IMPORTANT: Files discovered here are registered with the resolver so
+    // their types can be resolved during import resolution, but they are
+    // NOT marked as emittable. They exist solely to provide type definitions
+    // that other files depend on. Emitting them would pull in deep stdlib
+    // internals that reference types we don't mirror.
+    let mut import_discovered: HashSet<String> = HashSet::new();
+    for target in &spec.targets {
+        let lib_src = rust_src.join(&target.lib_name).join("src");
+
+        loop {
+            let mut newly_found: Vec<String> = Vec::new();
+            // Collect set of known parent directories from parsed_cache.
+            let known_dirs: HashSet<&str> = parsed_cache
+                .keys()
+                .filter_map(|p| p.rsplit_once('/'))
+                .map(|(dir, _)| dir)
+                .collect();
+
+            for (parsed, _) in parsed_cache.values() {
+                for stmt in &parsed.use_statements {
+                    // Look at all use statements (both glob and single) that
+                    // have path segments pointing to modules within our tree.
+                    let (segs, is_glob) = match &stmt.kind {
+                        rustyfill_sys_bindings::resolver::UseKind::Glob(pl) => {
+                            (pl.segments.clone(), true)
+                        }
+                        rustyfill_sys_bindings::resolver::UseKind::Single(pl, _) => {
+                            (pl.segments.clone(), false)
+                        }
+                    };
+                    if segs.is_empty() {
+                        continue;
+                    }
+                    // Build module path from segments, skipping leading
+                    // `self`, `super`, `crate` anchors.
+                    let mut mod_parts: Vec<String> = Vec::new();
+                    for seg in &segs {
+                        match seg {
+                            rustyfill_sys_bindings::resolver::PathSegment::Super => continue,
+                            rustyfill_sys_bindings::resolver::PathSegment::Crate => continue,
+                            rustyfill_sys_bindings::resolver::PathSegment::Self_ => continue,
+                            rustyfill_sys_bindings::resolver::PathSegment::Named(name) => {
+                                mod_parts.push(name.clone());
+                            }
+                        }
+                    }
+                    if mod_parts.is_empty() {
+                        continue;
+                    }
+                    // For single imports (not globs), the last segment is likely
+                    // an item name (struct/type/function), so strip it to get the
+                    // containing module path. E.g., `crate::sys::fd::FileDesc` →
+                    // we want `sys/fd`, not `sys/fd/FileDesc`.
+                    let module_candidates = if is_glob {
+                        vec![mod_parts.clone()]
+                    } else if mod_parts.len() > 1 {
+                        let mut without_last = mod_parts.clone();
+                        without_last.pop();
+                        vec![without_last, mod_parts.clone()]
+                    } else {
+                        vec![mod_parts.clone()]
+                    };
+
+                    for parts in module_candidates {
+                        let resolved = parts.join("/");
+                        // Skip cross-library refs (core/alloc/std at top level).
+                        if matches!(
+                            resolved.split('/').next().unwrap_or(""),
+                            "core" | "alloc" | "std"
+                        ) {
+                            continue;
+                        }
+                        // Only discover if the parent directory is already known.
+                        let parent_dir = match parts.last() {
+                            Some(_) if parts.len() > 1 => {
+                                let mut pd = parts.clone();
+                                pd.pop();
+                                Some(pd.join("/"))
+                            }
+                            _ => None,
+                        };
+                        if let Some(ref pd) = parent_dir
+                            && !known_dirs.contains(pd.as_str())
+                        {
+                            continue;
+                        }
+                        // Try as both .rs and /mod.rs.
+                        for candidate in
+                            &[format!("{}/mod.rs", resolved), format!("{}.rs", resolved)]
+                        {
+                            if !import_discovered.insert(candidate.clone()) {
+                                continue;
+                            }
+                            if lib_src.join(candidate).exists() {
+                                newly_found.push(candidate.clone());
+                            }
+                        }
+                    }
+                }
+            }
+
+            if newly_found.is_empty() {
+                break;
+            }
+
+            for fp in &newly_found {
+                let source_path = lib_src.join(fp);
+                if !source_path.exists() {
+                    continue;
+                }
+                if let Ok(source_text) = fs::read_to_string(&source_path) {
+                    let parsed = parse_source_with_cfg(&source_text, &cfg);
+                    resolver.register_source(fp, parsed.clone());
                 }
             }
         }
@@ -403,7 +553,7 @@ fn discover_and_register(params: DiscoverParams) {
             .unwrap_or(source_rel_path)
     };
 
-    let children = resolver.discover_children(&module_path, visited, &|_parent, mod_name| {
+    let children = resolver.discover_children(&module_path, visited, cfg, &|_parent, mod_name| {
         let child_mod_rs = if dir.is_empty() {
             format!("{}/mod.rs", mod_name)
         } else {

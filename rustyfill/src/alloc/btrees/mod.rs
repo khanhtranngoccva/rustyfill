@@ -15,15 +15,31 @@
 //! refer to [`fallible_collections`](https://crates.io/crates/fallible_collections)
 //!
 //! If you must use this anyway, you will have to use [`::lang_alloc::alloc::set_alloc_error_hook`].
+//!
+//! # Entry API (non-deprecated)
+//!
+//! The [`entry`] submodule provides [`TryBTreeMapEntry`], a trait that adds
+//! `try_insert_entry` to `BTreeMap<K, V>` via direct manipulation of internal
+//! node allocations. Unlike the deprecated `TryBTreeMap`, this approach properly
+//! handles OOM by returning [`Result`] instead of relying on `catch_unwind`.
+//! It requires the `btree-entry` feature and depends on [`rustyfill-sys`] bindings.
+
+#[cfg(feature = "panic")]
 mod btreemap_;
+#[cfg(feature = "panic")]
 mod btreeset_;
 
+#[cfg(feature = "btree-entry")]
+pub mod entry;
+
+#[cfg(feature = "panic")]
 #[deprecated(
     since = "0.2.0",
     note = "catch_unwind cannot intercept OOM aborts; use the `scapegoat` crate for fallible trees"
 )]
 pub use btreemap_::{TryBTreeMap, TryBTreeMapError};
 
+#[cfg(feature = "panic")]
 #[deprecated(
     since = "0.2.0",
     note = "catch_unwind cannot intercept OOM aborts; use the `scapegoat` crate for fallible trees"

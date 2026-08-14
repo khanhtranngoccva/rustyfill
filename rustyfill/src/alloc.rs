@@ -19,7 +19,7 @@ use lang_core::fmt::{self, Debug};
 
 pub mod arc;
 pub mod boxed;
-#[cfg(all(feature = "std", feature = "panic"))]
+#[cfg(all(feature = "std", any(feature = "panic", feature = "btree-entry")))]
 pub mod btrees;
 pub mod ffi;
 pub mod rc;

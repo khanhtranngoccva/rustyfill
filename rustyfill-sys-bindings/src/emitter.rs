@@ -10,7 +10,7 @@
 //! `use crate::<target>::__prelude::*;`. This avoids namespace clashes with
 //! local modules (e.g., btree's internal `mod marker` shadowing `core::marker`).
 
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::fmt::Write as FmtWrite;
 use std::path::Path;
 
@@ -96,6 +96,30 @@ pub fn preamble_content() -> String {
  pub mod boxed { pub use crate::std::boxed::Box; }
  #[allow(unused_imports)]
  pub mod alloc { pub use ::__rustyfill_builtin_core::alloc::Layout; }
+   // Re-export core::mem so that PAL modules referencing `mem::zeroed()` etc.
+   // can resolve the path through the prelude.
+   #[allow(unused_imports)]
+   pub mod mem { pub use ::__rustyfill_builtin_core::mem::*; }
+   // Re-export alloc::vec so that generated bindings referencing `vec::IntoIter`
+   // (e.g., BoxedArrayIntoIter on nightly) can resolve the path.
+   #[allow(unused_imports)]
+   pub mod vec { pub use ::__rustyfill_builtin_alloc::vec::IntoIter; }
+   // Minimal polyfills for platform-specific types referenced by PAL modules
+   // but not mirrored in our bindings. These come from external sources:
+   // - Atomic<T>: from core::sync::atomic, a generic type with complex impls
+   //   (only the type shape matters for bindings, not atomic operations)
+   // - FileDesc: wraps std::os::fd::OwnedFd, platform-specific
+   // - lwpid_t: from libc, used by netbsd thread parking
+   // - Nanoseconds: from core::num::niche_types, internal type alias
+   // - SetValZST: zero-sized marker from alloc::collections::btree::set_val,
+   //   used by BTreeSet's internal representation as BTreeMap<T, SetValZST>
+   # [repr(transparent)]
+   pub struct Atomic < T > (::__rustyfill_builtin_core::cell::UnsafeCell < T >);
+   # [derive(Debug)] # [allow(dead_code)] pub struct FileDesc(pub i32);
+   # [allow(non_camel_case_types)] pub type lwpid_t = i32;
+   pub type Nanoseconds = u32;
+   # [derive(Debug, Eq, PartialEq, Ord, PartialOrd, Hash, Clone, Default)]
+   pub struct SetValZST;
  "#
     .to_string()
 }
@@ -331,33 +355,251 @@ fn emit_item(
     out.push('\n');
 }
 
-/// Widen `pub(super)` and `pub(crate)` visibility to plain `pub` so that
-/// generated bindings are accessible across the synthetic module tree.
+/// Widen all visibility modifiers to plain `pub` so that generated bindings
+/// are fully accessible from any crate. This handles three cases:
+/// 1. `pub(super)` / `pub(crate)` → strip parens, keep `pub`
+/// 2. Plain `pub` → pass through unchanged
+/// 3. No visibility (private struct/enum/union/type/const) → inject `pub`
+///    before the item keyword so the type becomes public.
+///
+/// Additionally, for structs and unions with braced bodies, the FIRST braced
+/// group after the item name (and optional generics) is treated as the struct/union
+/// body, and private fields inside are widened to `pub`.
 fn widen_visibility(tokens: TokenStream) -> TokenStream {
+    let tts: Vec<TokenTree> = tokens.into_iter().collect();
     let mut result = TokenStream::new();
-    let mut iter = tokens.into_iter().peekable();
+    let mut i = 0;
 
-    while let Some(tt) = iter.next() {
-        match &tt {
+    // Skip leading attributes (`# [...]` pairs).
+    while i < tts.len() {
+        if let TokenTree::Punct(p) = &tts[i]
+            && p.as_char() == '#'
+            && i + 1 < tts.len()
+            && matches!(&tts[i + 1], TokenTree::Group(g) if g.delimiter() == proc_macro2::Delimiter::Bracket)
+        {
+            result.extend(Some(tts[i].clone()));
+            i += 1;
+            result.extend(Some(tts[i].clone()));
+            i += 1;
+            continue;
+        }
+        break;
+    }
+
+    // Determine if we have an existing visibility modifier and whether this
+    // is a struct/union needing field widening. Do NOT consume tokens yet.
+    let (has_vis, is_struct_or_union) = if i < tts.len() {
+        match &tts[i] {
             TokenTree::Ident(id) if id == "pub" => {
-                // Look ahead for `(` indicating pub(super) or pub(crate)
-                if let Some(TokenTree::Group(next)) = iter.peek()
-                    && next.delimiter() == proc_macro2::Delimiter::Parenthesis
+                let mut peek = i + 1;
+                if peek < tts.len()
+                    && matches!(&tts[peek], TokenTree::Group(g) if g.delimiter() == proc_macro2::Delimiter::Parenthesis)
                 {
-                    // Consume the parenthesized group and replace with plain pub
-                    iter.next();
-                    result.extend(Some(tt));
-                    continue;
+                    peek += 1;
                 }
-                result.extend(Some(tt));
+                let is_su = peek < tts.len()
+                    && matches!(&tts[peek], TokenTree::Ident(kw) if {
+                        let s = kw.to_string();
+                        s == "struct" || s == "union"
+                    });
+                (true, is_su)
             }
             _ => {
-                result.extend(Some(tt));
+                // No `pub` — check if this is an item keyword needing visibility injection.
+                let is_su = i < tts.len() && matches!(&tts[i], TokenTree::Ident(kw) if {
+                    let s = kw.to_string();
+                    s == "struct" || s == "union"
+                });
+                (false, is_su)
             }
         }
+    } else {
+        (false, false)
+    };
+
+    // If no visibility on an item keyword, inject `pub`.
+    if !has_vis && i < tts.len()
+        && let TokenTree::Ident(kw) = &tts[i] {
+            let kw_str = kw.to_string();
+            if matches!(kw_str.as_str(), "struct" | "enum" | "union" | "type" | "const") {
+                result.extend(Some(TokenTree::Ident(
+                    proc_macro2::Ident::new("pub", tts[i].span()),
+                )));
+            }
+        }
+
+    // Emit remaining tokens, stripping scope parens from `pub` and widening
+    // struct/union bodies.
+    let mut struct_body_widened = false;
+    while i < tts.len() {
+        // Strip scope parens from `pub(X)` → `pub` everywhere in the item.
+        if let TokenTree::Ident(id) = &tts[i]
+            && id == "pub"
+            && i + 1 < tts.len()
+            && matches!(&tts[i + 1], TokenTree::Group(g) if g.delimiter() == proc_macro2::Delimiter::Parenthesis)
+        {
+            // Emit just `pub`, skip the scope parens.
+            result.extend(Some(tts[i].clone()));
+            i += 1;
+            i += 1; // skip parenthesized scope
+            continue;
+        }
+
+        // For struct/union, widen the first braced body.
+        if is_struct_or_union && !struct_body_widened
+            && let TokenTree::Group(group) = &tts[i]
+                && group.delimiter() == proc_macro2::Delimiter::Brace
+            {
+                let widened_body = widen_struct_field_visibility(group.stream());
+                let new_group = TokenTree::Group(proc_macro2::Group::new(
+                    proc_macro2::Delimiter::Brace,
+                    widened_body,
+                ));
+                result.extend(Some(new_group));
+                struct_body_widened = true;
+                i += 1;
+                continue;
+            }
+
+        result.extend(Some(tts[i].clone()));
+        i += 1;
     }
 
     result
+}
+
+/// Widen private field visibility inside a struct/union body.
+///
+/// Strategy: walk through the body tracking "field boundary" state. At each
+/// field boundary (start of body or after `,`), the next meaningful token is
+/// either `pub` (already public) or a field name (needs widening). Once we've
+/// handled the visibility token, we consume the rest of the field until the
+/// next `,` by passing tokens through unchanged.
+fn widen_struct_field_visibility(tokens: TokenStream) -> TokenStream {
+    let tts: Vec<TokenTree> = tokens.into_iter().collect();
+    let mut result = TokenStream::new();
+    let mut i = 0;
+    let mut at_field_boundary = true;
+
+    while i < tts.len() {
+        // Skip attributes: `#` followed by `[...]`.
+        if let TokenTree::Punct(p) = &tts[i]
+            && p.as_char() == '#'
+            && i + 1 < tts.len()
+            && matches!(&tts[i + 1], TokenTree::Group(g) if g.delimiter() == proc_macro2::Delimiter::Bracket)
+        {
+            result.extend(Some(tts[i].clone()));
+            i += 1;
+            result.extend(Some(tts[i].clone()));
+            i += 1;
+            continue;
+        }
+
+        // Pass through nested groups (they're inside field types).
+        if matches!(&tts[i], TokenTree::Group(_)) {
+            result.extend(Some(tts[i].clone()));
+            i += 1;
+            continue;
+        }
+
+        // At a field boundary, check for `pub` or inject it.
+        if at_field_boundary {
+            if let TokenTree::Ident(id) = &tts[i]
+                && id == "pub"
+            {
+                // Already public — emit `pub` and optional scope, then field name.
+                result.extend(Some(tts[i].clone()));
+                i += 1;
+                // Skip scope parens if present.
+                if i < tts.len()
+                    && matches!(&tts[i], TokenTree::Group(g) if g.delimiter() == proc_macro2::Delimiter::Parenthesis)
+                {
+                    i += 1;
+                }
+                // Next ident is the field name — emit it.
+                if i < tts.len() {
+                    result.extend(Some(tts[i].clone()));
+                    i += 1;
+                }
+                at_field_boundary = false;
+                continue;
+            }
+
+            // Not `pub` — this should be the field name. Inject `pub` before it.
+            // But only if it looks like a field (identifier followed by `:` somewhere).
+            if let TokenTree::Ident(field_id) = &tts[i] {
+                let field_name = field_id.to_string();
+                // Verify this isn't a keyword or enum variant.
+                if !matches!(field_name.as_str(),
+                    "struct" | "enum" | "union" | "type" | "const" | "fn"
+                    | "mut" | "ref" | "self" | "Self" | "where" | "for"
+                    | "impl" | "trait" | "async" | "await" | "dyn"
+                    | "unsafe" | "extern" | "use" | "mod" | "crate"
+                    | "super" | "true" | "false"
+                ) && peek_for_colon_simple(&tts, i + 1)
+                {
+                    result.extend(Some(TokenTree::Ident(
+                        proc_macro2::Ident::new("pub", tts[i].span()),
+                    )));
+                    result.extend(Some(tts[i].clone()));
+                    i += 1;
+                    at_field_boundary = false;
+                    continue;
+                }
+            }
+        }
+
+        // Comma means end of current field, next token starts a new field.
+        if let TokenTree::Punct(p) = &tts[i]
+            && p.as_char() == ','
+        {
+            result.extend(Some(tts[i].clone()));
+            i += 1;
+            at_field_boundary = true;
+            continue;
+        }
+
+        // Everything else passes through unchanged.
+        result.extend(Some(tts[i].clone()));
+        i += 1;
+    }
+
+    result
+}
+
+/// Simple peek: does a SINGLE `:` (not `::`) appear before any `,` or end-of-tokens?
+/// A field type annotation uses single `:`, while path separators use `::`.
+/// We check that the token AFTER `:` is NOT another `:`.
+fn peek_for_colon_simple(tts: &[TokenTree], start: usize) -> bool {
+    let mut i = start;
+    while i < tts.len() {
+        match &tts[i] {
+            TokenTree::Punct(p) if p.as_char() == ':' => {
+                // Check if next token is also `:` (making it `::`).
+                if i + 1 < tts.len() {
+                    match &tts[i + 1] {
+                        TokenTree::Punct(p2) if p2.as_char() == ':' => {
+                            // This is `::`, skip both colons.
+                            i += 2;
+                            continue;
+                        }
+                        _ => {
+                            // Single `:` — this is a field type annotation.
+                            return true;
+                        }
+                    }
+                } else {
+                    // Lone `:` at end — treat as field annotation.
+                    return true;
+                }
+            }
+            TokenTree::Punct(p) if p.as_char() == ',' => return false,
+            TokenTree::Group(_) => {},
+            _ => {},
+        }
+        i += 1;
+    }
+    false
 }
 
 /// Recursively rewrite `crate::core`, `crate::alloc`, and other `crate::` paths
@@ -636,10 +878,13 @@ pub fn emit_glob_reexport_aliases(
 
         let alias_parent = alias_path.rsplit_once('/').map(|(p, _)| p).unwrap_or("");
         let reexport_path = compute_reexport_path(alias_parent, &canon_module_path);
-        let reexport_path = if reexport_path.is_empty() {
-            "super".to_string()
+        // When the alias and canonical are at the same level, `reexport_path` is
+        // empty. We emit `super::*` to glob-re-export all items from the parent.
+        // Bare `pub use super;` is not valid Rust (imports must be explicitly named).
+        let reexport_use = if reexport_path.is_empty() {
+            "super::*".to_string()
         } else {
-            format!("super::{reexport_path}")
+            format!("super::{reexport_path}::*")
         };
 
         // Mirror the canonical file's naming convention: if the canonical is
@@ -658,12 +903,28 @@ pub fn emit_glob_reexport_aliases(
         let content = format!(
             "// Auto-generated alias by rustyfill-sys.\n\
              // Re-exports from canonical module: {}\n\n\
-             pub use {reexport_path};\n",
+             pub use {reexport_use};\n",
             canon_file,
         );
 
-        std::fs::write(&alias_output, content)
+        std::fs::write(&alias_output, &content)
             .unwrap_or_else(|e| panic!("Failed to write alias {}: {}", alias_output.display(), e));
+
+        // Register the alias file with the resolver so that validation can
+        // resolve its single pub use statement back to the canonical target.
+        let parsed = crate::parser::parse_source_with_cfg(
+            &content,
+            &crate::parser::CfgContext {
+                target_os: None,
+                target_family: None,
+                target_arch: None,
+                target_env: None,
+                target_vendor: None,
+                is_unix: false,
+                is_windows: false,
+            },
+        );
+        resolver.register_source(&alias_file, parsed);
 
         results.push((alias_file, lib_name.to_string()));
     }
@@ -677,17 +938,18 @@ pub fn emit_glob_reexport_aliases(
 /// `bindings_generated.rs`. Also declares the preamble module at each
 /// target library root.
 pub fn emit_hierarchical_manifest(out_dir: &Path, all_files: &[(String, String)]) {
+    // Collect which libraries contributed files so we know which preambles to emit.
+    let mut libs_seen: BTreeSet<String> = BTreeSet::new();
+
+    // Build per-library trees as before.
     let mut by_lib: BTreeMap<String, TreeNode> = BTreeMap::new();
 
     for (rel_path, lib_name) in all_files {
+        libs_seen.insert(lib_name.clone());
         let node = by_lib.entry(lib_name.clone()).or_default();
-        // Convert file path to module path segments: strip `.rs`, then drop
-        // a trailing `mod` segment since `foo/mod.rs` defines the module `foo`,
-        // not `foo::mod`.
         let stem = rel_path.strip_suffix(".rs").unwrap_or(rel_path);
         let module_path = stem.strip_suffix("/mod").unwrap_or(stem);
         let parts: Vec<&str> = module_path.split('/').filter(|s| !s.is_empty()).collect();
-
         node.insert(parts, rel_path.clone());
     }
 
@@ -700,9 +962,40 @@ pub fn emit_hierarchical_manifest(out_dir: &Path, all_files: &[(String, String)]
          // All types are intentionally public.\n\n",
     );
 
-    for (lib_name, tree) in &by_lib {
-        tree.emit(&mut content, "std", 0, lib_name);
+    // Emit a single `pub mod std { ... }` wrapper. Inside it, emit preamble
+    // modules for every contributing library, then merge all library subtrees.
+    content.push_str("pub mod std {\n");
+
+    // Emit a single preamble module. All library preambles have identical
+    // content (same set of re-exports), so including one is sufficient.
+    content.push_str(&format!("    pub mod {} {{\n", PREAMBLE_MOD));
+    if let Some(first_lib) = libs_seen.iter().next() {
+        let preamble_filename = format!("{}_{}.rs", PREAMBLE_MOD, first_lib);
+        content.push_str(&format!(
+            "        include!(concat!(env!(\"OUT_DIR\"), \"/{}\"));\n",
+            preamble_filename
+        ));
     }
+    content.push_str("    }\n\n");
+
+    // Merge all library trees into one and emit children at depth 1.
+    // The first library's tree provides the base; subsequent libraries' trees
+    // are merged into it so their nodes share the same hierarchy.
+    if let Some((first_lib, first_tree)) = by_lib.iter().next() {
+        // Merge remaining trees into the first one.
+        let mut merged = TreeNode::default();
+        merge_trees(&mut merged, first_tree);
+        for (_lib_name, other_tree) in by_lib.iter().skip(1) {
+            merge_trees(&mut merged, other_tree);
+        }
+
+        // Emit merged children at depth 1 (inside `pub mod std`).
+        for (child_name, child_node) in &merged.children {
+            child_node.emit(&mut content, child_name, 1, first_lib);
+        }
+    }
+
+    content.push_str("}\n\n");
 
     std::fs::write(&manifest_path, content).unwrap_or_else(|e| {
         panic!(
@@ -711,6 +1004,19 @@ pub fn emit_hierarchical_manifest(out_dir: &Path, all_files: &[(String, String)]
             e
         )
     });
+}
+
+/// Recursively merge `other` into `target`. If a child exists in both, its
+/// subtree is merged recursively. File paths from `other` overwrite `target`
+/// when both define the same leaf.
+fn merge_trees(target: &mut TreeNode, other: &TreeNode) {
+    if let Some(fp) = &other.file_path {
+        target.file_path = Some(fp.clone());
+    }
+    for (name, other_child) in &other.children {
+        let target_child = target.children.entry(name.clone()).or_default();
+        merge_trees(target_child, other_child);
+    }
 }
 
 /// A node in the module tree. Either a directory (with children) or a leaf file.

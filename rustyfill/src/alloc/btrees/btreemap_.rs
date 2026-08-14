@@ -1041,4 +1041,196 @@ mod tests {
         let msg = format!("{}", err);
         assert!(msg.contains("key already exists"));
     }
+
+    // ── Additional edge cases ────────────────────────────────────────────────
+
+    #[test]
+    fn fallible_insert_reverse_order() {
+        let mut map: BTreeMap<i32, i32> = BTreeMap::new();
+        for i in (0..15).rev() {
+            map.fallible_insert(i, i * 100).unwrap();
+        }
+        assert_eq!(map.len(), 15);
+        for i in 0..15 {
+            assert_eq!(map[&i], i * 100);
+        }
+    }
+
+    #[test]
+    fn fallible_insert_large_values() {
+        let big: String = "x".repeat(1024);
+        let mut map: BTreeMap<i32, String> = BTreeMap::new();
+        map.fallible_insert(1, big.clone()).unwrap();
+        assert_eq!(map[&1].len(), 1024);
+        map.fallible_insert(2, big.clone()).unwrap();
+        assert_eq!(map.len(), 2);
+    }
+
+    #[test]
+    fn try_collect_deduplicates_keys() {
+        // When duplicate keys appear in the iterator, later values win.
+        let pairs = vec![(1, "first"), (2, "two"), (1, "second")];
+        let map: BTreeMap<i32, &str> =
+            <BTreeMap<i32, &str> as TryBTreeMap<_, _>>::try_collect(pairs).unwrap();
+        assert_eq!(map.len(), 2);
+        assert_eq!(map[&1], "second");
+        assert_eq!(map[&2], "two");
+    }
+
+    #[test]
+    fn try_extend_overwrites_existing_keys() {
+        let mut map: BTreeMap<i32, String> = BTreeMap::new();
+        map.fallible_insert(1, "original".to_string()).unwrap();
+        map.try_extend([(1, "overwritten".to_string())]).unwrap();
+        assert_eq!(map[&1], "overwritten");
+        assert_eq!(map.len(), 1);
+    }
+
+    #[test]
+    fn try_extend_from_slice_overwrites_and_clones() {
+        let mut map: BTreeMap<String, String> = BTreeMap::new();
+        map.fallible_insert("a".to_string(), "one".to_string()).unwrap();
+        let slice: &[(String, String)] = &[("a".to_string(), "updated".to_string())];
+        map.try_extend_from_slice(slice).unwrap();
+        assert_eq!(map["a"], "updated");
+        assert_eq!(map.len(), 1);
+    }
+
+    #[test]
+    fn try_insert_unique_after_many_entries() {
+        let mut map: BTreeMap<i32, i32> = BTreeMap::new();
+        for i in 0..20 {
+            map.fallible_insert(i, i).unwrap();
+        }
+        map.try_insert_unique(21, 21).unwrap();
+        assert_eq!(map.len(), 21);
+        let result = map.try_insert_unique(10, 999);
+        assert!(result.is_err());
+        let (k, v, err) = result.unwrap_err();
+        assert_eq!(k, 10);
+        assert_eq!(v, 999);
+        matches!(err, TryBTreeMapError::Other(_));
+    }
+
+    #[test]
+    fn try_clone_then_mutate_independent() {
+        let mut orig: BTreeMap<i32, String> = BTreeMap::new();
+        orig.insert(1, "hello".to_string());
+        let c = orig.try_clone().unwrap();
+        orig.insert(2, "world".to_string());
+        assert_eq!(orig.len(), 2);
+        assert_eq!(c.len(), 1);
+        assert_eq!(c[&1], "hello");
+    }
+
+    #[test]
+    fn try_insert_negative_keys() {
+        let mut map: BTreeMap<i64, &str> = BTreeMap::new();
+        map.fallible_insert(-5, "neg five").unwrap();
+        map.fallible_insert(-1, "neg one").unwrap();
+        map.fallible_insert(0, "zero").unwrap();
+        map.fallible_insert(1, "pos one").unwrap();
+        assert_eq!(map[&-5], "neg five");
+        assert_eq!(map[&-1], "neg one");
+        assert_eq!(map[&0], "zero");
+        assert_eq!(map[&1], "pos one");
+    }
+
+    #[test]
+    fn try_insert_entry_api_chain() {
+        let mut map: BTreeMap<String, i32> = BTreeMap::new();
+        // Chain entry API operations
+        map.try_entry("a".to_string()).unwrap().or_insert(1);
+        map.try_entry("b".to_string()).unwrap().or_insert(2);
+        map.try_entry("a".to_string())
+            .unwrap()
+            .and_modify(|v| *v += 10);
+        assert_eq!(map["a"], 11);
+        assert_eq!(map["b"], 2);
+    }
+
+    #[test]
+    fn try_extend_chained_operations() {
+        let mut map: BTreeMap<i32, i32> = BTreeMap::new();
+        map.try_extend([(1, 10), (2, 20)]).unwrap();
+        map.try_extend([(3, 30), (4, 40)]).unwrap();
+        assert_eq!(map.len(), 4);
+        assert_eq!(map[&1], 10);
+        assert_eq!(map[&4], 40);
+    }
+
+    #[test]
+    fn try_collect_strings_ordered_iteration() {
+        let pairs = vec![
+            ("zebra".to_string(), 1),
+            ("apple".to_string(), 2),
+            ("mango".to_string(), 3),
+        ];
+        let map: BTreeMap<String, i32> =
+            <BTreeMap<String, i32> as TryBTreeMap<_, _>>::try_collect(pairs).unwrap();
+        let keys: Vec<&String> = map.keys().collect();
+        assert_eq!(keys, &[&"apple".to_string(), &"mango".to_string(), &"zebra".to_string()]);
+    }
+
+    #[test]
+    fn try_insert_give_back_with_boxed_key_value() {
+        use lang_alloc::vec::Vec;
+        let mut map: BTreeMap<Box<i32>, Box<Vec<u8>>> = BTreeMap::new();
+        map.fallible_insert_give_back(Box::new(1), Box::new(vec![1, 2]))
+            .unwrap();
+        assert_eq!(*map[&Box::new(1)], vec![1, 2]);
+    }
+
+    #[test]
+    fn try_default_then_extend() {
+        let mut map: BTreeMap<i32, i32> = BTreeMap::try_default().unwrap();
+        map.try_extend([(5, 50), (10, 100)]).unwrap();
+        assert_eq!(map.len(), 2);
+        assert_eq!(map[&5], 50);
+    }
+
+    // ── Error formatting additional tests ────────────────────────────────────
+
+    #[test]
+    fn error_display_alloc_variant() {
+        let l = unsafe { lang_core::alloc::Layout::from_size_align_unchecked(1, 1) };
+        let err = TryBTreeMapError::Alloc(AllocError { layout: l });
+        let msg = format!("{}", err);
+        assert!(msg.contains("allocation"), "error message: {}", msg);
+    }
+
+    #[test]
+    fn error_from_alloc_error_conversion() {
+        let l = unsafe { lang_core::alloc::Layout::from_size_align_unchecked(1, 1) };
+        let ae = AllocError { layout: l };
+        let err: TryBTreeMapError = ae.into();
+        matches!(err, TryBTreeMapError::Alloc(_));
+    }
+
+    // ── Stress test ──────────────────────────────────────────────────────────
+
+    #[test]
+    fn fallible_insert_many_entries_stress() {
+        let mut map: BTreeMap<usize, usize> = BTreeMap::new();
+        for i in 0..200 {
+            map.fallible_insert(i, i.wrapping_mul(7)).unwrap();
+        }
+        assert_eq!(map.len(), 200);
+        for i in 0..200 {
+            assert_eq!(map[&i], i.wrapping_mul(7));
+        }
+    }
+
+    #[test]
+    fn fallible_insert_out_of_order_then_verify_sorted_keys() {
+        let mut map: BTreeMap<i32, i32> = BTreeMap::new();
+        let keys = [15, 3, 22, 1, 10, 8, 20, 5, 12, 2, 18, 7, 25, 0, 11, 6, 14, 9, 16, 4, 13, 19, 21, 23, 24];
+        for k in &keys {
+            map.fallible_insert(*k, k * 100).unwrap();
+        }
+        let collected: Vec<i32> = map.keys().copied().collect();
+        let mut sorted = keys.to_vec();
+        sorted.sort();
+        assert_eq!(collected.as_slice(), &sorted);
+    }
 }

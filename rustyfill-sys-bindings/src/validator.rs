@@ -281,15 +281,24 @@ impl ValidationBuilder {
     }
 
     pub fn check_aliases(&mut self, resolver: &mut ModuleResolver, aliases: &HashSet<String>) {
-        // Aliases are stored as just the alias module path string; resolution
-        // is checked internally by the resolver.
+        // Aliases are stored as module paths (e.g., "sys/unix/time"). Convert
+        // to file paths for resolution lookup. Skip aliases whose canonical
+        // target was never emitted (has no type definitions), since those are
+        // synthetic re-exports for function-only modules like PAL helpers.
         for alias_module in aliases {
-            let resolution = resolver.resolve_file(alias_module);
+            // Try both .rs and /mod.rs variants.
+            let alias_file = format!("{}.rs", alias_module);
+            let resolution = resolver.resolve_file(&alias_file);
             if resolution.is_empty() {
-                self.errors.push_fmt(format!(
-                    "[alias] Alias {} cannot resolve its target",
-                    alias_module
-                ));
+                // Also try as a directory module.
+                let alias_mod_file = format!("{}/mod.rs", alias_module);
+                let resolution2 = resolver.resolve_file(&alias_mod_file);
+                if resolution2.is_empty() {
+                    self.errors.push_fmt(format!(
+                        "[alias] Alias {} cannot resolve its target",
+                        alias_module
+                    ));
+                }
             }
         }
     }

@@ -94,11 +94,16 @@ pub struct ModuleResolver {
     /// All use statements indexed by their declaring file path.
     imports_by_file: HashMap<String, Vec<UseStatement>>,
     /// External module declarations (`mod X;`) indexed by declaring file path.
-    mods_by_file: HashMap<String, Vec<String>>,
+    mods_by_file: HashMap<String, Vec<crate::parser::ModDeclaration>>,
     /// Visited set for cycle detection during recursive resolution.
     visiting: HashSet<String>,
     /// Full parsed sources indexed by file path, for accessing inline modules.
     sources: HashMap<String, crate::parser::ParsedSource>,
+    /// Set of files that are eligible for emission (discovered via mod
+    /// declarations or structural parents). Files registered solely for import
+    /// resolution (Phase 1c) are NOT in this set, so generated use statements
+    /// won't reference modules that won't be emitted.
+    emittable_files: HashSet<String>,
 }
 
 impl ModuleResolver {
@@ -110,6 +115,7 @@ impl ModuleResolver {
             mods_by_file: HashMap::new(),
             visiting: HashSet::new(),
             sources: HashMap::new(),
+            emittable_files: HashSet::new(),
         }
     }
 
@@ -136,16 +142,32 @@ impl ModuleResolver {
     }
 
     /// Register external module declarations (`mod X;`) for a given file.
-    pub fn register_mods(&mut self, file_path: &str, mods: Vec<String>) {
+    pub fn register_mods(&mut self, file_path: &str, mods: Vec<crate::parser::ModDeclaration>) {
         self.mods_by_file.insert(file_path.to_string(), mods);
     }
 
     /// Register both the file path and its parsed use statements in one call.
     pub fn register_source(&mut self, file_path: &str, source: crate::parser::ParsedSource) {
-        self.register_file(file_path);
-        self.register_imports(file_path, source.use_statements.clone());
-        self.register_mods(file_path, source.mod_declarations.clone());
+        let module_path = Self::file_to_module_path_str(file_path);
+        self.modules
+            .insert(module_path.clone(), file_path.to_string());
+        self.leaves.insert(module_path, file_path.to_string());
+        self.imports_by_file
+            .insert(file_path.to_string(), source.use_statements.clone());
+        self.mods_by_file
+            .insert(file_path.to_string(), source.mod_declarations.clone());
         self.sources.insert(file_path.to_string(), source);
+    }
+
+    /// Mark a file as eligible for emission. Files registered via Phase 1c
+    /// (import-driven discovery) should NOT be marked emittable.
+    pub fn mark_emittable(&mut self, file_path: &str) {
+        self.emittable_files.insert(file_path.to_string());
+    }
+
+    /// Check if a file is eligible for emission.
+    pub fn is_emittable(&self, file_path: &str) -> bool {
+        self.emittable_files.contains(file_path)
     }
 
     /// Get all inline module names from registered sources.
@@ -299,9 +321,33 @@ impl ModuleResolver {
                     }
                     Resolution::File(file)
                 } else {
-                    // The full path isn't a known module. Check if all but the last
-                    // segment form a valid module — the last segment is likely an
-                    // item (struct/enum/trait) within that module.
+                    // The full path isn't a known module. Before decomposing into
+                    // item-in-file, try a fallback for `super::X` when X isn't directly
+                    // in the parent module but exists as a sibling of the parent
+                    // (re-exported via the parent's use statements).
+                    if path.segments.len() == 2
+                        && matches!(path.segments.first(), Some(PathSegment::Super))
+                        && let Some(last_name) = path.segments.iter().find_map(|s| {
+                            if let PathSegment::Named(n) = s {
+                                Some(n.clone())
+                            } else {
+                                None
+                            }
+                        })
+                    {
+                        // Go up two levels and look for the name there.
+                        let parts: Vec<&str> = current_module.split('/').collect();
+                        if parts.len() > 2 {
+                            let grandparent = parts[..parts.len() - 2].join("/");
+                            let candidate = format!("{}/{}", grandparent, last_name);
+                            if let Some(file) = self.find_module(&candidate) {
+                                return Resolution::File(file);
+                            }
+                        }
+                    }
+
+                    // Check if all but the last segment form a valid module — the last
+                    // segment is likely an item (struct/enum/trait) within that module.
                     let parts: Vec<&str> = resolved.split('/').collect();
                     if parts.len() > 1 {
                         let maybe_item = parts.last().unwrap();
@@ -310,10 +356,92 @@ impl ModuleResolver {
                             return Resolution::ItemInFile(container, maybe_item.to_string());
                         }
                     }
+
+                    // If the path started with a bare Named segment (not super/crate/self),
+                    // the original resolution was crate-relative. Try resolving relative
+                    // to the current module instead — this handles cases like `entry::Entry`
+                    // in `collections/btree/map.rs` where `entry` is a local child module.
+                    if matches!(path.segments.first(), Some(PathSegment::Named(_)))
+                        && path.segments.len() > 1
+                    {
+                        let local_resolved =
+                            self.resolve_path_segments_local(&path.segments, current_module);
+                        let lparts: Vec<&str> = local_resolved.split('/').collect();
+                        if let Some(file) = self.find_module(&local_resolved) {
+                            if lparts.len() > 1 {
+                                let lmaybe_item = lparts.last().unwrap();
+                                let lcontainer = lparts[..lparts.len() - 1].join("/");
+                                if self.find_module(&local_resolved).is_none()
+                                    && self.find_module(&lcontainer).is_some()
+                                {
+                                    return Resolution::ItemInFile(
+                                        lcontainer,
+                                        lmaybe_item.to_string(),
+                                    );
+                                }
+                            }
+                            return Resolution::File(file);
+                        } else if lparts.len() > 1 {
+                            let lmaybe_item = lparts.last().unwrap();
+                            let lcontainer = lparts[..lparts.len() - 1].join("/");
+                            if self.find_module(&lcontainer).is_some() {
+                                return Resolution::ItemInFile(lcontainer, lmaybe_item.to_string());
+                            }
+                        }
+                    }
+
                     Resolution::Unresolved
                 }
             }
         }
+    }
+
+    /// Resolve path segments treating the first Named segment as relative to
+    /// the current module (rather than crate-relative). Used as fallback when
+    /// crate-relative resolution fails for multi-segment named paths.
+    fn resolve_path_segments_local(
+        &self,
+        segments: &[PathSegment],
+        current_module: &str,
+    ) -> String {
+        if segments.is_empty() {
+            return current_module.to_string();
+        }
+
+        let mut cursor = match &segments[0] {
+            PathSegment::Named(name) => {
+                if current_module.is_empty() {
+                    name.clone()
+                } else {
+                    format!("{}/{}", current_module, name)
+                }
+            }
+            _ => return self.resolve_path_segments(segments, current_module),
+        };
+
+        for seg in &segments[1..] {
+            cursor = match seg {
+                PathSegment::Named(n) => {
+                    if cursor.is_empty() {
+                        n.clone()
+                    } else {
+                        format!("{}/{}", cursor, n)
+                    }
+                }
+                PathSegment::Super => {
+                    let parts: Vec<&str> = cursor.split('/').collect();
+                    if parts.len() > 1 {
+                        parts[..parts.len() - 1].join("/")
+                    } else {
+                        String::new()
+                    }
+                }
+                PathSegment::Crate => String::new(),
+                PathSegment::Self_ => cursor.clone(),
+            };
+        }
+
+        cursor
     }
 
     fn resolve_glob_path(
@@ -333,17 +461,18 @@ impl ModuleResolver {
 
     /// Resolve a path like `super::super::cvt_nz` or `crate::sys::pal` or
     /// `self::unix` into an absolute module path string.
+    ///
+    /// Iterates linearly through segments, maintaining a mutable cursor that
+    /// tracks the current position in the module tree. This avoids the bug where
+    /// recursive calls lost context for Named segments following Super hops.
     fn resolve_path_segments(&self, segments: &[PathSegment], current_module: &str) -> String {
         if segments.is_empty() {
             return current_module.to_string();
         }
 
-        let first = &segments[0];
-        let rest = &segments[1..];
-
-        let base = match first {
+        // Determine the anchor point from the first segment.
+        let mut cursor = match &segments[0] {
             PathSegment::Super => {
-                // Go up one level.
                 let parts: Vec<&str> = current_module.split('/').collect();
                 if parts.len() > 1 {
                     parts[..parts.len() - 1].join("/")
@@ -351,64 +480,46 @@ impl ModuleResolver {
                     String::new()
                 }
             }
-            PathSegment::Crate => {
-                // Start from crate root.
-                String::new()
-            }
-            PathSegment::Self_ => {
-                // Stay in current module.
-                current_module.to_string()
-            }
+            PathSegment::Crate => String::new(),
+            PathSegment::Self_ => current_module.to_string(),
             PathSegment::Named(name) => {
-                // Absolute or relative lookup. If there's only one segment,
-                // it's relative to current module. Otherwise treat as crate-root.
+                // A bare name (single segment) is relative to current module.
+                // A multi-segment named path (e.g., foo::bar) is crate-relative.
                 if segments.len() == 1 {
-                    // Bare name — try local module first.
-                    let candidate = if current_module.is_empty() {
-                        name.clone()
-                    } else {
-                        format!("{}/{}", current_module, name)
-                    };
-                    return candidate;
+                    if current_module.is_empty() {
+                        return name.clone();
+                    }
+                    return format!("{}/{}", current_module, name);
                 }
-                // Multi-segment named path starting with a name = crate-relative.
+                // Multi-segment: start from crate root.
                 name.clone()
             }
         };
 
-        if rest.is_empty() {
-            return base;
+        // Process remaining segments iteratively.
+        for seg in &segments[1..] {
+            cursor = match seg {
+                PathSegment::Named(n) => {
+                    if cursor.is_empty() {
+                        n.clone()
+                    } else {
+                        format!("{}/{}", cursor, n)
+                    }
+                }
+                PathSegment::Super => {
+                    let parts: Vec<&str> = cursor.split('/').collect();
+                    if parts.len() > 1 {
+                        parts[..parts.len() - 1].join("/")
+                    } else {
+                        String::new()
+                    }
+                }
+                PathSegment::Crate => String::new(),
+                PathSegment::Self_ => cursor.clone(),
+            };
         }
 
-        // Continue resolving rest from base.
-        let next_segment = &rest[0];
-        let remaining = &rest[1..];
-
-        let joined = match next_segment {
-            PathSegment::Named(n) => {
-                if base.is_empty() {
-                    n.clone()
-                } else {
-                    format!("{}/{}", base, n)
-                }
-            }
-            PathSegment::Super => {
-                let parts: Vec<&str> = base.split('/').collect();
-                if parts.len() > 1 {
-                    parts[..parts.len() - 1].join("/")
-                } else {
-                    String::new()
-                }
-            }
-            PathSegment::Crate => String::new(),
-            PathSegment::Self_ => base,
-        };
-
-        if remaining.is_empty() {
-            joined
-        } else {
-            self.resolve_path_segments(remaining, &joined)
-        }
+        cursor
     }
 
     /// Find the file for a given module path. Checks both modules (directories with mod.rs)
@@ -514,22 +625,29 @@ impl ModuleResolver {
         &mut self,
         module_path: &str,
         visited: &mut HashSet<String>,
+        cfg: &crate::parser::CfgContext,
         resolve_child: &F,
     ) -> Vec<String>
     where
         F: Fn(&str, &str) -> Option<String>,
     {
+        // Look up the file for this module first — if it hasn't been registered
+        // yet (e.g., because the parent's discover_children recursed ahead of the
+        // outer loop that registers children), bail out without marking visited so
+        // the caller can retry once registration is complete.
+        let file_path = match self.find_module_file(module_path) {
+            Some(fp) => fp,
+            None => return Vec::new(),
+        };
+
+        // Only mark visited after confirming the module exists. This allows a
+        // prior speculative recursion (from the parent) to fail silently, then
+        // succeed on the real call from discover_and_register's child loop.
         if !visited.insert(module_path.to_string()) {
             return Vec::new();
         }
 
         let mut results = Vec::new();
-
-        // Look up the file for this module.
-        let file_path = match self.find_module_file(module_path) {
-            Some(fp) => fp,
-            None => return results,
-        };
 
         // Get mod declarations for this file.
         let mods = match self.mods_by_file.get(&file_path) {
@@ -537,7 +655,14 @@ impl ModuleResolver {
             None => return results,
         };
 
-        for mod_name in mods {
+        for md in &mods {
+            // Skip modules gated by cfg predicates that evaluate to false
+            // (e.g., #[cfg(test)] modules are invisible outside test builds).
+            if crate::parser::is_cfg_inactive(&md.attrs, cfg) {
+                continue;
+            }
+
+            let mod_name = &md.name;
             // Resolve child name to a file path.
             let child_module = if module_path.is_empty() {
                 mod_name.clone()
@@ -546,11 +671,12 @@ impl ModuleResolver {
             };
 
             // Try both `X.rs` and `X/mod.rs`.
-            let child_file = resolve_child(module_path, &mod_name);
+            let child_file = resolve_child(module_path, mod_name);
             if let Some(cf) = child_file {
                 results.push(cf.clone());
                 // Recurse into child.
-                let grandchildren = self.discover_children(&child_module, visited, resolve_child);
+                let grandchildren =
+                    self.discover_children(&child_module, visited, cfg, resolve_child);
                 results.extend(grandchildren);
             }
         }
@@ -571,6 +697,25 @@ impl ModuleResolver {
             return Some(file.clone());
         }
         None
+    }
+
+    /// Check if a module file has any parsed items (structs, enums, etc.).
+    /// Modules with only functions or constants won't have items and thus
+    /// won't produce emitted content.
+    pub fn module_has_items(&self, file_path: &str) -> bool {
+        match self.sources.get(file_path) {
+            Some(s) => !s.items.is_empty(),
+            None => false,
+        }
+    }
+
+    /// Check whether a specific named item (struct, enum, union, const, type alias)
+    /// exists in the parsed source for the given file path.
+    pub fn item_exists_in_module(&self, file_path: &str, item_name: &str) -> bool {
+        match self.sources.get(file_path) {
+            Some(s) => s.items.iter().any(|i| i.name == item_name),
+            None => false,
+        }
     }
 
     /// Convert a file path to a module path string (strip .rs, strip trailing /mod).
@@ -602,6 +747,17 @@ impl ModuleResolver {
         for ri in resolved {
             match &ri.resolution {
                 Resolution::File(target_file) => {
+                    // Skip if this module wasn't emitted (e.g., discovered via
+                    // Phase 1c import resolution but not in the canonical tree).
+                    if !self.is_emittable(target_file) {
+                        continue;
+                    }
+                    // Skip modules that were registered but have no actual type
+                    // definitions (e.g., sys/pal/unix/conf only exposes functions,
+                    // which means the emitter produced no content for it).
+                    if !self.module_has_items(target_file) {
+                        continue;
+                    }
                     // Convert file path to module path for resolution.
                     let target_mod = Self::file_to_module_path_str(target_file);
                     let rel_path = self.module_path_to_super_chain(&current_module, &target_mod);
@@ -609,7 +765,10 @@ impl ModuleResolver {
                         let last_seg = target_mod.split('/').next_back().unwrap_or("");
                         let alias_key = format!("module:{rel_path}");
                         if seen_paths.insert(alias_key) {
-                            // Use non-pub imports since source items may be pub(super).
+                            // Bring the module into scope under its original name so that
+                            // `X::item` paths resolve (e.g., `marker::Mut`), then glob
+                            // import all items for bare-name access. Use `self` in the
+                            // alias to disambiguate from any item of the same name.
                             lines.push(format!(
                                 "#[allow(unused_imports)] use {rel_path} as {last_seg};"
                             ));
@@ -628,22 +787,69 @@ impl ModuleResolver {
                     // target_path might be a file path or a module path depending on which
                     // code path created this resolution. Normalize to module path.
                     let target_mod = Self::file_to_module_path_str(target_path);
+                    // Skip if the target module has no items at all (wasn't emitted).
+                    // We don't check for the specific item name here, because items may
+                    // be re-exported via use statements rather than defined directly.
+                    // However, modules like sys/pal/unix define functions (not structs),
+                    // so their parsed items list is empty. For those, also check if the
+                    // item is a known non-type (we can't distinguish, so we skip anything
+                    // in a module with zero items).
+                    let target_file = self.find_module_file(&target_mod);
+                    if let Some(tf) = &target_file {
+                        if !self.module_has_items(tf) {
+                            continue;
+                        }
+                        // Additionally, check that the specific item actually exists
+                        // in the parsed source. If the module was discovered but doesn't
+                        // contain this particular type (e.g., io/mod.rs has structs but
+                        // not Error), skip the import.
+                        if !self.item_exists_in_module(tf, item_name) {
+                            continue;
+                        }
+                    } else {
+                        continue;
+                    }
                     let rel_path = self.module_path_to_super_chain(&current_module, &target_mod);
                     // Skip if we already glob-imported this entire module.
                     if globbed_modules.contains(&rel_path) {
                         continue;
                     }
                     if !rel_path.is_empty() {
-                        let full = format!("{rel_path}::{item_name}");
+                        // When the relative path doesn't start with `super`, it refers
+                        // to a local child/sibling module. Prefix with `self::` to
+                        // disambiguate from names brought in by glob imports.
+                        let qualified = if rel_path.starts_with("super") {
+                            rel_path.clone()
+                        } else {
+                            format!("self::{}", rel_path)
+                        };
+                        let full = format!("{qualified}::{item_name}");
                         if seen_paths.insert(full.clone()) {
-                            lines.push(format!("#[allow(unused_imports)] use {full};"));
+                            let vis = match ri.use_stmt.visibility {
+                                Visibility::Public => "pub use",
+                                _ => "use",
+                            };
+                            lines.push(format!("#[allow(unused_imports)] {vis} {full};"));
                         }
                     }
                 }
                 Resolution::GlobModule(target_module) => {
+                    // Skip if the target module wasn't emitted or has no items.
+                    let target_file = self.find_module_file(target_module);
+                    if let Some(tf) = &target_file {
+                        if !self.is_emittable(tf) || !self.module_has_items(tf) {
+                            continue;
+                        }
+                    } else {
+                        continue;
+                    }
                     let rel_path = self.module_path_to_super_chain(&current_module, target_module);
                     if !rel_path.is_empty() && seen_paths.insert(rel_path.clone()) {
-                        lines.push(format!("#[allow(unused_imports)] use {rel_path}::*;"));
+                        let vis = match ri.use_stmt.visibility {
+                            Visibility::Public => "pub use",
+                            _ => "use",
+                        };
+                        lines.push(format!("#[allow(unused_imports)] {vis} {rel_path}::*;"));
                         globbed_modules.insert(rel_path);
                     }
                 }
