@@ -44,6 +44,13 @@ mod sys {
     };
 }
 
+/// Return type for fallible insertion helpers: a reference to the inserted slot
+/// paired with its index, or the original key/value plus the error on failure.
+type InsertResult<'a, K, V> = Result<
+    (sys::NodeRef<sys::Mut<'a>, K, V, sys::LeafOrInternal>, usize),
+    (K, V, TryBTreeMapEntryError),
+>;
+
 // ── Error type ────────────────────────────────────────────────────────────────
 
 /// Error returned by [`TryBTreeMapEntry::try_insert_entry`].
@@ -232,10 +239,7 @@ fn try_insert_kv<'a, K, V>(
     handle: Option<sys::Handle<sys::NodeRef<sys::Mut<'a>, K, V, sys::Leaf>, sys::Edge>>,
     key: K,
     value: V,
-) -> Result<
-    (sys::NodeRef<sys::Mut<'a>, K, V, sys::LeafOrInternal>, usize),
-    (K, V, TryBTreeMapEntryError),
-> {
+) -> InsertResult<'a, K, V> {
     match handle {
         None => try_insert_empty_map(inner_map, key, value),
         Some(leaf_edge) => try_insert_into_existing(inner_map, leaf_edge, key, value),
@@ -247,10 +251,7 @@ fn try_insert_empty_map<'a, K, V>(
     inner_map: &mut sys::SysBTreeMap<K, V>,
     key: K,
     value: V,
-) -> Result<
-    (sys::NodeRef<sys::Mut<'a>, K, V, sys::LeafOrInternal>, usize),
-    (K, V, TryBTreeMapEntryError),
-> {
+) -> InsertResult<'a, K, V> {
     let leaf_box = match try_new_leaf() {
         Ok(b) => b,
         Err(e) => return Err((key, value, e)),
@@ -293,10 +294,7 @@ fn try_insert_into_existing<'a, K, V>(
     leaf_edge: sys::Handle<sys::NodeRef<sys::Mut<'a>, K, V, sys::Leaf>, sys::Edge>,
     key: K,
     value: V,
-) -> Result<
-    (sys::NodeRef<sys::Mut<'a>, K, V, sys::LeafOrInternal>, usize),
-    (K, V, TryBTreeMapEntryError),
-> {
+) -> InsertResult<'a, K, V> {
     let node_len = unsafe { (*leaf_edge.node.node.as_ptr()).len as usize };
     if node_len < sys::CAPACITY {
         let insert_idx = leaf_edge.idx;
@@ -317,23 +315,19 @@ fn try_insert_with_split<'a, K, V>(
     leaf_edge: sys::Handle<sys::NodeRef<sys::Mut<'a>, K, V, sys::Leaf>, sys::Edge>,
     key: K,
     value: V,
-) -> Result<
-    (sys::NodeRef<sys::Mut<'a>, K, V, sys::LeafOrInternal>, usize),
-    (K, V, TryBTreeMapEntryError),
-> {
+) -> InsertResult<'a, K, V> {
+    // Reserve the box first before performing any irreversible operations.
+    let right_box = match try_new_leaf() {
+        Ok(b) => b,
+        Err(e) => return Err((key, value, e)),
+    };
     let (split_point_idx, insertion_side) = splitpoint(leaf_edge.idx);
-
     let source_ptr = leaf_edge.node.node.as_ptr();
     let (middle_k, middle_v) = unsafe {
         (
             (*source_ptr).keys[split_point_idx].assume_init_read(),
             (*source_ptr).vals[split_point_idx].assume_init_read(),
         )
-    };
-
-    let right_box = match try_new_leaf() {
-        Ok(b) => b,
-        Err(e) => return Err((key, value, e)),
     };
 
     let old_len = unsafe { (*source_ptr).len as usize };
@@ -423,10 +417,7 @@ fn promote_split<'a, K, V>(
     mut split: sys::SplitResult<'a, K, V, sys::LeafOrInternal>,
     inserted_pos: (*mut sys::LeafNode<K, V>, usize),
     initial_right_ptr: NonNull<sys::LeafNode<K, V>>,
-) -> Result<
-    (sys::NodeRef<sys::Mut<'a>, K, V, sys::LeafOrInternal>, usize),
-    (K, V, TryBTreeMapEntryError),
-> {
+) -> InsertResult<'a, K, V> {
     let mut initial_right_wired = false;
     let mut last_allocated: Option<(NonNull<sys::LeafNode<K, V>>, usize)> = None;
 
