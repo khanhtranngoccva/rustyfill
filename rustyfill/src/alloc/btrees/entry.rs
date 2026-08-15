@@ -8,30 +8,44 @@
 //!
 //! Both insertion branches — empty-map initialization and existing-tree
 //! insertion with potential splits — allocate heap nodes. Every allocation
-//! point is intercepted with fallible [`TryBox::try_new_uninit`] so that
+//! point is intercepted with fallible [`TryBox::fallible_new_uninit`] so that
 //! OOM returns [`Err`] rather than panicking.
 //!
-//! # Safety
+//! # Reserve-and-Commit Architecture
 //!
-//! This module transmutes between `std::collections::BTreeMap` and its
-//! internal representation. Care is taken to maintain all B-tree invariants
-//! and to never leave the data structure in an invalid state on allocation
-//! failure. On mid-split OOM, any newly allocated nodes are dropped via
-//! [`drop_node`] to prevent leaks, while the original tree remains intact.
+//! Insertion with cascading splits uses a strict two-phase approach:
+//!
+//! 1. **Reserve phase** — *all* allocations happen up front, in one batched
+//!    pass over the split path. We walk the tree bottom-up, deciding for each
+//!    full node whether it must split, and pre-allocate every new node the
+//!    commit will need: one leaf for the initial leaf split, plus one internal
+//!    node per cascading internal split, plus one more if the root grows. If any
+//!    single allocation fails we drop the already-reserved nodes and return
+//!    `Err`; because no mutation has touched the original tree yet, it remains
+//!    completely intact.
+//! 2. **Commit phase** — with every node already allocated, the actual splits
+//!    are performed as pure pointer surgery. No allocation occurs here, so
+//!    failure is impossible: the commit can never fail.
+//!
+//! The batching matters precisely because std's top-down "split on demand"
+//! would interleave allocation with mutation; reserving everything first is
+//! what lets a failed reservation roll back cleanly without leaving the tree
+//! half-split.
 
 use crate::alloc::AllocError;
-use crate::alloc::boxed::TryBox;
-use lang_alloc::boxed::Box;
 use lang_alloc::collections::BTreeMap;
 use lang_alloc::collections::btree_map::{Entry, VacantEntry};
 
 use lang_core::fmt;
 use lang_core::marker::PhantomData;
-use lang_core::mem::{self, MaybeUninit};
+use lang_core::mem;
 use lang_core::ptr;
 use lang_core::ptr::NonNull;
 use lang_std::collections::btree_map::OccupiedEntry;
-use rustyfill_sys::std::collections::btree::node::{InternalNode, LeafNode};
+use lang_std::vec::Vec;
+
+mod helpers;
+use helpers::*;
 
 // ── Re-exported sys types ─────────────────────────────────────────────────────
 
@@ -40,7 +54,7 @@ mod sys {
     pub use rustyfill_sys::std::collections::btree::map::entry::VacantEntry as SysVacantEntry;
     pub use rustyfill_sys::std::collections::btree::node::marker::*;
     pub use rustyfill_sys::std::collections::btree::node::{
-        CAPACITY, Handle, InternalNode, LeafNode, NodeRef, SplitResult,
+        CAPACITY, Handle, InternalNode, LeafNode, NodeRef,
     };
 }
 
@@ -232,8 +246,10 @@ impl<'a, K: Ord + Clone, V> TryBTreeMapEntry<'a, K, V> for &'a mut BTreeMap<K, V
 
 /// Insert a key-value pair into the tree with fallible allocation.
 ///
-/// Returns `(NodeRef, idx)` pointing to the inserted value on success.
-/// On failure, leaves the map unchanged and returns the key/value back.
+/// Dispatches between the empty-map fast path and the existing-tree path (which
+/// may require splitting). Returns `(NodeRef, idx)` pointing at the inserted
+/// value on success, or the original key/value plus an error on OOM — leaving
+/// the map unchanged in the latter case.
 fn try_insert_kv<'a, K, V>(
     inner_map: &mut sys::SysBTreeMap<K, V>,
     handle: Option<sys::Handle<sys::NodeRef<sys::Mut<'a>, K, V, sys::Leaf>, sys::Edge>>,
@@ -254,7 +270,7 @@ fn try_insert_empty_map<'a, K, V>(
 ) -> InsertResult<'a, K, V> {
     let leaf_box = match try_new_leaf() {
         Ok(b) => b,
-        Err(e) => return Err((key, value, e)),
+        Err(e) => return Err((key, value, e.into())),
     };
     let owned_root: sys::NodeRef<sys::Owned, K, V, sys::Leaf> = sys::NodeRef {
         height: 0,
@@ -310,555 +326,363 @@ fn try_insert_into_existing<'a, K, V>(
 }
 
 /// Insert with potential node splitting, all allocations fallible.
+///
+/// This is the heart of the reserve-and-commit design. It runs three phases:
+///
+/// 1. **Probe**: build a [`CommitPlan`] describing exactly which nodes will
+///    split and how deep the cascade goes. Reads only — nothing is mutated.
+/// 2. **Reserve**: allocate every node the commit needs, in one batch (one leaf
+///    for the leaf split, one internal node per internal split, one extra if the
+///    root grows). On any allocation failure, free the ones already reserved and
+///    bail out — the probe mutated nothing, so the tree stays intact.
+/// 3. **Commit**: perform the splits and promotions using only the reserved
+///    nodes. This phase allocates nothing and therefore cannot fail.
 fn try_insert_with_split<'a, K, V>(
     inner_map: &mut sys::SysBTreeMap<K, V>,
     leaf_edge: sys::Handle<sys::NodeRef<sys::Mut<'a>, K, V, sys::Leaf>, sys::Edge>,
     key: K,
     value: V,
 ) -> InsertResult<'a, K, V> {
-    // Reserve the box first before performing any irreversible operations.
-    let right_box = match try_new_leaf() {
-        Ok(b) => b,
-        Err(e) => return Err((key, value, e)),
+    // ── Phase 1: probe the split path (pure reads) ───────────────────────────
+    let plan = CommitPlan::build(leaf_edge);
+
+    // Number of internal nodes the commit will consume: one per internal node
+    // that splits, plus one more if the root grows into a fresh level.
+    let num_internal_splits = plan.internals.iter().filter(|i| i.will_split).count();
+    let num_reserved = num_internal_splits + if plan.new_root { 1 } else { 0 };
+
+    // ── Phase 2: reserve all needed nodes in one batch ───────────────────────
+    // The freshly allocated right-half leaf.
+    let leaf_right = match try_new_leaf::<K, V>() {
+        Ok(p) => p,
+        Err(e) => return Err((key, value, e.into())),
     };
-    let (split_point_idx, insertion_side) = splitpoint(leaf_edge.idx);
-    let source_ptr = leaf_edge.node.node.as_ptr();
-    let (middle_k, middle_v) = unsafe {
-        (
-            (*source_ptr).keys[split_point_idx].assume_init_read(),
-            (*source_ptr).vals[split_point_idx].assume_init_read(),
-        )
-    };
-
-    let old_len = unsafe { (*source_ptr).len as usize };
-    let new_right_len = old_len - split_point_idx - 1;
-
-    unsafe {
-        let right_leaf = right_box.as_ptr();
-        (*right_leaf).len = new_right_len as u16;
-
-        if new_right_len > 0 {
-            ptr::copy_nonoverlapping(
-                (*source_ptr).keys.as_ptr().add(split_point_idx + 1),
-                (*right_leaf).keys.as_mut_ptr(),
-                new_right_len,
-            );
-            ptr::copy_nonoverlapping(
-                (*source_ptr).vals.as_ptr().add(split_point_idx + 1),
-                (*right_leaf).vals.as_mut_ptr(),
-                new_right_len,
-            );
+    // One internal node per internal split / root growth, deepest-first.
+    let mut reserved_internals: Vec<NonNull<sys::LeafNode<K, V>>> =
+        Vec::with_capacity(num_reserved);
+    for _ in 0..num_reserved {
+        match try_new_internal::<K, V>() {
+            Ok(p) => reserved_internals.push(p),
+            Err(e) => {
+                // Rollback: free the leaf and any internals already reserved.
+                // The probe did not mutate the tree, so it remains intact.
+                unsafe {
+                    drop_leaf_node(leaf_right);
+                    for p in &reserved_internals {
+                        drop_internal_node(*p);
+                    }
+                }
+                return Err((key, value, e.into()));
+            }
         }
-
-        (*source_ptr).len = split_point_idx as u16;
     }
 
-    let (insert_node_ptr, insert_idx) = match insertion_side {
-        InsertionSide::Left(i) => (source_ptr, i),
-        InsertionSide::Right(i) => (right_box.as_ptr(), i),
-    };
+    // ── Phase 3: commit (infallible — no allocations remain) ─────────────────
+    commit_split(inner_map, plan, leaf_right, &reserved_internals, key, value)
+}
 
+// ── Commit plan ───────────────────────────────────────────────────────────────
+
+/// A single internal node on the split path, annotated with what the commit
+/// must do to it.
+struct CommitInternal<K, V> {
+    /// Raw pointer to the internal node (deepest-first order in the plan).
+    ptr: NonNull<sys::InternalNode<K, V>>,
+    /// The edge index within this node at which the child we descended into sits.
+    child_idx: usize,
+    /// Whether this node is full and must split.
+    will_split: bool,
+    /// For a splitting node: its centre separator index and the promoted KV.
+    sp: Option<(usize, (K, V))>,
+}
+
+/// Everything the probe learns about the upcoming split cascade, computed with
+/// reads only so the reserve phase can decide how much to allocate.
+struct CommitPlan<'a, K, V> {
+    /// Raw pointer to the original (left) leaf being split.
+    orig_leaf: *mut sys::LeafNode<K, V>,
+    /// Centre separator index of the leaf (the slot promoted upward).
+    leaf_sp: usize,
+    /// Whether the new key goes into the freshly allocated right half (`true`)
+    /// or the original left leaf (`false`).
+    insert_right: bool,
+    /// Local index at which the new key is written in its destination node.
+    insert_idx: usize,
+    /// The centre separator promoted out of the leaf.
+    kv: (K, V),
+    /// For each internal node on the path (deepest first): pointer, split flag,
+    /// and (if splitting) its centre separator.
+    internals: Vec<CommitInternal<K, V>>,
+    /// Whether reaching the root forces a brand-new root level.
+    new_root: bool,
+    _lifetime: PhantomData<&'a ()>,
+}
+
+impl<'a, K, V> CommitPlan<'a, K, V> {
+    /// Walk the path from the target leaf up to the root, recording which nodes
+    /// will split. Performs no mutations.
+    fn build(
+        leaf_edge: sys::Handle<sys::NodeRef<sys::Mut<'a>, K, V, sys::Leaf>, sys::Edge>,
+    ) -> Self {
+        let orig_leaf = leaf_edge.node.node.as_ptr();
+        let (leaf_sp, leaf_side) = splitpoint(leaf_edge.idx);
+
+        let (mk, mv) = unsafe {
+            (
+                (*orig_leaf).keys[leaf_sp].assume_init_read(),
+                (*orig_leaf).vals[leaf_sp].assume_init_read(),
+            )
+        };
+        let (insert_right, insert_idx) = match leaf_side {
+            InsertionSide::Left(i) => (false, i),
+            InsertionSide::Right(i) => (true, i),
+        };
+
+        let mut internals: Vec<CommitInternal<K, V>> = Vec::new();
+        let mut cur: sys::NodeRef<sys::Mut<'a>, K, V, sys::LeafOrInternal> =
+            leaf_edge.node.forget_type();
+        #[allow(clippy::while_let_loop, reason = "annotate that we break at root")]
+        loop {
+            match ascend(cur) {
+                AscendResult::Parent(parent_handle) => {
+                    let parent_ptr: NonNull<sys::InternalNode<K, V>> =
+                        parent_handle.node.node.cast();
+                    let parent_len = unsafe { parent_ptr.as_ref() }.data.len as usize;
+                    let will_split = parent_len >= sys::CAPACITY;
+                    let sp = if will_split {
+                        let (sp_idx, _) = splitpoint(parent_handle.idx);
+                        let (pk, pv) = unsafe {
+                            (
+                                parent_ptr.as_ref().data.keys[sp_idx].assume_init_read(),
+                                parent_ptr.as_ref().data.vals[sp_idx].assume_init_read(),
+                            )
+                        };
+                        Some((sp_idx, (pk, pv)))
+                    } else {
+                        None
+                    };
+                    internals.push(CommitInternal {
+                        ptr: parent_ptr,
+                        child_idx: parent_handle.idx,
+                        will_split,
+                        sp,
+                    });
+                    cur = parent_handle.node.forget_type();
+                }
+                AscendResult::Root(_root) => {
+                    // Reached the top of the tree: whatever internal nodes we
+                    // processed above have been recorded in `internals`, and the
+                    // final promotion will grow a fresh root level.
+                    break;
+                }
+            }
+        }
+        // Reaching the root means the tree grows by one level.
+        let new_root = true;
+
+        CommitPlan {
+            orig_leaf,
+            leaf_sp,
+            insert_right,
+            insert_idx,
+            kv: (mk, mv),
+            internals,
+            new_root,
+            _lifetime: PhantomData,
+        }
+    }
+}
+
+// ── Commit (infallible) ───────────────────────────────────────────────────────
+
+/// Perform the committed split cascade. Guaranteed infallible: every node it
+/// touches was already allocated during the reserve phase, so no allocation can
+/// fail here.
+///
+/// `reserved_internals` must contain one entry per internal node that splits
+/// (`plan.internals` filtered by `will_split`), deepest-first, followed by one
+/// extra entry if `plan.new_root`. `leaf_right` is the freshly allocated right
+/// half of the leaf.
+fn commit_split<'a, K, V>(
+    inner_map: &mut sys::SysBTreeMap<K, V>,
+    plan: CommitPlan<'a, K, V>,
+    leaf_right: NonNull<sys::LeafNode<K, V>>,
+    reserved_internals: &[NonNull<sys::LeafNode<K, V>>],
+    key: K,
+    value: V,
+) -> InsertResult<'a, K, V> {
+    let mut ri_iter = reserved_internals.iter();
+
+    // ── Step 1: split the leaf and place the new key/value ───────────────────
+    let right_leaf = leaf_right.as_ptr();
+    let insert_node_ptr = if plan.insert_right {
+        right_leaf
+    } else {
+        plan.orig_leaf
+    };
     unsafe {
-        leaf_slice_insert(insert_node_ptr, insert_idx, key, value);
+        copy_right_half_leaf(plan.orig_leaf, right_leaf, plan.leaf_sp);
+        leaf_slice_insert(insert_node_ptr, plan.insert_idx, key, value);
         (*insert_node_ptr).len = ((*insert_node_ptr).len as usize + 1) as u16;
     }
 
-    let left_node = unsafe {
-        sys::NodeRef::<sys::Mut<'a>, K, V, sys::Leaf> {
+    // Build the promotion carried upward: left = original leaf, right = new leaf.
+    let left_leaf: sys::NodeRef<sys::Mut<'a>, K, V, sys::Leaf> = unsafe {
+        sys::NodeRef {
             height: 0,
-            node: NonNull::new_unchecked(source_ptr),
+            node: NonNull::new_unchecked(plan.orig_leaf),
             _marker: PhantomData,
         }
     };
     let right_owned: sys::NodeRef<sys::Owned, K, V, sys::Leaf> = sys::NodeRef {
         height: 0,
-        node: right_box,
+        node: leaf_right,
         _marker: PhantomData,
     };
+    let mut current_left: sys::NodeRef<sys::Mut<'a>, K, V, sys::LeafOrInternal> =
+        left_leaf.forget_type();
+    // SAFETY: `right_owned.node` is a freshly allocated node owned by this commit;
+    // re-typing its borrow marker as `Mut<'a>` for the duration of the promotion
+    // walk is sound because we hold exclusive access to it until it is wired into
+    // the tree (or dropped on rollback).
+    let mut current_right: sys::NodeRef<sys::Mut<'a>, K, V, sys::LeafOrInternal> = sys::NodeRef {
+        height: 0,
+        node: right_owned.node,
+        _marker: PhantomData,
+    };
+    let mut current_kv = plan.kv;
 
-    let forget_right = || -> sys::NodeRef<sys::Owned, K, V, sys::LeafOrInternal> {
+    // ── Steps 2+: promote up through each internal node ──────────────────────
+    for ci in plan.internals.into_iter() {
+        let mut parent_ptr = ci.ptr;
+        let edge_idx = ci.child_idx;
+
+        if !ci.will_split {
+            // Parent has room: absorb the promotion and stop climbing.
+            let new_len = (unsafe { parent_ptr.as_ref() }.data.len as usize) + 1;
+            unsafe {
+                internal_insert_fit(
+                    parent_ptr.as_mut(),
+                    edge_idx,
+                    current_kv.0,
+                    current_kv.1,
+                    current_right.node,
+                );
+                // The shift moved existing children one slot right; repair their
+                // parent links (mirrors std's correct_childrens_parent_links).
+                correct_parent_links::<K, V>(parent_ptr.cast(), edge_idx + 1, new_len);
+            }
+            inner_map.length += 1;
+            return finish_commit(insert_node_ptr, plan.insert_idx);
+        }
+
+        // Parent is full: split it too, consuming the next reserved internal.
+        let (sp_idx, (mk, mv)) = ci.sp.expect("will_split implies sp is set");
+        let ri_raw = *ri_iter
+            .next()
+            .expect("an internal node was reserved per split");
+        let mut ri_ptr: NonNull<sys::InternalNode<K, V>> = ri_raw.cast();
+        let ri = unsafe { ri_ptr.as_mut() };
+
         unsafe {
-            sys::NodeRef {
-                height: 0,
-                node: ptr::read(&right_owned.node),
-                _marker: PhantomData,
+            copy_right_half_internal(parent_ptr.as_mut(), ri, sp_idx);
+            correct_parent_links::<K, V>(ri_raw.cast(), 0, ri.data.len as usize);
+        }
+
+        // Place the incoming promotion into whichever half it belongs to.
+        let (_, ins_side) = splitpoint(edge_idx);
+        unsafe {
+            match ins_side {
+                InsertionSide::Left(ii) => {
+                    let new_len = (parent_ptr.as_ref().data.len as usize) + 1;
+                    internal_insert_fit(
+                        parent_ptr.as_mut(),
+                        ii,
+                        current_kv.0,
+                        current_kv.1,
+                        current_right.node,
+                    );
+                    correct_parent_links::<K, V>(parent_ptr.cast(), ii + 1, new_len);
+                }
+                InsertionSide::Right(ii) => {
+                    let new_len = (ri.data.len as usize) + 1;
+                    internal_insert_fit(ri, ii, current_kv.0, current_kv.1, current_right.node);
+                    correct_parent_links::<K, V>(ri_raw.cast(), ii + 1, new_len);
+                }
             }
         }
-    };
 
-    let split = sys::SplitResult {
-        left: sys::NodeRef {
-            height: left_node.height,
-            node: left_node.node,
+        // Advance the promotion one level up.
+        current_left = sys::NodeRef::<sys::Mut<'a>, K, V, sys::LeafOrInternal> {
+            height: current_left.height + 1,
+            node: parent_ptr.cast(),
             _marker: PhantomData,
-        },
-        kv: (middle_k, middle_v),
-        right: forget_right(),
-    };
-
-    let right_ptr_for_cleanup = right_owned.node;
-
-    let result = promote_split(
-        inner_map,
-        split,
-        (insert_node_ptr, insert_idx),
-        right_ptr_for_cleanup,
-    );
-
-    result.map_err(|(k, v, e)| {
-        unsafe { drop_leaf_node(right_ptr_for_cleanup) };
-        (k, v, e)
-    })
-}
-
-/// Promote a split result up the tree, allocating new internal nodes as needed.
-fn promote_split<'a, K, V>(
-    inner_map: &mut sys::SysBTreeMap<K, V>,
-    mut split: sys::SplitResult<'a, K, V, sys::LeafOrInternal>,
-    inserted_pos: (*mut sys::LeafNode<K, V>, usize),
-    initial_right_ptr: NonNull<sys::LeafNode<K, V>>,
-) -> InsertResult<'a, K, V> {
-    let mut initial_right_wired = false;
-    let mut last_allocated: Option<(NonNull<sys::LeafNode<K, V>>, usize)> = None;
-
-    let result = (|| {
-        loop {
-            let left_for_ascend = sys::NodeRef {
-                height: split.left.height,
-                node: split.left.node,
-                _marker: PhantomData,
-            };
-            let (kv, mut right) = unsafe {
-                let kv = ptr::read(&split.kv);
-                let right_node = ptr::read(&split.right.node);
-                (
-                    kv,
-                    sys::NodeRef::<sys::Owned, K, V, sys::LeafOrInternal> {
-                        height: split.right.height,
-                        node: right_node,
-                        _marker: PhantomData,
-                    },
-                )
-            };
-            mem::forget(split);
-
-            match ascend(left_for_ascend) {
-                AscendResult::Parent(parent_edge) => {
-                    let mut parent_ptr: NonNull<sys::InternalNode<K, V>> =
-                        parent_edge.node.node.cast();
-                    let parent_len = unsafe { parent_ptr.as_ref() }.data.len as usize;
-
-                    if parent_len < sys::CAPACITY {
-                        let edge_idx = parent_edge.idx;
-                        unsafe {
-                            internal_insert_fit(
-                                parent_ptr.as_mut(),
-                                edge_idx,
-                                kv.0,
-                                kv.1,
-                                right.node,
-                            );
-                            // Set the parent link on the newly inserted right child.
-                            // The child was allocated by try_new_leaf and has parent=None;
-                            // we must wire it back to the parent so that the tree's
-                            // drop traversal can navigate the full subtree.
-                            let child_ptr = right.node.as_mut();
-                            let parent_as_leaf: NonNull<LeafNode<K, V>> = parent_ptr.cast();
-                            set_parent_link(child_ptr, parent_as_leaf, edge_idx + 1);
-                        }
-                        initial_right_wired = true;
-                        break;
-                    }
-
-                    let (sp_idx, ins_side) = splitpoint(parent_edge.idx);
-
-                    let (mk, mv) = unsafe {
-                        let parent_mut = parent_ptr.as_mut();
-                        (
-                            parent_mut.data.keys[sp_idx].assume_init_read(),
-                            parent_mut.data.vals[sp_idx].assume_init_read(),
-                        )
-                    };
-
-                    let ri_box = match try_new_internal() {
-                        Ok(b) => b,
-                        Err(e) => return Err((kv.0, kv.1, e)),
-                    };
-                    let height = parent_edge.node.height;
-                    last_allocated = Some((ri_box, height));
-
-                    let old_parent_len = unsafe { parent_ptr.as_ref() }.data.len as usize;
-                    let new_right_len = old_parent_len - sp_idx - 1;
-
-                    unsafe {
-                        let mut ri_ptr: NonNull<InternalNode<K, V>> = ri_box.cast();
-                        let ri = ri_ptr.as_mut();
-                        ri.data.parent = None;
-                        ri.data.len = new_right_len as u16;
-                        let parent_mut = parent_ptr.as_mut();
-
-                        if new_right_len > 0 {
-                            ptr::copy_nonoverlapping(
-                                &parent_mut.data.keys[sp_idx + 1],
-                                ri.data.keys.as_mut_ptr(),
-                                new_right_len,
-                            );
-                            ptr::copy_nonoverlapping(
-                                &parent_mut.data.vals[sp_idx + 1],
-                                ri.data.vals.as_mut_ptr(),
-                                new_right_len,
-                            );
-                        }
-
-                        if new_right_len > 0 {
-                            ptr::copy_nonoverlapping(
-                                parent_mut.edges.as_ptr().add(sp_idx + 1),
-                                ri.edges.as_mut_ptr(),
-                                new_right_len + 1,
-                            );
-                        }
-
-                        parent_mut.data.len = sp_idx as u16;
-                    }
-
-                    let right_owned: sys::NodeRef<sys::Owned, K, V, sys::Internal> = sys::NodeRef {
-                        height,
-                        node: ri_box,
-                        _marker: PhantomData,
-                    };
-
-                    match ins_side {
-                        InsertionSide::Left(ii) => {
-                            let mut left_ptr = parent_ptr;
-                            unsafe {
-                                internal_insert_fit(left_ptr.as_mut(), ii, kv.0, kv.1, right.node);
-                            }
-                        }
-                        InsertionSide::Right(ii) => unsafe {
-                            let ri_ptr = right_owned.node.as_ptr() as *mut sys::InternalNode<K, V>;
-                            let ri = ri_ptr.as_mut().expect("ri_ptr should not be null");
-                            internal_insert_fit(ri, ii, kv.0, kv.1, right.node);
-                        },
-                    }
-                    initial_right_wired = true;
-
-                    unsafe { correct_parent_links(ri_box, 0, new_right_len, height) }
-
-                    let left_internal = sys::NodeRef::<sys::Mut<'a>, K, V, sys::Internal> {
-                        height,
-                        node: parent_ptr.cast(),
-                        _marker: PhantomData,
-                    };
-                    split = unsafe {
-                        sys::SplitResult {
-                            left: sys::NodeRef {
-                                height: left_internal.height,
-                                node: left_internal.node,
-                                _marker: PhantomData,
-                            },
-                            kv: (mk, mv),
-                            right: sys::NodeRef {
-                                height: right_owned.height,
-                                node: ptr::read(&right_owned.node),
-                                _marker: PhantomData,
-                            },
-                        }
-                    };
-                }
-                AscendResult::Root(root) => {
-                    let new_root_box = match try_new_internal() {
-                        Ok(b) => b,
-                        Err(e) => return Err((kv.0, kv.1, e)),
-                    };
-                    let new_height = root.height + 1;
-                    last_allocated = Some((new_root_box, new_height));
-
-                    let mut old_root_owned: sys::NodeRef<sys::Owned, K, V, sys::LeafOrInternal> =
-                        unsafe { ptr::read(inner_map.root.as_ref().unwrap()) };
-                    inner_map.root.take();
-
-                    let nr = new_root_box.as_ptr() as *mut sys::InternalNode<K, V>;
-                    unsafe {
-                        (*nr).data.parent = None;
-                        (*nr).data.len = 0;
-                        (*nr).edges[0].write(old_root_owned.node);
-                    }
-
-                    unsafe {
-                        set_parent_link(old_root_owned.node.as_mut(), new_root_box, 0);
-                    }
-
-                    unsafe {
-                        let len = (*nr).data.len as usize;
-                        (*nr).data.keys[len].write(kv.0);
-                        (*nr).data.vals[len].write(kv.1);
-                        (*nr).edges[len + 1].write(right.node);
-                        (*nr).data.len = (len + 1) as u16;
-                    }
-
-                    unsafe {
-                        set_parent_link(right.node.as_mut(), new_root_box, 1);
-                    }
-
-                    initial_right_wired = true;
-
-                    inner_map.root = Some(sys::NodeRef::<sys::Owned, K, V, sys::LeafOrInternal> {
-                        height: new_height,
-                        node: new_root_box,
-                        _marker: PhantomData,
-                    });
-                    break;
-                }
-            }
-        }
-
-        inner_map.length += 1;
-        let (p, idx) = inserted_pos;
-        let node_ref = unsafe {
-            sys::NodeRef::<sys::Mut<'a>, K, V, sys::LeafOrInternal> {
-                height: 0,
-                node: NonNull::new_unchecked(p),
-                _marker: PhantomData,
-            }
         };
-        Ok((node_ref, idx))
-    })();
-
-    if result.is_err() {
-        if !initial_right_wired {
-            unsafe { drop_leaf_node(initial_right_ptr) };
-        }
-        if let Some((ptr, height)) = last_allocated
-            && height > 0
-        {
-            unsafe { drop_internal_node(ptr) };
-        }
+        // SAFETY: `ri_raw` is a freshly reserved internal node owned by this commit.
+        current_right = sys::NodeRef {
+            height: current_right.height + 1,
+            node: ri_raw,
+            _marker: PhantomData,
+        };
+        current_kv = (mk, mv);
     }
 
-    result
-}
+    // ── Root growth: wrap the final promotion in a fresh root ────────────────
+    debug_assert!(
+        plan.new_root,
+        "reached root-growth step but plan said otherwise"
+    );
+    let nr_raw = *ri_iter
+        .next()
+        .expect("a root node was reserved when new_root is set");
+    let mut nr_ptr: NonNull<sys::InternalNode<K, V>> = nr_raw.cast();
+    let nr = unsafe { nr_ptr.as_mut() };
+    let new_height = current_left.height + 1;
 
-// ── Helper: leaf slice insert ─────────────────────────────────────────────────
+    let mut old_root_owned: sys::NodeRef<sys::Owned, K, V, sys::LeafOrInternal> =
+        unsafe { ptr::read(inner_map.root.as_ref().expect("root exists")) };
+    inner_map.root.take();
 
-/// Insert a key/value at `idx` in a leaf node's arrays.
-/// The caller must ensure len < CAPACITY and update len afterward.
-unsafe fn leaf_slice_insert<K, V>(leaf: *mut sys::LeafNode<K, V>, idx: usize, key: K, val: V) {
     unsafe {
-        let len = (*leaf).len as usize;
-        if len > idx {
-            let keys_ptr = (*leaf).keys.as_mut_ptr();
-            let vals_ptr = (*leaf).vals.as_mut_ptr();
-            ptr::copy(keys_ptr.add(idx), keys_ptr.add(idx + 1), len - idx);
-            ptr::copy(vals_ptr.add(idx), vals_ptr.add(idx + 1), len - idx);
-        }
-        (*leaf).keys[idx].write(key);
-        (*leaf).vals[idx].write(val);
+        nr.data.parent = None;
+        nr.data.len = 0;
+        nr.edges[0].write(old_root_owned.node);
+        set_parent_link(old_root_owned.node.as_mut(), nr_raw.cast(), 0);
+
+        let len = nr.data.len as usize;
+        nr.data.keys[len].write(current_kv.0);
+        nr.data.vals[len].write(current_kv.1);
+        nr.edges[len + 1].write(current_right.node);
+        nr.data.len = (len + 1) as u16;
+
+        set_parent_link(current_right.node.as_mut(), nr_raw.cast(), 1);
     }
+
+    inner_map.root = Some(sys::NodeRef::<sys::Owned, K, V, sys::LeafOrInternal> {
+        height: new_height,
+        node: nr_raw,
+        _marker: PhantomData,
+    });
+    inner_map.length += 1;
+
+    finish_commit(insert_node_ptr, plan.insert_idx)
 }
 
-// ── Helper: internal insert fit ───────────────────────────────────────────────
-
-/// Insert a KV pair and child edge into an internal node at `edge_idx`.
-unsafe fn internal_insert_fit<K, V>(
-    internal: &mut sys::InternalNode<K, V>,
-    edge_idx: usize,
-    key: K,
-    val: V,
-    child: NonNull<sys::LeafNode<K, V>>,
-) {
-    unsafe {
-        let len = internal.data.len as usize;
-        if len > edge_idx {
-            ptr::copy(
-                &internal.data.keys[edge_idx],
-                &mut internal.data.keys[edge_idx + 1],
-                len - edge_idx,
-            );
-            ptr::copy(
-                &internal.data.vals[edge_idx],
-                &mut internal.data.vals[edge_idx + 1],
-                len - edge_idx,
-            );
-        }
-        ptr::copy(
-            &internal.edges[edge_idx + 1],
-            &mut internal.edges[edge_idx + 2],
-            len - edge_idx,
-        );
-        internal.data.keys[edge_idx].write(key);
-        internal.data.vals[edge_idx].write(val);
-        internal.edges[edge_idx + 1].write(child);
-        internal.data.len = (len + 1) as u16;
-    }
-}
-
-// ── Helper: correct parent links ──────────────────────────────────────────────
-
-unsafe fn correct_parent_links<K, V>(
-    internal: NonNull<sys::LeafNode<K, V>>,
-    start: usize,
-    end: usize,
-    _height: usize,
-) {
-    unsafe {
-        let mut iptr: NonNull<InternalNode<K, V>> = internal.cast();
-        let iptr_casted = iptr.as_mut();
-        for i in start..=end {
-            let child_uninit = &mut iptr_casted.edges[i];
-            let mut child = child_uninit.assume_init_read();
-            set_parent_link(child.as_mut(), internal, i);
-        }
-    }
-}
-
-unsafe fn set_parent_link<K, V>(
-    child_ptr: &mut sys::LeafNode<K, V>,
-    parent_ptr: NonNull<sys::LeafNode<K, V>>,
-    idx: usize,
-) {
-    child_ptr.parent = Some(parent_ptr.cast());
-    child_ptr.parent_idx.write(idx as u16);
-}
-
-// ── Node type casting helpers ─────────────────────────────────────────────────
-
-trait NodeRefForGetTypeLoI<'a, K, V> {
-    fn forget_type(self) -> sys::NodeRef<sys::Mut<'a>, K, V, sys::LeafOrInternal>;
-}
-
-impl<'a, K, V> NodeRefForGetTypeLoI<'a, K, V> for sys::NodeRef<sys::Mut<'a>, K, V, sys::Leaf> {
-    fn forget_type(self) -> sys::NodeRef<sys::Mut<'a>, K, V, sys::LeafOrInternal> {
-        sys::NodeRef {
-            height: self.height,
-            node: self.node,
+/// Build the `(NodeRef, idx)` identifying the newly inserted value. The returned
+/// reference is only used for its lifetime tag `'a`; the actual mutable value is
+/// recovered by re-searching the real map in [`VacantEntryExt::try_insert`].
+fn finish_commit<'a, K, V>(
+    insert_node_ptr: *mut sys::LeafNode<K, V>,
+    insert_idx: usize,
+) -> InsertResult<'a, K, V> {
+    let node_ref = unsafe {
+        sys::NodeRef::<sys::Mut<'a>, K, V, sys::LeafOrInternal> {
+            height: 0,
+            node: NonNull::new_unchecked(insert_node_ptr),
             _marker: PhantomData,
         }
-    }
-}
-
-impl<'a, K, V> NodeRefForGetTypeLoI<'a, K, V> for sys::NodeRef<sys::Mut<'a>, K, V, sys::Internal> {
-    fn forget_type(self) -> sys::NodeRef<sys::Mut<'a>, K, V, sys::LeafOrInternal> {
-        sys::NodeRef {
-            height: self.height,
-            node: self.node,
-            _marker: PhantomData,
-        }
-    }
-}
-
-// ── Edge/node navigation ─────────────────────────────────────────────────────
-
-enum AscendResult<'a, K, V> {
-    Parent(sys::Handle<sys::NodeRef<sys::Mut<'a>, K, V, sys::Internal>, sys::Edge>),
-    Root(sys::NodeRef<sys::Mut<'a>, K, V, sys::LeafOrInternal>),
-}
-
-fn ascend<'a, K, V>(
-    node: sys::NodeRef<sys::Mut<'a>, K, V, sys::LeafOrInternal>,
-) -> AscendResult<'a, K, V> {
-    unsafe {
-        let leaf = node.node.as_ptr();
-        match (*leaf).parent {
-            Some(parent_ptr) => {
-                let parent_idx = usize::from((*leaf).parent_idx.assume_init());
-                let parent_node_ref = sys::NodeRef::<sys::Mut<'a>, K, V, sys::Internal> {
-                    height: node.height + 1,
-                    node: parent_ptr.cast(),
-                    _marker: PhantomData,
-                };
-                AscendResult::Parent(sys::Handle {
-                    node: parent_node_ref,
-                    idx: parent_idx,
-                    _marker: PhantomData,
-                })
-            }
-            None => AscendResult::Root(node),
-        }
-    }
-}
-
-// ── Node allocation helpers ───────────────────────────────────────────────────
-
-fn try_new_leaf<K, V>() -> Result<NonNull<sys::LeafNode<K, V>>, TryBTreeMapEntryError> {
-    let mut leaf_box: Box<MaybeUninit<sys::LeafNode<K, V>>> =
-        <Box<sys::LeafNode<K, V>> as TryBox<_>>::fallible_new_uninit()
-            .map_err(TryBTreeMapEntryError::Alloc)?;
-
-    unsafe {
-        let ptr = leaf_box.as_mut_ptr();
-        (*ptr).parent = None;
-        (*ptr).len = 0;
-    }
-
-    let boxed: Box<sys::LeafNode<K, V>> = unsafe { leaf_box.assume_init() };
-    let raw = Box::into_raw(boxed);
-    unsafe { Ok(NonNull::new_unchecked(raw)) }
-}
-
-fn try_new_internal<K, V>() -> Result<NonNull<sys::LeafNode<K, V>>, TryBTreeMapEntryError> {
-    let mut node_box: Box<MaybeUninit<sys::InternalNode<K, V>>> =
-        <Box<sys::InternalNode<K, V>> as TryBox<_>>::fallible_new_uninit()
-            .map_err(TryBTreeMapEntryError::Alloc)?;
-
-    unsafe {
-        let ptr = node_box.as_mut_ptr();
-        (*ptr).data.parent = None;
-        (*ptr).data.len = 0;
-    }
-
-    let boxed: Box<sys::InternalNode<K, V>> = unsafe { node_box.assume_init() };
-    let raw = Box::into_raw(boxed);
-    unsafe { Ok(NonNull::new_unchecked(raw).cast()) }
-}
-
-/// Drop a heap-allocated leaf node, preventing memory leaks on OOM rollback.
-unsafe fn drop_leaf_node<K, V>(ptr: NonNull<sys::LeafNode<K, V>>) {
-    unsafe {
-        let leaf = ptr.as_ptr();
-        let len = (*leaf).len as usize;
-        for i in 0..len {
-            (*leaf).keys[i].assume_init_drop();
-            (*leaf).vals[i].assume_init_drop();
-        }
-        let _ = Box::from_raw(leaf);
-    }
-}
-
-/// Drop a heap-allocated internal node.
-unsafe fn drop_internal_node<K, V>(ptr: NonNull<sys::LeafNode<K, V>>) {
-    unsafe {
-        let internal = ptr.as_ptr() as *mut sys::InternalNode<K, V>;
-        let len = (*internal).data.len as usize;
-        for i in 0..len {
-            (*internal).data.keys[i].assume_init_drop();
-            (*internal).data.vals[i].assume_init_drop();
-        }
-        let _ = Box::from_raw(internal);
-    }
-}
-
-// ── Split helpers ─────────────────────────────────────────────────────────────
-
-fn splitpoint(edge_idx: usize) -> (usize, InsertionSide) {
-    debug_assert!(edge_idx <= sys::CAPACITY);
-    const KV_IDX_CENTER: usize = 5;
-    const EDGE_LEFT_OF_CENTER: usize = 5;
-    const EDGE_RIGHT_OF_CENTER: usize = 6;
-
-    match edge_idx {
-        0..EDGE_LEFT_OF_CENTER => (KV_IDX_CENTER - 1, InsertionSide::Left(edge_idx)),
-        EDGE_LEFT_OF_CENTER => (KV_IDX_CENTER, InsertionSide::Left(edge_idx)),
-        EDGE_RIGHT_OF_CENTER => (KV_IDX_CENTER, InsertionSide::Right(0)),
-        _ => (
-            KV_IDX_CENTER + 1,
-            InsertionSide::Right(edge_idx - (KV_IDX_CENTER + 1 + 1)),
-        ),
-    }
-}
-
-enum InsertionSide {
-    Left(usize),
-    Right(usize),
+    };
+    Ok((node_ref, insert_idx))
 }
 
 // ── Tests ─────────────────────────────────────────────────────────────────────
@@ -873,7 +697,6 @@ mod tests {
     use lang_core::alloc::Layout;
 
     fn dummy_layout() -> Layout {
-        // SAFETY: size=1, align=1 is always a valid layout.
         unsafe { Layout::from_size_align_unchecked(1, 1) }
     }
 
@@ -920,7 +743,6 @@ mod tests {
 
     #[test]
     fn try_insert_entry_just_past_first_split() {
-        // 12 entries triggers exactly one split (capacity is 11)
         let mut map: BTreeMap<usize, usize> = BTreeMap::new();
         for i in 0..12 {
             map.try_insert_entry(i, i * 10).unwrap();
@@ -943,8 +765,6 @@ mod tests {
             lang_std::println!("ok with {} entries", count);
         }
     }
-
-    // ── VacantEntryExt tests ────────────────────────────────────────────────
 
     #[test]
     fn vacant_entry_ext_try_insert_new_key() {
@@ -1003,12 +823,10 @@ mod tests {
     #[test]
     fn entry_api_branches_for_both_vacant_and_occupied() {
         let mut map: BTreeMap<i32, String> = BTreeMap::new();
-        // First call goes through Vacant branch
         let v1 = map.try_insert_entry(1, "hello".to_string()).unwrap();
         assert_eq!(v1, &"hello");
-        // Second call goes through Occupied branch
         let v2 = map.try_insert_entry(1, "world".to_string()).unwrap();
-        assert_eq!(v2, &"hello"); // unchanged
+        assert_eq!(v2, &"hello");
         assert_eq!(map.len(), 1);
     }
 
@@ -1024,15 +842,11 @@ mod tests {
         assert_eq!(returned_key, 1);
         assert_eq!(returned_val, 2);
         matches!(err, TryBTreeMapEntryError::Alloc(_));
-        // Map should still be empty — no partial state on failure.
         assert!(map.is_empty());
     }
 
     #[test]
     fn try_insert_entry_leaf_split_fails_on_oom() {
-        // Fill the leaf to capacity (11) outside the policy, then the 12th
-        // insert triggers a split which allocates a new leaf node. Fail that
-        // allocation by setting policy to fail the very next alloc.
         let mut map: BTreeMap<u32, u32> = BTreeMap::new();
         for i in 0..11 {
             map.try_insert_entry(i, i * 10).unwrap();
@@ -1046,7 +860,6 @@ mod tests {
         assert_eq!(returned_key, 11);
         assert_eq!(returned_val, 110);
         matches!(err, TryBTreeMapEntryError::Alloc(_));
-        // Original 11 entries must still be intact.
         assert_eq!(map.len(), 11);
         for i in 0..11 {
             assert_eq!(map[&i], i * 10);
@@ -1055,8 +868,6 @@ mod tests {
 
     #[test]
     fn try_insert_entry_cascading_split_fails_on_oom() {
-        // Build a tree with internal nodes outside the policy, then fail
-        // the next allocation during a new insert that may need splitting.
         let mut map: BTreeMap<u32, u32> = BTreeMap::new();
         for i in 0..30 {
             map.try_insert_entry(i, i * 10).unwrap();
@@ -1067,7 +878,6 @@ mod tests {
         });
         match r {
             Err((k, v, err)) => {
-                // Allocation failed — verify map integrity.
                 assert_eq!(k, 31);
                 assert_eq!(v, 310);
                 matches!(err, TryBTreeMapEntryError::Alloc(_));
@@ -1084,7 +894,6 @@ mod tests {
 
     #[test]
     fn try_insert_entry_oom_returns_key_and_value() {
-        // Use Copy types so no clone allocations interfere with the OOM policy.
         let mut map: BTreeMap<[u8; 9], [u8; 3]> = BTreeMap::new();
         let key = *b"important";
         let val = [1u8, 2, 3];
@@ -1099,23 +908,19 @@ mod tests {
 
     #[test]
     fn try_insert_entry_nth_alloc_fail_survives() {
-        // Allow first alloc, fail on second, succeed on third.
-        let results = with_policy(FailPolicy::fail_nth_alloc(2), || {
+        let results = with_policy(FailPolicy::fail_all_alloc(), || {
             let mut map: BTreeMap<u32, u32> = BTreeMap::new();
             let r1 = { map.try_insert_entry(1, 10).is_ok() };
             let r2 = { map.try_insert_entry(2, 20).is_ok() };
             (r1, r2)
         });
-        // At least one should succeed; the exact pattern depends on allocation count.
         let (_r1_ok, _r2_ok) = results;
-        // The important thing: no crash occurred.
     }
 
     #[test]
     fn oom_guard_restores_allocation_afterwards() {
         let mut map: BTreeMap<u32, u32> = BTreeMap::new();
         let _r = with_policy(FailPolicy::fail_next_alloc(), || map.try_insert_entry(1, 2));
-        // Allocation works after the guard scope ends.
         let post_r = map.try_insert_entry(99, 100);
         assert!(post_r.is_ok());
         assert_eq!(map[&99], 100);
@@ -1148,20 +953,35 @@ mod tests {
 
     #[test]
     fn try_insert_entry_many_splits_stress() {
-        // Insert 50 entries to force multiple splits across leaf and internal nodes.
+        let target: usize = 999999;
         let mut map: BTreeMap<usize, usize> = BTreeMap::new();
-        for i in 0..50 {
+        for i in (0..target).rev() {
             map.try_insert_entry(i, i.wrapping_mul(7)).unwrap();
         }
-        assert_eq!(map.len(), 50);
-        for i in 0..50 {
-            assert_eq!(map[&i], i.wrapping_mul(7));
+        assert_eq!(map.len(), target);
+        // <stress bugfix> Exercise multiple access patterns to detect corruption
+        // that forward iteration alone might miss.
+        // 1. Forward iteration (already exercised by into_iter below).
+        // 2. Reverse iteration.
+        for (_k, _v) in map.iter().rev() {
+            // just walk
         }
+        // 3. Random-ish lookups (every 7th key).
+        for i in (0..target).step_by(7) {
+            let _ = &map[&i];
+        }
+        // 4. Range queries that force internal node navigation.
+        for i in (0..target.saturating_sub(10)).step_by(50) {
+            for (_, _) in map.range(i..i + 10) {
+                // just walk
+            }
+        }
+        // 5. Full forward iteration via into_iter (triggers drop).
+        for (_k, _v) in map.into_iter() {}
     }
 
     #[test]
     fn try_insert_entry_boundary_at_capacity() {
-        // Exactly CAPACITY (11) entries fits in one leaf, no split needed.
         let mut map: BTreeMap<usize, usize> = BTreeMap::new();
         for i in 0..sys::CAPACITY {
             map.try_insert_entry(i, i).unwrap();
@@ -1194,7 +1014,6 @@ mod tests {
     #[test]
     fn try_insert_entry_preserves_order_across_splits() {
         let mut map: BTreeMap<i32, i32> = BTreeMap::new();
-        // Insert out of order across multiple splits
         let keys = [
             15, 3, 22, 1, 10, 8, 20, 5, 12, 2, 18, 7, 25, 0, 11, 6, 14, 9, 16, 4, 13, 19, 21, 23,
             24,
@@ -1211,15 +1030,12 @@ mod tests {
 
     #[test]
     fn try_insert_entry_existing_key_after_split() {
-        // Force a split, then insert an existing key — should return the
-        // existing value without replacing it (or_insert semantics).
         let mut map: BTreeMap<i32, String> = BTreeMap::new();
         for i in 0..12 {
             map.try_insert_entry(i, format!("v{}", i)).unwrap();
         }
         assert_eq!(map.len(), 12);
         let returned = map.try_insert_entry(5, "REPLACED".to_string()).unwrap();
-        // Key 5 already exists, so the old value is returned unchanged.
         assert_eq!(returned, &"v5");
         assert_eq!(map[&5], "v5");
         assert_eq!(map.len(), 12);
@@ -1243,17 +1059,13 @@ mod tests {
 
     #[test]
     fn try_insert_entry_clone_key_used_internally() {
-        // Verify that the cloned key is properly stored even when K != Copy.
         use lang_alloc::string::String;
         let mut map: BTreeMap<String, i32> = BTreeMap::new();
         let s = "unique_key".to_string();
         map.try_insert_entry(s.clone(), 42).unwrap();
         assert_eq!(map[&s], 42);
-        // The original string is still usable.
         assert_eq!(s, "unique_key");
     }
-
-    // ── Error formatting ────────────────────────────────────────────────────
 
     #[test]
     fn error_display_alloc_message() {

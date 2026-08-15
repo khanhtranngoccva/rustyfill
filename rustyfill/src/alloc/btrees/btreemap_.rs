@@ -609,6 +609,8 @@ mod tests {
     use lang_core::any::Any;
     use lang_core::cmp;
     use lang_core::iter;
+    #[cfg(feature = "std")]
+    use rustyfill_test_allocator::{FailPolicy, with_policy};
 
     // ── Construction ─────────────────────────────────────────────────────────
 
@@ -1232,5 +1234,89 @@ mod tests {
         let mut sorted = keys.to_vec();
         sorted.sort();
         assert_eq!(collected.as_slice(), &sorted);
+    }
+
+    // ── Explicit rollback tests (mid-operation clone failure) ───────────────
+
+    #[test]
+    #[cfg(feature = "std")]
+    fn extend_from_slice_rollback_on_mid_way_clone_failure() {
+        // try_extend_from_slice on BTreeMap<String, String> clones each pair
+        // and inserts it. A mid-way clone failure must pop all elements
+        // already inserted during this call via pop_first().
+        let source: Vec<(String, String)> = vec![
+            ("key0".into(), "val0".into()), ("key1".into(), "val1".into()),
+            ("key2".into(), "val2".into()), ("key3".into(), "val3".into()),
+            ("key4".into(), "val4".into()), ("key5".into(), "val5".into()),
+            ("key6".into(), "val6".into()), ("key7".into(), "val7".into()),
+            ("key8".into(), "val8".into()), ("key9".into(), "val9".into()),
+        ];
+        let len_source = source.len();
+
+        let mut map: BTreeMap<String, String> = BTreeMap::from([
+            ("pre_k0".into(), "pre_v0".into()),
+            ("pre_k1".into(), "pre_v1".into()),
+            ("pre_k2".into(), "pre_v2".into()),
+        ]);
+        let len_before = map.len();
+
+        let r: Result<(), TryBTreeMapError> =
+            with_policy(FailPolicy::fail_nth_alloc(2), || {
+                <BTreeMap<String, String> as TryBTreeMap<String, String>>::try_extend_from_slice(&mut map, &source)
+            });
+
+        match r {
+            Err(TryBTreeMapError::Clone(_)) => {
+                assert_eq!(
+                    map.len(),
+                    len_before,
+                    "pop_first rollback did not restore length: expected {}, got {}",
+                    len_before,
+                    map.len()
+                );
+                // Pre-existing entries must be intact.
+                assert_eq!(map["pre_k0"], "pre_v0");
+                assert_eq!(map["pre_k1"], "pre_v1");
+                assert_eq!(map["pre_k2"], "pre_v2");
+                // No source keys should appear.
+                for (sk, _) in &source {
+                    assert!(
+                        !map.contains_key(sk.as_str()),
+                        "source key found in map after rollback"
+                    );
+                }
+            }
+            Ok(()) => {
+                assert_eq!(map.len(), len_before + len_source);
+            }
+            Err(other) => {
+                panic!("unexpected error variant: {:?}", other);
+            }
+        }
+    }
+
+    #[test]
+    #[cfg(feature = "std")]
+    fn extend_from_slice_rollback_empty_start() {
+        let source: Vec<(String, String)> = vec![
+            ("k0".into(), "v0".into()), ("k1".into(), "v1".into()),
+            ("k2".into(), "v2".into()), ("k3".into(), "v3".into()),
+            ("k4".into(), "v4".into()), ("k5".into(), "v5".into()),
+            ("k6".into(), "v6".into()), ("k7".into(), "v7".into()),
+            ("k8".into(), "v8".into()), ("k9".into(), "v9".into()),
+        ];
+
+        let mut map: BTreeMap<String, String> = BTreeMap::new();
+
+        let _: Result<(), TryBTreeMapError> =
+            with_policy(FailPolicy::fail_nth_alloc(3), || {
+                <BTreeMap<String, String> as TryBTreeMap<String, String>>::try_extend_from_slice(&mut map, &source)
+            });
+
+        assert!(
+            map.is_empty(),
+            "map should be empty after full rollback, but has {} entries",
+            map.len()
+        );
     }
 }

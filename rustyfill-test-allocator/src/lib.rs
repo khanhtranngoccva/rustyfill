@@ -383,5 +383,32 @@ mod tests {
         assert!(r4.is_ok());
     }
 
+    /// Documented pitfall: println! with captured stdout while allocation is disabled
+    ///
+    /// When the test harness captures stdout (the default), `println!` buffers
+    /// output into an internal `Vec<u8>`. If that buffer needs to grow while
+    /// `fail_all_alloc` is active, the allocation returns null and the OOM
+    /// handler itself tries to allocate (to format its error message), causing
+    /// a cascade that aborts the process via SIGABRT.
+    ///
+    /// With `--nocapture`, `println!` writes directly to fd 1 without buffering
+    /// through a heap-allocated Vec, so no allocation occurs and the test
+    /// completes normally.
+    ///
+    /// In practice, please avoid any heap-allocating operations (including debug logging
+    /// via `println!`/`eprintln!` when output is captured) inside a
+    /// `with_policy(fail_all_alloc(), ...)` span. If an abort suddenly happens, one may 
+    /// attempt to use --nocapture to detect this pitfall.
+    #[test]
+    #[ignore = "aborts the process when run with captured output (default); use --nocapture to verify it prints safely"]
+    fn fail_all_alloc_panics_if_println_buffers() {
+        with_policy(FailPolicy::fail_all_alloc(), || {
+            // This println! allocates internally when stdout is captured by
+            // the test harness. Under fail_all_alloc, that allocation fails,
+            // triggering the OOM handler which also needs to allocate → abort.
+            println!("hello from inside fail_all_alloc");
+        });
+    }
+
     static_assertions::assert_not_impl_all!(FailAllocGuard: Send, Sync);
 }

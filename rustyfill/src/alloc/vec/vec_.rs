@@ -1371,4 +1371,154 @@ mod tests {
         assert!(results.1, "second alloc should fail");
         assert!(results.2, "third alloc should succeed");
     }
+
+    // ── Explicit rollback / TruncateGuard tests ─────────────────────────────
+
+    #[test]
+    fn extend_from_slice_rollback_on_mid_way_clone_failure() {
+        // try_extend_from_slice on Vec<String> reserves capacity upfront,
+        // then clones each element via String::try_clone(). By failing the
+        // Nth allocation we can make a clone fail mid-way through the loop.
+        // The TruncateGuard must drop all elements pushed before the failure.
+        use lang_alloc::string::String;
+
+        let source: Vec<String> = vec![
+            "item0".into(), "item1".into(), "item2".into(), "item3".into(),
+            "item4".into(), "item5".into(), "item6".into(), "item7".into(),
+            "item8".into(), "item9".into(),
+        ];
+        let len_source = source.len();
+
+        // Start with 3 pre-existing elements so we can verify they survive.
+        let mut vec: Vec<String> = vec!["pre0".into(), "pre1".into(), "pre2".into()];
+        let len_before = vec.len();
+
+        // Fail an allocation somewhere in the middle of the clone loop.
+        // try_reserve already succeeded (outside the policy scope for the
+        // capacity reservation), so the first alloc inside with_policy will
+        // be from the first or later String::try_clone() call.
+        let r: Result<(), TryVecError> =
+            with_policy(FailPolicy::fail_nth_alloc(2), || {
+                <Vec<String> as TryVec<String>>::try_extend_from_slice(&mut vec, &source)
+            });
+
+        match r {
+            Err(TryVecError::Clone(_)) => {
+                // Clone failed mid-way — TruncateGuard must have rolled back.
+                assert_eq!(
+                    vec.len(),
+                    len_before,
+                    "TruncateGuard did not roll back: expected {} elements, got {}",
+                    len_before,
+                    vec.len()
+                );
+                // Pre-existing elements must be intact.
+                assert_eq!(vec[0], "pre0");
+                assert_eq!(vec[1], "pre1");
+                assert_eq!(vec[2], "pre2");
+            }
+            Ok(()) => {
+                // If it succeeded (failure didn't hit a clone alloc point),
+                // all elements were appended.
+                assert_eq!(vec.len(), len_before + len_source);
+            }
+            Err(other) => {
+                panic!("unexpected error variant: {:?}", other);
+            }
+        }
+    }
+
+    #[test]
+    fn extend_from_slice_no_partial_elements_after_rollback() {
+        // Verify that after a mid-way clone failure, the vec contains zero
+        // elements from the source slice — not even the ones cloned before
+        // the failure.
+        use lang_alloc::string::String;
+
+        let source: Vec<String> = vec![
+            "src0xxxxxxxx".into(), "src1xxxxxxxx".into(), "src2xxxxxxxx".into(),
+            "src3xxxxxxxx".into(), "src4xxxxxxxx".into(), "src5xxxxxxxx".into(),
+            "src6xxxxxxxx".into(), "src7xxxxxxxx".into(), "src8xxxxxxxx".into(),
+            "src9xxxxxxxx".into(),
+        ];
+        let mut vec: Vec<String> = vec!["anchor".into()];
+
+        let _: Result<(), TryVecError> =
+            with_policy(FailPolicy::fail_nth_alloc(3), || {
+                <Vec<String> as TryVec<String>>::try_extend_from_slice(&mut vec, &source)
+            });
+
+        // Whatever happened, no source strings should appear in vec.
+        for elem in vec.iter() {
+            assert!(
+                !elem.starts_with("src"),
+                "found a source element in vec after supposed rollback"
+            );
+        }
+    }
+
+    #[test]
+    fn extend_from_within_rollback_on_mid_way_clone_failure() {
+        // try_extend_from_within clones elements from within the same vec.
+        // A mid-way clone failure should trigger TruncateGuard to remove
+        // the elements already pushed.
+        use lang_alloc::string::String;
+
+        let mut vec: Vec<String> = vec![
+            "a".into(), "b".into(), "c".into(), "d".into(), "e".into(),
+        ];
+        let len_before = vec.len();
+
+        // Extend from [0..3], which clones 3 strings. Fail one mid-way.
+        let r: Result<(), TryVecError> =
+            with_policy(FailPolicy::fail_nth_alloc(2), || {
+                <Vec<String> as TryVec<String>>::try_extend_from_within(&mut vec, 0..3)
+            });
+
+        match r {
+            Err(TryVecError::Clone(_)) => {
+                assert_eq!(vec.len(), len_before,
+                    "TruncateGuard failed to roll back extend_from_within");
+                assert_eq!(vec[0], "a");
+                assert_eq!(vec[4], "e");
+            }
+            Ok(()) => {
+                assert_eq!(vec.len(), len_before + 3);
+            }
+            Err(other) => {
+                panic!("unexpected error: {:?}", other);
+            }
+        }
+    }
+
+    #[test]
+    fn resize_with_clone_rollback_on_mid_way_failure() {
+        // try_resize_with clones a value repeatedly to fill new slots.
+        // Mid-way failure must truncate back to original length.
+        use lang_alloc::string::String;
+
+        let val: String = "repeated".into();
+        let mut vec: Vec<String> = vec!["original".into()];
+        let len_before = vec.len();
+
+        // Resize to 15 — needs 14 clones. Fail one mid-way.
+        let r: Result<(), TryVecError> =
+            with_policy(FailPolicy::fail_nth_alloc(3), || {
+                <Vec<String> as TryVec<String>>::try_resize(&mut vec, &val, 15)
+            });
+
+        match r {
+            Err(TryVecError::Clone(_)) => {
+                assert_eq!(vec.len(), len_before,
+                    "resize rollback failed: expected {}, got {}", len_before, vec.len());
+                assert_eq!(vec[0], "original");
+            }
+            Ok(()) => {
+                assert_eq!(vec.len(), 15);
+            }
+            Err(other) => {
+                panic!("unexpected error: {:?}", other);
+            }
+        }
+    }
 }

@@ -422,6 +422,8 @@ mod tests {
     use lang_core::any;
     use lang_core::cmp;
     use lang_core::iter;
+    #[cfg(feature = "std")]
+    use rustyfill_test_allocator::{FailPolicy, with_policy};
 
     // ── Construction ─────────────────────────────────────────────────────────
 
@@ -730,5 +732,83 @@ mod tests {
         let err = TryBTreeSetError::Other("logic error");
         let msg = format!("{}", err);
         assert!(msg.contains("logic error"));
+    }
+
+    // ── Explicit rollback tests (mid-operation clone failure) ───────────────
+
+    #[test]
+    #[cfg(feature = "std")]
+    fn extend_from_slice_rollback_on_mid_way_clone_failure() {
+        // try_extend_from_slice on BTreeSet<String> clones each element and
+        // inserts it. A mid-way clone failure must pop all elements already
+        // inserted during this call via pop_first().
+        let source: Vec<String> = vec![
+            "item0".into(), "item1".into(), "item2".into(), "item3".into(),
+            "item4".into(), "item5".into(), "item6".into(), "item7".into(),
+            "item8".into(), "item9".into(),
+        ];
+        let len_source = source.len();
+
+        let mut set: BTreeSet<String> = BTreeSet::from([
+            "pre0".into(), "pre1".into(), "pre2".into(),
+        ]);
+        let len_before = set.len();
+
+        let r: Result<(), TryBTreeSetError> =
+            with_policy(FailPolicy::fail_nth_alloc(2), || {
+                <BTreeSet<String> as TryBTreeSet<String>>::try_extend_from_slice(&mut set, &source)
+            });
+
+        match r {
+            Err(TryBTreeSetError::Clone(_)) => {
+                assert_eq!(
+                    set.len(),
+                    len_before,
+                    "pop_first rollback did not restore length: expected {}, got {}",
+                    len_before,
+                    set.len()
+                );
+                // Pre-existing entries must be intact.
+                assert!(set.contains("pre0"));
+                assert!(set.contains("pre1"));
+                assert!(set.contains("pre2"));
+                // No source items should appear.
+                for s in &source {
+                    assert!(
+                        !set.contains(s.as_str()),
+                        "source item found in set after rollback"
+                    );
+                }
+            }
+            Ok(()) => {
+                assert_eq!(set.len(), len_before + len_source);
+            }
+            Err(other) => {
+                panic!("unexpected error variant: {:?}", other);
+            }
+        }
+    }
+
+    #[test]
+    #[cfg(feature = "std")]
+    fn extend_from_slice_rollback_empty_start() {
+        let source: Vec<String> = vec![
+            "x0xxxxxxxx".into(), "x1xxxxxxxx".into(), "x2xxxxxxxx".into(),
+            "x3xxxxxxxx".into(), "x4xxxxxxxx".into(), "x5xxxxxxxx".into(),
+            "x6xxxxxxxx".into(), "x7xxxxxxxx".into(), "x8xxxxxxxx".into(),
+            "x9xxxxxxxx".into(),
+        ];
+        let mut set: BTreeSet<String> = BTreeSet::new();
+
+        let _: Result<(), TryBTreeSetError> =
+            with_policy(FailPolicy::fail_nth_alloc(3), || {
+                <BTreeSet<String> as TryBTreeSet<String>>::try_extend_from_slice(&mut set, &source)
+            });
+
+        assert!(
+            set.is_empty(),
+            "set should be empty after full rollback, but has {} entries",
+            set.len()
+        );
     }
 }
