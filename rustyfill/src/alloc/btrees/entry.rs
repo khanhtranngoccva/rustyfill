@@ -38,7 +38,6 @@
 //! half-split.
 
 use crate::alloc::AllocError;
-use crate::alloc::vec::TryVec;
 use lang_alloc::collections::BTreeMap;
 use lang_alloc::collections::btree_map::{Entry, VacantEntry};
 
@@ -49,14 +48,16 @@ use lang_core::mem;
 use lang_core::ptr;
 use lang_core::ptr::NonNull;
 use lang_std::collections::btree_map::OccupiedEntry;
-use lang_std::vec::Vec;
 
 mod helpers;
 use helpers::*;
+mod scratch;
+use scratch::{CachedProbeBuffer, CachedReserveBuffer, PendingLeaf};
 
 // ── Re-exported sys types ─────────────────────────────────────────────────────
 
 mod sys {
+    pub use rustyfill_sys::std::collections::btree::borrow::DormantMutRef;
     pub use rustyfill_sys::std::collections::btree::map::BTreeMap as SysBTreeMap;
     pub use rustyfill_sys::std::collections::btree::map::entry::VacantEntry as SysVacantEntry;
     pub use rustyfill_sys::std::collections::btree::node::marker::*;
@@ -107,6 +108,15 @@ impl From<AllocError> for TryBTreeMapEntryError {
     }
 }
 
+impl TryBTreeMapEntryError {
+    /// Extract the underlying [`AllocError`].
+    pub fn alloc_error(&self) -> &AllocError {
+        match self {
+            Self::Alloc(e) => e,
+        }
+    }
+}
+
 // ── Layout validation ─────────────────────────────────────────────────────────
 
 /// Compile-time assertion that the real std `VacantEntry<'_, K, V>` and our
@@ -142,6 +152,51 @@ unsafe fn extract_to_sys<'a, K: Ord, V>(
     let sys_ve = unsafe { mem::transmute_copy(&ve) };
     mem::forget(ve);
     sys_ve
+}
+
+/// Compile-time assertion that the real std `OccupiedEntry<'_, K, V>` and our
+/// polyfill `SysOccupiedEntry<'_, K, V, ()>` share the same size and alignment.
+const fn assert_occupied_layout_compat<K: Ord, V>() {
+    use rustyfill_sys::std::collections::btree::map::entry::OccupiedEntry as SysOccupiedEntry;
+    assert!(
+        mem::size_of::<OccupiedEntry<'_, K, V>>()
+            == mem::size_of::<SysOccupiedEntry<'_, K, V, ()>>(),
+        "OccupiedEntry and SysOccupiedEntry have different sizes"
+    );
+    assert!(
+        mem::align_of::<OccupiedEntry<'_, K, V>>()
+            == mem::align_of::<SysOccupiedEntry<'_, K, V, ()>>(),
+        "OccupiedEntry and SysOccupiedEntry have different alignments"
+    );
+}
+
+/// Construct a real `OccupiedEntry` from the node reference and index returned
+/// by a successful insertion, plus the dormant map reference from the original
+/// `VacantEntry`.
+///
+/// # Safety
+/// - `node_ref` and `idx` must point to a valid, live KV pair in the tree.
+/// - `dormant_map` must refer to the same `BTreeMap` that owns the tree.
+/// - `assert_occupied_layout_compat` must hold for these `K, V`.
+unsafe fn build_occupied_entry<'a, K: Ord, V>(
+    node_ref: sys::NodeRef<sys::Mut<'a>, K, V, sys::LeafOrInternal>,
+    idx: usize,
+    dormant_map: sys::DormantMutRef<'a, sys::SysBTreeMap<K, V, ()>>,
+) -> OccupiedEntry<'a, K, V> {
+    assert_occupied_layout_compat::<K, V>();
+    // Build the sys-view OccupiedEntry with public fields, then transmute-copy
+    // into the real type (same layout, only the allocator param differs: () vs Global).
+    let sys_occ = rustyfill_sys::std::collections::btree::map::entry::OccupiedEntry {
+        handle: sys::Handle {
+            node: node_ref,
+            idx,
+            _marker: PhantomData,
+        },
+        dormant_map,
+        alloc: (),
+        _marker: PhantomData,
+    };
+    unsafe { mem::transmute_copy(&sys_occ) }
 }
 
 // ── Trait definition ──────────────────────────────────────────────────────────
@@ -199,7 +254,7 @@ pub trait VacantEntryExt<'a, K, V>: Sized {
 
 // ── Implementation on VacantEntry ─────────────────────────────────────────────
 
-impl<'a, K: Ord + Clone, V> VacantEntryExt<'a, K, V> for VacantEntry<'a, K, V> {
+impl<'a, K: Ord, V> VacantEntryExt<'a, K, V> for VacantEntry<'a, K, V> {
     fn try_insert(
         self,
         value: V,
@@ -210,32 +265,27 @@ impl<'a, K: Ord + Clone, V> VacantEntryExt<'a, K, V> for VacantEntry<'a, K, V> {
         // dormant_map contains NonNull<BTreeMap<K,V,A>> — the inner pointer
         // points to the real BTreeMap since it was copied from the real VacantEntry.
         let map_ptr = sys_ve.dormant_map.ptr;
+        let dormant_map = sys_ve.dormant_map;
 
         // SAFETY: map_ptr was extracted from DormantMutRef.ptr inside the real
         // VacantEntry, so it points to a live BTreeMap. The VacantEntry has been
         // forgotten above, releasing the dormant borrow, so we can safely cast
         // through the sys view and mutate.
-        let sys_map_ptr = map_ptr.as_ptr();
-        let sys_map = unsafe { &mut *sys_map_ptr };
+        let sys_map = unsafe { &mut *map_ptr.as_ptr() };
 
-        let result = try_insert_kv(sys_map, handle, key.clone(), value);
+        let result = try_insert_kv(sys_map, handle, key, value);
 
         match result {
-            Ok((_node_ref, _idx)) => {
-                // Insertion succeeded. Re-search the real map to get a properly
-                // typed OccupiedEntry via the public API. The dormant borrow was
-                // released when we forgot the VacantEntry above.
-                // SAFETY: map_ptr originally came from the real VacantEntry's
-                // DormantMutRef.ptr, which pointed to a real BTreeMap<K, V>.
-                // The sys DormantMutRef just re-typed the NonNull; the address is the same.
-                let real_map_ptr = map_ptr.as_ptr() as *mut BTreeMap<K, V>;
-                let map_ref = unsafe { &mut *real_map_ptr };
-                match map_ref.entry(key) {
-                    Entry::Occupied(entry) => Ok(entry),
-                    Entry::Vacant(_) => {
-                        unreachable!("insertion succeeded but key not found in map")
-                    }
-                }
+            Ok((node_ref, idx)) => {
+                // Construct the OccupiedEntry directly from the node reference
+                // and index returned by the insertion. No re-search needed.
+                // SAFETY: node_ref and idx point to the freshly inserted KV pair
+                // in the tree. dormant_map was taken from the original VacantEntry
+                // and still refers to the same BTreeMap. The layout of our sys
+                // OccupiedEntry matches the real one (verified by the const assert
+                // on VacantEntry; OccupiedEntry has the same field structure).
+                let occupied = unsafe { build_occupied_entry(node_ref, idx, dormant_map) };
+                Ok(occupied)
             }
             Err((k, v, e)) => Err((k, v, e)),
         }
@@ -244,13 +294,102 @@ impl<'a, K: Ord + Clone, V> VacantEntryExt<'a, K, V> for VacantEntry<'a, K, V> {
 
 // ── Implementation on &mut BTreeMap ───────────────────────────────────────────
 
-impl<'a, K: Ord + Clone, V> TryBTreeMapEntry<'a, K, V> for &'a mut BTreeMap<K, V> {
+impl<'a, K: Ord, V> TryBTreeMapEntry<'a, K, V> for &'a mut BTreeMap<K, V> {
     fn try_insert_entry(
         self,
         key: K,
         value: V,
     ) -> Result<&'a mut V, (K, V, TryBTreeMapEntryError)> {
-        match self.entry(key) {
+        self.entry(key).try_insert_entry(value)
+    }
+}
+
+// ── Fallible Entry methods ────────────────────────────────────────────────────
+
+/// Fallible versions of the canonical [`Entry`] consumption methods.
+///
+/// These mirror [`Entry::or_insert`], [`Entry::or_insert_with`],
+/// [`Entry::or_insert_with_key`], and [`Entry::insert_entry`] but return a
+/// [`Result`] so that allocation failures during the vacant-branch insertion
+/// are reported rather than panicking.
+///
+/// The occupied branch never allocates, so it always succeeds.
+pub trait TryEntryExt<'a, K, V>: Sized {
+    /// Fallible version of [`Entry::or_insert`](lang_alloc::collections::btree_map::Entry::or_insert).
+    fn try_or_insert(self, default: V) -> Result<&'a mut V, (K, V, TryBTreeMapEntryError)>
+    where
+        K: Ord;
+
+    /// Fallible version of [`Entry::or_insert_with`](lang_alloc::collections::btree_map::Entry::or_insert_with).
+    fn try_or_insert_with<F: FnOnce() -> V>(
+        self,
+        default: F,
+    ) -> Result<&'a mut V, (K, V, TryBTreeMapEntryError)>
+    where
+        K: Ord;
+
+    /// Fallible version of [`Entry::or_insert_with_key`](lang_alloc::collections::btree_map::Entry::or_insert_with_key).
+    fn try_or_insert_with_key<F: FnOnce(&K) -> V>(
+        self,
+        default: F,
+    ) -> Result<&'a mut V, (K, V, TryBTreeMapEntryError)>
+    where
+        K: Ord;
+
+    /// Fallible version of [`Entry::insert_entry`](lang_alloc::collections::btree_map::Entry::insert_entry)
+    /// (nightly `map_try_insert`). Inserts `value` unconditionally; if the key
+    /// was already present, returns the old value in the error tuple alongside
+    /// the new key/value (mirroring `OccupiedError`).
+    fn try_insert_entry(self, value: V) -> Result<&'a mut V, (K, V, TryBTreeMapEntryError)>
+    where
+        K: Ord;
+}
+
+impl<'a, K: Ord, V> TryEntryExt<'a, K, V> for Entry<'a, K, V> {
+    fn try_or_insert(self, default: V) -> Result<&'a mut V, (K, V, TryBTreeMapEntryError)> {
+        match self {
+            Entry::Occupied(entry) => Ok(entry.into_mut()),
+            Entry::Vacant(vacant) => match vacant.try_insert(default) {
+                Ok(occupied) => Ok(occupied.into_mut()),
+                Err((k, v, e)) => Err((k, v, e)),
+            },
+        }
+    }
+
+    fn try_or_insert_with<F: FnOnce() -> V>(
+        self,
+        default: F,
+    ) -> Result<&'a mut V, (K, V, TryBTreeMapEntryError)> {
+        match self {
+            Entry::Occupied(entry) => Ok(entry.into_mut()),
+            Entry::Vacant(vacant) => {
+                let value = default();
+                match vacant.try_insert(value) {
+                    Ok(occupied) => Ok(occupied.into_mut()),
+                    Err((k, v, e)) => Err((k, v, e)),
+                }
+            }
+        }
+    }
+
+    fn try_or_insert_with_key<F: FnOnce(&K) -> V>(
+        self,
+        default: F,
+    ) -> Result<&'a mut V, (K, V, TryBTreeMapEntryError)> {
+        match self {
+            Entry::Occupied(entry) => Ok(entry.into_mut()),
+            Entry::Vacant(vacant) => {
+                let value = default(vacant.key());
+                match vacant.try_insert(value) {
+                    Ok(occupied) => Ok(occupied.into_mut()),
+                    Err((k, v, e)) => Err((k, v, e)),
+                }
+            }
+        }
+    }
+
+    fn try_insert_entry(self, value: V) -> Result<&'a mut V, (K, V, TryBTreeMapEntryError)> {
+        match self {
             // Mirrors BTreeMap::insert: a pre-existing key has its value replaced.
             Entry::Occupied(mut entry) => {
                 entry.insert(value);
@@ -338,7 +477,6 @@ fn try_insert_into_existing<'a, K, V>(
         let insert_idx = leaf_edge.idx;
         unsafe {
             leaf_slice_insert(leaf_edge.node.node.as_ptr(), insert_idx, key, value);
-            (*leaf_edge.node.node.as_ptr()).len = (node_len + 1) as u16;
         }
         inner_map.length += 1;
         return Ok((leaf_edge.node.forget_type(), insert_idx));
@@ -380,46 +518,54 @@ fn try_insert_with_split<'a, K, V>(
     let num_reserved = num_internal_splits + if plan.new_root { 1 } else { 0 };
 
     // ── Phase 2: reserve all needed nodes in one batch ───────────────────────
-    // The freshly allocated right-half leaf.
-    let leaf_right = match try_new_leaf::<K, V>() {
-        Ok(p) => p,
+    // The freshly allocated right-half leaf. Owned by PendingLeaf: if anything
+    // below fails, dropping it frees the node automatically.
+    let leaf_box = match try_new_leaf_box::<K, V>() {
+        Ok(b) => b,
         Err(e) => return Err((key, value, e.into())),
     };
+    let leaf = PendingLeaf::new(leaf_box);
+
     // One internal node per internal split / root growth, deepest-first.
-    // Reserve the container up front so the loop below never reallocates.
-    let mut reserved_internals: Vec<NonNull<sys::LeafNode<K, V>>> =
-        match <Vec<NonNull<sys::LeafNode<K, V>>> as TryVec<_>>::try_with_capacity(num_reserved) {
-            Ok(v) => v,
-            Err(_) => {
-                unsafe { drop_leaf_node(leaf_right) };
-                return Err((key, value, TryBTreeMapEntryError::Alloc(alloc_error())));
-            }
-        };
+    // Owned by CachedReserveBuffer: if allocation fails mid-loop, dropping the
+    // buffer frees all already-reserved boxes automatically.
+    let mut reserve_buf = match CachedReserveBuffer::try_new(num_reserved) {
+        Ok(buf) => buf,
+        Err(e) => return Err((key, value, e)),
+    };
     for _ in 0..num_reserved {
-        match try_new_internal::<K, V>() {
-            Ok(p) => reserved_internals.push(p),
+        match try_new_internal_box::<K, V>() {
+            Ok(box_node) => reserve_buf.push(box_node),
             Err(e) => {
-                // Rollback: free the leaf and any internals already reserved.
+                // Rollback: both `leaf` and `reserve_buf` are dropped here,
+                // freeing the leaf and all already-reserved internal nodes.
                 // The probe did not mutate the tree, so it remains intact.
-                unsafe {
-                    drop_leaf_node(leaf_right);
-                    for p in &reserved_internals {
-                        drop_internal_node(*p);
-                    }
-                }
                 return Err((key, value, e.into()));
             }
         }
     }
 
     // ── Phase 3: commit (infallible — no allocations remain) ─────────────────
-    commit_split(inner_map, plan, leaf_right, &reserved_internals, key, value)
+    // Transfer ownership of the leaf and internal nodes to the tree.
+    let leaf_right = leaf.into_raw();
+    let reserved_ptrs = reserve_buf.drain_to_pointers();
+    // `reserve_buf` is now empty; its Drop will recycle the Vec allocation.
+    // `leaf` was consumed by into_raw(); nothing left to clean up.
+
+    commit_split(inner_map, plan, leaf_right, &reserved_ptrs, key, value)
 }
 
 // ── Commit plan ───────────────────────────────────────────────────────────────
 
 /// A single internal node on the split path, annotated with what the commit
 /// must do to it.
+///
+/// Derives `Copy` + `Clone` to guarantee zero drop glue on the element type.
+/// Uses `#[repr(C)]` to pin the field layout so it matches
+/// [`scratch::ErasedCommitInternal`] exactly, making the thread-local buffer
+/// transmute sound.
+#[derive(Copy, Clone)]
+#[repr(C)]
 struct CommitInternal<K, V> {
     /// Raw pointer to the internal node (deepest-first order in the plan).
     ptr: NonNull<sys::InternalNode<K, V>>,
@@ -435,8 +581,13 @@ struct CommitInternal<K, V> {
     sp_idx: Option<usize>,
 }
 
+
 /// Everything the probe learns about the upcoming split cascade, computed with
 /// reads only so the reserve phase can decide how much to allocate.
+///
+/// The `internals` field uses [`CachedProbeBuffer`] which automatically returns
+/// its backing allocation to the thread-local cache on drop, avoiding a heap
+/// allocation on every subsequent insert that triggers a split.
 struct CommitPlan<'a, K, V> {
     /// Raw pointer to the original (left) leaf being split.
     orig_leaf: *mut sys::LeafNode<K, V>,
@@ -445,11 +596,12 @@ struct CommitPlan<'a, K, V> {
     /// Whether the new key goes into the freshly allocated right half (`true`)
     /// or the original left leaf (`false`).
     insert_right: bool,
-    /// Local index at which the new key is written in its destination node.
+    /// Local index at which the new key value pair is written in its destination node.
     insert_idx: usize,
     /// For each internal node on the path (deepest first): pointer, split flag,
-    /// and (if splitting) its centre separator index.
-    internals: Vec<CommitInternal<K, V>>,
+    /// and (if splitting) its centre separator index. Wrapped in a cached buffer
+    /// that recycles its allocation via thread-local storage.
+    internals: CachedProbeBuffer<K, V>,
     /// Whether reaching the root forces a brand-new root level.
     new_root: bool,
     _lifetime: PhantomData<&'a ()>,
@@ -508,12 +660,10 @@ impl<'a, K, V> CommitPlan<'a, K, V> {
             count
         };
 
-        // Reserve the probe buffer up front so the fill pass never reallocates.
-        // Uses the fallible [`TryVec::try_with_capacity`] (a single allocation)
-        // rather than `Vec::with_capacity`, which would panic on OOM.
-        let mut internals: Vec<CommitInternal<K, V>> =
-            <Vec<CommitInternal<K, V>> as TryVec<_>>::try_with_capacity(num_internals)
-                .map_err(|_| TryBTreeMapEntryError::Alloc(alloc_error()))?;
+        // Allocate the probe buffer via the thread-local cache (recycles on
+        // subsequent inserts). Falls back to a fresh fallible allocation if no
+        // suitable cached buffer is available.
+        let mut internals_buf = CachedProbeBuffer::try_new(num_internals)?;
 
         // Pass 2: re-walk and record each node's annotation.
         let mut cur: sys::NodeRef<sys::Mut<'a>, K, V, sys::LeafOrInternal> = sys::NodeRef {
@@ -535,7 +685,7 @@ impl<'a, K, V> CommitPlan<'a, K, V> {
                     } else {
                         None
                     };
-                    internals.push(CommitInternal {
+                    internals_buf.as_mut().push(CommitInternal {
                         ptr: parent_ptr,
                         child_idx: parent_handle.idx,
                         will_split,
@@ -559,7 +709,7 @@ impl<'a, K, V> CommitPlan<'a, K, V> {
             leaf_sp,
             insert_right,
             insert_idx,
-            internals,
+            internals: internals_buf,
             new_root,
             _lifetime: PhantomData,
         })
@@ -608,7 +758,6 @@ fn commit_split<'a, K, V>(
     unsafe {
         copy_right_half_leaf(plan.orig_leaf, right_leaf, plan.leaf_sp);
         leaf_slice_insert(insert_node_ptr, plan.insert_idx, key, value);
-        (*insert_node_ptr).len = ((*insert_node_ptr).len as usize + 1) as u16;
     }
 
     // Build the promotion carried upward: left = original leaf, right = new leaf.
@@ -638,7 +787,10 @@ fn commit_split<'a, K, V>(
     let mut current_kv = (mk, mv);
 
     // ── Steps 2+: promote up through each internal node ──────────────────────
-    for ci in plan.internals.into_iter() {
+    // Iterate by reference: `CommitInternal` is `Copy`, so we copy each element.
+    // The plan (and its CachedProbeBuffer) is dropped at function exit, which
+    // recycles the backing allocation to the thread-local cache.
+    for ci in plan.internals.iter() {
         let parent_ptr = ci.ptr;
         let edge_idx = ci.child_idx;
 

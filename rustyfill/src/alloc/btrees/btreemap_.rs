@@ -25,8 +25,10 @@ use crate::try_fmt::{TryDebug, helpers::FormatterExt};
 use lang_alloc::collections::BTreeMap;
 use lang_alloc::collections::btree_map;
 use lang_core::fmt;
+#[cfg(not(feature = "btree-entry"))]
 use lang_core::mem::ManuallyDrop;
 use lang_core::panic::{AssertUnwindSafe, RefUnwindSafe};
+#[cfg(not(feature = "btree-entry"))]
 use lang_core::ptr;
 use lang_std::panic::catch_unwind;
 
@@ -348,19 +350,39 @@ impl<K: Ord + RefUnwindSafe, V: RefUnwindSafe> TryBTreeMap<K, V> for BTreeMap<K,
 
     // ── Insertion ───────────────────────────────────────────────────────────
 
+    #[cfg(feature = "btree-entry")]
     fn try_insert(&mut self, key: K, value: V) -> Result<Option<V>, TryBTreeMapError>
     where
         K: Ord + RefUnwindSafe,
         V: RefUnwindSafe,
     {
-        // NOTE: `catch_unwind` cannot catch aborting panics (panic = 'abort').
-        // This is a Rust language limitation; if the allocator aborts on OOM,
-        // the process terminates regardless.
+        use crate::alloc::btrees::entry::VacantEntryExt;
+        match self.entry(key) {
+            lang_alloc::collections::btree_map::Entry::Occupied(mut occ) => {
+                let old_val = core::mem::replace(occ.get_mut(), value);
+                Ok(Some(old_val))
+            }
+            lang_alloc::collections::btree_map::Entry::Vacant(vac) => {
+                match vac.try_insert(value) {
+                    Ok(_) => Ok(None),
+                    Err((_, _, e)) => Err(TryBTreeMapError::Alloc(*e.alloc_error())),
+                }
+            }
+        }
+    }
+
+    #[cfg(not(feature = "btree-entry"))]
+    fn try_insert(&mut self, key: K, value: V) -> Result<Option<V>, TryBTreeMapError>
+    where
+        K: Ord + RefUnwindSafe,
+        V: RefUnwindSafe,
+    {
         let result: Option<V> = catch_unwind(AssertUnwindSafe(|| self.insert(key, value)))
             .map_err(|payload| TryBTreeMapError::AllocPanic(PayloadBox(payload)))?;
         Ok(result)
     }
 
+    #[cfg(feature = "btree-entry")]
     fn try_insert_give_back(
         &mut self,
         key: K,
@@ -370,57 +392,86 @@ impl<K: Ord + RefUnwindSafe, V: RefUnwindSafe> TryBTreeMap<K, V> for BTreeMap<K,
         K: Ord + RefUnwindSafe,
         V: RefUnwindSafe,
     {
-        // Step 1: Transmute &mut BTreeMap<K, V> into &mut BTreeMap<ManuallyDrop<K>, ManuallyDrop<V>>
+        use crate::alloc::btrees::entry::VacantEntryExt;
+        // Use the entry API: if occupied, replace and return old value.
+        // If vacant, fallible-insert. On alloc failure, return (key, value, err).
+        match self.entry(key) {
+            lang_alloc::collections::btree_map::Entry::Occupied(mut occ) => {
+                // Replace: take old value out, insert new one.
+                let old = occ.get_mut();
+                let old_val = core::mem::replace(old, value);
+                Ok(Some(old_val))
+            }
+            lang_alloc::collections::btree_map::Entry::Vacant(vac) => {
+                match vac.try_insert(value) {
+                    Ok(_) => Ok(None),
+                    Err((k, v, e)) => Err((k, v, TryBTreeMapError::Alloc(*e.alloc_error()))),
+                }
+            }
+        }
+    }
+
+    #[cfg(not(feature = "btree-entry"))]
+    fn try_insert_give_back(
+        &mut self,
+        key: K,
+        value: V,
+    ) -> Result<Option<V>, (K, V, TryBTreeMapError)>
+    where
+        K: Ord + RefUnwindSafe,
+        V: RefUnwindSafe,
+    {
         let md_map: &mut BTreeMap<ManuallyDrop<K>, ManuallyDrop<V>> = unsafe {
             &mut *(self as *mut BTreeMap<K, V> as *mut BTreeMap<ManuallyDrop<K>, ManuallyDrop<V>>)
         };
-
-        // Step 2: Wrap the originals in ManuallyDrop.
         let md_value = ManuallyDrop::new(value);
         let md_key = ManuallyDrop::new(key);
-
-        // Step 3: Insert into the ManuallyDrop map inside catch_unwind.
-        // Use ptr::read to move out of the references without consuming md_key/md_value,
-        // so they're still accessible on panic.
-        // NOTE: `catch_unwind` cannot catch aborting panics (panic = 'abort').
-        // If the allocator aborts on OOM, the process terminates regardless.
         let result = catch_unwind(AssertUnwindSafe(|| {
             let k = unsafe { ptr::read(&md_key) };
             let v = unsafe { ptr::read(&md_value) };
             md_map.insert(k, v)
         }));
-
         match result {
             Ok(maybe_old_md_value) => {
                 if let Some(old_md_value) = maybe_old_md_value {
-                    // Collision: BTreeMap::insert kept the old key in the tree,
-                    // replaced the value with ours, and dropped the new key as
-                    // ManuallyDrop<K> (skipping the inner K's destructor).
-                    //
-                    // The new key is still valid in md_key on our stack (ptr::read
-                    // copies without invalidating). We extract it and drop it here
-                    // so the inner K is properly freed.
                     let old_v = ManuallyDrop::into_inner(old_md_value);
                     let _new_k = ManuallyDrop::into_inner(md_key);
-                    // _new_k drops here, freeing the inner K.
                     return Ok(Some(old_v));
                 }
                 Ok(None)
             }
             Err(payload) => {
-                // Step 4 (failure): Recover the original values.
-                // Nothing was inserted, so the ManuallyDrop wrappers still hold valid data.
                 let key = ManuallyDrop::into_inner(md_key);
                 let value = ManuallyDrop::into_inner(md_value);
-                Err((
-                    key,
-                    value,
-                    TryBTreeMapError::AllocPanic(PayloadBox(payload)),
-                ))
+                Err((key, value, TryBTreeMapError::AllocPanic(PayloadBox(payload))))
             }
         }
     }
 
+    #[cfg(feature = "btree-entry")]
+    fn try_insert_unique(&mut self, key: K, value: V) -> Result<(), (K, V, TryBTreeMapError)>
+    where
+        K: Ord + RefUnwindSafe,
+        V: RefUnwindSafe,
+    {
+        use crate::alloc::btrees::entry::VacantEntryExt;
+        if self.contains_key(&key) {
+            return Err((key, value, TryBTreeMapError::Other("key already exists")));
+        }
+        match self.entry(key) {
+            lang_alloc::collections::btree_map::Entry::Vacant(vac) => {
+                match vac.try_insert(value) {
+                    Ok(_) => Ok(()),
+                    Err((k, v, e)) => Err((k, v, TryBTreeMapError::Alloc(*e.alloc_error()))),
+                }
+            }
+            lang_alloc::collections::btree_map::Entry::Occupied(_) => {
+                unreachable!("contains_key check above guarantees vacancy")
+            }
+        }
+    }
+
+    #[cfg(not(feature = "btree-entry"))]
     fn try_insert_unique(&mut self, key: K, value: V) -> Result<(), (K, V, TryBTreeMapError)>
     where
         K: Ord + RefUnwindSafe,
@@ -429,38 +480,26 @@ impl<K: Ord + RefUnwindSafe, V: RefUnwindSafe> TryBTreeMap<K, V> for BTreeMap<K,
         if self.contains_key(&key) {
             return Err((key, value, TryBTreeMapError::Other("key already exists")));
         }
-        // Step 1: Transmute &mut BTreeMap<K, V> into &mut BTreeMap<ManuallyDrop<K>, ManuallyDrop<V>>
         let md_map: &mut BTreeMap<ManuallyDrop<K>, ManuallyDrop<V>> = unsafe {
             &mut *(self as *mut BTreeMap<K, V> as *mut BTreeMap<ManuallyDrop<K>, ManuallyDrop<V>>)
         };
-
-        // Step 2: Wrap originals in ManuallyDrop.
         let md_value = ManuallyDrop::new(value);
         let md_key = ManuallyDrop::new(key);
-
-        // Step 3: Insert into the ManuallyDrop map.
-        // NOTE: `catch_unwind` cannot catch aborting panics (panic = 'abort').
-        // If the allocator aborts on OOM, the process terminates regardless.
         let result = catch_unwind(AssertUnwindSafe(|| {
             let k = unsafe { ptr::read(&md_key) };
             let v = unsafe { ptr::read(&md_value) };
             md_map.insert(k, v)
         }));
-
         match result {
             Ok(_old) => Ok(()),
             Err(payload) => {
-                // Step 4: Recover the original values.
                 let key = ManuallyDrop::into_inner(md_key);
                 let value = ManuallyDrop::into_inner(md_value);
-                Err((
-                    key,
-                    value,
-                    TryBTreeMapError::AllocPanic(PayloadBox(payload)),
-                ))
+                Err((key, value, TryBTreeMapError::AllocPanic(PayloadBox(payload))))
             }
         }
     }
+
 
     fn try_entry<'a>(&'a mut self, key: K) -> Result<btree_map::Entry<'a, K, V>, TryBTreeMapError>
     where
@@ -505,6 +544,48 @@ impl<K: Ord + RefUnwindSafe, V: RefUnwindSafe> TryBTreeMap<K, V> for BTreeMap<K,
         Ok(())
     }
 
+    #[cfg(feature = "btree-entry")]
+    fn try_extend_from_slice(&mut self, other: &[(K, V)]) -> Result<(), TryBTreeMapError>
+    where
+        K: Ord + RefUnwindSafe + crate::try_clone::TryClone,
+        V: RefUnwindSafe + crate::try_clone::TryClone,
+    {
+        use crate::alloc::btrees::entry::VacantEntryExt;
+        if other.is_empty() {
+            return Ok(());
+        }
+        let len_before = self.len();
+        for (key, value) in other {
+            match (key.try_clone(), value.try_clone()) {
+                (Ok(k), Ok(v)) => {
+                    match self.entry(k) {
+                        lang_alloc::collections::btree_map::Entry::Occupied(mut occ) => {
+                            *occ.get_mut() = v;
+                        }
+                        lang_alloc::collections::btree_map::Entry::Vacant(vac) => {
+                            if let Err((_, _, e)) = vac.try_insert(v) {
+                                // Alloc failure: rollback and propagate.
+                                for _ in 0..self.len() - len_before {
+                                    self.pop_first();
+                                }
+                                return Err(TryBTreeMapError::Alloc(*e.alloc_error()));
+                            }
+                        }
+                    }
+                }
+                (Err(e), _) | (_, Err(e)) => {
+                    // Rollback: drain elements we already inserted.
+                    for _ in 0..self.len() - len_before {
+                        self.pop_first();
+                    }
+                    return Err(TryBTreeMapError::Clone(e));
+                }
+            }
+        }
+        Ok(())
+    }
+
+    #[cfg(not(feature = "btree-entry"))]
     fn try_extend_from_slice(&mut self, other: &[(K, V)]) -> Result<(), TryBTreeMapError>
     where
         K: Ord + RefUnwindSafe + crate::try_clone::TryClone,

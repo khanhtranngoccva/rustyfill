@@ -23,8 +23,10 @@ use crate::try_clone::TryCloneError;
 use crate::try_fmt::{TryDebug, helpers::FormatterExt};
 use lang_alloc::collections::BTreeSet;
 use lang_core::fmt;
+#[cfg(not(feature = "btree-entry"))]
 use lang_core::mem::ManuallyDrop;
 use lang_core::panic::{AssertUnwindSafe, RefUnwindSafe};
+#[cfg(not(feature = "btree-entry"))]
 use lang_core::ptr;
 use lang_std::panic::catch_unwind;
 
@@ -244,12 +246,47 @@ impl<T: Ord + RefUnwindSafe> TryBTreeSet<T> for BTreeSet<T> {
 
     // ── Insertion ───────────────────────────────────────────────────────────
 
+    #[cfg(feature = "btree-entry")]
+    fn try_insert(&mut self, value: T) -> Result<bool, TryBTreeSetError> {
+        use crate::alloc::btrees::entry::VacantEntryExt;
+        // BTreeSet<T> is { map: BTreeMap<T, SetValZST> }. Cast to the inner map
+        // and use the direct entry backend (no catch_unwind needed).
+        let map: &mut lang_alloc::collections::BTreeMap<T, ()> = unsafe {
+            &mut *(self as *mut BTreeSet<T> as *mut lang_alloc::collections::BTreeMap<T, ()>)
+        };
+        match map.entry(value) {
+            lang_alloc::collections::btree_map::Entry::Occupied(_) => Ok(false),
+            lang_alloc::collections::btree_map::Entry::Vacant(vac) => match vac.try_insert(()) {
+                Ok(_) => Ok(true),
+                Err((_, _, e)) => Err(TryBTreeSetError::Alloc(*e.alloc_error())),
+            },
+        }
+    }
+
+    #[cfg(not(feature = "btree-entry"))]
     fn try_insert(&mut self, value: T) -> Result<bool, TryBTreeSetError> {
         let result: bool = catch_unwind(AssertUnwindSafe(|| self.insert(value)))
             .map_err(|payload| TryBTreeSetError::AllocPanic(PayloadBox(payload)))?;
         Ok(result)
     }
 
+    #[cfg(feature = "btree-entry")]
+    fn try_insert_give_back(&mut self, value: T) -> Result<bool, (T, TryBTreeSetError)> {
+        use crate::alloc::btrees::entry::VacantEntryExt;
+        // Cast to inner map for direct entry access.
+        let map: &mut lang_alloc::collections::BTreeMap<T, ()> = unsafe {
+            &mut *(self as *mut BTreeSet<T> as *mut lang_alloc::collections::BTreeMap<T, ()>)
+        };
+        match map.entry(value) {
+            lang_alloc::collections::btree_map::Entry::Occupied(_) => Ok(false),
+            lang_alloc::collections::btree_map::Entry::Vacant(vac) => match vac.try_insert(()) {
+                Ok(_) => Ok(true),
+                Err((k, _, e)) => Err((k, TryBTreeSetError::Alloc(*e.alloc_error()))),
+            },
+        }
+    }
+
+    #[cfg(not(feature = "btree-entry"))]
     fn try_insert_give_back(&mut self, value: T) -> Result<bool, (T, TryBTreeSetError)>
     where
         T: Ord + RefUnwindSafe,
@@ -743,21 +780,26 @@ mod tests {
         // inserts it. A mid-way clone failure must pop all elements already
         // inserted during this call via pop_first().
         let source: Vec<String> = vec![
-            "item0".into(), "item1".into(), "item2".into(), "item3".into(),
-            "item4".into(), "item5".into(), "item6".into(), "item7".into(),
-            "item8".into(), "item9".into(),
+            "item0".into(),
+            "item1".into(),
+            "item2".into(),
+            "item3".into(),
+            "item4".into(),
+            "item5".into(),
+            "item6".into(),
+            "item7".into(),
+            "item8".into(),
+            "item9".into(),
         ];
         let len_source = source.len();
 
-        let mut set: BTreeSet<String> = BTreeSet::from([
-            "pre0".into(), "pre1".into(), "pre2".into(),
-        ]);
+        let mut set: BTreeSet<String> =
+            BTreeSet::from(["pre0".into(), "pre1".into(), "pre2".into()]);
         let len_before = set.len();
 
-        let r: Result<(), TryBTreeSetError> =
-            with_policy(FailPolicy::fail_nth_alloc(2), || {
-                <BTreeSet<String> as TryBTreeSet<String>>::try_extend_from_slice(&mut set, &source)
-            });
+        let r: Result<(), TryBTreeSetError> = with_policy(FailPolicy::fail_nth_alloc(2), || {
+            <BTreeSet<String> as TryBTreeSet<String>>::try_extend_from_slice(&mut set, &source)
+        });
 
         match r {
             Err(TryBTreeSetError::Clone(_)) => {
@@ -793,17 +835,22 @@ mod tests {
     #[cfg(feature = "std")]
     fn extend_from_slice_rollback_empty_start() {
         let source: Vec<String> = vec![
-            "x0xxxxxxxx".into(), "x1xxxxxxxx".into(), "x2xxxxxxxx".into(),
-            "x3xxxxxxxx".into(), "x4xxxxxxxx".into(), "x5xxxxxxxx".into(),
-            "x6xxxxxxxx".into(), "x7xxxxxxxx".into(), "x8xxxxxxxx".into(),
+            "x0xxxxxxxx".into(),
+            "x1xxxxxxxx".into(),
+            "x2xxxxxxxx".into(),
+            "x3xxxxxxxx".into(),
+            "x4xxxxxxxx".into(),
+            "x5xxxxxxxx".into(),
+            "x6xxxxxxxx".into(),
+            "x7xxxxxxxx".into(),
+            "x8xxxxxxxx".into(),
             "x9xxxxxxxx".into(),
         ];
         let mut set: BTreeSet<String> = BTreeSet::new();
 
-        let _: Result<(), TryBTreeSetError> =
-            with_policy(FailPolicy::fail_nth_alloc(3), || {
-                <BTreeSet<String> as TryBTreeSet<String>>::try_extend_from_slice(&mut set, &source)
-            });
+        let _: Result<(), TryBTreeSetError> = with_policy(FailPolicy::fail_nth_alloc(3), || {
+            <BTreeSet<String> as TryBTreeSet<String>>::try_extend_from_slice(&mut set, &source)
+        });
 
         assert!(
             set.is_empty(),

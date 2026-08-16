@@ -51,10 +51,7 @@ pub(crate) enum InsertionSide {
 pub(crate) fn splitpoint(edge_idx: usize) -> (usize, InsertionSide) {
     debug_assert!(edge_idx <= sys::CAPACITY);
     match edge_idx {
-        0..sys::EDGE_IDX_LEFT_OF_CENTER => (
-            sys::KV_IDX_CENTER - 1,
-            InsertionSide::Left(edge_idx),
-        ),
+        0..sys::EDGE_IDX_LEFT_OF_CENTER => (sys::KV_IDX_CENTER - 1, InsertionSide::Left(edge_idx)),
         sys::EDGE_IDX_LEFT_OF_CENTER => (sys::KV_IDX_CENTER, InsertionSide::Left(edge_idx)),
         sys::EDGE_IDX_RIGHT_OF_CENTER => (sys::KV_IDX_CENTER, InsertionSide::Right(0)),
         _ => (
@@ -86,12 +83,24 @@ pub(crate) fn try_new_leaf<K, V>() -> Result<NonNull<sys::LeafNode<K, V>>, Alloc
     Ok(unsafe { NonNull::new_unchecked(raw) })
 }
 
-/// Allocate a fresh, empty internal node on the heap.
-///
-/// As with [`try_new_leaf`], the returned pointer carries full ownership. Note
-/// the pointer is typed as `NonNull<LeafNode>` (matching the sys `BoxedNode`
-/// alias) and must be cast back to `InternalNode` before touching `data`/`edges`.
-pub(crate) fn try_new_internal<K, V>() -> Result<NonNull<sys::LeafNode<K, V>>, AllocError_> {
+/// Allocate a fresh, empty leaf node, returning the `Box` (caller owns it).
+/// The box can be dropped directly on rollback (frees the node) or converted
+/// to a raw pointer via `Box::into_raw` when wiring into the tree.
+pub(crate) fn try_new_leaf_box<K, V>() -> Result<Box<sys::LeafNode<K, V>>, AllocError_> {
+    let mut leaf_box: Box<MaybeUninit<sys::LeafNode<K, V>>> =
+        <Box<sys::LeafNode<K, V>> as TryBox<_>>::fallible_new_uninit()?;
+
+    unsafe {
+        let ptr = leaf_box.as_mut_ptr();
+        (*ptr).parent = None;
+        (*ptr).len = 0;
+    }
+
+    Ok(unsafe { leaf_box.assume_init() })
+}
+
+/// Allocate a fresh, empty internal node, returning the `Box` (caller owns it).
+pub(crate) fn try_new_internal_box<K, V>() -> Result<Box<sys::InternalNode<K, V>>, AllocError_> {
     let mut node_box: Box<MaybeUninit<sys::InternalNode<K, V>>> =
         <Box<sys::InternalNode<K, V>> as TryBox<_>>::fallible_new_uninit()?;
 
@@ -101,54 +110,18 @@ pub(crate) fn try_new_internal<K, V>() -> Result<NonNull<sys::LeafNode<K, V>>, A
         (*ptr).data.len = 0;
     }
 
-    let boxed: Box<sys::InternalNode<K, V>> = unsafe { node_box.assume_init() };
-    let raw = Box::into_raw(boxed);
-    Ok(unsafe { NonNull::new_unchecked(raw).cast() })
+    Ok(unsafe { node_box.assume_init() })
 }
 
 /// Re-export of the allocation error surfaced by the fallible allocators above.
 pub(crate) type AllocError_ = crate::alloc::AllocError;
 
-// ── Manual node teardown (rollback path) ──────────────────────────────────────
-
-/// Drop a heap-allocated leaf node that was reserved but never linked into the
-/// tree, dropping any initialised keys/values first. Used during rollback when a
-/// later reservation fails after an earlier one succeeded.
-pub(crate) unsafe fn drop_leaf_node<K, V>(ptr: NonNull<sys::LeafNode<K, V>>) {
-    unsafe {
-        let leaf = ptr.as_ptr();
-        let len = (*leaf).len as usize;
-        for i in 0..len {
-            (*leaf).keys[i].assume_init_drop();
-            (*leaf).vals[i].assume_init_drop();
-        }
-        let _ = Box::from_raw(leaf);
-    }
-}
-
-/// Drop a heap-allocated internal node that was reserved but never linked into
-/// the tree, dropping any initialised keys/values first. Child edges are not
-/// dropped: by construction a rolled-back internal node only ever references
-/// nodes that remain reachable from the (unchanged) original tree, so freeing
-/// them here would double-free.
-pub(crate) unsafe fn drop_internal_node<K, V>(ptr: NonNull<sys::LeafNode<K, V>>) {
-    unsafe {
-        let internal = ptr.as_ptr() as *mut sys::InternalNode<K, V>;
-        let len = (*internal).data.len as usize;
-        for i in 0..len {
-            (*internal).data.keys[i].assume_init_drop();
-            (*internal).data.vals[i].assume_init_drop();
-        }
-        let _ = Box::from_raw(internal);
-    }
-}
-
 // ── Infallible leaf mutation ──────────────────────────────────────────────────
 
 /// Shift elements right and insert `(key, val)` at `idx` within a leaf's arrays.
 ///
-/// Does **not** update `len`; the caller updates it. The caller must ensure the
-/// resulting length stays within `CAPACITY`.
+/// Increments `len` by one. The caller must ensure the resulting length stays
+/// within `CAPACITY`.
 pub(crate) unsafe fn leaf_slice_insert<K, V>(
     leaf: *mut sys::LeafNode<K, V>,
     idx: usize,
@@ -170,6 +143,7 @@ pub(crate) unsafe fn leaf_slice_insert<K, V>(
         }
         (*leaf).keys[idx].write(key);
         (*leaf).vals[idx].write(val);
+        (*leaf).len = (len + 1) as u16;
     }
 }
 
@@ -246,7 +220,11 @@ pub(crate) unsafe fn internal_insert_fit<K, V>(
             let vals_base = (*internal).data.vals.as_mut_ptr();
             ptr::copy(vals_base.add(edge_idx), vals_base.add(edge_idx + 1), shift);
             let edges_base = (*internal).edges.as_mut_ptr();
-            ptr::copy(edges_base.add(edge_idx + 1), edges_base.add(edge_idx + 2), shift);
+            ptr::copy(
+                edges_base.add(edge_idx + 1),
+                edges_base.add(edge_idx + 2),
+                shift,
+            );
         }
         (*internal).data.keys[edge_idx].write(key);
         (*internal).data.vals[edge_idx].write(val);
