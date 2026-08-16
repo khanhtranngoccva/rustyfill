@@ -158,10 +158,15 @@ pub(crate) unsafe fn leaf_slice_insert<K, V>(
     unsafe {
         let len = (*leaf).len as usize;
         if len > idx {
-            let keys_ptr = (*leaf).keys.as_mut_ptr();
-            let vals_ptr = (*leaf).vals.as_mut_ptr();
-            ptr::copy(keys_ptr.add(idx), keys_ptr.add(idx + 1), len - idx);
-            ptr::copy(vals_ptr.add(idx), vals_ptr.add(idx + 1), len - idx);
+            // Shift-right within the same array. Derive BOTH src and dst from a
+            // single base pointer so that under stacked borrows neither read nor
+            // write retags against the other (a separate as_ptr()/as_mut_ptr()
+            // pair would create a SharedReadOnly then a Unique tag whose overlap
+            // invalidates the former → UB on the copy's read of src).
+            let keys_base = (*leaf).keys.as_mut_ptr();
+            ptr::copy(keys_base.add(idx), keys_base.add(idx + 1), len - idx);
+            let vals_base = (*leaf).vals.as_mut_ptr();
+            ptr::copy(vals_base.add(idx), vals_base.add(idx + 1), len - idx);
         }
         (*leaf).keys[idx].write(key);
         (*leaf).vals[idx].write(val);
@@ -210,7 +215,7 @@ pub(crate) unsafe fn copy_right_half_leaf<K, V>(
 /// Assumes the node is **not** full (so there is room for one more separator).
 /// Updates `len` itself.
 pub(crate) unsafe fn internal_insert_fit<K, V>(
-    internal: &mut sys::InternalNode<K, V>,
+    internal: *mut sys::InternalNode<K, V>,
     edge_idx: usize,
     key: K,
     val: V,
@@ -229,29 +234,24 @@ pub(crate) unsafe fn internal_insert_fit<K, V>(
         // so when `edge_idx == len` the "shift" copies from the one trailing
         // uninitialised slot into another uninitialised slot — harmless, since
         // nothing ever reads that slot afterwards.
-        let len = internal.data.len as usize;
+        //
+        // Operate through raw pointers only: taking `&mut` sub-slices here would
+        // create fresh borrow tags that stack against any caller-held reference
+        // to this node (stacked-borrows UB, caught by Miri).
+        let len = (*internal).data.len as usize;
         let shift = len - edge_idx;
         if shift > 0 {
-            ptr::copy(
-                &internal.data.keys[edge_idx],
-                &mut internal.data.keys[edge_idx + 1],
-                shift,
-            );
-            ptr::copy(
-                &internal.data.vals[edge_idx],
-                &mut internal.data.vals[edge_idx + 1],
-                shift,
-            );
-            ptr::copy(
-                &internal.edges[edge_idx + 1],
-                &mut internal.edges[edge_idx + 2],
-                shift,
-            );
+            let keys_base = (*internal).data.keys.as_mut_ptr();
+            ptr::copy(keys_base.add(edge_idx), keys_base.add(edge_idx + 1), shift);
+            let vals_base = (*internal).data.vals.as_mut_ptr();
+            ptr::copy(vals_base.add(edge_idx), vals_base.add(edge_idx + 1), shift);
+            let edges_base = (*internal).edges.as_mut_ptr();
+            ptr::copy(edges_base.add(edge_idx + 1), edges_base.add(edge_idx + 2), shift);
         }
-        internal.data.keys[edge_idx].write(key);
-        internal.data.vals[edge_idx].write(val);
-        internal.edges[edge_idx + 1].write(child);
-        internal.data.len = (len + 1) as u16;
+        (*internal).data.keys[edge_idx].write(key);
+        (*internal).data.vals[edge_idx].write(val);
+        (*internal).edges[edge_idx + 1].write(child);
+        (*internal).data.len = (len + 1) as u16;
     }
 }
 
@@ -268,26 +268,24 @@ pub(crate) unsafe fn internal_insert_fit<K, V>(
 /// links now reference `source`; the caller must repair those links via
 /// [`correct_parent_links`].
 pub(crate) unsafe fn copy_right_half_internal<K, V>(
-    source: &mut sys::InternalNode<K, V>,
-    right: &mut sys::InternalNode<K, V>,
+    source: *mut sys::InternalNode<K, V>,
+    right: *mut sys::InternalNode<K, V>,
     sp_idx: usize,
 ) {
     unsafe {
-        let old_len = source.data.len as usize;
+        let old_len = (*source).data.len as usize;
         let new_right_len = old_len - sp_idx - 1;
 
-        right.data.len = new_right_len as u16;
+        (*right).data.len = new_right_len as u16;
         if new_right_len > 0 {
-            ptr::copy_nonoverlapping(
-                &source.data.keys[sp_idx + 1],
-                right.data.keys.as_mut_ptr(),
-                new_right_len,
-            );
-            ptr::copy_nonoverlapping(
-                &source.data.vals[sp_idx + 1],
-                right.data.vals.as_mut_ptr(),
-                new_right_len,
-            );
+            // Distinct allocations → non-overlapping. Raw pointers avoid any
+            // borrow retag on source that stacked borrows would invalidate.
+            let src_keys = (*source).data.keys.as_ptr().add(sp_idx + 1);
+            let dst_keys = (*right).data.keys.as_mut_ptr();
+            ptr::copy_nonoverlapping(src_keys, dst_keys, new_right_len);
+            let src_vals = (*source).data.vals.as_ptr().add(sp_idx + 1);
+            let dst_vals = (*right).data.vals.as_mut_ptr();
+            ptr::copy_nonoverlapping(src_vals, dst_vals, new_right_len);
         }
         // Edges: the right node always inherits at least one edge — former
         // edge `old_len` (the last child of `source`) becomes its sole edge
@@ -295,11 +293,11 @@ pub(crate) unsafe fn copy_right_half_internal<K, V>(
         // node would be wired into the tree with an uninitialised edge slot,
         // leaving a dangling/unset child pointer that panics on drop.
         ptr::copy_nonoverlapping(
-            source.edges.as_ptr().add(sp_idx + 1),
-            right.edges.as_mut_ptr(),
+            (*source).edges.as_ptr().add(sp_idx + 1),
+            (*right).edges.as_mut_ptr(),
             new_right_len + 1,
         );
-        source.data.len = sp_idx as u16;
+        (*source).data.len = sp_idx as u16;
     }
 }
 
@@ -308,12 +306,14 @@ pub(crate) unsafe fn copy_right_half_internal<K, V>(
 /// Point `child`'s stored parent link at `parent`, recording its position as
 /// `idx` among the parent's edges.
 pub(crate) unsafe fn set_parent_link<K, V>(
-    child_ptr: &mut sys::LeafNode<K, V>,
+    child_ptr: *mut sys::LeafNode<K, V>,
     parent_ptr: NonNull<sys::LeafNode<K, V>>,
     idx: usize,
 ) {
-    child_ptr.parent = Some(parent_ptr.cast());
-    child_ptr.parent_idx.write(idx as u16);
+    unsafe {
+        (*child_ptr).parent = Some(parent_ptr.cast());
+        (*child_ptr).parent_idx.write(idx as u16);
+    }
 }
 
 /// Rewrite the parent links of the children referenced by `internal`'s edges
@@ -325,11 +325,13 @@ pub(crate) unsafe fn correct_parent_links<K, V>(
     end: usize,
 ) {
     unsafe {
-        let mut iptr: NonNull<sys::InternalNode<K, V>> = internal.cast();
-        let iptr_casted = iptr.as_mut();
+        // Read edges through a raw pointer (no as_mut retag) so we don't create
+        // a second Unique borrow on this node that would invalidate any
+        // caller-held reference to it under stacked borrows.
+        let iptr: *mut sys::InternalNode<K, V> = internal.cast().as_ptr();
         for i in start..=end {
-            let mut child = (&mut iptr_casted.edges[i]).assume_init_read();
-            set_parent_link(child.as_mut(), internal, i);
+            let child = (*iptr).edges[i].assume_init_read();
+            set_parent_link(child.as_ptr(), internal, i);
         }
     }
 }

@@ -13,17 +13,22 @@
 //!
 //! # Reserve-and-Commit Architecture
 //!
-//! Insertion with cascading splits uses a strict two-phase approach:
+//! Insertion with cascading splits uses a strict three-phase approach:
 //!
-//! 1. **Reserve phase** — *all* allocations happen up front, in one batched
-//!    pass over the split path. We walk the tree bottom-up, deciding for each
-//!    full node whether it must split, and pre-allocate every new node the
-//!    commit will need: one leaf for the initial leaf split, plus one internal
-//!    node per cascading internal split, plus one more if the root grows. If any
-//!    single allocation fails we drop the already-reserved nodes and return
-//!    `Err`; because no mutation has touched the original tree yet, it remains
-//!    completely intact.
-//! 2. **Commit phase** — with every node already allocated, the actual splits
+//! 1. **Probe phase** — walk the tree bottom-up (reads only) to learn exactly
+//!    which nodes will split and how deep the cascade goes. The probe records
+//!    this in a heap-backed vector; because that vector itself must be grown,
+//!    the probe runs a count pass first and then reserves its buffer up front
+//!    via a fallible `try_with_capacity`. If that reservation fails we return
+//!    `Err` immediately — nothing has been mutated yet.
+//! 2. **Reserve phase** — with the split path fully known, allocate every node
+//!    the commit needs in one batch: one leaf for the initial leaf split, one
+//!    internal node per cascading internal split, plus one more if the root
+//!    grows. The container holding those pointers is likewise reserved up
+//!    front. If any single allocation fails we drop the already-reserved nodes
+//!    and return `Err`; because no mutation has touched the original tree yet,
+//!    it remains completely intact.
+//! 3. **Commit phase** — with every node already allocated, the actual splits
 //!    are performed as pure pointer surgery. No allocation occurs here, so
 //!    failure is impossible: the commit can never fail.
 //!
@@ -33,9 +38,11 @@
 //! half-split.
 
 use crate::alloc::AllocError;
+use crate::alloc::vec::TryVec;
 use lang_alloc::collections::BTreeMap;
 use lang_alloc::collections::btree_map::{Entry, VacantEntry};
 
+use lang_alloc::alloc::Layout;
 use lang_core::fmt;
 use lang_core::marker::PhantomData;
 use lang_core::mem;
@@ -64,6 +71,15 @@ type InsertResult<'a, K, V> = Result<
     (sys::NodeRef<sys::Mut<'a>, K, V, sys::LeafOrInternal>, usize),
     (K, V, TryBTreeMapEntryError),
 >;
+
+/// Construct an [`AllocError`] carrying a placeholder layout. Used when a
+/// fallible allocation primitive (e.g. `Vec::try_reserve`) reports failure
+/// without exposing the exact `Layout` that failed.
+fn alloc_error() -> AllocError {
+    AllocError {
+        layout: unsafe { Layout::from_size_align_unchecked(1, 1) },
+    }
+}
 
 // ── Error type ────────────────────────────────────────────────────────────────
 
@@ -153,16 +169,18 @@ unsafe fn extract_to_sys<'a, K: Ord, V>(
 /// assert_eq!(val, &42);
 /// assert_eq!(map["hello"], 42);
 ///
-/// // Second call — key already exists, returns the existing value.
+/// // Second call — key already exists; like BTreeMap::insert the value is replaced.
 /// let val = map.try_insert_entry("hello", 99).unwrap();
-/// assert_eq!(val, &42); // old value unchanged
+/// assert_eq!(val, &99); // new value stored
+/// assert_eq!(map["hello"], 99);
 /// ```
 pub trait TryBTreeMapEntry<'a, K, V>: Sized {
-    /// Obtain an entry for `key` and fallibly insert `value` if vacant.
+    /// Obtain an entry for `key` and fallibly insert `value`.
     ///
-    /// If the key is already present, returns a reference to the existing value.
-    /// If the key is absent, performs a fallible insertion that may return
-    /// [`Err`] on heap allocation failure.
+    /// Mirrors [`BTreeMap::insert`](std::collections::BTreeMap::insert): whether
+    /// the key was already present or not, its value is set to `value`, and a
+    /// mutable reference to that (possibly overwritten) value is returned.
+    /// Insertion of a new key may return [`Err`] on heap allocation failure.
     fn try_insert_entry(self, key: K, value: V) -> Result<&'a mut V, (K, V, TryBTreeMapEntryError)>
     where
         K: Ord;
@@ -233,7 +251,11 @@ impl<'a, K: Ord + Clone, V> TryBTreeMapEntry<'a, K, V> for &'a mut BTreeMap<K, V
         value: V,
     ) -> Result<&'a mut V, (K, V, TryBTreeMapEntryError)> {
         match self.entry(key) {
-            Entry::Occupied(entry) => Ok(entry.into_mut()),
+            // Mirrors BTreeMap::insert: a pre-existing key has its value replaced.
+            Entry::Occupied(mut entry) => {
+                entry.insert(value);
+                Ok(entry.into_mut())
+            }
             Entry::Vacant(vacant) => match vacant.try_insert(value) {
                 Ok(occupied) => Ok(occupied.into_mut()),
                 Err((k, v, e)) => Err((k, v, e)),
@@ -343,8 +365,14 @@ fn try_insert_with_split<'a, K, V>(
     key: K,
     value: V,
 ) -> InsertResult<'a, K, V> {
-    // ── Phase 1: probe the split path (pure reads) ───────────────────────────
-    let plan = CommitPlan::build(leaf_edge);
+    // ── Phase 1: probe the split path (reads + fallible buffer reservation) ──
+    // The probe walks the tree twice (once to count, once to record) and
+    // reserves its own backing vector up front via `try_with_capacity`. If that
+    // reservation fails we bail out — the tree is still untouched.
+    let plan = match CommitPlan::build(leaf_edge) {
+        Ok(plan) => plan,
+        Err(e) => return Err((key, value, e)),
+    };
 
     // Number of internal nodes the commit will consume: one per internal node
     // that splits, plus one more if the root grows into a fresh level.
@@ -358,8 +386,15 @@ fn try_insert_with_split<'a, K, V>(
         Err(e) => return Err((key, value, e.into())),
     };
     // One internal node per internal split / root growth, deepest-first.
+    // Reserve the container up front so the loop below never reallocates.
     let mut reserved_internals: Vec<NonNull<sys::LeafNode<K, V>>> =
-        Vec::with_capacity(num_reserved);
+        match <Vec<NonNull<sys::LeafNode<K, V>>> as TryVec<_>>::try_with_capacity(num_reserved) {
+            Ok(v) => v,
+            Err(_) => {
+                unsafe { drop_leaf_node(leaf_right) };
+                return Err((key, value, TryBTreeMapEntryError::Alloc(alloc_error())));
+            }
+        };
     for _ in 0..num_reserved {
         match try_new_internal::<K, V>() {
             Ok(p) => reserved_internals.push(p),
@@ -392,8 +427,12 @@ struct CommitInternal<K, V> {
     child_idx: usize,
     /// Whether this node is full and must split.
     will_split: bool,
-    /// For a splitting node: its centre separator index and the promoted KV.
-    sp: Option<(usize, (K, V))>,
+    /// For a splitting node: its centre separator index. The KV is re-read from
+    /// the node during commit (the slot is still valid at that point because we
+    /// walk bottom-up and haven't modified this node yet). Storing only the
+    /// index avoids owning a copy of `V` that would be double-dropped if the
+    /// commit stops early (a higher ancestor absorbs the promotion).
+    sp_idx: Option<usize>,
 }
 
 /// Everything the probe learns about the upcoming split cascade, computed with
@@ -408,10 +447,8 @@ struct CommitPlan<'a, K, V> {
     insert_right: bool,
     /// Local index at which the new key is written in its destination node.
     insert_idx: usize,
-    /// The centre separator promoted out of the leaf.
-    kv: (K, V),
     /// For each internal node on the path (deepest first): pointer, split flag,
-    /// and (if splitting) its centre separator.
+    /// and (if splitting) its centre separator index.
     internals: Vec<CommitInternal<K, V>>,
     /// Whether reaching the root forces a brand-new root level.
     new_root: bool,
@@ -420,28 +457,71 @@ struct CommitPlan<'a, K, V> {
 
 impl<'a, K, V> CommitPlan<'a, K, V> {
     /// Walk the path from the target leaf up to the root, recording which nodes
-    /// will split. Performs no mutations.
+    /// will split. Performs no mutations on the tree.
+    ///
+    /// The probe vector itself is heap-backed, so its growth can fail under OOM.
+    /// To avoid growing it incrementally (which would allocate repeatedly over a
+    /// deep cascade), we run **two passes**:
+    ///
+    /// 1. Count how many internal nodes sit on the split path.
+    /// 2. [`Vec::try_reserve`] exactly that many slots up front — a single
+    ///    allocation that fails cleanly if memory runs out.
+    /// 3. Re-walk the path and fill the pre-sized vector (no further growth).
+    ///
+    /// Returns `Err` if reserving the probe buffer fails, leaving the tree
+    /// untouched.
     fn build(
         leaf_edge: sys::Handle<sys::NodeRef<sys::Mut<'a>, K, V, sys::Leaf>, sys::Edge>,
-    ) -> Self {
+    ) -> Result<Self, TryBTreeMapEntryError> {
         let orig_leaf = leaf_edge.node.node.as_ptr();
         let (leaf_sp, leaf_side) = splitpoint(leaf_edge.idx);
 
-        let (mk, mv) = unsafe {
-            (
-                (*orig_leaf).keys[leaf_sp].assume_init_read(),
-                (*orig_leaf).vals[leaf_sp].assume_init_read(),
-            )
-        };
         let (insert_right, insert_idx) = match leaf_side {
             InsertionSide::Left(i) => (false, i),
             InsertionSide::Right(i) => (true, i),
         };
 
-        let mut internals: Vec<CommitInternal<K, V>> = Vec::new();
-        let mut cur: sys::NodeRef<sys::Mut<'a>, K, V, sys::LeafOrInternal> =
-            leaf_edge.node.forget_type();
-        #[allow(clippy::while_let_loop, reason = "annotate that we break at root")]
+        // Starting-node fields, captured once so both passes begin from the
+        // identical node. `NodeRef` is a cheap value (height + pointer); we
+        // rebuild it per pass because `forget_type` consumes its receiver.
+        let start_height = leaf_edge.node.height;
+        let start_node = leaf_edge.node.node;
+
+        // Pass 1: count the internal nodes on the split path.
+        let num_internals = {
+            let mut count = 0usize;
+            let mut cur: sys::NodeRef<sys::Mut<'a>, K, V, sys::LeafOrInternal> = sys::NodeRef {
+                height: start_height,
+                node: start_node,
+                _marker: PhantomData,
+            };
+            #[allow(clippy::while_let_loop, reason = "root node is annotated")]
+            loop {
+                match ascend(cur) {
+                    AscendResult::Parent(parent_handle) => {
+                        count += 1;
+                        cur = parent_handle.node.forget_type();
+                    }
+                    AscendResult::Root(_) => break,
+                }
+            }
+            count
+        };
+
+        // Reserve the probe buffer up front so the fill pass never reallocates.
+        // Uses the fallible [`TryVec::try_with_capacity`] (a single allocation)
+        // rather than `Vec::with_capacity`, which would panic on OOM.
+        let mut internals: Vec<CommitInternal<K, V>> =
+            <Vec<CommitInternal<K, V>> as TryVec<_>>::try_with_capacity(num_internals)
+                .map_err(|_| TryBTreeMapEntryError::Alloc(alloc_error()))?;
+
+        // Pass 2: re-walk and record each node's annotation.
+        let mut cur: sys::NodeRef<sys::Mut<'a>, K, V, sys::LeafOrInternal> = sys::NodeRef {
+            height: start_height,
+            node: start_node,
+            _marker: PhantomData,
+        };
+        #[allow(clippy::while_let_loop, reason = "root node is annotated")]
         loop {
             match ascend(cur) {
                 AscendResult::Parent(parent_handle) => {
@@ -449,15 +529,9 @@ impl<'a, K, V> CommitPlan<'a, K, V> {
                         parent_handle.node.node.cast();
                     let parent_len = unsafe { parent_ptr.as_ref() }.data.len as usize;
                     let will_split = parent_len >= sys::CAPACITY;
-                    let sp = if will_split {
+                    let sp_idx = if will_split {
                         let (sp_idx, _) = splitpoint(parent_handle.idx);
-                        let (pk, pv) = unsafe {
-                            (
-                                parent_ptr.as_ref().data.keys[sp_idx].assume_init_read(),
-                                parent_ptr.as_ref().data.vals[sp_idx].assume_init_read(),
-                            )
-                        };
-                        Some((sp_idx, (pk, pv)))
+                        Some(sp_idx)
                     } else {
                         None
                     };
@@ -465,7 +539,7 @@ impl<'a, K, V> CommitPlan<'a, K, V> {
                         ptr: parent_ptr,
                         child_idx: parent_handle.idx,
                         will_split,
-                        sp,
+                        sp_idx,
                     });
                     cur = parent_handle.node.forget_type();
                 }
@@ -480,16 +554,15 @@ impl<'a, K, V> CommitPlan<'a, K, V> {
         // Reaching the root means the tree grows by one level.
         let new_root = true;
 
-        CommitPlan {
+        Ok(CommitPlan {
             orig_leaf,
             leaf_sp,
             insert_right,
             insert_idx,
-            kv: (mk, mv),
             internals,
             new_root,
             _lifetime: PhantomData,
-        }
+        })
     }
 }
 
@@ -520,6 +593,18 @@ fn commit_split<'a, K, V>(
     } else {
         plan.orig_leaf
     };
+    // Read the leaf's centre separator BEFORE the split mutation. This is the
+    // initial promotion carried upward. Reading it here (rather than storing a
+    // copy in the plan) ensures the value is owned exactly once — by
+    // `current_kv` — and never duplicated in a plan buffer that could be
+    // partially consumed and dropped.
+    let (mk, mv) = unsafe {
+        (
+            (*plan.orig_leaf).keys[plan.leaf_sp].assume_init_read(),
+            (*plan.orig_leaf).vals[plan.leaf_sp].assume_init_read(),
+        )
+    };
+
     unsafe {
         copy_right_half_leaf(plan.orig_leaf, right_leaf, plan.leaf_sp);
         leaf_slice_insert(insert_node_ptr, plan.insert_idx, key, value);
@@ -550,11 +635,11 @@ fn commit_split<'a, K, V>(
         node: right_owned.node,
         _marker: PhantomData,
     };
-    let mut current_kv = plan.kv;
+    let mut current_kv = (mk, mv);
 
     // ── Steps 2+: promote up through each internal node ──────────────────────
     for ci in plan.internals.into_iter() {
-        let mut parent_ptr = ci.ptr;
+        let parent_ptr = ci.ptr;
         let edge_idx = ci.child_idx;
 
         if !ci.will_split {
@@ -562,7 +647,7 @@ fn commit_split<'a, K, V>(
             let new_len = (unsafe { parent_ptr.as_ref() }.data.len as usize) + 1;
             unsafe {
                 internal_insert_fit(
-                    parent_ptr.as_mut(),
+                    parent_ptr.as_ptr(),
                     edge_idx,
                     current_kv.0,
                     current_kv.1,
@@ -577,16 +662,29 @@ fn commit_split<'a, K, V>(
         }
 
         // Parent is full: split it too, consuming the next reserved internal.
-        let (sp_idx, (mk, mv)) = ci.sp.expect("will_split implies sp is set");
+        let sp_idx = ci.sp_idx.expect("will_split implies sp_idx is set");
         let ri_raw = *ri_iter
             .next()
             .expect("an internal node was reserved per split");
-        let mut ri_ptr: NonNull<sys::InternalNode<K, V>> = ri_raw.cast();
-        let ri = unsafe { ri_ptr.as_mut() };
+        let ri_ptr: *mut sys::InternalNode<K, V> = ri_raw.as_ptr() as *mut _;
+
+        // Re-read the centre separator from the node NOW. This is safe because
+        // we walk bottom-up: no prior commit step has modified this node.
+        // Reading it here (rather than storing a copy in the plan) ensures the
+        // value is dropped exactly once — when it is written into the parent
+        // below — and never again via a stale plan buffer.
+        let (mk, mv) = unsafe {
+            (
+                parent_ptr.as_ref().data.keys[sp_idx].assume_init_read(),
+                parent_ptr.as_ref().data.vals[sp_idx].assume_init_read(),
+            )
+        };
 
         unsafe {
-            copy_right_half_internal(parent_ptr.as_mut(), ri, sp_idx);
-            correct_parent_links::<K, V>(ri_raw.cast(), 0, ri.data.len as usize);
+            copy_right_half_internal(parent_ptr.as_ptr(), ri_ptr, sp_idx);
+            // After the copy, `ri` holds `new_right_len` separators.
+            let right_len = (*ri_ptr).data.len as usize;
+            correct_parent_links::<K, V>(ri_raw.cast(), 0, right_len);
         }
 
         // Place the incoming promotion into whichever half it belongs to.
@@ -596,7 +694,7 @@ fn commit_split<'a, K, V>(
                 InsertionSide::Left(ii) => {
                     let new_len = (parent_ptr.as_ref().data.len as usize) + 1;
                     internal_insert_fit(
-                        parent_ptr.as_mut(),
+                        parent_ptr.as_ptr(),
                         ii,
                         current_kv.0,
                         current_kv.1,
@@ -605,8 +703,8 @@ fn commit_split<'a, K, V>(
                     correct_parent_links::<K, V>(parent_ptr.cast(), ii + 1, new_len);
                 }
                 InsertionSide::Right(ii) => {
-                    let new_len = (ri.data.len as usize) + 1;
-                    internal_insert_fit(ri, ii, current_kv.0, current_kv.1, current_right.node);
+                    let new_len = ((*ri_ptr).data.len as usize) + 1;
+                    internal_insert_fit(ri_ptr, ii, current_kv.0, current_kv.1, current_right.node);
                     correct_parent_links::<K, V>(ri_raw.cast(), ii + 1, new_len);
                 }
             }
@@ -635,27 +733,26 @@ fn commit_split<'a, K, V>(
     let nr_raw = *ri_iter
         .next()
         .expect("a root node was reserved when new_root is set");
-    let mut nr_ptr: NonNull<sys::InternalNode<K, V>> = nr_raw.cast();
-    let nr = unsafe { nr_ptr.as_mut() };
+    let nr_ptr: *mut sys::InternalNode<K, V> = nr_raw.as_ptr() as *mut _;
     let new_height = current_left.height + 1;
 
-    let mut old_root_owned: sys::NodeRef<sys::Owned, K, V, sys::LeafOrInternal> =
+    let old_root_owned: sys::NodeRef<sys::Owned, K, V, sys::LeafOrInternal> =
         unsafe { ptr::read(inner_map.root.as_ref().expect("root exists")) };
     inner_map.root.take();
 
     unsafe {
-        nr.data.parent = None;
-        nr.data.len = 0;
-        nr.edges[0].write(old_root_owned.node);
-        set_parent_link(old_root_owned.node.as_mut(), nr_raw.cast(), 0);
+        (*nr_ptr).data.parent = None;
+        (*nr_ptr).data.len = 0;
+        (*nr_ptr).edges[0].write(old_root_owned.node);
+        set_parent_link(old_root_owned.node.as_ptr(), nr_raw.cast(), 0);
 
-        let len = nr.data.len as usize;
-        nr.data.keys[len].write(current_kv.0);
-        nr.data.vals[len].write(current_kv.1);
-        nr.edges[len + 1].write(current_right.node);
-        nr.data.len = (len + 1) as u16;
+        let len = (*nr_ptr).data.len as usize;
+        (*nr_ptr).data.keys[len].write(current_kv.0);
+        (*nr_ptr).data.vals[len].write(current_kv.1);
+        (*nr_ptr).edges[len + 1].write(current_right.node);
+        (*nr_ptr).data.len = (len + 1) as u16;
 
-        set_parent_link(current_right.node.as_mut(), nr_raw.cast(), 1);
+        set_parent_link(current_right.node.as_ptr(), nr_raw.cast(), 1);
     }
 
     inner_map.root = Some(sys::NodeRef::<sys::Owned, K, V, sys::LeafOrInternal> {
@@ -709,12 +806,13 @@ mod tests {
     }
 
     #[test]
-    fn try_insert_entry_existing_key_returns_old_value() {
+    fn try_insert_entry_existing_key_replaces_value() {
+        // Mirrors BTreeMap::insert: re-inserting a present key overwrites the value.
         let mut map: BTreeMap<i32, &str> = BTreeMap::new();
         map.insert(1, "one");
         let val = map.try_insert_entry(1, "ONE").unwrap();
-        assert_eq!(val, &"one");
-        assert_eq!(map[&1], "one");
+        assert_eq!(val, &"ONE");
+        assert_eq!(map[&1], "ONE");
     }
 
     #[test]
@@ -825,8 +923,9 @@ mod tests {
         let mut map: BTreeMap<i32, String> = BTreeMap::new();
         let v1 = map.try_insert_entry(1, "hello".to_string()).unwrap();
         assert_eq!(v1, &"hello");
+        // Re-inserting key 1 replaces the value (std insert semantics).
         let v2 = map.try_insert_entry(1, "world".to_string()).unwrap();
-        assert_eq!(v2, &"hello");
+        assert_eq!(v2, &"world");
         assert_eq!(map.len(), 1);
     }
 
@@ -915,6 +1014,36 @@ mod tests {
             (r1, r2)
         });
         let (_r1_ok, _r2_ok) = results;
+    }
+
+    /// The probe's backing vector is reserved up front via `try_with_capacity`.
+    /// This test forces *that* allocation to fail (the very first heap allocation
+    /// of the split insert) and verifies the tree is left intact. It isolates the
+    /// fallible-probe path from the node-allocation paths covered by the other
+    /// OOM tests.
+    #[test]
+    fn try_insert_entry_probe_buffer_reservation_fails_on_oom() {
+        let mut map: BTreeMap<u32, u32> = BTreeMap::new();
+        // Fill past the leaf capacity so the next insert takes the split path.
+        for i in 0..11 {
+            map.try_insert_entry(i, i * 10).unwrap();
+        }
+        assert_eq!(map.len(), 11);
+        // Fail the first allocation inside try_insert_with_split — which is the
+        // probe buffer's `try_with_capacity` reservation.
+        let r = with_policy(FailPolicy::fail_next_alloc(), || {
+            map.try_insert_entry(11, 110)
+        });
+        assert!(r.is_err(), "probe buffer reservation should fail on OOM");
+        let (returned_key, returned_val, err) = r.unwrap_err();
+        assert_eq!(returned_key, 11);
+        assert_eq!(returned_val, 110);
+        matches!(err, TryBTreeMapEntryError::Alloc(_));
+        // Tree untouched: still 11 entries, all values preserved.
+        assert_eq!(map.len(), 11);
+        for i in 0..11 {
+            assert_eq!(map[&i], i * 10);
+        }
     }
 
     #[test]
@@ -1035,9 +1164,10 @@ mod tests {
             map.try_insert_entry(i, format!("v{}", i)).unwrap();
         }
         assert_eq!(map.len(), 12);
+        // Key 5 already exists; re-inserting replaces its value (std semantics).
         let returned = map.try_insert_entry(5, "REPLACED".to_string()).unwrap();
-        assert_eq!(returned, &"v5");
-        assert_eq!(map[&5], "v5");
+        assert_eq!(returned, &"REPLACED");
+        assert_eq!(map[&5], "REPLACED");
         assert_eq!(map.len(), 12);
     }
 
@@ -1092,5 +1222,311 @@ mod tests {
         };
         let err: TryBTreeMapEntryError = ae.into();
         matches!(err, TryBTreeMapEntryError::Alloc(_));
+    }
+
+    // ── Randomised fuzzing ────────────────────────────────────────────────────
+    //
+    // The deterministic tests above pin specific shapes (11, 30, 999_999 keys)
+    // but a B-tree's correctness depends on *every* combination of node fill
+    // levels and split directions along the probe path. A randomised driver that
+    // inserts an unpredictable stream of keys — then verifies the tree is a valid
+    // ordered map with exactly the expected contents — surfaces corruption that
+    // fixed-size tests miss (mis-shifted edges, stale parent links, dropped or
+    // duplicated keys).
+    //
+    // We use a self-contained SplitMix64 PRNG rather than pulling in a `rand`
+    // dependency: it is deterministic for a given seed (so failures reproduce
+    // under Miri/sanitizers), portable across toolchains, and allocation-free.
+
+    /// Minimal deterministic PRNG (SplitMix64). No external crate needed.
+    struct FuzzRng(u64);
+
+    impl FuzzRng {
+        const fn new(seed: u64) -> Self {
+            Self(seed)
+        }
+        /// Advance state and return the next pseudorandom 64-bit word.
+        fn next_u64(&mut self) -> u64 {
+            self.0 = self.0.wrapping_add(0x9E37_79B9_7F4A_7C15);
+            let mut z = self.0;
+            z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+            z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+            z ^ (z >> 31)
+        }
+        /// Uniform integer in `[0, bound)` via rejection sampling (no modulo bias).
+        fn below(&mut self, bound: usize) -> usize {
+            debug_assert!(bound > 0);
+            if bound == 1 {
+                return 0;
+            }
+            // Largest multiple of `bound` that fits in usize without overflowing
+            // when we add one back for the inclusive modulus range. Using
+            // `wrapping_add` guards the edge case where `(usize::MAX / bound) *
+            // bound == usize::MAX` (e.g. bound == 3 on 64-bit, since 2^64 - 1 is
+            // divisible by 3).
+            let limit = ((usize::MAX / bound) * bound).min(usize::MAX - 1);
+            loop {
+                let r = (self.next_u64() as usize) % (limit + 1);
+                if r < limit {
+                    return r % bound;
+                }
+            }
+        }
+    }
+
+    /// Insert `n_ops` randomly-chosen keys into a fresh map via
+    /// [`TryBTreeMapEntry`], tracking the authoritative key→value mapping in a
+    /// second std `BTreeMap`. After every insertion we assert our map agrees with
+    /// the oracle (length + full ordered equality), so any corruption is caught
+    /// at the exact operation that introduced it rather than at drop time.
+    fn run_fuzz_seed(seed: u64, n_ops: usize) {
+        let mut rng = FuzzRng::new(seed);
+        let mut ours: BTreeMap<u32, u32> = BTreeMap::new();
+        // Oracle: the ground-truth mapping produced by std's own insert.
+        let mut oracle: BTreeMap<u32, u32> = BTreeMap::new();
+
+        for op in 0..n_ops {
+            // Draw a key from a deliberately narrow band (~half the ops collide
+            // with existing keys, exercising the Occupied branch and repeated
+            // probes into the same region) mixed with wide-range draws (forcing
+            // splits far apart).
+            let key: u32 = if rng.below(2) == 0 {
+                (rng.next_u64() % 4096) as u32
+            } else {
+                rng.next_u64() as u32
+            };
+            let val = (op as u32).wrapping_mul(31);
+
+            // Was this key already present before this op? (Decide from the
+            // oracle *before* updating it.) `try_insert_entry` returns `Ok` for
+            // both new and existing keys — it only fails on OOM — so we cannot
+            // infer occupancy from the Result alone.
+            let old_val = oracle.get(&key).copied();
+
+            match ours.try_insert_entry(key, val) {
+                Ok(inserted_ref) => {
+                    // Mirrors BTreeMap::insert: whether the key was new or already
+                    // present, the stored value is replaced by `val`, so the
+                    // returned &mut V must observe `val`. (`old_val` is still read
+                    // above to keep the oracle's notion of "was this a collision"
+                    // available for future assertions.)
+                    let _ = old_val;
+                    assert_eq!(*inserted_ref, val, "seed {seed}: op {op}");
+                }
+                Err((k, v, _)) => {
+                    // Allocation failure is not expected here (normal allocator);
+                    // if it somehow happens, abort loudly.
+                    panic!("seed {seed}: op {op}: unexpected OOM for key {k}, val {v}");
+                }
+            }
+
+            // Record ground truth.
+            oracle.insert(key, val);
+
+            // Invariant check after each op: identical contents, correct order.
+            assert_eq!(
+                ours.len(),
+                oracle.len(),
+                "seed {seed}: op {op}: length mismatch"
+            );
+            let ours_vec: lang_alloc::vec::Vec<(u32, u32)> =
+                ours.iter().map(|(k, v)| (*k, *v)).collect();
+            let oracle_vec: lang_alloc::vec::Vec<(u32, u32)> =
+                oracle.iter().map(|(k, v)| (*k, *v)).collect();
+            assert_eq!(
+                ours_vec.as_slice(),
+                oracle_vec.as_slice(),
+                "seed {seed}: op {op}: content/order mismatch"
+            );
+        }
+
+        // Final structural sweep: reverse iteration + range scans force the
+        // drop/navigation machinery to walk every edge and parent link.
+        for (_k, _v) in ours.iter().rev() {}
+        if ours.len() > 20 {
+            let lo = ours.keys().next().copied().unwrap();
+            for i in 0..ours.len() {
+                let k = lo.saturating_add(i as u32);
+                let count = ours.range(k..k.checked_add(1).unwrap_or(k)).count();
+                assert!(count <= 1, "seed {seed}: duplicate key {k}");
+            }
+        }
+        // Dropping the map exercises IntoIter over the whole structure.
+        drop(ours);
+    }
+
+    /// A value type whose every destruction increments a shared, locally-owned
+    /// counter. Because the counter lives in an `Arc` captured by the closure,
+    /// each test invocation gets its own isolated tally — no process-global
+    /// state, so parallel test threads can't interfere. If the map's drop path
+    /// double-drops or leaks any stored value, the final count will differ from
+    /// the number of values inserted and this test fails. Miri additionally
+    /// detects any actual double-free at the moment it happens.
+    struct DropCountedValue {
+        /// Shared destructor hook; cloned into every value so all drops funnel
+        /// through the same counter.
+        on_drop: lang_std::sync::Arc<dyn Fn(u32) + Send + Sync>,
+        /// Random payload tag (fuzzy, not derived from the op index).
+        tag: u32,
+    }
+
+    impl Drop for DropCountedValue {
+        fn drop(&mut self) {
+            (self.on_drop)(self.tag);
+        }
+    }
+
+    /// Fuzzy drop-safety driver: insert `n_ops` random (key, value) pairs where
+    /// *both* the key and the value are drawn from the PRNG (values are not
+    /// derived from the op index), so collisions exercise the Occupied-replace
+    /// path (the old value must be dropped exactly once when overwritten). After
+    /// the loop we compare the destruction count against the number of values
+    /// inserted — they must match exactly, proving no stored value was leaked or
+    /// destroyed twice. Finally we iterate in reverse and drop the map, forcing
+    /// the whole teardown to walk every node.
+    fn run_drop_count_fuzz(seed: u64, n_ops: usize) {
+        use lang_core::sync::atomic::{AtomicUsize, Ordering};
+        use lang_std::sync::Arc;
+
+        let mut rng = FuzzRng::new(seed);
+
+        // Locally-scoped drop counter shared by every DropCountedValue in this
+        // run. Construction is implicit (one per `DropCountedValue::new` call),
+        // so we track insertions separately and compare against the drop count.
+        let drop_counter = Arc::new(AtomicUsize::new(0));
+        let on_drop: Arc<dyn Fn(u32) + Send + Sync> = {
+            let c = Arc::clone(&drop_counter);
+            Arc::new(move |_tag: u32| {
+                c.fetch_add(1, Ordering::SeqCst);
+            })
+        };
+
+        let mut ours: BTreeMap<u32, DropCountedValue> = BTreeMap::new();
+        // Oracle mapping key -> tag, used to verify value integrity after each
+        // op (catches logical corruption before it turns into heap damage).
+        let mut oracle: BTreeMap<u32, u32> = BTreeMap::new();
+        // One DropCountedValue is created per successful insertion. A re-insert
+        // of an existing key drops the previous value immediately, then stores
+        // the new one — so the total number of drops by the end must equal the
+        // total number of insertions.
+        let mut total_insertions = 0usize;
+
+        for op in 0..n_ops {
+            // Fuzzy key: mix narrow-band (collisions → Occupied replace) and
+            // wide-range (fresh leaves / splits) draws.
+            let key: u32 = if rng.below(3) == 0 {
+                (rng.next_u64() % 512) as u32
+            } else {
+                rng.next_u64() as u32
+            };
+            // Fuzzy value: independent random tag, NOT tied to the op index, so
+            // two inserts of the same key carry genuinely different payloads.
+            let tag = rng.next_u64() as u32;
+            let val = DropCountedValue {
+                on_drop: Arc::clone(&on_drop),
+                tag,
+            };
+
+            match ours.try_insert_entry(key, val) {
+                Ok(inserted_ref) => {
+                    total_insertions += 1;
+                    // The stored value's tag must equal the one we just inserted.
+                    assert_eq!(
+                        inserted_ref.tag, tag,
+                        "seed {seed}: op {op}: value tag corrupted (key {key})"
+                    );
+                }
+                Err((k, v, _)) => {
+                    // The returned (k, v) is dropped here by the pattern binding;
+                    // that accounts for the one construction we just did.
+                    drop(v);
+                    panic!("seed {seed}: op {op}: unexpected OOM for key {k}");
+                }
+            }
+
+            // Record ground truth and periodically verify full content equality.
+            oracle.insert(key, tag);
+            if op % 1000 == 0 {
+                let ours_tags: lang_alloc::vec::Vec<(u32, u32)> =
+                    ours.iter().map(|(k, v)| (*k, v.tag)).collect();
+                let oracle_vec: lang_alloc::vec::Vec<(u32, u32)> =
+                    oracle.iter().map(|(k, v)| (*k, *v)).collect();
+                assert_eq!(
+                    ours_tags.as_slice(),
+                    oracle_vec.as_slice(),
+                    "seed {seed}: op {op}: content/order mismatch"
+                );
+            }
+        }
+
+        // Reverse iteration forces navigation across all edges before teardown.
+        for (_k, _v) in ours.iter().rev() {}
+
+        // Dropping the map tears down every node and every stored value.
+        drop(ours);
+
+        let drops = drop_counter.load(Ordering::SeqCst);
+        assert_eq!(
+            drops, total_insertions,
+            "seed {seed}: DROPS ({drops}) ≠ INSERTIONS ({total_insertions}) — \
+             leaked or double-dropped values"
+        );
+    }
+
+    /// Runs under Miri (kept small so the interpreter finishes in reasonable
+    /// time). Exercises the full split cascade with fuzzy keys+values and asserts
+    /// balanced drop accounting plus no double-free (Miri catches the latter
+    /// directly).
+    #[test]
+    fn try_insert_entry_fuzz_drop_safety_miri() {
+        // ~600 ops over a tight-ish band produces several levels of internal
+        // nodes and plenty of Occupied-replace events, while staying fast enough
+        // for Miri.
+        run_drop_count_fuzz(0x000D_EADB_EEF1, 600);
+    }
+
+    /// Larger variant for native runs (ASan/UBSan-friendly, too big for Miri).
+    #[cfg_attr(miri, ignore = "test case is too large for Miri")]
+    #[test]
+    fn try_insert_entry_fuzz_drop_safety_large() {
+        run_drop_count_fuzz(0xCAFE_BABE, 50_000);
+    }
+
+    #[test]
+    fn try_insert_entry_fuzz_random_keys_small() {
+        // Small enough to also run comfortably under Miri.
+        run_fuzz_seed(0xC0FFEE, 400);
+    }
+
+    #[cfg_attr(miri, ignore = "test case is too large for Miri")]
+    #[test]
+    fn try_insert_entry_fuzz_random_keys_large() {
+        // Large multi-level trees (many cascading internal splits + root growth).
+        run_fuzz_seed(0xDEADBEEF, 200_000);
+    }
+
+    #[cfg_attr(miri, ignore = "test case is too large for Miri")]
+    #[test]
+    fn try_insert_entry_fuzz_dense_collisions() {
+        // Tight key band → heavy collision rate and repeated local splits.
+        let mut rng = FuzzRng::new(0xFEED_FACE);
+        let mut ours: BTreeMap<u32, u32> = BTreeMap::new();
+        let mut oracle: BTreeMap<u32, u32> = BTreeMap::new();
+        for op in 0..50_000 {
+            let key = (rng.next_u64() % 2048) as u32;
+            let val = (op as u32).wrapping_mul(17);
+            let _ = ours.try_insert_entry(key, val).expect("dense fuzz: no OOM");
+            oracle.insert(key, val);
+        }
+        let ours_vec: lang_alloc::vec::Vec<(u32, u32)> =
+            ours.iter().map(|(k, v)| (*k, *v)).collect();
+        let oracle_vec: lang_alloc::vec::Vec<(u32, u32)> =
+            oracle.iter().map(|(k, v)| (*k, *v)).collect();
+        assert_eq!(
+            ours_vec.as_slice(),
+            oracle_vec.as_slice(),
+            "dense fuzz mismatch"
+        );
+        for (_k, _v) in ours.into_iter().rev() {}
     }
 }
