@@ -19,14 +19,19 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use rustyfill_sys_bindings::emitter::{
-    emit_binding_file, emit_glob_reexport_aliases, emit_hierarchical_manifest, emit_preamble_module,
+    check_declared_struct_fields, emit_binding_file, emit_glob_reexport_aliases,
+    emit_hierarchical_manifest, emit_preamble_module, TypeRegistry,
 };
 use rustyfill_sys_bindings::get_loader_spec;
 use rustyfill_sys_bindings::parser::{CfgContext, parse_source_with_cfg};
-use rustyfill_sys_bindings::resolver::ModuleResolver;
+use rustyfill_sys_bindings::resolver::{ModuleResolver, UseKind};
 use rustyfill_sys_bindings::validator::ValidationBuilder;
 
 fn main() {
+    // Fail immediately if layout randomization is active — it breaks the
+    // deterministic layout assumptions that polyfilled mirrors depend on.
+    reject_randomize_layout();
+
     let out_dir = env::var("OUT_DIR").unwrap();
     let out_path = Path::new(&out_dir);
 
@@ -91,6 +96,9 @@ fn main() {
     let mut resolver = ModuleResolver::new();
     let mut processed_parents: HashSet<String> = HashSet::new();
     let mut preamble_emitted: HashSet<String> = HashSet::new();
+    // Declarations whose defining file could not be located on disk directly;
+    // resolved against the registered module tree after Phase 1.
+    let mut pending_declarations: Vec<(String, String)> = Vec::new();
 
     // ── Phase 0: Emit preamble modules per target library ──────────────────
     for target in &spec.targets {
@@ -106,48 +114,115 @@ fn main() {
     for target in &spec.targets {
         let lib_src = rust_src.join(&target.lib_name).join("src");
 
-        for source_rel_path in &target.canonical_files {
-            let mut child_visited = HashSet::new();
-            discover_and_register(DiscoverParams {
-                source_rel_path,
-                lib_name: &target.lib_name,
-                lib_src: &lib_src,
-                cfg: &cfg,
-                resolver: &mut resolver,
-                validator: &mut validator,
-                visited: &mut child_visited,
-                cache: &mut parsed_cache,
-            });
+        // Each declared struct drives discovery of its defining file and the
+        // module chain above it. The same file may be reached through several
+        // declarations; a per-target visited set deduplicates traversal.
+        for decl in &target.declared_structs {
+            match locate_declared_struct(decl, &lib_src, &cfg) {
+                LocatedStruct::Found(def_file) => {
+                    let mut parent_visited = HashSet::new();
+                    discover_and_register(DiscoverParams {
+                        source_rel_path: def_file.as_str(),
+                        lib_name: &target.lib_name,
+                        lib_src: &lib_src,
+                        cfg: &cfg,
+                        resolver: &mut resolver,
+                        validator: &mut validator,
+                        visited: &mut parent_visited,
+                        cache: &mut parsed_cache,
+                    });
+                    // Also ensure the structural parents of the defining file
+                    // are registered so re-export aliases resolve.
+                    register_parents_of(
+                        &def_file,
+                        &target.lib_name,
+                        &lib_src,
+                        &cfg,
+                        &mut resolver,
+                        &mut parsed_cache,
+                        &mut processed_parents,
+                    );
+                }
+                LocatedStruct::NotDefinedOnDisk(path_hint) => {
+                    // May live in an inline module or another file; resolved
+                    // against the registered module tree after Phase 1.
+                    pending_declarations.push((decl.clone(), path_hint));
+                }
+                LocatedStruct::BadPath(msg) => {
+                    eprintln!("cargo:error=[spec] {}", msg);
+                    std::process::exit(1);
+                }
+            }
         }
     }
 
-    // Mark all Phase 1 files as emittable.
+    // Resolve declarations that could not be located on disk directly (e.g.,
+    // types defined in inline modules). Search every registered file's items.
+    let unresolved: Vec<(String, String)> = if !pending_declarations.is_empty() {
+        let mut still_unresolved = Vec::new();
+        for (decl, hint) in pending_declarations {
+            let leaf = decl.rsplit("::").next().unwrap_or(&decl);
+            let found = parsed_cache
+                .iter()
+                .find(|(_, (parsed, _))| parsed.items.iter().any(|i| i.name == leaf));
+            match found {
+                Some((file_path, _)) => {
+                    eprintln!(
+                        "cargo:warning=[spec] `{}` defined in {} (hint was {})",
+                        decl, file_path, hint
+                    );
+                }
+                None => still_unresolved.push((decl, hint)),
+            }
+        }
+        still_unresolved
+    } else {
+        Vec::new()
+    };
+    for (decl, hint) in &unresolved {
+        eprintln!(
+            "cargo:error=[spec] Declared struct `{}` not found in any registered \
+             source file (looked near {}). Declare it with a path that matches its \
+             actual definition location.",
+            decl, hint
+        );
+    }
+    if !unresolved.is_empty() {
+        std::process::exit(1);
+    }
+
+    // Mark all Phase 1 files as emittable, EXCEPT structural parents that were
+    // registered solely to support alias discovery (their module paths end in
+    // "/mod"). Emitting them would duplicate the definitions of their child
+    // modules under the parent's name (e.g., core::marker duplicating
+    // core::variance).
+    let mut emitted_files: HashSet<String> = HashSet::new();
     for file_path in parsed_cache.keys() {
+        if file_path.ends_with("/mod") || file_path == "mod" {
+            continue;
+        }
         resolver.mark_emittable(file_path);
+        emitted_files.insert(file_path.clone());
     }
 
     // ── Phase 1b: Register structural parents ──────────────────────────────
+    // Structural parents of each declared struct's defining file are already
+    // registered during discovery (see register_parents_of). Any remaining
+    // ancestors discovered via import-driven expansion are picked up here.
+    let phase1b_files: Vec<String> = parsed_cache.keys().cloned().collect();
     for target in &spec.targets {
         let lib_src = rust_src.join(&target.lib_name).join("src");
 
-        for file_path in parsed_cache.keys() {
-            let parents = resolver.get_parent_module_paths(file_path);
-            for parent_mod in parents {
-                if !processed_parents.insert(parent_mod.clone()) {
-                    continue;
-                }
-
-                let parent_path = lib_src.join(&parent_mod);
-                if !parent_path.exists() {
-                    continue;
-                }
-
-                if let Ok(parent_text) = fs::read_to_string(&parent_path) {
-                    let parsed = parse_source_with_cfg(&parent_text, &cfg);
-                    resolver.register_source(&parent_mod, parsed);
-                    resolver.mark_emittable(&parent_mod);
-                }
-            }
+        for file_path in &phase1b_files {
+            register_parents_of(
+                file_path,
+                &target.lib_name,
+                &lib_src,
+                &cfg,
+                &mut resolver,
+                &mut parsed_cache,
+                &mut processed_parents,
+            );
         }
     }
 
@@ -280,12 +355,113 @@ fn main() {
         }
     }
 
+    // ── Phase 1d: Build the type registry ───────────────────────────────────
+    // Index every named type in every registered file (visibility + export
+    // status) and mark spec-declared structs. The registry drives both the
+    // field-type publicity check and reference rewriting at emission time.
+    let mut registry = TypeRegistry::empty();
+    for target in &spec.targets {
+        for (file_path, (parsed, lib_name)) in &parsed_cache {
+            if lib_name != &target.lib_name {
+                continue;
+            }
+            let module_path = resolver.file_to_module_path(file_path);
+            let exported_names = public_reexport_names(parsed, &module_path);
+            // Canonical paths are always lib-prefixed (`lib::module::Leaf`) so that
+            // the library name is recoverable as the first segment when routing
+            // references to the original builtin crate.
+            for item in &parsed.items {
+                let canonical = if module_path.is_empty() {
+                    format!("{}::{}", target.lib_name, item.name)
+                } else {
+                    format!(
+                        "{}::{}::{}",
+                        target.lib_name,
+                        module_path.replace('/', "::"),
+                        item.name
+                    )
+                };
+                let is_exported = exported_names.contains(&item.name);
+                registry.register(
+                    &canonical,
+                    item.visibility,
+                    is_exported,
+                    file_path,
+                );
+                // Record type-alias RHS so declared aliases can be mirrored.
+                if let Some(rhs) = &item.alias_rhs {
+                    registry.set_alias_rhs(&canonical, rhs.clone());
+                }
+            }
+            for (mod_name, mod_items) in &parsed.inline_modules {
+                let inline_module = if module_path.is_empty() {
+                    mod_name.clone()
+                } else {
+                    format!("{}/{}", module_path, mod_name)
+                };
+                let inline_canonical_base = inline_module.replace('/', "::");
+                for item in mod_items {
+                    let canonical =
+                        format!("{}::{}::{}", target.lib_name, inline_canonical_base, item.name);
+                    let is_exported = exported_names.contains(&item.name);
+                    registry.register(
+                        &canonical,
+                        item.visibility,
+                        is_exported,
+                        file_path,
+                    );
+                    if let Some(rhs) = &item.alias_rhs {
+                        registry.set_alias_rhs(&canonical, rhs.clone());
+                    }
+                }
+            }
+        }
+        // Mark declared structs (paths are relative to the library root). The
+        // def_file is stored as an absolute path so that
+        // `check_declared_struct_fields` can read it regardless of the build
+        // script's working directory.
+        let lib_src = rust_src.join(&target.lib_name).join("src");
+        for decl in &target.declared_structs {
+            let canonical = format!("{}::{}", target.lib_name, decl);
+            let def_file_rel = parsed_cache
+                .iter()
+                .find(|(_, (parsed, ln))| {
+                    ln == &target.lib_name
+                        && parsed.items.iter().any(|i| i.name == decl.rsplit("::").next().unwrap_or(""))
+                })
+                .map(|(fp, _)| fp.clone())
+                .unwrap_or_else(|| decl.replace("::", "/") + ".rs");
+            let def_file_abs = lib_src.join(&def_file_rel).to_string_lossy().to_string();
+            registry.insert_declared(&canonical, &def_file_abs);
+        }
+    }
+
+    // Field-type publicity check: every field of a declared struct must refer
+    // to either a declared type (mirrored) or a public type (original).
+    // Private undeclared types are hard errors.
+    let field_errors = check_declared_struct_fields(&registry);
+    for err in &field_errors {
+        eprintln!("cargo:error={}", err);
+    }
+    if !field_errors.is_empty() {
+        eprintln!(
+            "cargo:error=Field publicity check failed with {} error(s).",
+            field_errors.len()
+        );
+        std::process::exit(1);
+    }
+
     // ── Phase 2: EMIT — Now that all modules are registered, emit with full resolution ──
     let mut all_files: Vec<(String, String)> = Vec::new();
     let mut emitted_canonicals: HashSet<String> = HashSet::new();
     let mut emitted_paths: Vec<PathBuf> = Vec::new();
 
     for (file_path, (parsed, lib_name)) in &parsed_cache {
+        // Structural parents are registered for alias discovery only; they
+        // must not be emitted as standalone files.
+        if file_path.ends_with("/mod") || file_path == "mod" {
+            continue;
+        }
         let depth = compute_module_depth(file_path);
         let extra_uses = resolver.emit_use_statements_for_file(file_path, &ignored_name_refs);
         let siblings = get_sibling_modules(file_path, &all_files);
@@ -307,6 +483,7 @@ fn main() {
                 path_replacements: &replacement_entries_slice,
                 ignored_structs: &target_ignored_structs,
                 relative_file_path: file_path,
+                type_registry: &registry,
             },
         );
 
@@ -347,6 +524,7 @@ fn main() {
                     path_replacements: &replacement_entries_slice,
                     ignored_structs: &target_ignored_structs,
                     relative_file_path: &inline_rel_path,
+                    type_registry: &registry,
                 },
             );
 
@@ -360,13 +538,29 @@ fn main() {
     }
 
     // ── Phase 3: Discover and emit re-export aliases ────────────────────────
+    // For every declared struct, walk from its defining file up through the
+    // structural parents and discover `pub use` re-exports along the way. The
+    // emitted alias files make both the canonical path and any module-level
+    // aliases resolve to the same definition.
     let mut discovered_aliases = HashSet::new();
     for target in &spec.targets {
-        for source_rel_path in &target.canonical_files {
-            let parents = resolver.get_parent_module_paths(source_rel_path);
-            let all_related: Vec<String> = std::iter::once(source_rel_path.clone())
-                .chain(parents)
-                .collect();
+        for decl in &target.declared_structs {
+            let leaf = decl.rsplit("::").next().unwrap_or("");
+            let def_file = parsed_cache
+                .iter()
+                .find(|(_, (parsed, ln))| {
+                    ln == &target.lib_name
+                        && (parsed.items.iter().any(|i| i.name == leaf)
+                            || parsed
+                                .inline_modules
+                                .iter()
+                                .any(|(_, items)| items.iter().any(|i| i.name == leaf)))
+                })
+                .map(|(fp, _)| fp.clone());
+            let Some(def_file) = def_file else { continue };
+
+            let parents = resolver.get_parent_module_paths(&def_file);
+            let all_related: Vec<String> = std::iter::once(def_file).chain(parents).collect();
 
             for related_file in all_related {
                 let aliases = resolver.discover_reexport_aliases(&related_file);
@@ -396,6 +590,139 @@ fn main() {
 
     println!("cargo:rerun-if-changed=../rustyfill-sys-bindings/src/spec.rs");
     println!("cargo:rerun-if-env-changed=RUSTUP_TOOLCHAIN");
+}
+
+// ── Declaration location helpers ────────────────────────────────────────────
+
+enum LocatedStruct {
+    /// The struct is defined in this file (relative to the library src root).
+    Found(String),
+    /// No file on disk matched the declaration's path prefix.
+    NotDefinedOnDisk(String),
+    /// The declaration itself is malformed.
+    BadPath(String),
+}
+
+/// Locate the defining file for a declared struct path like
+/// `"collections::btree::map::BTreeMap"` under `<lib_src>`.
+///
+/// Tries progressively shorter prefixes of the path as candidate module
+/// directories/files, keeping the longest one whose items actually include
+/// the leaf name. This handles both `X.rs` / `X/mod.rs` layouts and inline
+/// modules (where the definition sits in an ancestor file).
+fn locate_declared_struct(decl: &str, lib_src: &Path, cfg: &CfgContext) -> LocatedStruct {
+    let parts: Vec<&str> = decl.split("::").collect();
+    if parts.is_empty() || parts.iter().any(|p| p.is_empty()) {
+        return LocatedStruct::BadPath(format!(
+            "Invalid struct path `{}` — expected `path::to::Struct` syntax",
+            decl
+        ));
+    }
+    let leaf = *parts.last().unwrap();
+
+    // Try the full path first, then peel segments off the end.
+    for cut in (1..=parts.len()).rev() {
+        let prefix: Vec<&str> = parts[..cut].to_vec();
+        let rel_prefix = prefix.join("/");
+        let candidates = [
+            format!("{rel_prefix}.rs"),
+            format!("{rel_prefix}/mod.rs"),
+        ];
+        for cand in &candidates {
+            let full = lib_src.join(cand);
+            if !full.exists() {
+                continue;
+            }
+            let Ok(text) = std::fs::read_to_string(&full) else {
+                continue;
+            };
+            let parsed = parse_source_with_cfg(&text, cfg);
+            if parsed.items.iter().any(|i| i.name == leaf) {
+                return LocatedStruct::Found(cand.clone());
+            }
+            // Inline modules count too.
+            if parsed.inline_modules.iter().any(|(_, items)| {
+                items.iter().any(|i| i.name == leaf)
+            }) {
+                return LocatedStruct::Found(cand.clone());
+            }
+        }
+    }
+
+    let hint = parts[..parts.len()].join("/");
+    LocatedStruct::NotDefinedOnDisk(hint + ".rs")
+}
+
+/// Register the structural parent modules of a file with the resolver so that
+/// re-export alias discovery can walk up the tree. Mirrors Phase 1b logic for
+/// a single file.
+fn register_parents_of(
+    file_path: &str,
+    _lib_name: &str,
+    lib_src: &Path,
+    cfg: &CfgContext,
+    resolver: &mut ModuleResolver,
+    cache: &mut HashMap<String, (rustyfill_sys_bindings::parser::ParsedSource, String)>,
+    processed_parents: &mut HashSet<String>,
+) {
+    let parents = resolver.get_parent_module_paths(file_path);
+    for parent_mod in parents {
+        if !processed_parents.insert(parent_mod.clone()) {
+            continue;
+        }
+        let parent_path = lib_src.join(&parent_mod);
+        if !parent_path.exists() {
+            continue;
+        }
+        if let Ok(parent_text) = std::fs::read_to_string(&parent_path) {
+            let parsed = parse_source_with_cfg(&parent_text, cfg);
+            resolver.register_source(&parent_mod, parsed.clone());
+            if !cache.contains_key(&parent_mod) {
+                cache.insert(parent_mod.clone(), (parsed, _lib_name.to_string()));
+                resolver.mark_emittable(&parent_mod);
+            }
+        }
+    }
+}
+
+/// Compute the set of item names that are publicly re-exported from a module:
+/// items defined directly with `pub` visibility plus everything pulled in by
+/// `pub use` statements (single imports and globs resolved against known
+/// sibling names heuristically).
+fn public_reexport_names(parsed: &rustyfill_sys_bindings::parser::ParsedSource, _module_path: &str) -> HashSet<String> {
+    let mut names: HashSet<String> = HashSet::new();
+    for item in &parsed.items {
+        if item.visibility.is_public() {
+            names.insert(item.name.clone());
+        }
+    }
+    for stmt in &parsed.use_statements {
+        if !matches!(stmt.visibility, rustyfill_sys_bindings::resolver::Visibility::Public) {
+            continue;
+        }
+        match &stmt.kind {
+            UseKind::Single(plist, alias) => {
+                let name = alias.clone().or_else(|| {
+                    plist.segments.iter().rev().find_map(|s| {
+                        if let rustyfill_sys_bindings::resolver::PathSegment::Named(n) = s {
+                            Some(n.clone())
+                        } else {
+                            None
+                        }
+                    })
+                });
+                if let Some(n) = name {
+                    names.insert(n);
+                }
+            }
+            UseKind::Glob(_) => {
+                // Globs pull in every public item of the target module; we
+                // approximate conservatively by leaving it to the per-item
+                // visibility check above. Nothing to add here.
+            }
+        }
+    }
+    names
 }
 
 /// Compute how many module levels deep a file is under its library root.
@@ -526,6 +853,7 @@ fn discover_and_register(params: DiscoverParams) {
             use_statements: Vec::new(),
             mod_declarations: Vec::new(),
             inline_modules: Vec::new(),
+            inline_module_uses: std::collections::HashMap::new(),
         };
         resolver.register_source(&inline_rel_path, inline_parsed);
 
@@ -537,6 +865,7 @@ fn discover_and_register(params: DiscoverParams) {
                     use_statements: Vec::new(),
                     mod_declarations: Vec::new(),
                     inline_modules: Vec::new(),
+                    inline_module_uses: std::collections::HashMap::new(),
                 }),
                 lib_name.to_string(),
             ),
@@ -626,4 +955,45 @@ fn find_rust_source_root() -> PathBuf {
          Install the rust-src component: `rustup component add rust-src`\n\
          Or set RUST_SRC_PATH to the library source root."
     );
+}
+
+/// Abort the build if `-Zrandomize-layout` is active in the current
+/// compilation environment. Layout randomization shuffles field offsets and
+/// type alignments, which completely breaks the deterministic layout
+/// assumptions that polyfilled mirror structs rely on (identical field
+/// layout with the real stdlib types).
+fn reject_randomize_layout() {
+    // CARGO_ENCODED_RUSTFLAGS contains all effective flags (from RUSTFLAGS,
+    // .cargo/config.toml [target.*.rustflags], etc.) null-separated.
+    if let Some(encoded) = env::var_os("CARGO_ENCODED_RUSTFLAGS") {
+        for flag in encoded.to_string_lossy().split('\0') {
+            if flag == "-Zrandomize-layout" || flag == "-Z randomize-layout" {
+                panic!(
+                    "rustyfill-sys: -Zrandomize-layout is incompatible with polyfilled \
+                     bindings.\nThe mirrored data structures require deterministic field \
+                     layout matching the standard library.\n\
+                     Remove -Zrandomize-layout from your RUSTFLAGS or cargo config."
+                );
+            }
+        }
+    }
+
+    // Also check RUSTFLAGS directly (covers cases where CARGO_ENCODED_RUSTFLAGS
+    // might not be set, e.g., manual cargo invocations with unusual profiles).
+    if let Some(rustflags) = env::var_os("RUSTFLAGS") {
+        for flag in rustflags.to_string_lossy().split_whitespace() {
+            if flag == "-Zrandomize-layout" || flag == "-Z" {
+                // If bare -Z is present, the next token is the flag name.
+                // We can't easily pair them here, so just warn on the explicit form.
+                if flag == "-Zrandomize-layout" {
+                    panic!(
+                        "rustyfill-sys: -Zrandomize-layout is incompatible with polyfilled \
+                         bindings.\nThe mirrored data structures require deterministic field \
+                         layout matching the standard library.\n\
+                         Remove -Zrandomize-layout from your RUSTFLAGS or cargo config."
+                    );
+                }
+            }
+        }
+    }
 }

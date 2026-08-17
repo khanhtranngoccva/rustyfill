@@ -9,11 +9,32 @@
 //! macros like `cfg_select!`), a text-based scanner evaluates cfg predicates
 //! against the current build target and only follows the active branch.
 
+use std::collections::HashMap;
+
 use proc_macro2::TokenStream;
 use quote::ToTokens;
 use syn::{Attribute, Item, UseTree};
 
 use crate::resolver::{PathSegment, PathSegmentList, UseKind, UseStatement, Visibility};
+
+/// Visibility of a parsed item, as written in the source.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ItemVisibility {
+    /// No visibility modifier (private to its defining module).
+    Private,
+    /// `pub` — visible everywhere.
+    Public,
+    /// `pub(crate)` / `pub(super)` / `pub(in path)` — restricted scope.
+    Restricted,
+}
+
+impl ItemVisibility {
+    /// True for plain `pub`. Restricted visibilities are NOT public: they do
+    /// not make the item reachable through re-exports outside their scope.
+    pub fn is_public(&self) -> bool {
+        matches!(self, ItemVisibility::Public)
+    }
+}
 
 /// A parsed top-level item extracted from a Rust source file.
 #[derive(Clone)]
@@ -27,6 +48,12 @@ pub struct ParsedItem {
     /// The identifier name of the item (e.g., `"BTreeMap"`, `"Iter"`).
     /// Used by the spec to match against fully qualified ignore paths.
     pub name: String,
+    /// Source visibility of the item, used when checking field-type publicity.
+    pub visibility: ItemVisibility,
+    /// For type aliases only: the right-hand-side type expression tokens
+    /// (`type Root<K, V> = NodeRef<...>` → `NodeRef<...>`). `None` for all
+    /// other item kinds and for text-scanner-extracted items.
+    pub alias_rhs: Option<TokenStream>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -62,6 +89,9 @@ pub struct ParsedSource {
     /// Each entry is `(module_name, items)` so the emitter can write them
     /// to a separate `<parent>/<name>/mod.rs` file.
     pub inline_modules: Vec<(String, Vec<ParsedItem>)>,
+    /// `use` statements declared inside inline modules, keyed by module name.
+    /// Needed for alias discovery through re-exports (e.g., `pub use map::*;`).
+    pub inline_module_uses: HashMap<String, Vec<UseStatement>>,
 }
 
 /// Build-time cfg context for evaluating conditional compilation predicates.
@@ -199,6 +229,38 @@ fn split_commas(s: &str) -> Vec<String> {
     parts
 }
 
+/// Strips glob-from-type use statements (`use TypeName::*;`) that are valid
+/// Rust but unsupported by syn 2.x's parser. These lines import associated
+/// items from a type (e.g., `use Entry::*;` in btree/map.rs) and cause
+/// `syn::parse_file` to fail with "expected identifier or `_`". Removing
+/// them lets the rest of the file parse successfully. Module-path globs
+/// (`use crate::foo::*;`) are preserved since syn handles those fine.
+fn strip_glob_from_type_uses(source: &str) -> String {
+    let mut result = String::with_capacity(source.len());
+    for line in source.lines() {
+        let trimmed = line.trim_start();
+        if let Some(rest) = trimmed.strip_prefix("use ") {
+            let rest_trimmed = rest.trim_end();
+            if let Some(star_pos) = rest_trimmed.find("::*;") {
+                let path_part = &rest_trimmed[..star_pos];
+                // Glob-from-type: a single PascalCase identifier followed by
+                // `::*`. Distinguished from module-path globs (`use super::*`,
+                // `use crate::foo::*`) by having no `::` separators AND the
+                // identifier starting with an uppercase letter (type naming
+                // convention). This avoids stripping legitimate module globs.
+                let is_single_ident = !path_part.contains("::") && !path_part.contains(' ');
+                let is_pascal_case = path_part.chars().next().is_some_and(char::is_uppercase);
+                if is_single_ident && is_pascal_case {
+                    continue;
+                }
+            }
+        }
+        result.push_str(line);
+        result.push('\n');
+    }
+    result
+}
+
 /// Parse a single `.rs` file in one pass, extracting type definitions,
 /// `use` statements, and external module declarations.
 ///
@@ -209,11 +271,15 @@ pub fn parse_source_with_cfg(source: &str, cfg: &CfgContext) -> ParsedSource {
     let mut use_statements = Vec::new();
     let mut mod_declarations_from_ast = Vec::new();
     let mut inline_modules: Vec<(String, Vec<ParsedItem>)> = Vec::new();
+    let mut inline_module_uses: HashMap<String, Vec<UseStatement>> = HashMap::new();
+
+    // Preprocess: remove glob-from-type use statements that break syn parsing.
+    let preprocessed = strip_glob_from_type_uses(source);
 
     // Try to parse via syn AST. This may fail for files that contain
     // macro-heavy content like cfg_select!, or for nightly toolchains where
     // the stdlib source uses syntax ahead of what syn supports.
-    match syn::parse_file(source) {
+    match syn::parse_file(&preprocessed) {
         Err(_e) => {
             // Fall back to text-based extraction when syn can't parse the file
             // (e.g., nightly stdlib source uses syntax ahead of what syn supports)
@@ -238,19 +304,25 @@ pub fn parse_source_with_cfg(source: &str, cfg: &CfgContext) -> ParsedSource {
                         });
                     }
                     Item::Mod(im) if im.content.is_some() => {
-                        // Inline module — extract type-defining items from it
+                        // Inline module — extract type-defining items and its
+                        // own use statements (needed for alias discovery).
                         let (_brace, mod_items) = im.content.as_ref().unwrap();
                         let mut inner_items = Vec::new();
+                        let mut inner_uses = Vec::new();
                         for inner in mod_items {
                             match inner {
                                 Item::Struct(s) => inner_items.push(parse_struct(s.clone())),
                                 Item::Enum(e) => inner_items.push(parse_enum(e.clone())),
                                 Item::Union(u) => inner_items.push(parse_union(u.clone())),
+                                Item::Use(iu) => inner_uses.extend(parse_use_item(iu.clone())),
                                 _ => {}
                             }
                         }
-                        if !inner_items.is_empty() {
+                        if !inner_items.is_empty() || !inner_uses.is_empty() {
                             inline_modules.push((im.ident.to_string(), inner_items));
+                            if !inner_uses.is_empty() {
+                                inline_module_uses.insert(im.ident.to_string(), inner_uses);
+                            }
                         }
                     }
                     _ => {}
@@ -277,6 +349,16 @@ pub fn parse_source_with_cfg(source: &str, cfg: &CfgContext) -> ParsedSource {
         use_statements,
         mod_declarations,
         inline_modules,
+        inline_module_uses,
+    }
+}
+
+/// Map a syn visibility to the item's source visibility.
+fn vis_of(vis: &syn::Visibility) -> ItemVisibility {
+    match vis {
+        syn::Visibility::Public(_) => ItemVisibility::Public,
+        syn::Visibility::Restricted(_) => ItemVisibility::Restricted,
+        syn::Visibility::Inherited => ItemVisibility::Private,
     }
 }
 
@@ -380,6 +462,8 @@ fn parse_struct(s: syn::ItemStruct) -> ParsedItem {
         full_tokens: tokens,
         kind: ItemKind::Struct,
         name: s.ident.to_string(),
+        visibility: vis_of(&s.vis),
+        alias_rhs: None,
     }
 }
 
@@ -391,6 +475,8 @@ fn parse_enum(e: syn::ItemEnum) -> ParsedItem {
         full_tokens: tokens,
         kind: ItemKind::Enum,
         name: e.ident.to_string(),
+        visibility: vis_of(&e.vis),
+        alias_rhs: None,
     }
 }
 
@@ -402,6 +488,8 @@ fn parse_union(u: syn::ItemUnion) -> ParsedItem {
         full_tokens: tokens,
         kind: ItemKind::Union,
         name: u.ident.to_string(),
+        visibility: vis_of(&u.vis),
+        alias_rhs: None,
     }
 }
 
@@ -413,17 +501,25 @@ fn parse_const(c: syn::ItemConst) -> ParsedItem {
         full_tokens: tokens,
         kind: ItemKind::Const,
         name: c.ident.to_string(),
+        visibility: vis_of(&c.vis),
+        alias_rhs: None,
     }
 }
 
 fn parse_type_alias(t: syn::ItemType) -> ParsedItem {
     let mut tokens = TokenStream::new();
     t.to_tokens(&mut tokens);
+    // Capture the RHS type expression separately so the emitter can mirror
+    // declared aliases (routing the RHS through the type registry).
+    let mut rhs = TokenStream::new();
+    t.ty.to_tokens(&mut rhs);
     ParsedItem {
         attrs: t.attrs,
         full_tokens: tokens,
         kind: ItemKind::TypeAlias,
         name: t.ident.to_string(),
+        visibility: vis_of(&t.vis),
+        alias_rhs: Some(rhs),
     }
 }
 
@@ -837,6 +933,67 @@ struct TextScanResult {
     inline_modules: Vec<(String, Vec<ParsedItem>)>,
 }
 
+/// True when a trimmed line begins a macro definition (`macro name` or
+/// `pub macro name`, optionally followed by `(` or `{`). Macro invocations
+/// (`name!`) are not matched because they lack the leading `macro` keyword.
+fn is_macro_definition(trimmed: &str) -> bool {
+    let rest = trimmed.strip_prefix("pub ").unwrap_or(trimmed);
+    match rest.strip_prefix("macro ") {
+        Some(after) => {
+            // Expect an identifier (the macro name) next.
+            after
+                .chars()
+                .next()
+                .is_some_and(|c| c.is_ascii_alphabetic() || c == '_')
+        }
+        None => false,
+    }
+}
+
+/// Given the index of a line that starts a macro definition, return the index
+/// of the first line *after* the macro's closing brace (or EOF). Uses
+/// brace-depth counting over the raw lines; string/comment stripping has
+/// already been applied upstream so braces inside strings are not counted.
+fn skip_macro_body(lines: &[&str], start: usize) -> usize {
+    let mut depth = 0usize;
+    let mut j = start;
+    while j < lines.len() {
+        for ch in lines[j].chars() {
+            match ch {
+                '{' => depth += 1,
+                '}' => {
+                    if depth > 0 {
+                        depth -= 1;
+                    }
+                }
+                _ => {}
+            }
+        }
+        j += 1;
+        if depth == 0 && j > start + 1 {
+            break;
+        }
+    }
+    j
+}
+
+/// Strip a visibility prefix (`pub`, `pub(super)`, `pub(crate)`, `pub(in path)`)
+/// from a trimmed line, returning the remainder starting at the item keyword.
+fn strip_visibility_prefix(trimmed: &str) -> &str {
+    if let Some(rest) = trimmed.strip_prefix("pub") {
+        // Check for restricted visibility: pub(...)
+        if rest.starts_with('(') {
+            // Find matching closing paren
+            if let Some(close) = rest.find(')') {
+                return &rest[close + 1..].trim_start();
+            }
+        } else if rest.starts_with(' ') {
+            return &rest[1..];
+        }
+    }
+    trimmed
+}
+
 /// Text-based fallback scanner for extracting struct/enum/union/type/const
 /// declarations from a Rust source file when syn::parse_file fails.
 ///
@@ -863,6 +1020,16 @@ fn text_scan_source(source: &str, cfg: &CfgContext) -> TextScanResult {
             continue;
         }
 
+        // Skip macro definitions entirely. A `macro name { ... }` or
+        // `pub macro name(...) { ... }` block is not a type definition and
+        // cannot be compiled in a downstream crate (the `macro` keyword is
+        // unstable). Consume through its closing brace so its body — which may
+        // contain stray identifiers — is never mistaken for an item.
+        if is_macro_definition(trimmed) {
+            i = skip_macro_body(&lines, i);
+            continue;
+        }
+
         // Check indentation - we only want truly top-level items (no leading whitespace).
         // Items inside impl blocks, functions, or modules will be indented.
         let leading_spaces = line.len() - line.trim_start_matches(' ').len();
@@ -879,16 +1046,27 @@ fn text_scan_source(source: &str, cfg: &CfgContext) -> TextScanResult {
             continue;
         }
 
-        // Determine item kind
-        let kind = if trimmed.starts_with("pub struct ") || trimmed.starts_with("struct ") {
+        // Determine item kind. Only plain `const NAME : TYPE = EXPR;` items are
+        // collected — `const fn`, `const trait`, `const impl`, etc. are skipped
+        // because their bodies use braces (not a terminating `;`) which would
+        // send the collector running off the end of the file and swallowing
+        // every subsequent top-level item into one giant blob.
+        // Strip visibility prefix to get the item keyword. Handles:
+        //   pub struct, pub(super) struct, pub(crate) struct, pub(in path) struct, struct
+        let after_vis = strip_visibility_prefix(trimmed);
+        let kind = if after_vis.starts_with("struct ") {
             Some(ItemKind::Struct)
-        } else if trimmed.starts_with("pub enum ") || trimmed.starts_with("enum ") {
+        } else if after_vis.starts_with("enum ") {
             Some(ItemKind::Enum)
-        } else if trimmed.starts_with("pub union ") || trimmed.starts_with("union ") {
+        } else if after_vis.starts_with("union ") {
             Some(ItemKind::Union)
-        } else if trimmed.starts_with("pub const ") || trimmed.starts_with("const ") {
+        } else if after_vis.starts_with("const ")
+            && !after_vis.starts_with("const fn")
+            && !after_vis.starts_with("const trait")
+            && !after_vis.starts_with("const impl")
+        {
             Some(ItemKind::Const)
-        } else if trimmed.starts_with("pub type ") || trimmed.starts_with("type ") {
+        } else if after_vis.starts_with("type ") {
             Some(ItemKind::TypeAlias)
         } else {
             None
@@ -929,28 +1107,52 @@ fn text_scan_source(source: &str, cfg: &CfgContext) -> TextScanResult {
                 item_text = item_lines.join("\n");
                 i = j;
             } else {
-                // For struct/enum/union, collect until matching closing brace
-                let mut brace_depth = 0;
-                let mut found_open = false;
+                // For struct/enum/union there are two shapes:
+                //   - Unit items ending in `;` (e.g. `pub struct Foo<T>;`)
+                //   - Braced items ending at the matching `}` (field/tuple structs, enums, unions)
+                // Detect which by scanning forward for the first terminating `;` or `{`.
+                // A naive "collect until balanced brace" approach would swallow every
+                // subsequent top-level item when the declaration is a unit struct,
+                // because no opening brace ever appears on the declaration itself.
                 let mut item_lines = Vec::new();
+                let mut terminated = false;
+                let mut brace_depth = 0usize;
+                let mut saw_brace = false;
 
                 for (j, line) in lines.iter().enumerate().skip(attr_start) {
                     item_lines.push(*line);
                     for ch in line.chars() {
-                        if ch == '{' {
-                            brace_depth += 1;
-                            found_open = true;
-                        } else if ch == '}' {
-                            brace_depth -= 1;
+                        match ch {
+                            '{' => {
+                                brace_depth += 1;
+                                saw_brace = true;
+                            }
+                            '}' => {
+                                if saw_brace {
+                                    brace_depth = brace_depth.saturating_sub(1);
+                                }
+                            }
+                            ';' if !saw_brace => {
+                                // Unit struct/enum/union: declaration ends here.
+                                i = j + 1;
+                                terminated = true;
+                                break;
+                            }
+                            _ => {}
                         }
                     }
-                    if found_open && brace_depth == 0 {
+                    if terminated {
+                        break;
+                    }
+                    if saw_brace && brace_depth == 0 {
                         i = j + 1;
+                        terminated = true;
                         break;
                     }
                 }
-                if !found_open {
-                    i += 1;
+                if !terminated {
+                    // Ran off the end of the file without finding a terminator.
+                    i = lines.len();
                     continue;
                 }
                 item_text = item_lines.join("\n");
@@ -959,11 +1161,29 @@ fn text_scan_source(source: &str, cfg: &CfgContext) -> TextScanResult {
             // Try to parse as tokens
             if let Ok(tokens) = item_text.parse::<TokenStream>() {
                 let name = extract_item_name_from_tokens(&tokens, kind);
+                let visibility = if trimmed.starts_with("pub ") {
+                    ItemVisibility::Public
+                } else {
+                    ItemVisibility::Private
+                };
+                // For text-scanned type aliases, extract the RHS (everything
+                // after `=` up to the terminating `;`) so declared-alias
+                // mirroring works even when syn can't parse the whole file.
+                let alias_rhs = if kind == ItemKind::TypeAlias {
+                    let text = item_text.to_string();
+                    text.split_once('=')
+                        .map(|(_, rhs)| rhs.trim().trim_end_matches(';').to_string())
+                        .and_then(|rhs_text| rhs_text.parse::<TokenStream>().ok())
+                } else {
+                    None
+                };
                 items.push(ParsedItem {
                     attrs: Vec::new(),
                     full_tokens: tokens,
                     kind,
                     name,
+                    visibility,
+                    alias_rhs,
                 });
             }
         } else if trimmed.starts_with("use ") || trimmed.starts_with("pub use ") {
@@ -1039,17 +1259,30 @@ fn strip_comments_and_strings(source: &str) -> String {
                 }
             }
             '\'' => {
-                result.push('\'');
-                i += 1;
-                while i < len {
-                    if chars_vec[i] == '\\' {
-                        i += 2;
-                    } else if chars_vec[i] == '\'' {
-                        result.push('\'');
-                        i += 1;
-                        break;
-                    } else {
-                        i += 1;
+                // Distinguish char literals ('a', '\n') from lifetimes ('a, 'static).
+                // A lifetime is `'` followed by an identifier character (alpha or _).
+                // A char literal is `'` followed by either a backslash (escape) or
+                // a single non-identifier character.
+                let next = chars_vec.get(i + 1).copied();
+                let is_lifetime = matches!(next, Some(c) if c.is_ascii_alphabetic() || c == '_');
+                if is_lifetime {
+                    // Lifetime: just emit the quote and move on.
+                    result.push('\'');
+                    i += 1;
+                } else {
+                    // Char literal: consume through the closing quote.
+                    result.push('\'');
+                    i += 1;
+                    while i < len {
+                        if chars_vec[i] == '\\' {
+                            i += 2;
+                        } else if chars_vec[i] == '\'' {
+                            result.push('\'');
+                            i += 1;
+                            break;
+                        } else {
+                            i += 1;
+                        }
                     }
                 }
             }
@@ -1486,7 +1719,7 @@ mod child;
     #[test]
     fn test_emitted_struct_with_preamble_types_parses() {
         use super::super::parser::ItemKind;
-        use crate::emitter::{EmitConfig, emit_parsed_items};
+        use crate::emitter::{EmitConfig, TypeRegistry, emit_parsed_items};
         use quote::quote;
 
         let item = ParsedItem {
@@ -1500,10 +1733,30 @@ mod child;
             },
             kind: ItemKind::Struct,
             name: "TestStruct".to_string(),
+            visibility: ItemVisibility::Public,
+            alias_rhs: None,
         };
 
+        // Registry routing: both marker types are registered as public,
+        // undeclared core types, so references to them route straight at the
+        // builtin crate (`__rustyfill_builtin_core`) instead of through the
+        // synthetic tree or the preamble.
+        let mut registry = TypeRegistry::empty();
+        registry.register(
+            "core::marker::PhantomData",
+            ItemVisibility::Public,
+            true,
+            "core/marker.rs",
+        );
+        registry.register(
+            "core::marker::PhantomPinned",
+            ItemVisibility::Public,
+            true,
+            "core/marker.rs",
+        );
+
         let output = emit_parsed_items(
-            &[item],
+            &[item.clone()],
             &EmitConfig {
                 lib_name: "alloc",
                 file_module_depth: 0,
@@ -1512,6 +1765,7 @@ mod child;
                 path_replacements: &[],
                 ignored_structs: &[],
                 relative_file_path: "",
+                type_registry: &registry,
             },
             "crate::__prelude",
             &[],
@@ -1524,6 +1778,51 @@ mod child;
             "Emitted output must be valid Rust:\n{}",
             output
         );
+        // Declared types are routed to their mirrored bindings via an absolute
+        // `crate::std::` path into the merged synthetic tree (all libraries
+        // merge under one `std` wrapper module in the manifest).
+        let mut registry_declared = TypeRegistry::empty();
+        registry_declared.insert_declared("core::marker::PhantomData", "core/marker.rs");
+        let declared_out = emit_parsed_items(
+            &[item.clone()],
+            &EmitConfig {
+                lib_name: "alloc",
+                file_module_depth: 0,
+                extra_uses: &[],
+                sibling_modules: &[],
+                path_replacements: &[],
+                ignored_structs: &[],
+                relative_file_path: "",
+                type_registry: &registry_declared,
+            },
+            "crate::__prelude",
+            &[],
+            "",
+        );
+        let declared_norm: String = declared_out
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join("");
+        assert!(
+            declared_norm.contains("crate::std::marker::PhantomData"),
+            "Declared type should be rewritten to its mirror:\n{}",
+            declared_out
+        );
+
+        // Public undeclared types route straight at the builtin crate, never
+        // through the synthetic tree or the preamble (token spacing may vary,
+        // so normalize whitespace before asserting).
+        let normalized: String = output
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join("");
+        assert!(
+            normalized.contains("__rustyfill_builtin_core::marker::PhantomData")
+                && normalized.contains("__rustyfill_builtin_core::marker::PhantomPinned")
+                && !normalized.contains("crate::core::"),
+            "Public undeclared types should point at the builtin crate:\n{}",
+            output
+        );
     }
 
     /// Verify that emitting a struct with generic bounds referencing marker
@@ -1532,7 +1831,7 @@ mod child;
     #[test]
     fn test_emitted_struct_with_trait_bounds_parses() {
         use super::super::parser::ItemKind;
-        use crate::emitter::{EmitConfig, emit_parsed_items};
+        use crate::emitter::{EmitConfig, TypeRegistry, emit_parsed_items};
         use quote::quote;
 
         let item = ParsedItem {
@@ -1544,6 +1843,8 @@ mod child;
             },
             kind: ItemKind::Struct,
             name: "Wrapper".to_string(),
+            visibility: ItemVisibility::Public,
+            alias_rhs: None,
         };
 
         let output = emit_parsed_items(
@@ -1556,6 +1857,7 @@ mod child;
                 path_replacements: &[],
                 ignored_structs: &[],
                 relative_file_path: "",
+                type_registry: &TypeRegistry::empty(),
             },
             "crate::__prelude",
             &[],
@@ -1578,5 +1880,55 @@ mod child;
             content.contains("rustyfill"),
             "Preamble should identify itself"
         );
+    }
+
+    // ── Glob-from-type use stripping tests ───────────────────────────────
+
+    #[test]
+    fn test_strip_glob_from_type_single_ident() {
+        let src = "use Entry::*;\nstruct Foo {}\n";
+        let out = strip_glob_from_type_uses(src);
+        assert!(!out.contains("use Entry::*;"));
+        assert!(out.contains("struct Foo {}"));
+    }
+
+    #[test]
+    fn test_strip_preserves_module_path_globs() {
+        let src = "use crate::collections::btree::*;\nstruct Bar {}\n";
+        let out = strip_glob_from_type_uses(src);
+        assert!(out.contains("use crate::collections::btree::*;"));
+    }
+
+    #[test]
+    fn test_strip_preserves_regular_uses() {
+        let src = "use std::cell::Cell;\nuse super::NodeRef;\nstruct Baz {}\n";
+        let out = strip_glob_from_type_uses(src);
+        assert!(out.contains("use std::cell::Cell;"));
+        assert!(out.contains("use super::NodeRef;"));
+    }
+
+    #[test]
+    fn test_strip_multiple_glob_from_type() {
+        let src = "use Entry::*;\nuse NodeRef::*;\nfn foo() {}\n";
+        let out = strip_glob_from_type_uses(src);
+        assert!(!out.contains("use Entry::*;"));
+        assert!(!out.contains("use NodeRef::*;"));
+        assert!(out.contains("fn foo() {}"));
+    }
+
+    #[test]
+    fn test_strip_indented_glob_from_type() {
+        let src = "mod inner {\n    use Entry::*;\n    struct X {}\n}\n";
+        let out = strip_glob_from_type_uses(src);
+        assert!(!out.contains("use Entry::*;"));
+        assert!(out.contains("struct X {}"));
+    }
+
+    #[test]
+    fn test_strip_preserves_lowercase_module_globs() {
+        let src = "use super::*;\nuse self::inner::*;\nstruct Y {}\n";
+        let out = strip_glob_from_type_uses(src);
+        assert!(out.contains("use super::*;"));
+        assert!(out.contains("use self::inner::*;"));
     }
 }

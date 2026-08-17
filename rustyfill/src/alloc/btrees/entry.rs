@@ -1110,7 +1110,12 @@ impl<'a, K, V> CommitPlan<'a, K, V> {
         let start_height = leaf_edge.node.height;
         let start_node = leaf_edge.node.node;
 
-        // Pass 1: count the internal nodes on the split path.
+        // Pass 1: count the internal nodes the promotion will climb through.
+        // The cascade stops at the first ancestor that has room (`will_split ==
+        // false`) — a non-splitting parent absorbs the promotion and the walk
+        // halts there. Only if every ancestor up to the root splits does the
+        // tree grow by one level. We must stop at exactly the same node in both
+        // passes so the recorded plan matches the actual commit behaviour.
         let num_internals = {
             let mut count = 0usize;
             let mut cur: sys::NodeRef<sys::Mut<'a>, K, V, sys::LeafOrInternal> = sys::NodeRef {
@@ -1118,11 +1123,19 @@ impl<'a, K, V> CommitPlan<'a, K, V> {
                 node: start_node,
                 _marker: PhantomData,
             };
-            #[allow(clippy::while_let_loop, reason = "root node is annotated")]
+            #[allow(clippy::while_let_loop, reason = "stops at first non-splitting ancestor or root")]
             loop {
                 match ascend(cur) {
                     AscendResult::Parent(parent_handle) => {
                         count += 1;
+                        let parent_ptr: NonNull<sys::InternalNode<K, V>> =
+                            parent_handle.node.node.cast();
+                        let parent_len = unsafe { parent_ptr.as_ref() }.data.len as usize;
+                        // A full parent splits and the cascade continues upward;
+                        // a non-full parent absorbs the promotion and we stop.
+                        if parent_len < sys::CAPACITY {
+                            break;
+                        }
                         cur = parent_handle.node.forget_type();
                     }
                     AscendResult::Root(_) => break,
@@ -1136,13 +1149,19 @@ impl<'a, K, V> CommitPlan<'a, K, V> {
         // suitable cached buffer is available.
         let mut internals_buf = CachedProbeBuffer::try_new(num_internals)?;
 
-        // Pass 2: re-walk and record each node's annotation.
+        // Pass 2: re-walk and record each node's annotation. Mirrors pass 1
+        // exactly — it stops at the first non-splitting ancestor (which absorbs
+        // the promotion) or at the root.
         let mut cur: sys::NodeRef<sys::Mut<'a>, K, V, sys::LeafOrInternal> = sys::NodeRef {
             height: start_height,
             node: start_node,
             _marker: PhantomData,
         };
-        #[allow(clippy::while_let_loop, reason = "root node is annotated")]
+        // Set to `true` only when the walk reaches the root without ever hitting
+        // a non-splitting ancestor — i.e. every ancestor on the path splits, so
+        // the final promotion has nowhere to land and forces a fresh root level.
+        let mut new_root = false;
+        #[allow(clippy::while_let_loop, reason = "stops at first non-splitting ancestor or root")]
         loop {
             match ascend(cur) {
                 AscendResult::Parent(parent_handle) => {
@@ -1162,18 +1181,22 @@ impl<'a, K, V> CommitPlan<'a, K, V> {
                         will_split,
                         sp_idx,
                     });
+                    // A non-full parent absorbs the promotion: the commit stops
+                    // here, so no further ancestors are examined.
+                    if !will_split {
+                        break;
+                    }
                     cur = parent_handle.node.forget_type();
                 }
                 AscendResult::Root(_root) => {
-                    // Reached the top of the tree: whatever internal nodes we
-                    // processed above have been recorded in `internals`, and the
-                    // final promotion will grow a fresh root level.
+                    // Every ancestor on the path was full and split, so the
+                    // promotion climbs all the way past the old root and the
+                    // tree grows by one level.
+                    new_root = true;
                     break;
                 }
             }
         }
-        // Reaching the root means the tree grows by one level.
-        let new_root = true;
 
         Ok(CommitPlan {
             orig_leaf,

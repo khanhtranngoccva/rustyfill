@@ -1,10 +1,15 @@
-//! Loader specification: describes which files to bind.
+//! Loader specification: describes which types to bind.
 //!
-//! Canonical bindings emit the actual type definitions from std source.
-//! Re-exports are discovered automatically by parsing each canonical file's
-//! `use` statements and resolving paths against the module tree. No manual
-//! alias declarations are needed — the resolver handles `pub use X::*`,
-//! `pub use self::platform::*`, and relative imports transparently.
+//! Bindings are driven by explicit struct declarations in path syntax
+//! (e.g., `"collections::btree::map::BTreeMap"`). For every declared struct,
+//! its definition is emitted from the std source file that defines it, and
+//! any re-export aliases of that struct (discovered through `pub use`
+//! statements) resolve to the same emitted definition.
+//!
+//! Field types of declared structs are checked for publicity: a field whose
+//! type is public and undeclared refers to the original (real core/alloc/std)
+//! type; a field whose type is private and undeclared is an error; a field
+//! whose type is itself declared refers to the mirrored binding.
 
 /// Describes a type or trait that the emitter should not generate bindings for.
 /// Instead, every reference to this path is either stripped entirely (for trait
@@ -29,7 +34,7 @@ pub struct PathReplacement {
 /// Top-level spec returned by [`crate::spec::get_loader_spec`].
 #[derive(Clone)]
 pub struct LoaderSpec {
-    /// Targets (core, alloc, std) with their file bindings.
+    /// Targets (core, alloc, std) with their struct declarations.
     pub targets: Vec<BindingTarget>,
 }
 
@@ -38,10 +43,13 @@ pub struct LoaderSpec {
 pub struct BindingTarget {
     /// Library name: "core", "alloc", or "std".
     pub lib_name: String,
-    /// Canonical files — these get real type definitions emitted.
-    /// The build script parses each file's `use` statements to discover
-    /// dependencies and re-export relationships automatically.
-    pub canonical_files: Vec<String>,
+    /// Explicitly declared structs in path syntax, relative to the library
+    /// root, e.g. `"collections::btree::map::BTreeMap"`. These drive binding
+    /// generation: each declaration causes the defining source file to be
+    /// parsed and the struct's definition emitted. Re-export aliases of the
+    /// declared struct (through its module tree) resolve to the same emitted
+    /// definition.
+    pub declared_structs: Vec<String>,
     /// Paths to traits or types that the emitter should deliberately skip or
     /// replace during binding generation. Each entry specifies a fully
     /// qualified path and an optional replacement.
@@ -84,10 +92,18 @@ impl BindingTarget {
     pub fn new(lib_name: &str) -> Self {
         Self {
             lib_name: lib_name.to_string(),
-            canonical_files: Vec::new(),
+            declared_structs: Vec::new(),
             path_replacements: Vec::new(),
             ignored_structs: Vec::new(),
         }
+    }
+
+    /// Declare a struct to bind by its path within the library, e.g.
+    /// `target.declare_struct("collections::btree::map::BTreeMap")`. The build
+    /// script locates the defining source file, emits the definition, and makes
+    /// every re-export alias of the struct resolve to that definition.
+    pub fn declare_struct(&mut self, path: &str) {
+        self.declared_structs.push(path.to_string());
     }
 
     /// Force-ignore a struct/enum/union by its fully qualified path within the
@@ -95,11 +111,6 @@ impl BindingTarget {
     /// For example: `target.ignore_struct("collections::btree::set::Iter")`.
     pub fn ignore_struct(&mut self, path: &str) {
         self.ignored_structs.push(path.to_string());
-    }
-
-    /// Register a canonical file — the real definition will be emitted here.
-    pub fn add_canonical(&mut self, source_rel_path: &str) {
-        self.canonical_files.push(source_rel_path.to_string());
     }
 
     /// Mark a fully qualified path as ignored with no replacement.

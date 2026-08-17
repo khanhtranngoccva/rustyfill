@@ -14,6 +14,10 @@ libc = "0.2"
 [features]
 nightly = []
 std = []
+# Emits `#[rustyfill_drop = "yes" | "maybe-no"]` annotations on struct/enum/
+# union fields so downstream crates know which fields carry real drop glue.
+# Works on stable — no compiler feature required.
+drop-annotations = []
 
 [build-dependencies]
 rustyfill-sys-bindings = { path = "../rustyfill-sys-bindings" }

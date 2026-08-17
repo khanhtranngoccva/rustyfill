@@ -6,6 +6,10 @@ use std::io::Write;
 use std::path::Path;
 
 fn main() {
+    // Fail immediately if layout randomization is active — it breaks the
+    // deterministic layout assumptions that polyfilled mirrors depend on.
+    reject_randomize_layout();
+
     let out_dir = env::var("OUT_DIR").unwrap_or_default();
 
     // Detect if we're compiling with a nightly compiler by probing an unstable feature.
@@ -19,6 +23,42 @@ fn main() {
 
     // Re-run if the target changes (e.g., switching between host and UEFI targets).
     println!("cargo:rerun-if-env-changed=CARGO_CFG_TARGET_OS");
+}
+
+/// Abort the build if `-Zrandomize-layout` is active in the current
+/// compilation environment. Layout randomization shuffles field offsets and
+/// type alignments, which completely breaks the deterministic layout
+/// assumptions that polyfilled mirror structs rely on (identical field
+/// layout with the real stdlib types).
+fn reject_randomize_layout() {
+    // CARGO_ENCODED_RUSTFLAGS contains all effective flags (from RUSTFLAGS,
+    // .cargo/config.toml [target.*.rustflags], etc.) null-separated.
+    if let Some(encoded) = env::var_os("CARGO_ENCODED_RUSTFLAGS") {
+        for flag in encoded.to_string_lossy().split('\0') {
+            if flag == "-Zrandomize-layout" || flag == "-Z randomize-layout" {
+                panic!(
+                    "rustyfill: -Zrandomize-layout is incompatible with polyfilled \
+                     bindings.\nThe mirrored data structures require deterministic field \
+                     layout matching the standard library.\n\
+                     Remove -Zrandomize-layout from your RUSTFLAGS or cargo config."
+                );
+            }
+        }
+    }
+
+    // Also check RUSTFLAGS directly as a fallback.
+    if let Some(rustflags) = env::var_os("RUSTFLAGS") {
+        for flag in rustflags.to_string_lossy().split_whitespace() {
+            if flag == "-Zrandomize-layout" {
+                panic!(
+                    "rustyfill: -Zrandomize-layout is incompatible with polyfilled \
+                     bindings.\nThe mirrored data structures require deterministic field \
+                     layout matching the standard library.\n\
+                     Remove -Zrandomize-layout from your RUSTFLAGS or cargo config."
+                );
+            }
+        }
+    }
 }
 
 /// Probe whether we're on a nightly compiler by feeding a snippet that uses

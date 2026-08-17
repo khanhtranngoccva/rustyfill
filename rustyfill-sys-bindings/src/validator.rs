@@ -66,16 +66,9 @@ pub fn validate_spec_paths(spec: &LoaderSpec, rust_src: &Path, errors: &mut Vali
             continue;
         }
 
-        for rel_path in &target.canonical_files {
-            let full = lib_src.join(rel_path);
-            if !full.exists() {
-                errors.push_fmt(format!(
-                    "[spec] Canonical file not found: {} (expected at {})",
-                    rel_path,
-                    full.display()
-                ));
-            }
-        }
+        // Declared structs are located lazily against the source tree during
+        // discovery; nothing to check on disk up front beyond the library root.
+        let _ = &target.declared_structs;
     }
 }
 
