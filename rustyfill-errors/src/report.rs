@@ -397,10 +397,7 @@ impl<
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.debug_struct("ChangeContextError")
             .field("report", &self.report)
-            .field(
-                "context_type",
-                &core::any::type_name::<T>(),
-            )
+            .field("context_type", &core::any::type_name::<T>())
             .finish()
     }
 }

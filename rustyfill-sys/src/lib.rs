@@ -3,7 +3,7 @@
 //! This crate mirrors data structures from the Rust standard library (core, alloc, std)
 //! with identical field layout and alignment. All types are intentionally made public.
 //!
-//! Here be dragons! Note that *no* drop implementations exist at all including the heap 
+//! Here be dragons! Note that *no* drop implementations exist at all including the heap
 //! deallocation, and it is *incredibly* dangerous to use these polyfill structs.
 //!
 //! Generated at build time by `build.rs` using `rustyfill-sys-bindings`.

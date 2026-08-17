@@ -1034,21 +1034,27 @@ mod tests {
         use lang_alloc::string::String;
 
         let source: Vec<String> = vec![
-            "item0".into(), "item1".into(), "item2".into(), "item3".into(),
-            "item4".into(), "item5".into(), "item6".into(), "item7".into(),
-            "item8".into(), "item9".into(),
+            "item0".into(),
+            "item1".into(),
+            "item2".into(),
+            "item3".into(),
+            "item4".into(),
+            "item5".into(),
+            "item6".into(),
+            "item7".into(),
+            "item8".into(),
+            "item9".into(),
         ];
         let len_source = source.len();
 
-        let mut set: HashSet<String> = HashSet::from([
-            "pre0".into(), "pre1".into(), "pre2".into(),
-        ]);
+        let mut set: HashSet<String> = HashSet::from(["pre0".into(), "pre1".into(), "pre2".into()]);
         let len_before = set.len();
 
-        let r: Result<(), TryHashSetError> =
-            with_policy(FailPolicy::fail_nth_alloc(2), || {
-                <HashSet<String> as TryHashSet<String, RandomState>>::try_extend_from_slice(&mut set, &source)
-            });
+        let r: Result<(), TryHashSetError> = with_policy(FailPolicy::fail_nth_alloc(2), || {
+            <HashSet<String> as TryHashSet<String, RandomState>>::try_extend_from_slice(
+                &mut set, &source,
+            )
+        });
 
         match r {
             Err(TryHashSetError::Clone(_)) => {
@@ -1086,17 +1092,24 @@ mod tests {
         use lang_alloc::string::String;
 
         let source: Vec<String> = vec![
-            "x0xxxxxxxx".into(), "x1xxxxxxxx".into(), "x2xxxxxxxx".into(),
-            "x3xxxxxxxx".into(), "x4xxxxxxxx".into(), "x5xxxxxxxx".into(),
-            "x6xxxxxxxx".into(), "x7xxxxxxxx".into(), "x8xxxxxxxx".into(),
+            "x0xxxxxxxx".into(),
+            "x1xxxxxxxx".into(),
+            "x2xxxxxxxx".into(),
+            "x3xxxxxxxx".into(),
+            "x4xxxxxxxx".into(),
+            "x5xxxxxxxx".into(),
+            "x6xxxxxxxx".into(),
+            "x7xxxxxxxx".into(),
+            "x8xxxxxxxx".into(),
             "x9xxxxxxxx".into(),
         ];
         let mut set: HashSet<String> = HashSet::new();
 
-        let _: Result<(), TryHashSetError> =
-            with_policy(FailPolicy::fail_nth_alloc(3), || {
-                <HashSet<String> as TryHashSet<String, RandomState>>::try_extend_from_slice(&mut set, &source)
-            });
+        let _: Result<(), TryHashSetError> = with_policy(FailPolicy::fail_nth_alloc(3), || {
+            <HashSet<String> as TryHashSet<String, RandomState>>::try_extend_from_slice(
+                &mut set, &source,
+            )
+        });
 
         assert!(
             set.is_empty(),

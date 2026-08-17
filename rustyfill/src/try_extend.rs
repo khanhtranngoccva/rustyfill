@@ -55,7 +55,7 @@
 //! slice — alongside the failure reason. On a capacity failure the remainder is
 //! the full input (nothing was consumed); on a mid-way clone failure it is the
 //! tail starting at the failing index.
-//! 
+//!
 //! Implementors do not rollback on failure.
 //!
 //! ## Implementors
@@ -99,18 +99,12 @@ pub trait TryExtend<Item>: Sized {
     type Error;
 
     /// Fallibly extend `self` with all items produced by `source`.
-    fn try_extend<S>(
-        &mut self,
-        source: S,
-    ) -> Result<(), (Self::Error, Resumable<S::Inner>)>
+    fn try_extend<S>(&mut self, source: S) -> Result<(), (Self::Error, Resumable<S::Inner>)>
     where
         S: crate::recovery::ResumableSource<Item = Item>;
 
     /// Alias for [`Self::try_extend`].
-    fn fallible_extend<S>(
-        &mut self,
-        source: S,
-    ) -> Result<(), (Self::Error, Resumable<S::Inner>)>
+    fn fallible_extend<S>(&mut self, source: S) -> Result<(), (Self::Error, Resumable<S::Inner>)>
     where
         S: crate::recovery::ResumableSource<Item = Item>,
     {
@@ -130,10 +124,14 @@ pub trait TryExtendFromSlice<'s, Item>: Sized {
     type Error;
 
     /// Fallibly extend `self` by cloning each element of `other`.
-    fn try_extend_from_slice(&mut self, other: &'s [Item]) -> Result<(), (&'s [Item], Self::Error)>;
+    fn try_extend_from_slice(&mut self, other: &'s [Item])
+    -> Result<(), (&'s [Item], Self::Error)>;
 
     /// Alias for [`Self::try_extend_from_slice`].
-    fn fallible_extend_from_slice(&mut self, other: &'s [Item]) -> Result<(), (&'s [Item], Self::Error)> {
+    fn fallible_extend_from_slice(
+        &mut self,
+        other: &'s [Item],
+    ) -> Result<(), (&'s [Item], Self::Error)> {
         Self::try_extend_from_slice(self, other)
     }
 }

@@ -89,8 +89,8 @@ pub use crate::dashmap::{TryDashMap, TryDashSet};
 
 #[cfg(feature = "btree-entry")]
 pub use crate::alloc::btrees::entry::{
-    TryEntryWithGiveBackError, TryBTreeMap, TryBTreeMapEntry, TryBTreeMapVacantEntry,
-    TryEntryWithError, TryBTreeMapExtendFromSliceError,
+    TryBTreeMap, TryBTreeMapEntry, TryBTreeMapEntryWithError, TryBTreeMapEntryWithGiveBackError,
+    TryBTreeMapExtendFromSliceError, TryBTreeMapVacantEntry,
 };
 
 // ── RefCell ──────────────────────────────────────────

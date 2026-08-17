@@ -1,7 +1,7 @@
 //! [`TryExtend`] / [`TryExtendFromSlice`] implementations for `VecDeque<T>`.
 
-use crate::alloc::vecdeque::TryVecDequeError;
 use crate::alloc::TryReserveError;
+use crate::alloc::vecdeque::TryVecDequeError;
 use crate::recovery::Resumable;
 use crate::try_clone::TryClone;
 use crate::try_extend::{TryExtend, TryExtendFromSlice};
@@ -34,10 +34,7 @@ impl<'s, T: TryClone> TryExtendFromSlice<'s, T> for lang_alloc::collections::Vec
 impl<T> TryExtend<T> for lang_alloc::collections::VecDeque<T> {
     type Error = TryVecDequeError;
 
-    fn try_extend<S>(
-        &mut self,
-        source: S,
-    ) -> Result<(), (TryVecDequeError, Resumable<S::Inner>)>
+    fn try_extend<S>(&mut self, source: S) -> Result<(), (TryVecDequeError, Resumable<S::Inner>)>
     where
         S: crate::recovery::ResumableSource<Item = T>,
     {
@@ -47,7 +44,10 @@ impl<T> TryExtend<T> for lang_alloc::collections::VecDeque<T> {
             if self.len() == self.capacity()
                 && let Err(e) = self.try_reserve(1)
             {
-                return Err((TryVecDequeError::from(TryReserveError::from(e)), Resumable::new(item, iter)));
+                return Err((
+                    TryVecDequeError::from(TryReserveError::from(e)),
+                    Resumable::new(item, iter),
+                ));
             }
             self.push_back(item);
         }
@@ -56,13 +56,19 @@ impl<T> TryExtend<T> for lang_alloc::collections::VecDeque<T> {
         if lower > 0
             && let Err(e) = self.try_reserve(lower)
         {
-            return Err((TryVecDequeError::from(TryReserveError::from(e)), Resumable::from_remainder(iter)));
+            return Err((
+                TryVecDequeError::from(TryReserveError::from(e)),
+                Resumable::from_remainder(iter),
+            ));
         }
         while let Some(item) = iter.next() {
             if self.len() == self.capacity()
                 && let Err(e) = self.try_reserve(1)
             {
-                return Err((TryVecDequeError::from(TryReserveError::from(e)), Resumable::new(item, iter)));
+                return Err((
+                    TryVecDequeError::from(TryReserveError::from(e)),
+                    Resumable::new(item, iter),
+                ));
             }
             self.push_back(item);
         }

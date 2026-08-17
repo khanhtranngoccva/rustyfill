@@ -162,7 +162,7 @@ pub trait TryArc<T>: Sized {
 
     /// Unwraps the value if this is the only strong reference, otherwise fallibly
     /// clones the inner data.
-    /// 
+    ///
     /// Alias of [`Self::unwrap_or_try_clone`].
     fn unwrap_or_fallible_clone(self) -> Result<T, (Self, TryCloneError)>
     where

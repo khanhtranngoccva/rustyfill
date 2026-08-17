@@ -397,7 +397,7 @@ mod tests {
     ///
     /// In practice, please avoid any heap-allocating operations (including debug logging
     /// via `println!`/`eprintln!` when output is captured) inside a
-    /// `with_policy(fail_all_alloc(), ...)` span. If an abort suddenly happens, one may 
+    /// `with_policy(fail_all_alloc(), ...)` span. If an abort suddenly happens, one may
     /// attempt to use --nocapture to detect this pitfall.
     #[test]
     #[ignore = "aborts the process when run with captured output (default); use --nocapture to verify it prints safely"]

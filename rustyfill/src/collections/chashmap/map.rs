@@ -723,10 +723,7 @@ impl<K: Eq + Hash, V, S: BuildHasher> ConcurrentHashMap<K, V, S> {
     }
 
     /// Alias for [`Self::try_remove_entry`].
-    pub fn fallible_remove_entry(
-        &self,
-        key: K,
-    ) -> Result<Option<(K, V)>, ConcurrentHashMapError>
+    pub fn fallible_remove_entry(&self, key: K) -> Result<Option<(K, V)>, ConcurrentHashMapError>
     where
         K: Eq + Hash,
     {

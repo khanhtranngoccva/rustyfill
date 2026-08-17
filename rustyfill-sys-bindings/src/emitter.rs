@@ -406,10 +406,11 @@ fn widen_visibility(tokens: TokenStream) -> TokenStream {
             }
             _ => {
                 // No `pub` — check if this is an item keyword needing visibility injection.
-                let is_su = i < tts.len() && matches!(&tts[i], TokenTree::Ident(kw) if {
-                    let s = kw.to_string();
-                    s == "struct" || s == "union"
-                });
+                let is_su = i < tts.len()
+                    && matches!(&tts[i], TokenTree::Ident(kw) if {
+                        let s = kw.to_string();
+                        s == "struct" || s == "union"
+                    });
                 (false, is_su)
             }
         }
@@ -418,15 +419,21 @@ fn widen_visibility(tokens: TokenStream) -> TokenStream {
     };
 
     // If no visibility on an item keyword, inject `pub`.
-    if !has_vis && i < tts.len()
-        && let TokenTree::Ident(kw) = &tts[i] {
-            let kw_str = kw.to_string();
-            if matches!(kw_str.as_str(), "struct" | "enum" | "union" | "type" | "const") {
-                result.extend(Some(TokenTree::Ident(
-                    proc_macro2::Ident::new("pub", tts[i].span()),
-                )));
-            }
+    if !has_vis
+        && i < tts.len()
+        && let TokenTree::Ident(kw) = &tts[i]
+    {
+        let kw_str = kw.to_string();
+        if matches!(
+            kw_str.as_str(),
+            "struct" | "enum" | "union" | "type" | "const"
+        ) {
+            result.extend(Some(TokenTree::Ident(proc_macro2::Ident::new(
+                "pub",
+                tts[i].span(),
+            ))));
         }
+    }
 
     // Emit remaining tokens, stripping scope parens from `pub` and widening
     // struct/union bodies.
@@ -446,20 +453,21 @@ fn widen_visibility(tokens: TokenStream) -> TokenStream {
         }
 
         // For struct/union, widen the first braced body.
-        if is_struct_or_union && !struct_body_widened
+        if is_struct_or_union
+            && !struct_body_widened
             && let TokenTree::Group(group) = &tts[i]
-                && group.delimiter() == proc_macro2::Delimiter::Brace
-            {
-                let widened_body = widen_struct_field_visibility(group.stream());
-                let new_group = TokenTree::Group(proc_macro2::Group::new(
-                    proc_macro2::Delimiter::Brace,
-                    widened_body,
-                ));
-                result.extend(Some(new_group));
-                struct_body_widened = true;
-                i += 1;
-                continue;
-            }
+            && group.delimiter() == proc_macro2::Delimiter::Brace
+        {
+            let widened_body = widen_struct_field_visibility(group.stream());
+            let new_group = TokenTree::Group(proc_macro2::Group::new(
+                proc_macro2::Delimiter::Brace,
+                widened_body,
+            ));
+            result.extend(Some(new_group));
+            struct_body_widened = true;
+            i += 1;
+            continue;
+        }
 
         result.extend(Some(tts[i].clone()));
         i += 1;
@@ -530,17 +538,39 @@ fn widen_struct_field_visibility(tokens: TokenStream) -> TokenStream {
             if let TokenTree::Ident(field_id) = &tts[i] {
                 let field_name = field_id.to_string();
                 // Verify this isn't a keyword or enum variant.
-                if !matches!(field_name.as_str(),
-                    "struct" | "enum" | "union" | "type" | "const" | "fn"
-                    | "mut" | "ref" | "self" | "Self" | "where" | "for"
-                    | "impl" | "trait" | "async" | "await" | "dyn"
-                    | "unsafe" | "extern" | "use" | "mod" | "crate"
-                    | "super" | "true" | "false"
+                if !matches!(
+                    field_name.as_str(),
+                    "struct"
+                        | "enum"
+                        | "union"
+                        | "type"
+                        | "const"
+                        | "fn"
+                        | "mut"
+                        | "ref"
+                        | "self"
+                        | "Self"
+                        | "where"
+                        | "for"
+                        | "impl"
+                        | "trait"
+                        | "async"
+                        | "await"
+                        | "dyn"
+                        | "unsafe"
+                        | "extern"
+                        | "use"
+                        | "mod"
+                        | "crate"
+                        | "super"
+                        | "true"
+                        | "false"
                 ) && peek_for_colon_simple(&tts, i + 1)
                 {
-                    result.extend(Some(TokenTree::Ident(
-                        proc_macro2::Ident::new("pub", tts[i].span()),
-                    )));
+                    result.extend(Some(TokenTree::Ident(proc_macro2::Ident::new(
+                        "pub",
+                        tts[i].span(),
+                    ))));
                     result.extend(Some(tts[i].clone()));
                     i += 1;
                     at_field_boundary = false;
@@ -594,8 +624,8 @@ fn peek_for_colon_simple(tts: &[TokenTree], start: usize) -> bool {
                 }
             }
             TokenTree::Punct(p) if p.as_char() == ',' => return false,
-            TokenTree::Group(_) => {},
-            _ => {},
+            TokenTree::Group(_) => {}
+            _ => {}
         }
         i += 1;
     }
@@ -806,7 +836,8 @@ pub fn emit_binding_file(output_path: &Path, items: &[ParsedItem], config: &Emit
 
     // Compute the module path from the relative file path
     // (e.g., "collections/btree/set.rs" -> "collections::btree::set").
-    let module_path = config.relative_file_path
+    let module_path = config
+        .relative_file_path
         .strip_suffix(".rs")
         .unwrap_or(config.relative_file_path)
         .strip_suffix("/mod")

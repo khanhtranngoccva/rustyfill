@@ -1486,7 +1486,7 @@ mod child;
     #[test]
     fn test_emitted_struct_with_preamble_types_parses() {
         use super::super::parser::ItemKind;
-        use crate::emitter::{emit_parsed_items, EmitConfig};
+        use crate::emitter::{EmitConfig, emit_parsed_items};
         use quote::quote;
 
         let item = ParsedItem {
@@ -1532,7 +1532,7 @@ mod child;
     #[test]
     fn test_emitted_struct_with_trait_bounds_parses() {
         use super::super::parser::ItemKind;
-        use crate::emitter::{emit_parsed_items, EmitConfig};
+        use crate::emitter::{EmitConfig, emit_parsed_items};
         use quote::quote;
 
         let item = ParsedItem {

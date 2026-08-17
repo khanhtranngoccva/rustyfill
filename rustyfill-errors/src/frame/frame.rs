@@ -186,10 +186,7 @@ impl<C> From<C> for StaticFrame<C> {
 impl<C: core::fmt::Debug> core::fmt::Debug for StaticFrame<C> {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.debug_struct("StaticFrame")
-            .field(
-                "context_type",
-                &core::any::type_name::<C>(),
-            )
+            .field("context_type", &core::any::type_name::<C>())
             .field("attachments_len", &self.attachments.len())
             .field("children_len", &self.children.len())
             .field("lost_attachments", &self.lost_attachments)

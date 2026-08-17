@@ -1,7 +1,7 @@
 //! [`TryExtend`] / [`TryExtendFromSlice`] implementations for `Vec<T>`.
 
-use crate::alloc::vec::TryVecError;
 use crate::alloc::TryReserveError;
+use crate::alloc::vec::TryVecError;
 use crate::recovery::Resumable;
 use crate::try_clone::TryClone;
 use crate::try_extend::{TryExtend, TryExtendFromSlice};
@@ -34,10 +34,7 @@ impl<'s, T: TryClone> TryExtendFromSlice<'s, T> for lang_alloc::vec::Vec<T> {
 impl<T> TryExtend<T> for lang_alloc::vec::Vec<T> {
     type Error = TryVecError;
 
-    fn try_extend<S>(
-        &mut self,
-        source: S,
-    ) -> Result<(), (TryVecError, Resumable<S::Inner>)>
+    fn try_extend<S>(&mut self, source: S) -> Result<(), (TryVecError, Resumable<S::Inner>)>
     where
         S: crate::recovery::ResumableSource<Item = T>,
     {
@@ -47,7 +44,10 @@ impl<T> TryExtend<T> for lang_alloc::vec::Vec<T> {
             if self.len() == self.capacity()
                 && let Err(e) = self.try_reserve(1)
             {
-                return Err((TryVecError::from(TryReserveError::from(e)), Resumable::new(h, iter)));
+                return Err((
+                    TryVecError::from(TryReserveError::from(e)),
+                    Resumable::new(h, iter),
+                ));
             }
             self.push(h);
         }
@@ -56,13 +56,19 @@ impl<T> TryExtend<T> for lang_alloc::vec::Vec<T> {
         if lower > 0
             && let Err(e) = self.try_reserve(lower)
         {
-            return Err((TryVecError::from(TryReserveError::from(e)), Resumable::from_remainder(iter)));
+            return Err((
+                TryVecError::from(TryReserveError::from(e)),
+                Resumable::from_remainder(iter),
+            ));
         }
         while let Some(item) = iter.next() {
             if self.len() == self.capacity()
                 && let Err(e) = self.try_reserve(1)
             {
-                return Err((TryVecError::from(TryReserveError::from(e)), Resumable::new(item, iter)));
+                return Err((
+                    TryVecError::from(TryReserveError::from(e)),
+                    Resumable::new(item, iter),
+                ));
             }
             self.push(item);
         }

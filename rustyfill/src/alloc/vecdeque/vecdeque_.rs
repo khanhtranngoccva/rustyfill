@@ -1181,21 +1181,26 @@ mod tests {
         use lang_alloc::string::String;
 
         let source: Vec<String> = vec![
-            "item0".into(), "item1".into(), "item2".into(), "item3".into(),
-            "item4".into(), "item5".into(), "item6".into(), "item7".into(),
-            "item8".into(), "item9".into(),
+            "item0".into(),
+            "item1".into(),
+            "item2".into(),
+            "item3".into(),
+            "item4".into(),
+            "item5".into(),
+            "item6".into(),
+            "item7".into(),
+            "item8".into(),
+            "item9".into(),
         ];
         let len_source = source.len();
 
-        let mut deque: VecDeque<String> = VecDeque::from([
-            "pre0".into(), "pre1".into(), "pre2".into(),
-        ]);
+        let mut deque: VecDeque<String> =
+            VecDeque::from(["pre0".into(), "pre1".into(), "pre2".into()]);
         let len_before = deque.len();
 
-        let r: Result<(), TryVecDequeError> =
-            with_policy(FailPolicy::fail_nth_alloc(2), || {
-                <VecDeque<String> as TryVecDeque<String>>::try_extend_from_slice(&mut deque, &source)
-            });
+        let r: Result<(), TryVecDequeError> = with_policy(FailPolicy::fail_nth_alloc(2), || {
+            <VecDeque<String> as TryVecDeque<String>>::try_extend_from_slice(&mut deque, &source)
+        });
 
         match r {
             Err(TryVecDequeError::Clone(_)) => {
@@ -1225,20 +1230,21 @@ mod tests {
         // Mid-way failure must truncate back to original length.
         use lang_alloc::string::String;
 
-        let mut deque: VecDeque<String> = VecDeque::from([
-            "a".into(), "b".into(), "c".into(), "d".into(), "e".into(),
-        ]);
+        let mut deque: VecDeque<String> =
+            VecDeque::from(["a".into(), "b".into(), "c".into(), "d".into(), "e".into()]);
         let len_before = deque.len();
 
-        let r: Result<(), TryVecDequeError> =
-            with_policy(FailPolicy::fail_nth_alloc(2), || {
-                <VecDeque<String> as TryVecDeque<String>>::try_extend_from_within(&mut deque, 0..3)
-            });
+        let r: Result<(), TryVecDequeError> = with_policy(FailPolicy::fail_nth_alloc(2), || {
+            <VecDeque<String> as TryVecDeque<String>>::try_extend_from_within(&mut deque, 0..3)
+        });
 
         match r {
             Err(TryVecDequeError::Clone(_)) => {
-                assert_eq!(deque.len(), len_before,
-                    "TruncateGuard failed to roll back extend_from_within");
+                assert_eq!(
+                    deque.len(),
+                    len_before,
+                    "TruncateGuard failed to roll back extend_from_within"
+                );
                 assert_eq!(deque[0], "a");
                 assert_eq!(deque[4], "e");
             }
@@ -1261,15 +1267,19 @@ mod tests {
         let mut deque: VecDeque<String> = VecDeque::from(["original".into()]);
         let len_before = deque.len();
 
-        let r: Result<(), TryVecDequeError> =
-            with_policy(FailPolicy::fail_nth_alloc(3), || {
-                <VecDeque<String> as TryVecDeque<String>>::try_resize(&mut deque, &val, 15)
-            });
+        let r: Result<(), TryVecDequeError> = with_policy(FailPolicy::fail_nth_alloc(3), || {
+            <VecDeque<String> as TryVecDeque<String>>::try_resize(&mut deque, &val, 15)
+        });
 
         match r {
             Err(TryVecDequeError::Clone(_)) => {
-                assert_eq!(deque.len(), len_before,
-                    "resize rollback failed: expected {}, got {}", len_before, deque.len());
+                assert_eq!(
+                    deque.len(),
+                    len_before,
+                    "resize rollback failed: expected {}, got {}",
+                    len_before,
+                    deque.len()
+                );
                 assert_eq!(deque[0], "original");
             }
             Ok(()) => {

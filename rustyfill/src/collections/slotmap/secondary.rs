@@ -426,11 +426,7 @@ impl<K: Key, V> SecondaryMap<K, V> {
     }
 
     /// Alias for [`Self::try_insert`].
-    pub fn fallible_insert(
-        &mut self,
-        key: K,
-        value: V,
-    ) -> Result<Option<V>, SecondaryMapError> {
+    pub fn fallible_insert(&mut self, key: K, value: V) -> Result<Option<V>, SecondaryMapError> {
         Self::try_insert(self, key, value)
     }
 
@@ -444,10 +440,7 @@ impl<K: Key, V> SecondaryMap<K, V> {
     }
 
     /// Alias for [`Self::try_entry`].
-    pub fn fallible_entry(
-        &mut self,
-        key: K,
-    ) -> Result<Option<Entry<'_, K, V>>, SecondaryMapError> {
+    pub fn fallible_entry(&mut self, key: K) -> Result<Option<Entry<'_, K, V>>, SecondaryMapError> {
         Self::try_entry(self, key)
     }
 

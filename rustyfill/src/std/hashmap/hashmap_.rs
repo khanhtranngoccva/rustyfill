@@ -1069,7 +1069,9 @@ mod tests {
         let mut map: HashMap<String, Vec<u8>> = HashMap::new();
         let slice: &[(String, Vec<u8>)] = &[("x".to_string(), vec![1])];
         let result: Result<(), (&[(String, Vec<u8>)], TryHashMapError)> =
-            <_ as TryExtendFromSlice<'_, (String, Vec<u8>)>>::try_extend_from_slice(&mut map, slice);
+            <_ as TryExtendFromSlice<'_, (String, Vec<u8>)>>::try_extend_from_slice(
+                &mut map, slice,
+            );
         assert!(result.is_ok());
         assert_eq!(map["x"], vec![1]);
     }
@@ -1181,20 +1183,27 @@ mod tests {
         use lang_alloc::string::String;
 
         let source: Vec<(String, String)> = vec![
-            ("key0".into(), "val0".into()), ("key1".into(), "val1".into()),
-            ("key2".into(), "val2".into()), ("key3".into(), "val3".into()),
-            ("key4".into(), "val4".into()), ("key5".into(), "val5".into()),
-            ("key6".into(), "val6".into()), ("key7".into(), "val7".into()),
-            ("key8".into(), "val8".into()), ("key9".into(), "val9".into()),
+            ("key0".into(), "val0".into()),
+            ("key1".into(), "val1".into()),
+            ("key2".into(), "val2".into()),
+            ("key3".into(), "val3".into()),
+            ("key4".into(), "val4".into()),
+            ("key5".into(), "val5".into()),
+            ("key6".into(), "val6".into()),
+            ("key7".into(), "val7".into()),
+            ("key8".into(), "val8".into()),
+            ("key9".into(), "val9".into()),
         ];
 
         let mut map: HashMap<String, String> = HashMap::new();
 
         use crate::try_extend::TryExtendFromSlice;
-        let r: Result<(), (&[(String, String)], TryHashMapError)> =
-            with_policy(FailPolicy::fail_nth_alloc(2), || {
+        let r: Result<(), (&[(String, String)], TryHashMapError)> = with_policy(
+            FailPolicy::fail_nth_alloc(2),
+            || {
                 <HashMap<String, String> as TryExtendFromSlice<'_, (String, String)>>::try_extend_from_slice(&mut map, &source)
-            });
+            },
+        );
 
         match r {
             Err((remaining, err)) => {
@@ -1234,8 +1243,8 @@ mod tests {
         use lang_alloc::string::String;
 
         let source: Vec<(String, String)> = vec![
-            ("dup".into(), "first".into()),   // index 0: dup -> "first"
-            ("dup".into(), "second".into()),  // index 1: dup -> "second" (overwrite)
+            ("dup".into(), "first".into()),  // index 0: dup -> "first"
+            ("dup".into(), "second".into()), // index 1: dup -> "second" (overwrite)
             ("a".into(), "va".into()),
             ("b".into(), "vb".into()),
             ("c".into(), "vc".into()),
@@ -1253,10 +1262,12 @@ mod tests {
         use crate::try_extend::TryExtendFromSlice;
         // Fail a clone well past indices 0..2 so both "dup" entries are
         // guaranteed to be committed before the failure fires.
-        let r: Result<(), (&[(String, String)], TryHashMapError)> =
-            with_policy(FailPolicy::fail_nth_alloc(8), || {
+        let r: Result<(), (&[(String, String)], TryHashMapError)> = with_policy(
+            FailPolicy::fail_nth_alloc(8),
+            || {
                 <HashMap<String, String> as TryExtendFromSlice<'_, (String, String)>>::try_extend_from_slice(&mut map, &source)
-            });
+            },
+        );
 
         match r {
             Err((remaining, err)) => {

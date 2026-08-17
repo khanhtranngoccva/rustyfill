@@ -188,10 +188,7 @@ pub trait TryVec<T>: Sized {
     /// the start of the call so that no partially-appended elements remain.
     /// The error does not carry a remainder since the collection state is
     /// restored to exactly what it was before the call.
-    fn try_extend_from_slice_with_rollback(
-        &mut self,
-        other: &[T],
-    ) -> Result<(), TryVecError>
+    fn try_extend_from_slice_with_rollback(&mut self, other: &[T]) -> Result<(), TryVecError>
     where
         T: TryClone;
 
@@ -314,10 +311,7 @@ pub trait TryVec<T>: Sized {
     }
 
     /// Alias for [`Self::try_extend_from_slice_with_rollback`].
-    fn fallible_extend_from_slice_with_rollback(
-        &mut self,
-        other: &[T],
-    ) -> Result<(), TryVecError>
+    fn fallible_extend_from_slice_with_rollback(&mut self, other: &[T]) -> Result<(), TryVecError>
     where
         T: TryClone,
     {
@@ -487,10 +481,7 @@ impl<T> TryVec<T> for Vec<T> {
         }
     }
 
-    fn try_extend_from_slice_with_rollback(
-        &mut self,
-        other: &[T],
-    ) -> Result<(), TryVecError>
+    fn try_extend_from_slice_with_rollback(&mut self, other: &[T]) -> Result<(), TryVecError>
     where
         T: TryClone,
     {
@@ -1334,9 +1325,16 @@ mod tests {
         use lang_alloc::string::String;
 
         let source: Vec<String> = vec![
-            "item0".into(), "item1".into(), "item2".into(), "item3".into(),
-            "item4".into(), "item5".into(), "item6".into(), "item7".into(),
-            "item8".into(), "item9".into(),
+            "item0".into(),
+            "item1".into(),
+            "item2".into(),
+            "item3".into(),
+            "item4".into(),
+            "item5".into(),
+            "item6".into(),
+            "item7".into(),
+            "item8".into(),
+            "item9".into(),
         ];
         let len_source = source.len();
 
@@ -1348,10 +1346,9 @@ mod tests {
         // try_reserve already succeeded (outside the policy scope for the
         // capacity reservation), so the first alloc inside with_policy will
         // be from the first or later String::try_clone() call.
-        let r: Result<(), TryVecError> =
-            with_policy(FailPolicy::fail_nth_alloc(2), || {
-                <Vec<String> as TryVec<String>>::try_extend_from_slice_with_rollback(&mut vec, &source)
-            });
+        let r: Result<(), TryVecError> = with_policy(FailPolicy::fail_nth_alloc(2), || {
+            <Vec<String> as TryVec<String>>::try_extend_from_slice_with_rollback(&mut vec, &source)
+        });
 
         match r {
             Err(TryVecError::Clone(_)) => {
@@ -1387,17 +1384,22 @@ mod tests {
         use lang_alloc::string::String;
 
         let source: Vec<String> = vec![
-            "src0xxxxxxxx".into(), "src1xxxxxxxx".into(), "src2xxxxxxxx".into(),
-            "src3xxxxxxxx".into(), "src4xxxxxxxx".into(), "src5xxxxxxxx".into(),
-            "src6xxxxxxxx".into(), "src7xxxxxxxx".into(), "src8xxxxxxxx".into(),
+            "src0xxxxxxxx".into(),
+            "src1xxxxxxxx".into(),
+            "src2xxxxxxxx".into(),
+            "src3xxxxxxxx".into(),
+            "src4xxxxxxxx".into(),
+            "src5xxxxxxxx".into(),
+            "src6xxxxxxxx".into(),
+            "src7xxxxxxxx".into(),
+            "src8xxxxxxxx".into(),
             "src9xxxxxxxx".into(),
         ];
         let mut vec: Vec<String> = vec!["anchor".into()];
 
-        let _: Result<(), TryVecError> =
-            with_policy(FailPolicy::fail_nth_alloc(3), || {
-                <Vec<String> as TryVec<String>>::try_extend_from_slice_with_rollback(&mut vec, &source)
-            });
+        let _: Result<(), TryVecError> = with_policy(FailPolicy::fail_nth_alloc(3), || {
+            <Vec<String> as TryVec<String>>::try_extend_from_slice_with_rollback(&mut vec, &source)
+        });
 
         // Whatever happened, no source strings should appear in vec.
         for elem in vec.iter() {
@@ -1415,9 +1417,16 @@ mod tests {
         use lang_alloc::string::String;
 
         let source: Vec<String> = vec![
-            "item0".into(), "item1".into(), "item2".into(), "item3".into(),
-            "item4".into(), "item5".into(), "item6".into(), "item7".into(),
-            "item8".into(), "item9".into(),
+            "item0".into(),
+            "item1".into(),
+            "item2".into(),
+            "item3".into(),
+            "item4".into(),
+            "item5".into(),
+            "item6".into(),
+            "item7".into(),
+            "item8".into(),
+            "item9".into(),
         ];
         let len_source = source.len();
 
@@ -1427,7 +1436,9 @@ mod tests {
         use crate::try_extend::TryExtendFromSlice;
         let r: Result<(), (&[String], TryVecError)> =
             with_policy(FailPolicy::fail_nth_alloc(2), || {
-                <Vec<String> as TryExtendFromSlice<'_, String>>::try_extend_from_slice(&mut vec, &source)
+                <Vec<String> as TryExtendFromSlice<'_, String>>::try_extend_from_slice(
+                    &mut vec, &source,
+                )
             });
 
         match r {
@@ -1460,21 +1471,21 @@ mod tests {
         // the elements already pushed.
         use lang_alloc::string::String;
 
-        let mut vec: Vec<String> = vec![
-            "a".into(), "b".into(), "c".into(), "d".into(), "e".into(),
-        ];
+        let mut vec: Vec<String> = vec!["a".into(), "b".into(), "c".into(), "d".into(), "e".into()];
         let len_before = vec.len();
 
         // Extend from [0..3], which clones 3 strings. Fail one mid-way.
-        let r: Result<(), TryVecError> =
-            with_policy(FailPolicy::fail_nth_alloc(2), || {
-                <Vec<String> as TryVec<String>>::try_extend_from_within(&mut vec, 0..3)
-            });
+        let r: Result<(), TryVecError> = with_policy(FailPolicy::fail_nth_alloc(2), || {
+            <Vec<String> as TryVec<String>>::try_extend_from_within(&mut vec, 0..3)
+        });
 
         match r {
             Err(TryVecError::Clone(_)) => {
-                assert_eq!(vec.len(), len_before,
-                    "TruncateGuard failed to roll back extend_from_within");
+                assert_eq!(
+                    vec.len(),
+                    len_before,
+                    "TruncateGuard failed to roll back extend_from_within"
+                );
                 assert_eq!(vec[0], "a");
                 assert_eq!(vec[4], "e");
             }
@@ -1498,15 +1509,19 @@ mod tests {
         let len_before = vec.len();
 
         // Resize to 15 — needs 14 clones. Fail one mid-way.
-        let r: Result<(), TryVecError> =
-            with_policy(FailPolicy::fail_nth_alloc(3), || {
-                <Vec<String> as TryVec<String>>::try_resize(&mut vec, &val, 15)
-            });
+        let r: Result<(), TryVecError> = with_policy(FailPolicy::fail_nth_alloc(3), || {
+            <Vec<String> as TryVec<String>>::try_resize(&mut vec, &val, 15)
+        });
 
         match r {
             Err(TryVecError::Clone(_)) => {
-                assert_eq!(vec.len(), len_before,
-                    "resize rollback failed: expected {}, got {}", len_before, vec.len());
+                assert_eq!(
+                    vec.len(),
+                    len_before,
+                    "resize rollback failed: expected {}, got {}",
+                    len_before,
+                    vec.len()
+                );
                 assert_eq!(vec[0], "original");
             }
             Ok(()) => {

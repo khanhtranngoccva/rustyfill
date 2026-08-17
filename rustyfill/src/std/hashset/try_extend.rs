@@ -59,7 +59,10 @@ where
             if self.len() == self.capacity()
                 && let Err(e) = self.try_reserve(1)
             {
-                return Err((TryHashSetError::from(TryReserveError::from(e)), Resumable::new(value, iter)));
+                return Err((
+                    TryHashSetError::from(TryReserveError::from(e)),
+                    Resumable::new(value, iter),
+                ));
             }
             self.insert(value);
         }
@@ -68,13 +71,19 @@ where
         if lower > 0
             && let Err(e) = self.try_reserve(lower)
         {
-            return Err((TryHashSetError::from(TryReserveError::from(e)), Resumable::from_remainder(iter)));
+            return Err((
+                TryHashSetError::from(TryReserveError::from(e)),
+                Resumable::from_remainder(iter),
+            ));
         }
         while let Some(value) = iter.next() {
             if self.len() == self.capacity()
                 && let Err(e) = self.try_reserve(1)
             {
-                return Err((TryHashSetError::from(TryReserveError::from(e)), Resumable::new(value, iter)));
+                return Err((
+                    TryHashSetError::from(TryReserveError::from(e)),
+                    Resumable::new(value, iter),
+                ));
             }
             self.insert(value);
         }
