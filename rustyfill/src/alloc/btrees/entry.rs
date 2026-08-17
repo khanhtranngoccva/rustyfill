@@ -5,11 +5,12 @@
 //! - [`TryBTreeMap`] — map-level `try_insert(key, value)` with plain `insert`
 //!   semantics on `BTreeMap<K, V>` (by value). Routes through the standard
 //!   entry API; only the split cascade can fail, reported as [`Result`].
-//! - [`TryBTreeMapEntry`] — fallible `or_fallible_insert` - family methods on the
-//!   standard `BTreeMap` Entry API (`Entry<'_, K, V>`). The entry-side methods
-//!   use the `or_fallible_*` naming convention so they read like their std
-//!   counterparts (`or_insert`, `or_insert_with`, …) while signalling that the
-//!   vacant branch can fail.
+//! - [`TryBTreeMapEntry`] — fallible `or_try_insert*` / `or_fallible_insert*`
+//!   methods on the standard `BTreeMap` Entry API (`Entry<'_, K, V>`). Each
+//!   functional variant (plain, closure, key-aware-closure) comes in a `try_`
+//!   and a `fallible_` form, each with a `_give_back` variant that hands the
+//!   key/value back on failure and a non-suffixed variant that returns only the
+//!   error. Twelve entry points in total.
 //! - [`TryBTreeMapVacantEntry`] — fallible `try_insert` on the standard
 //!   `VacantEntry<'_, K, V>`.
 //!
@@ -54,7 +55,6 @@
 //! [`TryBox::fallible_new_uninit`]: crate::alloc::boxed::TryBox::fallible_new_uninit
 
 use crate::alloc::AllocError;
-use crate::try_clone::TryCloneError;
 use lang_alloc::collections::BTreeMap;
 use lang_alloc::collections::btree_map::{Entry, VacantEntry};
 
@@ -85,10 +85,8 @@ mod sys {
 
 /// Return type for fallible insertion helpers: a reference to the inserted slot
 /// paired with its index, or the original key/value plus the error on failure.
-type InsertResult<'a, K, V> = Result<
-    (sys::NodeRef<sys::Mut<'a>, K, V, sys::LeafOrInternal>, usize),
-    (K, V, TryBTreeMapEntryError),
->;
+type InsertResult<'a, K, V> =
+    Result<(sys::NodeRef<sys::Mut<'a>, K, V, sys::LeafOrInternal>, usize), (K, V, AllocError)>;
 
 /// Construct an [`AllocError`] carrying a placeholder layout. Used when a
 /// fallible allocation primitive (e.g. `Vec::try_reserve`) reports failure
@@ -99,56 +97,135 @@ fn alloc_error() -> AllocError {
     }
 }
 
-// ── Error type ────────────────────────────────────────────────────────────────
+// ── Error types ───────────────────────────────────────────────────────────────
 
-/// Error returned by the fallible entry methods in [`TryBTreeMapEntry`].
+/// Error returned by the give-back fallible-closure entry methods
+/// (`or_try_insert_with_give_back`, `or_try_insert_with_key_give_back`, and
+/// their `or_fallible_*_give_back` counterparts).
+///
+/// Each variant carries exactly the data relevant to that failure mode:
+///
+/// - [`Self::Alloc`] — the closure succeeded but the tree insertion hit OOM;
+///   both the key and the computed value are handed back alongside the
+///   [`AllocError`].
+/// - [`Self::Closure`] — the closure itself failed before any insertion; only
+///   the key is handed back (there is no computed value to return).
 #[derive(Debug)]
-pub enum TryBTreeMapEntryError {
-    /// A heap allocation failed while creating a new B-tree node.
-    Alloc(AllocError),
-    /// An element clone failed during a method that requires [`TryClone`](crate::try_clone::TryClone).
-    Clone(TryCloneError),
+pub enum TryEntryWithGiveBackError<K, V, E> {
+    /// Heap allocation failed while inserting the successfully computed value.
+    /// Contains the key, the value, and the underlying [`AllocError`].
+    Alloc(K, V, AllocError),
+    /// The fallible default-value closure returned an error; nothing was
+    /// inserted. Contains the key and the closure's own error `E`.
+    Closure(K, E),
 }
 
-impl fmt::Display for TryBTreeMapEntryError {
+impl<K, V, E> fmt::Display for TryEntryWithGiveBackError<K, V, E> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Alloc(_, _, _) => write!(
+                f,
+                "B-tree map entry operation failed: heap allocation error"
+            ),
+            Self::Closure(_, _) => write!(
+                f,
+                "B-tree map entry operation failed: default-value closure returned an error"
+            ),
+        }
+    }
+}
+
+impl<K, V, E> TryEntryWithGiveBackError<K, V, E> {
+    /// Returns `true` if this is an allocation failure.
+    pub fn is_alloc(&self) -> bool {
+        matches!(self, Self::Alloc(..))
+    }
+
+    /// Returns `true` if this is a closure failure.
+    pub fn is_closure(&self) -> bool {
+        matches!(self, Self::Closure(..))
+    }
+}
+
+/// Error returned by the non-give-back fallible-closure entry methods
+/// (`or_fallible_insert_with`, `or_fallible_insert_with_key`).
+///
+/// These methods discard the key and any computed value on failure, returning
+/// only the error. Because the fallible-closure methods can fail in two ways —
+/// the closure itself errored, or the subsequent insertion hit OOM — this error
+/// keeps just those two modes without the discarded data.
+#[derive(Debug)]
+pub enum TryEntryWithError<E> {
+    /// Heap allocation failed while inserting the successfully computed value.
+    Alloc(AllocError),
+    /// The fallible default-value closure returned an error; nothing was
+    /// inserted. Carries the closure's own error `E`.
+    Closure(E),
+}
+
+impl<E> fmt::Display for TryEntryWithError<E> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Alloc(_) => write!(
                 f,
                 "B-tree map entry operation failed: heap allocation error"
             ),
-            Self::Clone(e) => write!(f, "B-tree map entry operation failed: {}", e),
+            Self::Closure(_) => write!(
+                f,
+                "B-tree map entry operation failed: default-value closure returned an error"
+            ),
         }
     }
 }
 
-impl From<AllocError> for TryBTreeMapEntryError {
-    fn from(e: AllocError) -> Self {
-        Self::Alloc(e)
+impl<E> TryEntryWithError<E> {
+    /// Returns `true` if this is an allocation failure.
+    pub fn is_alloc(&self) -> bool {
+        matches!(self, Self::Alloc(..))
+    }
+
+    /// Returns `true` if this is a closure failure.
+    pub fn is_closure(&self) -> bool {
+        matches!(self, Self::Closure(..))
     }
 }
 
-impl From<TryCloneError> for TryBTreeMapEntryError {
-    fn from(e: TryCloneError) -> Self {
+/// Error returned by [`TryExtendFromSlice`](crate::try_extend::TryExtendFromSlice)
+/// implementations on `BTreeMap` and `BTreeSet`.
+///
+/// Slice extension clones each element before inserting, so there are two
+/// distinct failure modes: the clone itself can fail, or the subsequent
+/// insertion can hit OOM.
+#[derive(Debug)]
+pub enum TryBTreeMapExtendFromSliceError {
+    /// An element clone failed during a method that requires
+    /// [`TryClone`](crate::try_clone::TryClone).
+    Clone(crate::try_clone::TryCloneError),
+    /// A heap allocation failed while creating a new B-tree node.
+    Alloc(AllocError),
+}
+
+impl fmt::Display for TryBTreeMapExtendFromSliceError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Clone(e) => write!(f, "B-tree map extend-from-slice failed: {}", e),
+            Self::Alloc(_) => write!(
+                f,
+                "B-tree map extend-from-slice failed: heap allocation error"
+            ),
+        }
+    }
+}
+
+impl From<crate::try_clone::TryCloneError> for TryBTreeMapExtendFromSliceError {
+    fn from(e: crate::try_clone::TryCloneError) -> Self {
         Self::Clone(e)
     }
 }
 
-impl TryBTreeMapEntryError {
-    /// Extract the underlying [`AllocError`], if this is an allocation failure.
-    pub fn alloc_error(&self) -> Option<&AllocError> {
-        match self {
-            Self::Alloc(e) => Some(e),
-            Self::Clone(_) => None,
-        }
-    }
-
-    /// Extract the underlying [`TryCloneError`], if this is a clone failure.
-    pub fn clone_error(&self) -> Option<&TryCloneError> {
-        match self {
-            Self::Clone(e) => Some(e),
-            Self::Alloc(_) => None,
-        }
+impl From<AllocError> for TryBTreeMapExtendFromSliceError {
+    fn from(e: AllocError) -> Self {
+        Self::Alloc(e)
     }
 }
 
@@ -256,7 +333,7 @@ unsafe fn build_occupied_entry<'a, K: Ord, V>(
 /// Read-only accessors (`get`, `contains_key`, `len`, iteration, ranges) do not
 /// allocate either, so the inherent std methods are already safe to call.
 ///
-/// On allocation failure, returns [`Err`] containing [`TryBTreeMapEntryError`];
+/// On allocation failure, returns [`Err`] containing an [`AllocError`];
 /// the map is left logically consistent (the reserve-and-commit scheme
 /// guarantees no stranded elements on rollback).
 ///
@@ -286,7 +363,7 @@ pub trait TryBTreeMap<K, V>: Sized {
     /// previously present, or `Ok(Some(old_value))` if the key existed and was
     /// replaced. Returns `Err` on heap allocation failure during a node split.
     /// The key and value are dropped on failure.
-    fn try_insert(&mut self, key: K, value: V) -> Result<Option<V>, TryBTreeMapEntryError>;
+    fn try_insert(&mut self, key: K, value: V) -> Result<Option<V>, AllocError>;
 
     /// Like [`Self::try_insert`] but returns ownership of `key` and `value`
     /// back on allocation failure.
@@ -295,11 +372,7 @@ pub trait TryBTreeMap<K, V>: Sized {
     /// `Ok(Some(old_value))` if the key existed and was replaced. Returns
     /// `Err((key, value, error))` on heap allocation failure during a node
     /// split, giving ownership of both `key` and `value` back to the caller.
-    fn try_insert_give_back(
-        &mut self,
-        key: K,
-        value: V,
-    ) -> Result<Option<V>, (K, V, TryBTreeMapEntryError)>;
+    fn try_insert_give_back(&mut self, key: K, value: V) -> Result<Option<V>, (K, V, AllocError)>;
 }
 
 /// Fallible insertion on a [`VacantEntry`] obtained from the standard
@@ -308,7 +381,7 @@ pub trait TryBTreeMapVacantEntry<'a, K, V>: Sized {
     /// Fallibly insert a value into this vacant entry.
     ///
     /// Returns an [`OccupiedEntry`] on success, or the key/value/error on failure.
-    fn try_insert(self, value: V) -> Result<OccupiedEntry<'a, K, V>, (K, V, TryBTreeMapEntryError)>
+    fn try_insert(self, value: V) -> Result<OccupiedEntry<'a, K, V>, (K, V, AllocError)>
     where
         K: Ord;
 
@@ -318,10 +391,7 @@ pub trait TryBTreeMapVacantEntry<'a, K, V>: Sized {
     /// Semantically identical to [`Self::try_insert`] (which already hands back
     /// the pair on failure); provided as a named alias for API symmetry with
     /// the map-level [`TryBTreeMap::try_insert_give_back`].
-    fn try_insert_give_back(
-        self,
-        value: V,
-    ) -> Result<OccupiedEntry<'a, K, V>, (K, V, TryBTreeMapEntryError)>
+    fn try_insert_give_back(self, value: V) -> Result<OccupiedEntry<'a, K, V>, (K, V, AllocError)>
     where
         K: Ord,
     {
@@ -332,10 +402,7 @@ pub trait TryBTreeMapVacantEntry<'a, K, V>: Sized {
 // ── Implementation on VacantEntry ─────────────────────────────────────────────
 
 impl<'a, K: Ord, V> TryBTreeMapVacantEntry<'a, K, V> for VacantEntry<'a, K, V> {
-    fn try_insert(
-        self,
-        value: V,
-    ) -> Result<OccupiedEntry<'a, K, V>, (K, V, TryBTreeMapEntryError)> {
+    fn try_insert(self, value: V) -> Result<OccupiedEntry<'a, K, V>, (K, V, AllocError)> {
         let sys_ve = unsafe { extract_to_sys::<K, V>(self) };
         let key = sys_ve.key;
         let handle = sys_ve.handle;
@@ -372,7 +439,7 @@ impl<'a, K: Ord, V> TryBTreeMapVacantEntry<'a, K, V> for VacantEntry<'a, K, V> {
 // ── Implementation on BTreeMap (by value) ─────────────────────────────────────
 
 impl<K: Ord, V> TryBTreeMap<K, V> for BTreeMap<K, V> {
-    fn try_insert(&mut self, key: K, value: V) -> Result<Option<V>, TryBTreeMapEntryError> {
+    fn try_insert(&mut self, key: K, value: V) -> Result<Option<V>, AllocError> {
         // Route through the standard entry API (no allocations). The occupied branch replaces the
         // value in place (no allocation); the vacant branch delegates to our
         // fallible insertion machinery, which handles the empty-map fast path and
@@ -386,11 +453,7 @@ impl<K: Ord, V> TryBTreeMap<K, V> for BTreeMap<K, V> {
         }
     }
 
-    fn try_insert_give_back(
-        &mut self,
-        key: K,
-        value: V,
-    ) -> Result<Option<V>, (K, V, TryBTreeMapEntryError)> {
+    fn try_insert_give_back(&mut self, key: K, value: V) -> Result<Option<V>, (K, V, AllocError)> {
         // Same routing as try_insert, but on the vacant-branch failure we
         // propagate the (key, value, error) triple instead of discarding it.
         match self.entry(key) {
@@ -434,7 +497,7 @@ pub trait TryBTreeSet<T>: Sized {
     /// [`Err`] on heap allocation failure during a node split. The value is
     /// consumed (dropped) on failure, mirroring [`TryBTreeMap::try_insert`]
     /// which also drops the key on OOM.
-    fn try_insert(&mut self, value: T) -> Result<bool, TryBTreeMapEntryError>;
+    fn try_insert(&mut self, value: T) -> Result<bool, AllocError>;
 
     /// Like [`Self::try_insert`] but returns ownership of `value` back on
     /// allocation failure.
@@ -443,11 +506,11 @@ pub trait TryBTreeSet<T>: Sized {
     /// `Ok(false)` if it existed (in which case the set is unchanged). Returns
     /// `Err((value, error))` on heap allocation failure during a node split,
     /// giving ownership of `value` back to the caller.
-    fn try_insert_give_back(&mut self, value: T) -> Result<bool, (T, TryBTreeMapEntryError)>;
+    fn try_insert_give_back(&mut self, value: T) -> Result<bool, (T, AllocError)>;
 }
 
 impl<T: Ord> TryBTreeSet<T> for lang_alloc::collections::BTreeSet<T> {
-    fn try_insert(&mut self, value: T) -> Result<bool, TryBTreeMapEntryError> {
+    fn try_insert(&mut self, value: T) -> Result<bool, AllocError> {
         assert_btree_set_layout_compat::<T>();
         // SAFETY: BTreeSet<T> and BTreeMap<T, ()> have identical layouts
         // (verified above). Casting through a raw pointer lets us reuse the
@@ -462,7 +525,7 @@ impl<T: Ord> TryBTreeSet<T> for lang_alloc::collections::BTreeSet<T> {
         }
     }
 
-    fn try_insert_give_back(&mut self, value: T) -> Result<bool, (T, TryBTreeMapEntryError)> {
+    fn try_insert_give_back(&mut self, value: T) -> Result<bool, (T, AllocError)> {
         assert_btree_set_layout_compat::<T>();
         // SAFETY: same layout argument as try_insert above.
         let map_ptr = ptr::from_mut(self) as *mut BTreeMap<T, ()>;
@@ -482,67 +545,26 @@ impl<T: Ord> TryBTreeSet<T> for lang_alloc::collections::BTreeSet<T> {
 /// These mirror [`Entry::or_insert`], [`Entry::or_insert_with`], and
 /// [`Entry::or_insert_with_key`] but return a [`Result`] so that allocation
 /// failures during the vacant-branch insertion are reported rather than
-/// panicking. Following the crate-wide entry convention, these methods are
-/// named `or_fallible_*`: they read like their std counterparts while making
-/// clear that the vacant branch can fail.
+/// panicking or aborting.
 ///
-/// The occupied branch never allocates, so it always succeeds.
+/// The API is a grid of three axes:
+///
+/// - **Functional** — plain insert, closure-based insert, or
+///   key-aware-closure insert.
+/// - **Naming** — each functional variant comes in a `try_` form and a
+///   `fallible_` form. Within a row the two forms behave identically: the
+///   non-suffixed `try_` method mirrors its `fallible_` counterpart, and the
+///   `_give_back` `try_` method mirrors its `_give_back` `fallible_`
+///   counterpart.
+/// - **Give-back** — the `_give_back` variants hand the key/value back to the
+///   caller on failure; the non-suffixed variants drop them and return only the
+///   error.
+///
+/// Only the three `or_try_*_give_back` methods are required; the remaining nine
+/// entry points are provided methods derived from them. The occupied branch
+/// never allocates, so it always succeeds.
 pub trait TryBTreeMapEntry<'a, K, V>: Sized {
-    /// Fallible version of [`Entry::or_insert`](lang_alloc::collections::btree_map::Entry::or_insert).
-    ///
-    /// On the vacant branch, if allocation fails, returns
-    /// `Err((key, value, error))` giving ownership of both back to the caller.
-    ///
-    /// **Deprecated:** This method name conflicts with the unstable inherent
-    /// [`Entry::try_insert`](lang_alloc::collections::btree_map::Entry::try_insert).
-    /// Use [`Self::or_fallible_insert`] instead.
-    #[deprecated(
-        since = "0.1.0",
-        note = "conflicts with unstable Entry::try_insert; use or_fallible_insert"
-    )]
-    fn or_try_insert(self, default: V) -> Result<&'a mut V, (K, V, TryBTreeMapEntryError)>
-    where
-        K: Ord;
-
-    /// Fallible version of [`Entry::or_insert_with`](lang_alloc::collections::btree_map::Entry::or_insert_with).
-    ///
-    /// On the vacant branch, if allocation fails, returns
-    /// `Err((key, value, error))` giving ownership of both back to the caller.
-    ///
-    /// **Deprecated:** This method name conflicts with the unstable inherent
-    /// [`Entry::try_insert_with`](lang_alloc::collections::btree_map::Entry::try_insert_with).
-    /// Use [`Self::or_fallible_insert_with`] instead.
-    #[deprecated(
-        since = "0.1.0",
-        note = "conflicts with unstable Entry::try_insert_with; use or_fallible_insert_with"
-    )]
-    fn or_try_insert_with<F: FnOnce() -> V>(
-        self,
-        default: F,
-    ) -> Result<&'a mut V, (K, V, TryBTreeMapEntryError)>
-    where
-        K: Ord;
-
-    /// Fallible version of [`Entry::or_insert_with_key`](lang_alloc::collections::btree_map::Entry::or_insert_with_key).
-    ///
-    /// On the vacant branch, if allocation fails, returns
-    /// `Err((key, value, error))` giving ownership of both back to the caller.
-    ///
-    /// **Deprecated:** This method name conflicts with the unstable inherent
-    /// [`Entry::try_insert_with_key`](lang_alloc::collections::btree_map::Entry::try_insert_with_key).
-    /// Use [`Self::or_fallible_insert_with_key`] instead.
-    #[deprecated(
-        since = "0.1.0",
-        note = "conflicts with unstable Entry::try_insert_with_key; use or_fallible_insert_with_key"
-    )]
-    fn or_try_insert_with_key<F: FnOnce(&K) -> V>(
-        self,
-        default: F,
-    ) -> Result<&'a mut V, (K, V, TryBTreeMapEntryError)>
-    where
-        K: Ord;
-
-    // ── Canonical `or_fallible_*` entry methods ──────────────────────────────
+    // ── Plain insert ───────────────────────────────────────────────────────────
 
     /// Fallible version of [`Entry::or_insert`](lang_alloc::collections::btree_map::Entry::or_insert).
     ///
@@ -550,117 +572,180 @@ pub trait TryBTreeMapEntry<'a, K, V>: Sized {
     /// is occupied, the existing value is returned without any allocation. If
     /// the entry is vacant, `default` is inserted into the tree; because this
     /// may trigger node splits, it can fail on heap exhaustion. On the vacant
-    /// branch, if allocation fails, returns `Err((key, value, error))` giving
-    /// ownership of both back to the caller.
+    /// branch, if allocation fails, returns `Err(alloc_error)` with the key and
+    /// value dropped.
     ///
-    /// This method replaces the deprecated [`Self::or_try_insert`] which shares
-    /// its name with the unstable inherent [`Entry::try_insert`](lang_alloc::collections::btree_map::Entry::try_insert).
-    #[allow(deprecated)]
-    fn or_fallible_insert(self, default: V) -> Result<&'a mut V, (K, V, TryBTreeMapEntryError)>
+    /// Behaviourally identical to [`Self::or_fallible_insert`]; see
+    /// [`Self::or_try_insert_give_back`] for the variant that hands the pair
+    /// back on failure.
+    fn or_try_insert(self, default: V) -> Result<&'a mut V, AllocError>
+    where
+        K: Ord,
+    {
+        match self.or_try_insert_give_back(default) {
+            Ok(r) => Ok(r),
+            Err((_, _, e)) => Err(e),
+        }
+    }
+
+    /// Like [`Self::or_try_insert`] but hands the key and value back to the
+    /// caller on allocation failure.
+    ///
+    /// Returns `Ok(&mut V)` on success; on a vacant-branch OOM returns
+    /// `Err((key, value, alloc_error))`, giving ownership of both back to the
+    /// caller.
+    fn or_try_insert_give_back(self, default: V) -> Result<&'a mut V, (K, V, AllocError)>
+    where
+        K: Ord;
+
+    /// Mirror of [`Self::or_try_insert`]: inserts `default` into a vacant entry
+    /// and reports an allocation failure as `Err(alloc_error)`, dropping the key
+    /// and value.
+    fn or_fallible_insert(self, default: V) -> Result<&'a mut V, AllocError>
     where
         K: Ord,
     {
         self.or_try_insert(default)
     }
 
-    /// Fallible version of [`Entry::or_insert_with`](lang_alloc::collections::btree_map::Entry::or_insert_with).
-    ///
-    /// Returns a mutable reference to the stored value on success. If the entry
-    /// is occupied, the existing value is returned without invoking `default`.
-    /// If the entry is vacant, `default()` is evaluated and inserted; because
-    /// this may trigger node splits, it can fail on heap exhaustion. On the
-    /// vacant branch, if allocation fails, returns `Err((key, value, error))`
-    /// giving ownership of both back to the caller.
-    ///
-    /// This method replaces the deprecated [`Self::or_try_insert_with`] which
-    /// shares its name with the unstable inherent [`Entry::try_insert_with`](lang_alloc::collections::btree_map::Entry::try_insert_with).
-    #[allow(deprecated)]
-    fn or_fallible_insert_with<F: FnOnce() -> V>(
+    /// Mirror of [`Self::or_try_insert_give_back`]: hands the key and value back
+    /// on allocation failure.
+    fn or_fallible_insert_give_back(self, default: V) -> Result<&'a mut V, (K, V, AllocError)>
+    where
+        K: Ord,
+    {
+        self.or_try_insert_give_back(default)
+    }
+
+    // ── Closure-based insert ───────────────────────────────────────────────────
+
+    /// Deprecated alias for [`Self::or_fallible_insert_with`].
+    #[deprecated(note = "use [`Self::or_fallible_insert_with`] instead")]
+    fn or_try_insert_with<E, F: FnOnce() -> Result<V, E>>(
         self,
         default: F,
-    ) -> Result<&'a mut V, (K, V, TryBTreeMapEntryError)>
+    ) -> Result<&'a mut V, TryEntryWithError<E>>
+    where
+        K: Ord,
+    {
+        match self.or_try_insert_with_give_back(default) {
+            Ok(r) => Ok(r),
+            Err(e) => Err(match e {
+                TryEntryWithGiveBackError::Alloc(_, _, a) => TryEntryWithError::Alloc(a),
+                TryEntryWithGiveBackError::Closure(_, c) => TryEntryWithError::Closure(c),
+            }),
+        }
+    }
+
+    /// Like [`Self::or_fallible_insert_with`] but hands the key and value back to
+    /// the caller on failure.
+    ///
+    /// On closure failure returns
+    /// `Err(TryEntryWithError::Closure(key, e))` — only the key is handed back,
+    /// since no value was computed. On OOM during insertion of a successfully
+    /// computed value, returns
+    /// `Err(TryEntryWithError::Alloc(key, value, alloc_error))` handing back
+    /// both the key and the value.
+    fn or_try_insert_with_give_back<E, F: FnOnce() -> Result<V, E>>(
+        self,
+        default: F,
+    ) -> Result<&'a mut V, TryEntryWithGiveBackError<K, V, E>>
+    where
+        K: Ord;
+
+    /// Evaluates the fallible closure and reports either its error or an
+    /// allocation failure, dropping the key and any computed value. See
+    /// [`Self::or_fallible_insert_with_give_back`] for the variant that hands the
+    /// key/value back on failure.
+    #[allow(deprecated)]
+    fn or_fallible_insert_with<E, F: FnOnce() -> Result<V, E>>(
+        self,
+        default: F,
+    ) -> Result<&'a mut V, TryEntryWithError<E>>
     where
         K: Ord,
     {
         self.or_try_insert_with(default)
     }
 
-    /// Fallible version of [`Entry::or_insert_with_key`](lang_alloc::collections::btree_map::Entry::or_insert_with_key).
-    ///
-    /// Returns a mutable reference to the stored value on success. If the entry
-    /// is occupied, the existing value is returned without invoking `default`.
-    /// If the entry is vacant, `default(key)` is evaluated and inserted; because
-    /// this may trigger node splits, it can fail on heap exhaustion. On the
-    /// vacant branch, if allocation fails, returns `Err((key, value, error))`
-    /// giving ownership of both back to the caller.
-    ///
-    /// This method replaces the deprecated [`Self::or_try_insert_with_key`]
-    /// which shares its name with the unstable inherent [`Entry::try_insert_with_key`](lang_alloc::collections::btree_map::Entry::try_insert_with_key).
-    #[allow(deprecated)]
-    fn or_fallible_insert_with_key<F: FnOnce(&K) -> V>(
+    /// Mirror of [`Self::or_try_insert_with_give_back`]: hands the key and value
+    /// back on failure.
+    fn or_fallible_insert_with_give_back<E, F: FnOnce() -> Result<V, E>>(
         self,
         default: F,
-    ) -> Result<&'a mut V, (K, V, TryBTreeMapEntryError)>
+    ) -> Result<&'a mut V, TryEntryWithGiveBackError<K, V, E>>
+    where
+        K: Ord,
+    {
+        self.or_try_insert_with_give_back(default)
+    }
+
+    // ── Key-aware-closure insert ───────────────────────────────────────────────
+
+    /// Deprecated alias for [`Self::or_fallible_insert_with_key`].
+    #[deprecated(note = "use [`Self::or_fallible_insert_with_key`] instead")]
+    fn or_try_insert_with_key<E, F: FnOnce(&K) -> Result<V, E>>(
+        self,
+        default: F,
+    ) -> Result<&'a mut V, TryEntryWithError<E>>
+    where
+        K: Ord,
+    {
+        match self.or_try_insert_with_key_give_back(default) {
+            Ok(r) => Ok(r),
+            Err(e) => Err(match e {
+                TryEntryWithGiveBackError::Alloc(_, _, a) => TryEntryWithError::Alloc(a),
+                TryEntryWithGiveBackError::Closure(_, c) => TryEntryWithError::Closure(c),
+            }),
+        }
+    }
+
+    /// Like [`Self::or_fallible_insert_with_key`] but hands the key and value back
+    /// to the caller on failure.
+    ///
+    /// On closure failure returns
+    /// `Err(TryEntryWithError::Closure(key, e))` — only the key is handed back,
+    /// since no value was computed. On OOM during insertion of a successfully
+    /// computed value, returns
+    /// `Err(TryEntryWithError::Alloc(key, value, alloc_error))` handing back
+    /// both the key and the value.
+    fn or_try_insert_with_key_give_back<E, F: FnOnce(&K) -> Result<V, E>>(
+        self,
+        default: F,
+    ) -> Result<&'a mut V, TryEntryWithGiveBackError<K, V, E>>
+    where
+        K: Ord;
+
+    /// Evaluates the fallible key-aware closure and reports either its error or
+    /// an allocation failure, dropping the key and any computed value. See
+    /// [`Self::or_fallible_insert_with_key_give_back`] for the variant that hands
+    /// the key/value back on failure.
+    #[allow(deprecated)]
+    fn or_fallible_insert_with_key<E, F: FnOnce(&K) -> Result<V, E>>(
+        self,
+        default: F,
+    ) -> Result<&'a mut V, TryEntryWithError<E>>
     where
         K: Ord,
     {
         self.or_try_insert_with_key(default)
     }
 
-    // ── Give-back variants ───────────────────────────────────────────────────
-
-    /// Like [`Self::or_fallible_insert`] but explicitly documents that ownership
-    /// of both `key` and `value` is returned to the caller on allocation failure.
-    ///
-    /// Semantically identical to [`Self::or_fallible_insert`] (which already
-    /// hands back the pair on failure); provided as a named variant for API
-    /// symmetry with the map-level [`TryBTreeMap::try_insert_give_back`].
-    fn or_fallible_insert_give_back(
-        self,
-        default: V,
-    ) -> Result<&'a mut V, (K, V, TryBTreeMapEntryError)>
-    where
-        K: Ord,
-    {
-        self.or_fallible_insert(default)
-    }
-
-    /// Like [`Self::or_fallible_insert_with`] but explicitly documents that
-    /// ownership of both `key` and `value` is returned to the caller on
-    /// allocation failure.
-    ///
-    /// Semantically identical to [`Self::or_fallible_insert_with`]; provided as
-    /// a named variant for API symmetry.
-    fn or_fallible_insert_with_give_back<F: FnOnce() -> V>(
+    /// Mirror of [`Self::or_try_insert_with_key_give_back`]: hands the key and
+    /// value back on failure.
+    fn or_fallible_insert_with_key_give_back<E, F: FnOnce(&K) -> Result<V, E>>(
         self,
         default: F,
-    ) -> Result<&'a mut V, (K, V, TryBTreeMapEntryError)>
+    ) -> Result<&'a mut V, TryEntryWithGiveBackError<K, V, E>>
     where
         K: Ord,
     {
-        self.or_fallible_insert_with(default)
-    }
-
-    /// Like [`Self::or_fallible_insert_with_key`] but explicitly documents that
-    /// ownership of both `key` and `value` is returned to the caller on
-    /// allocation failure.
-    ///
-    /// Semantically identical to [`Self::or_fallible_insert_with_key`]; provided
-    /// as a named variant for API symmetry.
-    fn or_fallible_insert_with_key_give_back<F: FnOnce(&K) -> V>(
-        self,
-        default: F,
-    ) -> Result<&'a mut V, (K, V, TryBTreeMapEntryError)>
-    where
-        K: Ord,
-    {
-        self.or_fallible_insert_with_key(default)
+        self.or_try_insert_with_key_give_back(default)
     }
 }
 
-#[allow(deprecated)]
 impl<'a, K: Ord, V> TryBTreeMapEntry<'a, K, V> for Entry<'a, K, V> {
-    fn or_try_insert(self, default: V) -> Result<&'a mut V, (K, V, TryBTreeMapEntryError)> {
+    fn or_try_insert_give_back(self, default: V) -> Result<&'a mut V, (K, V, AllocError)> {
         match self {
             Entry::Occupied(entry) => Ok(entry.into_mut()),
             Entry::Vacant(vacant) => match vacant.try_insert(default) {
@@ -670,33 +755,43 @@ impl<'a, K: Ord, V> TryBTreeMapEntry<'a, K, V> for Entry<'a, K, V> {
         }
     }
 
-    fn or_try_insert_with<F: FnOnce() -> V>(
+    fn or_try_insert_with_give_back<E, F: FnOnce() -> Result<V, E>>(
         self,
         default: F,
-    ) -> Result<&'a mut V, (K, V, TryBTreeMapEntryError)> {
+    ) -> Result<&'a mut V, TryEntryWithGiveBackError<K, V, E>> {
         match self {
             Entry::Occupied(entry) => Ok(entry.into_mut()),
             Entry::Vacant(vacant) => {
-                let value = default();
+                // The closure runs first and may fail; on failure nothing has
+                // been allocated or inserted, so only the key is handed back.
+                let value = match default() {
+                    Ok(v) => v,
+                    Err(e) => return Err(TryEntryWithGiveBackError::Closure(vacant.into_key(), e)),
+                };
                 match vacant.try_insert(value) {
                     Ok(occupied) => Ok(occupied.into_mut()),
-                    Err((k, v, e)) => Err((k, v, e)),
+                    Err((k, v, e)) => Err(TryEntryWithGiveBackError::Alloc(k, v, e)),
                 }
             }
         }
     }
 
-    fn or_try_insert_with_key<F: FnOnce(&K) -> V>(
+    fn or_try_insert_with_key_give_back<E, F: FnOnce(&K) -> Result<V, E>>(
         self,
         default: F,
-    ) -> Result<&'a mut V, (K, V, TryBTreeMapEntryError)> {
+    ) -> Result<&'a mut V, TryEntryWithGiveBackError<K, V, E>> {
         match self {
             Entry::Occupied(entry) => Ok(entry.into_mut()),
             Entry::Vacant(vacant) => {
-                let value = default(vacant.key());
+                // The closure runs first and may fail; on failure nothing has
+                // been allocated or inserted, so only the key is handed back.
+                let value = match default(vacant.key()) {
+                    Ok(v) => v,
+                    Err(e) => return Err(TryEntryWithGiveBackError::Closure(vacant.into_key(), e)),
+                };
                 match vacant.try_insert(value) {
                     Ok(occupied) => Ok(occupied.into_mut()),
-                    Err((k, v, e)) => Err((k, v, e)),
+                    Err((k, v, e)) => Err(TryEntryWithGiveBackError::Alloc(k, v, e)),
                 }
             }
         }
@@ -731,7 +826,7 @@ fn try_insert_empty_map<'a, K, V>(
 ) -> InsertResult<'a, K, V> {
     let leaf_box = match try_new_leaf() {
         Ok(b) => b,
-        Err(e) => return Err((key, value, e.into())),
+        Err(e) => return Err((key, value, e)),
     };
     let owned_root: sys::NodeRef<sys::Owned, K, V, sys::Leaf> = sys::NodeRef {
         height: 0,
@@ -822,7 +917,7 @@ fn try_insert_with_split<'a, K, V>(
     // below fails, dropping it frees the node automatically.
     let leaf_box = match try_new_leaf_box::<K, V>() {
         Ok(b) => b,
-        Err(e) => return Err((key, value, e.into())),
+        Err(e) => return Err((key, value, e)),
     };
     let leaf = PendingLeaf::new(leaf_box);
 
@@ -840,7 +935,7 @@ fn try_insert_with_split<'a, K, V>(
                 // Rollback: both `leaf` and `reserve_buf` are dropped here,
                 // freeing the leaf and all already-reserved internal nodes.
                 // The probe did not mutate the tree, so it remains intact.
-                return Err((key, value, e.into()));
+                return Err((key, value, e));
             }
         }
     }
@@ -923,7 +1018,7 @@ impl<'a, K, V> CommitPlan<'a, K, V> {
     /// untouched.
     fn build(
         leaf_edge: sys::Handle<sys::NodeRef<sys::Mut<'a>, K, V, sys::Leaf>, sys::Edge>,
-    ) -> Result<Self, TryBTreeMapEntryError> {
+    ) -> Result<Self, AllocError> {
         let orig_leaf = leaf_edge.node.node.as_ptr();
         let (leaf_sp, leaf_side) = splitpoint(leaf_edge.idx);
 
@@ -1244,16 +1339,11 @@ mod tests {
     use lang_alloc::string::ToString;
     use lang_alloc::vec;
     use lang_alloc::vec::Vec;
-    use lang_core::alloc::Layout;
-
-    fn dummy_layout() -> Layout {
-        unsafe { Layout::from_size_align_unchecked(1, 1) }
-    }
 
     #[test]
     fn try_or_insert_new_key_empty_map() {
         let mut map: BTreeMap<i32, &str> = BTreeMap::new();
-        let val = map.entry(1).or_fallible_insert("one").unwrap();
+        let val = map.entry(1).or_try_insert_give_back("one").unwrap();
         assert_eq!(val, &"one");
         assert_eq!(map[&1], "one");
     }
@@ -1263,7 +1353,7 @@ mod tests {
         // Mirrors Entry::or_insert: a present key is left untouched.
         let mut map: BTreeMap<i32, &str> = BTreeMap::new();
         map.insert(1, "one");
-        let val = map.entry(1).or_fallible_insert("ONE").unwrap();
+        let val = map.entry(1).or_try_insert_give_back("ONE").unwrap();
         assert_eq!(val, &"one");
         assert_eq!(map[&1], "one");
     }
@@ -1271,9 +1361,9 @@ mod tests {
     #[test]
     fn try_or_insert_multiple_keys_ordered() {
         let mut map: BTreeMap<i32, &str> = BTreeMap::new();
-        map.entry(3).or_fallible_insert("three").unwrap();
-        map.entry(1).or_fallible_insert("one").unwrap();
-        map.entry(2).or_fallible_insert("two").unwrap();
+        map.entry(3).or_try_insert_give_back("three").unwrap();
+        map.entry(1).or_try_insert_give_back("one").unwrap();
+        map.entry(2).or_try_insert_give_back("two").unwrap();
         assert_eq!(map.len(), 3);
         assert_eq!(map[&1], "one");
         assert_eq!(map[&2], "two");
@@ -1284,7 +1374,7 @@ mod tests {
     fn try_or_insert_many_entries_triggers_splits() {
         let mut map: BTreeMap<usize, usize> = BTreeMap::new();
         for i in 0..20 {
-            map.entry(i).or_fallible_insert(i * 10).unwrap();
+            map.entry(i).or_try_insert_give_back(i * 10).unwrap();
         }
         assert_eq!(map.len(), 20);
         for i in 0..20 {
@@ -1296,7 +1386,7 @@ mod tests {
     fn try_or_insert_just_past_first_split() {
         let mut map: BTreeMap<usize, usize> = BTreeMap::new();
         for i in 0..12 {
-            map.entry(i).or_fallible_insert(i * 10).unwrap();
+            map.entry(i).or_try_insert_give_back(i * 10).unwrap();
         }
         assert_eq!(map.len(), 12);
         for i in 0..12 {
@@ -1309,7 +1399,7 @@ mod tests {
         for count in 12..=25 {
             let mut map: BTreeMap<usize, usize> = BTreeMap::new();
             for i in 0..count {
-                map.entry(i).or_fallible_insert(i * 10).unwrap();
+                map.entry(i).or_try_insert_give_back(i * 10).unwrap();
             }
             assert_eq!(map.len(), count);
             drop(map);
@@ -1376,13 +1466,13 @@ mod tests {
         let mut map: BTreeMap<i32, String> = BTreeMap::new();
         let v1 = map
             .entry(1)
-            .or_fallible_insert("hello".to_string())
+            .or_try_insert_give_back("hello".to_string())
             .unwrap();
         assert_eq!(v1, &"hello");
         // Key 1 already exists; or_insert leaves it untouched.
         let v2 = map
             .entry(1)
-            .or_fallible_insert("world".to_string())
+            .or_try_insert_give_back("world".to_string())
             .unwrap();
         assert_eq!(v2, &"hello");
         assert_eq!(map.len(), 1);
@@ -1393,15 +1483,102 @@ mod tests {
         let mut map: BTreeMap<i32, String> = BTreeMap::new();
         let v1 = map
             .entry(1)
-            .or_fallible_insert_with(|| "closure".to_string())
+            .or_try_insert_with_give_back(|| Ok::<_, ()>("closure".to_string()))
             .unwrap();
         assert_eq!(v1, &"closure");
         let v2 = map
             .entry(2)
-            .or_fallible_insert_with_key(|k| format!("key-{k}"))
+            .or_try_insert_with_key_give_back(|k| Ok::<_, ()>(format!("key-{k}")))
             .unwrap();
         assert_eq!(v2, &"key-2");
         assert_eq!(map.len(), 2);
+    }
+
+    #[test]
+    fn or_try_insert_with_closure_error_returns_key_and_e() {
+        let mut map: BTreeMap<i32, i32> = BTreeMap::new();
+        let r = map.entry(1).or_try_insert_with_give_back(|| Err::<i32, i32>(7));
+        assert!(r.is_err());
+        let err = r.unwrap_err();
+        assert!(err.is_closure());
+        let (key, e) = match err {
+            TryEntryWithGiveBackError::Closure(k, e) => (k, e),
+            _ => unreachable!(),
+        };
+        assert_eq!(key, 1);
+        assert_eq!(e, 7);
+        assert!(map.is_empty());
+    }
+
+    #[test]
+    fn or_try_insert_with_key_closure_error_returns_key_and_e() {
+        let mut map: BTreeMap<i32, i32> = BTreeMap::new();
+        let r = map
+            .entry(1)
+            .or_try_insert_with_key_give_back(|_k| Err::<i32, i32>(9));
+        assert!(r.is_err());
+        let err = r.unwrap_err();
+        assert!(err.is_closure());
+        let (key, e) = match err {
+            TryEntryWithGiveBackError::Closure(k, e) => (k, e),
+            _ => unreachable!(),
+        };
+        assert_eq!(key, 1);
+        assert_eq!(e, 9);
+        assert!(map.is_empty());
+    }
+
+    #[test]
+    fn or_try_insert_with_closure_error_on_occupied_entry_never_runs() {
+        // The occupied branch must not invoke the closure at all.
+        let mut map: BTreeMap<i32, i32> = BTreeMap::new();
+        map.insert(1, 42);
+        let val = map
+            .entry(1)
+            .or_try_insert_with_give_back(|| -> Result<i32, i32> { panic!("must not run") })
+            .unwrap();
+        assert_eq!(*val, 42);
+    }
+
+    #[test]
+    fn or_try_insert_with_closure_failure_beats_alloc_failure() {
+        // Even under a failing allocator, a closure error is reported as
+        // Closure (not Insertion), because the closure runs before any insertion.
+        let mut map: BTreeMap<u32, u32> = BTreeMap::new();
+        let r = with_policy(FailPolicy::fail_next_alloc(), || {
+            map.entry(1).or_try_insert_with_give_back(|| Err::<u32, i32>(5))
+        });
+        assert!(r.is_err());
+        let err = r.unwrap_err();
+        assert!(err.is_closure());
+        let (key, e) = match err {
+            TryEntryWithGiveBackError::Closure(k, e) => (k, e),
+            _ => unreachable!(),
+        };
+        assert_eq!(key, 1);
+        assert_eq!(e, 5);
+        assert!(map.is_empty());
+    }
+
+    #[test]
+    fn or_try_insert_with_oom_reports_alloc_variant() {
+        // A successful closure followed by an OOM must surface the
+        // Alloc variant carrying the key, value, and the raw AllocError.
+        let mut map: BTreeMap<u32, u32> = BTreeMap::new();
+        let r = with_policy(FailPolicy::fail_next_alloc(), || {
+            map.entry(1).or_try_insert_with_give_back(|| Ok::<u32, i32>(10))
+        });
+        assert!(r.is_err());
+        let err = r.unwrap_err();
+        assert!(err.is_alloc());
+        let (key, val, alloc_err) = match err {
+            TryEntryWithGiveBackError::Alloc(k, v, e) => (k, v, e),
+            _ => unreachable!(),
+        };
+        assert_eq!(key, 1);
+        assert_eq!(val, 10);
+        assert!(alloc_err.layout.size() >= 1);
+        assert!(map.is_empty());
     }
 
     // ── OOM tests ───────────────────────────────────────────────────────────
@@ -1411,13 +1588,13 @@ mod tests {
     fn try_or_insert_empty_map_fails_on_oom() {
         let mut map: BTreeMap<u32, u32> = BTreeMap::new();
         let r = with_policy(FailPolicy::fail_next_alloc(), || {
-            map.entry(1).or_fallible_insert(2)
+            map.entry(1).or_try_insert_give_back(2)
         });
         assert!(r.is_err(), "insertion should fail on OOM");
         let (returned_key, returned_val, err) = r.unwrap_err();
         assert_eq!(returned_key, 1);
         assert_eq!(returned_val, 2);
-        matches!(err, TryBTreeMapEntryError::Alloc(_));
+        assert!(err.layout.size() >= 1);
         assert!(map.is_empty());
     }
 
@@ -1425,17 +1602,17 @@ mod tests {
     fn try_or_insert_leaf_split_fails_on_oom() {
         let mut map: BTreeMap<u32, u32> = BTreeMap::new();
         for i in 0..11 {
-            map.entry(i).or_fallible_insert(i * 10).unwrap();
+            map.entry(i).or_try_insert_give_back(i * 10).unwrap();
         }
         assert_eq!(map.len(), 11);
         let r = with_policy(FailPolicy::fail_next_alloc(), || {
-            map.entry(11).or_fallible_insert(110)
+            map.entry(11).or_try_insert_give_back(110)
         });
         assert!(r.is_err(), "split allocation should fail on OOM");
         let (returned_key, returned_val, err) = r.unwrap_err();
         assert_eq!(returned_key, 11);
         assert_eq!(returned_val, 110);
-        matches!(err, TryBTreeMapEntryError::Alloc(_));
+        assert!(err.layout.size() >= 1);
         assert_eq!(map.len(), 11);
         for i in 0..11 {
             assert_eq!(map[&i], i * 10);
@@ -1446,17 +1623,17 @@ mod tests {
     fn try_or_insert_cascading_split_fails_on_oom() {
         let mut map: BTreeMap<u32, u32> = BTreeMap::new();
         for i in 0..30 {
-            map.entry(i).or_fallible_insert(i * 10).unwrap();
+            map.entry(i).or_try_insert_give_back(i * 10).unwrap();
         }
         assert_eq!(map.len(), 30);
         let r = with_policy(FailPolicy::fail_next_alloc(), || {
-            map.entry(31).or_fallible_insert(310)
+            map.entry(31).or_try_insert_give_back(310)
         });
         match r {
             Err((k, v, err)) => {
                 assert_eq!(k, 31);
                 assert_eq!(v, 310);
-                matches!(err, TryBTreeMapEntryError::Alloc(_));
+                assert!(err.layout.size() >= 1);
                 assert_eq!(map.len(), 30);
                 for i in 0..30 {
                     assert_eq!(map[&i], i * 10);
@@ -1474,7 +1651,7 @@ mod tests {
         let key = *b"important";
         let val = [1u8, 2, 3];
         let r = with_policy(FailPolicy::fail_next_alloc(), || {
-            map.entry(key).or_fallible_insert(val)
+            map.entry(key).or_try_insert_give_back(val)
         });
         assert!(r.is_err(), "first insert should fail on OOM");
         let (returned_key, returned_val, _) = r.unwrap_err();
@@ -1486,8 +1663,8 @@ mod tests {
     fn try_or_insert_nth_alloc_fail_survives() {
         let results = with_policy(FailPolicy::fail_all_alloc(), || {
             let mut map: BTreeMap<u32, u32> = BTreeMap::new();
-            let r1 = { map.entry(1).or_fallible_insert(10).is_ok() };
-            let r2 = { map.entry(2).or_fallible_insert(20).is_ok() };
+            let r1 = { map.entry(1).or_try_insert_give_back(10).is_ok() };
+            let r2 = { map.entry(2).or_try_insert_give_back(20).is_ok() };
             (r1, r2)
         });
         let (_r1_ok, _r2_ok) = results;
@@ -1498,7 +1675,7 @@ mod tests {
     #[test]
     fn entry_try_or_insert_give_back_success_new_key() {
         let mut map: BTreeMap<i32, &str> = BTreeMap::new();
-        let val = map.entry(1).or_fallible_insert_give_back("one").unwrap();
+        let val = map.entry(1).or_try_insert_give_back("one").unwrap();
         assert_eq!(val, &"one");
         assert_eq!(map[&1], "one");
     }
@@ -1507,7 +1684,7 @@ mod tests {
     fn entry_try_or_insert_give_back_existing_key_keeps_old() {
         let mut map: BTreeMap<i32, &str> = BTreeMap::new();
         map.insert(1, "one");
-        let val = map.entry(1).or_fallible_insert_give_back("ONE").unwrap();
+        let val = map.entry(1).or_try_insert_give_back("ONE").unwrap();
         assert_eq!(val, &"one");
         assert_eq!(map[&1], "one");
     }
@@ -1518,7 +1695,7 @@ mod tests {
         let key = *b"important";
         let val = [1u8, 2, 3];
         let r = with_policy(FailPolicy::fail_next_alloc(), || {
-            map.entry(key).or_fallible_insert_give_back(val)
+            map.entry(key).or_try_insert_give_back(val)
         });
         assert!(r.is_err());
         let (returned_key, returned_val, _) = r.unwrap_err();
@@ -1531,7 +1708,7 @@ mod tests {
         let mut map: BTreeMap<i32, i32> = BTreeMap::new();
         let val = map
             .entry(5)
-            .or_fallible_insert_with_give_back(|| 42)
+            .or_try_insert_with_give_back(|| Ok::<_, ()>(42))
             .unwrap();
         assert_eq!(*val, 42);
         assert_eq!(map[&5], 42);
@@ -1543,10 +1720,14 @@ mod tests {
         let key = *b"important";
         let r = with_policy(FailPolicy::fail_next_alloc(), || {
             map.entry(key)
-                .or_fallible_insert_with_give_back(|| [7u8, 8, 9])
+                .or_try_insert_with_give_back(|| Ok::<_, ()>([7u8, 8, 9]))
         });
         assert!(r.is_err());
-        let (returned_key, returned_val, _) = r.unwrap_err();
+        let err = r.unwrap_err();
+        let (returned_key, returned_val, _) = match err {
+            TryEntryWithGiveBackError::Alloc(k, v, _) => (k, v, ()),
+            _ => unreachable!(),
+        };
         assert_eq!(returned_key, key);
         assert_eq!(returned_val, [7u8, 8, 9]);
     }
@@ -1556,7 +1737,7 @@ mod tests {
         let mut map: BTreeMap<i32, i32> = BTreeMap::new();
         let val = map
             .entry(5)
-            .or_fallible_insert_with_key_give_back(|k| k * 10)
+            .or_try_insert_with_key_give_back(|k| Ok::<_, ()>(k * 10))
             .unwrap();
         assert_eq!(*val, 50);
         assert_eq!(map[&5], 50);
@@ -1568,10 +1749,14 @@ mod tests {
         let key = *b"important";
         let r = with_policy(FailPolicy::fail_next_alloc(), || {
             map.entry(key)
-                .or_fallible_insert_with_key_give_back(|_k| [1u8, 2, 3])
+                .or_try_insert_with_key_give_back(|_k| Ok::<_, ()>([1u8, 2, 3]))
         });
         assert!(r.is_err());
-        let (returned_key, returned_val, _) = r.unwrap_err();
+        let err = r.unwrap_err();
+        let (returned_key, returned_val, _) = match err {
+            TryEntryWithGiveBackError::Alloc(k, v, _) => (k, v, ()),
+            _ => unreachable!(),
+        };
         assert_eq!(returned_key, key);
         assert_eq!(returned_val, [1u8, 2, 3]);
     }
@@ -1579,11 +1764,10 @@ mod tests {
     #[test]
     fn vacant_entry_try_insert_give_back_success() {
         let mut map: BTreeMap<i32, &str> = BTreeMap::new();
-        let occupied = match map.entry(1) {
+        let _occupied = match map.entry(1) {
             Entry::Vacant(v) => v.try_insert_give_back("one").unwrap(),
             Entry::Occupied(_) => unreachable!(),
         };
-        drop(occupied);
         assert_eq!(map[&1], "one");
     }
 
@@ -1612,19 +1796,19 @@ mod tests {
         let mut map: BTreeMap<u32, u32> = BTreeMap::new();
         // Fill past the leaf capacity so the next insert takes the split path.
         for i in 0..11 {
-            map.entry(i).or_fallible_insert(i * 10).unwrap();
+            map.entry(i).or_try_insert_give_back(i * 10).unwrap();
         }
         assert_eq!(map.len(), 11);
         // Fail the first allocation inside try_insert_with_split — which is the
         // probe buffer's `try_with_capacity` reservation.
         let r = with_policy(FailPolicy::fail_next_alloc(), || {
-            map.entry(11).or_fallible_insert(110)
+            map.entry(11).or_try_insert_give_back(110)
         });
         assert!(r.is_err(), "probe buffer reservation should fail on OOM");
         let (returned_key, returned_val, err) = r.unwrap_err();
         assert_eq!(returned_key, 11);
         assert_eq!(returned_val, 110);
-        matches!(err, TryBTreeMapEntryError::Alloc(_));
+        assert!(err.layout.size() >= 1);
         // Tree untouched: still 11 entries, all values preserved.
         assert_eq!(map.len(), 11);
         for i in 0..11 {
@@ -1636,9 +1820,9 @@ mod tests {
     fn oom_guard_restores_allocation_afterwards() {
         let mut map: BTreeMap<u32, u32> = BTreeMap::new();
         let _r = with_policy(FailPolicy::fail_next_alloc(), || {
-            map.entry(1).or_fallible_insert(2)
+            map.entry(1).or_try_insert_give_back(2)
         });
-        let post_r = map.entry(99).or_fallible_insert(100);
+        let post_r = map.entry(99).or_try_insert_give_back(100);
         assert!(post_r.is_ok());
         assert_eq!(map[&99], 100);
     }
@@ -1714,7 +1898,7 @@ mod tests {
             TryBTreeMap::try_insert(&mut map, 1, 2)
         });
         assert!(r.is_err(), "first insert should fail on OOM");
-        matches!(r.unwrap_err(), TryBTreeMapEntryError::Alloc(_));
+        assert!(r.unwrap_err().layout.size() >= 1);
         assert!(map.is_empty());
     }
 
@@ -1729,7 +1913,7 @@ mod tests {
             TryBTreeMap::try_insert(&mut map, 11, 110)
         });
         assert!(r.is_err(), "split allocation should fail on OOM");
-        matches!(r.unwrap_err(), TryBTreeMapEntryError::Alloc(_));
+        assert!(r.unwrap_err().layout.size() >= 1);
         // Tree untouched: still 11 entries, all values preserved.
         assert_eq!(map.len(), 11);
         for i in 0..11 {
@@ -1749,7 +1933,7 @@ mod tests {
         });
         match r {
             Err(e) => {
-                matches!(e, TryBTreeMapEntryError::Alloc(_));
+                assert!(e.layout.size() >= 1);
                 assert_eq!(map.len(), 30);
                 for i in 0..30 {
                     assert_eq!(map[&i], i * 10);
@@ -1774,71 +1958,13 @@ mod tests {
         assert_eq!(map[&1], 10);
     }
 
-    /// Cross-check `TryBTreeMap::try_insert` against std's own `insert` over a
-    /// randomised stream of keys, verifying identical contents after every op.
-    /// This exercises both the occupied-replace and vacant-insert branches
-    /// across many node fill levels and split directions.
-    fn run_try_btreemap_fuzz(seed: u64, n_ops: usize) {
-        let mut rng = FuzzRng::new(seed);
-        let mut ours: BTreeMap<u32, u32> = BTreeMap::new();
-        let mut oracle: BTreeMap<u32, u32> = BTreeMap::new();
-
-        for op in 0..n_ops {
-            // Mix narrow-band (collisions → occupied-replace branch) and
-            // wide-range (fresh leaves / splits) draws.
-            let key: u32 = if rng.below(2) == 0 {
-                (rng.next_u64() % 4096) as u32
-            } else {
-                rng.next_u64() as u32
-            };
-            let val = (op as u32).wrapping_mul(31);
-
-            let old_val = oracle.get(&key).copied();
-            match TryBTreeMap::try_insert(&mut ours, key, val) {
-                Ok(prev) => {
-                    assert_eq!(prev, old_val, "seed {seed}: op {op}");
-                    oracle.insert(key, val);
-                }
-                Err(_) => panic!("seed {seed}: op {op}: unexpected OOM"),
-            }
-
-            assert_eq!(
-                ours.len(),
-                oracle.len(),
-                "seed {seed}: op {op}: len mismatch"
-            );
-            let ours_vec: lang_alloc::vec::Vec<(u32, u32)> =
-                ours.iter().map(|(k, v)| (*k, *v)).collect();
-            let oracle_vec: lang_alloc::vec::Vec<(u32, u32)> =
-                oracle.iter().map(|(k, v)| (*k, *v)).collect();
-            assert_eq!(
-                ours_vec.as_slice(),
-                oracle_vec.as_slice(),
-                "seed {seed}: op {op}: content/order mismatch"
-            );
-        }
-        for (_k, _v) in ours.iter().rev() {}
-        drop(ours);
-    }
-
-    #[test]
-    fn try_btreemap_fuzz_random_keys_small() {
-        run_try_btreemap_fuzz(0xBEEF_FACE, 100);
-    }
-
-    #[cfg_attr(miri, ignore = "test case is too large for Miri")]
-    #[test]
-    fn try_btreemap_fuzz_random_keys_large() {
-        run_try_btreemap_fuzz(0x7A1D_CAFE, 200_000);
-    }
-
     // ── Edge cases and stress tests ─────────────────────────────────────────
 
     #[test]
     fn try_or_insert_reverse_order() {
         let mut map: BTreeMap<i32, i32> = BTreeMap::new();
         for i in (0..20).rev() {
-            map.entry(i).or_fallible_insert(i * 100).unwrap();
+            map.entry(i).or_try_insert_give_back(i * 100).unwrap();
         }
         assert_eq!(map.len(), 20);
         for i in 0..20 {
@@ -1851,9 +1977,9 @@ mod tests {
         use lang_alloc::string::String;
         let big: String = "x".repeat(1024);
         let mut map: BTreeMap<i32, String> = BTreeMap::new();
-        map.entry(1).or_fallible_insert(big.clone()).unwrap();
+        map.entry(1).or_try_insert_give_back(big.clone()).unwrap();
         assert_eq!(map[&1].len(), 1024);
-        map.entry(2).or_fallible_insert(big.clone()).unwrap();
+        map.entry(2).or_try_insert_give_back(big.clone()).unwrap();
         assert_eq!(map.len(), 2);
     }
 
@@ -1863,7 +1989,7 @@ mod tests {
         let target: usize = 999999;
         let mut map: BTreeMap<usize, usize> = BTreeMap::new();
         for i in (0..target).rev() {
-            map.entry(i).or_fallible_insert(i.wrapping_mul(7)).unwrap();
+            map.entry(i).or_try_insert_give_back(i.wrapping_mul(7)).unwrap();
         }
         assert_eq!(map.len(), target);
         // <stress bugfix> Exercise multiple access patterns to detect corruption
@@ -1891,7 +2017,7 @@ mod tests {
     fn try_or_insert_boundary_at_capacity() {
         let mut map: BTreeMap<usize, usize> = BTreeMap::new();
         for i in 0..sys::CAPACITY {
-            map.entry(i).or_fallible_insert(i).unwrap();
+            map.entry(i).or_try_insert_give_back(i).unwrap();
         }
         assert_eq!(map.len(), sys::CAPACITY);
     }
@@ -1900,7 +2026,7 @@ mod tests {
     fn try_or_insert_one_past_capacity_triggers_split() {
         let mut map: BTreeMap<usize, usize> = BTreeMap::new();
         for i in 0..=sys::CAPACITY {
-            map.entry(i).or_fallible_insert(i).unwrap();
+            map.entry(i).or_try_insert_give_back(i).unwrap();
         }
         assert_eq!(map.len(), sys::CAPACITY + 1);
     }
@@ -1908,10 +2034,10 @@ mod tests {
     #[test]
     fn try_or_insert_negative_keys() {
         let mut map: BTreeMap<i64, &str> = BTreeMap::new();
-        map.entry(-5).or_fallible_insert("neg five").unwrap();
-        map.entry(-1).or_fallible_insert("neg one").unwrap();
-        map.entry(0).or_fallible_insert("zero").unwrap();
-        map.entry(1).or_fallible_insert("pos one").unwrap();
+        map.entry(-5).or_try_insert_give_back("neg five").unwrap();
+        map.entry(-1).or_try_insert_give_back("neg one").unwrap();
+        map.entry(0).or_try_insert_give_back("zero").unwrap();
+        map.entry(1).or_try_insert_give_back("pos one").unwrap();
         assert_eq!(map[&-5], "neg five");
         assert_eq!(map[&-1], "neg one");
         assert_eq!(map[&0], "zero");
@@ -1926,7 +2052,7 @@ mod tests {
             24,
         ];
         for k in &keys {
-            map.entry(*k).or_fallible_insert(k * 100).unwrap();
+            map.entry(*k).or_try_insert_give_back(k * 100).unwrap();
         }
         assert_eq!(map.len(), keys.len());
         let collected: lang_alloc::vec::Vec<i32> = map.keys().copied().collect();
@@ -1939,13 +2065,13 @@ mod tests {
     fn try_or_insert_existing_key_after_split() {
         let mut map: BTreeMap<i32, String> = BTreeMap::new();
         for i in 0..12 {
-            map.entry(i).or_fallible_insert(format!("v{}", i)).unwrap();
+            map.entry(i).or_try_insert_give_back(format!("v{}", i)).unwrap();
         }
         assert_eq!(map.len(), 12);
         // Key 5 already exists; or_insert leaves its value untouched.
         let returned = map
             .entry(5)
-            .or_fallible_insert("REPLACED".to_string())
+            .or_try_insert_give_back("REPLACED".to_string())
             .unwrap();
         assert_eq!(returned, &"v5");
         assert_eq!(map[&5], "v5");
@@ -1955,7 +2081,7 @@ mod tests {
     #[test]
     fn try_or_insert_single_element_map_no_split() {
         let mut map: BTreeMap<i32, i32> = BTreeMap::new();
-        map.entry(42).or_fallible_insert(100).unwrap();
+        map.entry(42).or_try_insert_give_back(100).unwrap();
         assert_eq!(map.len(), 1);
         assert_eq!(map[&42], 100);
     }
@@ -1963,7 +2089,7 @@ mod tests {
     #[test]
     fn try_or_insert_returned_mut_ref_is_valid() {
         let mut map: BTreeMap<i32, i32> = BTreeMap::new();
-        let val = map.entry(1).or_fallible_insert(0).unwrap();
+        let val = map.entry(1).or_try_insert_give_back(0).unwrap();
         *val = 999;
         assert_eq!(map[&1], 999);
     }
@@ -1973,36 +2099,9 @@ mod tests {
         use lang_alloc::string::String;
         let mut map: BTreeMap<String, i32> = BTreeMap::new();
         let s = "unique_key".to_string();
-        map.entry(s.clone()).or_fallible_insert(42).unwrap();
+        map.entry(s.clone()).or_try_insert_give_back(42).unwrap();
         assert_eq!(map[&s], 42);
         assert_eq!(s, "unique_key");
-    }
-
-    #[test]
-    fn error_display_alloc_message() {
-        let err = TryBTreeMapEntryError::Alloc(AllocError {
-            layout: dummy_layout(),
-        });
-        let msg = format!("{}", err);
-        assert!(msg.contains("allocation"), "error message: {}", msg);
-    }
-
-    #[test]
-    fn error_debug_format() {
-        let err = TryBTreeMapEntryError::Alloc(AllocError {
-            layout: dummy_layout(),
-        });
-        let debug_msg = format!("{:?}", err);
-        assert!(debug_msg.contains("Alloc"), "debug message: {}", debug_msg);
-    }
-
-    #[test]
-    fn error_from_alloc_error() {
-        let ae = AllocError {
-            layout: dummy_layout(),
-        };
-        let err: TryBTreeMapEntryError = ae.into();
-        matches!(err, TryBTreeMapEntryError::Alloc(_));
     }
 
     // ── Randomised fuzzing ────────────────────────────────────────────────────
@@ -2085,7 +2184,7 @@ mod tests {
             // cannot infer occupancy from the Result alone.
             let old_val = oracle.get(&key).copied();
 
-            match ours.entry(key).or_fallible_insert_with(|| val) {
+            match ours.entry(key).or_try_insert_with_give_back(|| Ok::<_, ()>(val)) {
                 Ok(inserted_ref) => {
                     // Mirrors Entry::or_insert: a pre-existing key keeps its
                     // old value, a new key stores `val`. Either way the returned
@@ -2094,10 +2193,14 @@ mod tests {
                     oracle.insert(key, expected);
                     assert_eq!(*inserted_ref, expected, "seed {seed}: op {op}");
                 }
-                Err((k, v, _)) => {
+                Err(err) => {
                     // Allocation failure is not expected here (normal allocator);
                     // if it somehow happens, abort loudly.
-                    panic!("seed {seed}: op {op}: unexpected OOM for key {k}, val {v}");
+                    if let TryEntryWithGiveBackError::Alloc(k, v, _) = err {
+                        panic!("seed {seed}: op {op}: unexpected OOM for key {k}, val {v}");
+                    } else {
+                        panic!("seed {seed}: op {op}: unexpected closure error in fuzz");
+                    }
                 }
             }
 
@@ -2107,15 +2210,17 @@ mod tests {
                 oracle.len(),
                 "seed {seed}: op {op}: length mismatch"
             );
-            let ours_vec: lang_alloc::vec::Vec<(u32, u32)> =
-                ours.iter().map(|(k, v)| (*k, *v)).collect();
-            let oracle_vec: lang_alloc::vec::Vec<(u32, u32)> =
-                oracle.iter().map(|(k, v)| (*k, *v)).collect();
-            assert_eq!(
-                ours_vec.as_slice(),
-                oracle_vec.as_slice(),
-                "seed {seed}: op {op}: content/order mismatch"
-            );
+            if op % 1000 == 0 || op + 1 == n_ops {
+                let ours_vec: lang_alloc::vec::Vec<(u32, u32)> =
+                    ours.iter().map(|(k, v)| (*k, *v)).collect();
+                let oracle_vec: lang_alloc::vec::Vec<(u32, u32)> =
+                    oracle.iter().map(|(k, v)| (*k, *v)).collect();
+                assert_eq!(
+                    ours_vec.as_slice(),
+                    oracle_vec.as_slice(),
+                    "seed {seed}: op {op}: content/order mismatch"
+                );
+            }
         }
 
         // Final structural sweep: reverse iteration + range scans force the
@@ -2205,7 +2310,7 @@ mod tests {
                 tag,
             };
 
-            match ours.entry(key).or_fallible_insert_with(|| val) {
+            match ours.entry(key).or_try_insert_with_give_back(|| Ok::<_, ()>(val)) {
                 Ok(inserted_ref) => {
                     total_constructed += 1;
                     // A new key stores the value we just constructed; a pre-existing
@@ -2217,14 +2322,17 @@ mod tests {
                         "seed {seed}: op {op}: value tag corrupted (key {key})"
                     );
                 }
-                Err((k, v, _)) => {
-                    // The returned (k, v) is dropped here by the pattern binding;
+                Err(err) => {
+                    // The returned value is dropped here as part of dropping `err`;
                     // that accounts for the one construction we just did.
-                    drop(v);
-                    panic!("seed {seed}: op {op}: unexpected OOM for key {k}");
+                    if let TryEntryWithGiveBackError::Alloc(k, _, _) = err {
+                        panic!("seed {seed}: op {op}: unexpected OOM for key {k}");
+                    } else {
+                        panic!("seed {seed}: op {op}: unexpected closure error in fuzz");
+                    }
                 }
             }
-            if op % 1000 == 0 {
+            if op % 1000 == 0 || op + 1 == n_ops {
                 let ours_tags: lang_alloc::vec::Vec<(u32, u32)> =
                     ours.iter().map(|(k, v)| (*k, v.tag)).collect();
                 let oracle_vec: lang_alloc::vec::Vec<(u32, u32)> =
@@ -2297,7 +2405,7 @@ mod tests {
             let expected = *oracle.entry(key).or_insert(val);
             let _ = ours
                 .entry(key)
-                .or_fallible_insert(expected)
+                .or_try_insert_give_back(expected)
                 .expect("dense fuzz: no OOM");
         }
         let ours_vec: lang_alloc::vec::Vec<(u32, u32)> =

@@ -66,10 +66,16 @@
 //! | `VecDeque<T>`      | `T`         | `TryVecDequeError`       | `&'s [T]`                | (always)    |
 //! | `HashMap<K,V,S>`   | `(K, V)`    | `TryHashMapError`        | `&'s [(K, V)]`           | `std`       |
 //! | `HashSet<T, S>`    | `T`         | `TryHashSetError`        | `&'s [T]`                | `std`       |
-//! | `BTreeMap<K,V>`    | `(K, V)`    | `TryBTreeMapEntryError`  | `&'s [(K, V)]`           | `btree-entry` |
-//! | `BTreeSet<T>`      | `T`         | `TryBTreeMapEntryError`  | `&'s [T]`                | `btree-entry` |
+//! | `BTreeMap<K,V>`    | `(K, V)`    | `AllocError` / `TryBTreeMapExtendFromSliceError`¹ | `&'s [(K, V)]` | `btree-entry` |
+//! | `BTreeSet<T>`      | `T`         | `AllocError` / `TryBTreeMapExtendFromSliceError`¹ | `&'s [T]`      | `btree-entry` |
 //! | `DashMap<K,V,S>`   | `(K, V)`    | `TryDashMapError`        | `&'s [(K, V)]`           | `unstable`  |
 //! | `DashSet<T, S>`    | `T`         | `TryDashSetError`        | `&'s [T]`                | `unstable`  |
+//!
+//! ¹ The iterator-based `TryExtend` moves items into the tree, so only
+//! allocation can fail (`AllocError`). The slice-based `TryExtendFromSlice`
+//! clones elements before inserting, so it uses
+//! `TryBTreeMapExtendFromSliceError`, which distinguishes a clone failure from
+//! an allocation failure.
 //!
 //! DashMap/DashSet additionally require `K/V/T: TryClone` since they insert by
 //! cloning through interior-mutability locks. BTreeMap/BTreeSet require

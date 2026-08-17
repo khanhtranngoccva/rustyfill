@@ -12,6 +12,7 @@ use lang_core::alloc::Layout;
 use lang_core::fmt;
 use lang_core::mem::{self, MaybeUninit};
 use lang_core::pin::Pin;
+
 /// A trait for fallibly allocating a value on the heap.
 ///
 /// Implemented for `Box<T>`.

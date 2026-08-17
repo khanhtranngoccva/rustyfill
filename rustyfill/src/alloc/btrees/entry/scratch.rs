@@ -17,7 +17,8 @@
 //!      capacity — no length arithmetic, no byte-size calculations. At the
 //!      moment of transmute, no elements are logically alive.
 
-use super::{CommitInternal, TryBTreeMapEntryError, alloc_error};
+use super::{CommitInternal, alloc_error};
+use crate::alloc::AllocError;
 use crate::alloc::vec::TryVec;
 use lang_alloc::boxed::Box;
 use lang_core::mem;
@@ -143,7 +144,7 @@ pub(super) struct CachedProbeBuffer<K, V> {
 
 impl<K, V> CachedProbeBuffer<K, V> {
     /// Create a new probe buffer, recycling from the thread-local if possible.
-    pub(super) fn try_new(capacity: usize) -> Result<Self, TryBTreeMapEntryError> {
+    pub(super) fn try_new(capacity: usize) -> Result<Self, AllocError> {
         #[cfg(feature = "std")]
         {
             if let Some(cached) = storage::PROBE_BUF.with(|b| b.replace(None))
@@ -155,7 +156,7 @@ impl<K, V> CachedProbeBuffer<K, V> {
             // Capacity insufficient; fall through to fresh allocation.
         }
         let inner = <Vec<CommitInternal<K, V>> as TryVec<_>>::try_with_capacity(capacity)
-            .map_err(|_| TryBTreeMapEntryError::Alloc(alloc_error()))?;
+            .map_err(|_| alloc_error())?;
         Ok(Self { inner })
     }
 
@@ -198,7 +199,7 @@ pub(super) struct CachedReserveBuffer<K, V> {
 
 impl<K, V> CachedReserveBuffer<K, V> {
     /// Create a new reserve buffer, recycling from the thread-local if possible.
-    pub(super) fn try_new(capacity: usize) -> Result<Self, TryBTreeMapEntryError> {
+    pub(super) fn try_new(capacity: usize) -> Result<Self, AllocError> {
         #[cfg(feature = "std")]
         {
             if let Some(cached) = storage::RESERVED_BUF.with(|b| b.replace(None))
@@ -211,7 +212,7 @@ impl<K, V> CachedReserveBuffer<K, V> {
         }
         let inner =
             <Vec<Box<super::sys::InternalNode<K, V>>> as TryVec<_>>::try_with_capacity(capacity)
-                .map_err(|_| TryBTreeMapEntryError::Alloc(alloc_error()))?;
+                .map_err(|_| alloc_error())?;
         Ok(Self { inner })
     }
 

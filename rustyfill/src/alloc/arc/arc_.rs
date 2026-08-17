@@ -90,7 +90,7 @@ pub trait TryArc<T>: Sized {
     /// caller retains access to the shared data.
     fn unwrap_or_try_clone(self) -> Result<T, (Self, TryCloneError)>
     where
-        T: Clone + crate::try_clone::TryClone;
+        T: crate::try_clone::TryClone;
 
     /// Fallibly allocate `value` on the heap and pin it in place.
     ///
@@ -114,7 +114,7 @@ pub trait TryArc<T>: Sized {
     /// Fallibly allocate a new `Arc<T>`.
     ///
     /// Returns [`AllocError`] if the heap allocation fails. Unlike
-    /// [`Arc::new`], this never panics on out-of-memory.
+    /// [`Arc::new`], this never panics or crashes on out-of-memory.
     ///
     /// Allocation is performed by first allocating a boxed
     /// `MaybeUninit<ArcInner<T>>` via [`TryBox::fallible_new_uninit`], then
@@ -132,7 +132,7 @@ pub trait TryArc<T>: Sized {
     ///
     /// Returns an `Arc` wrapping `MaybeUninit<T>` that can be initialised
     /// in place via [`MaybeUninit::write`] and converted to an `Arc<T>` using
-    /// [`Arc::into_inner`] + [`MaybeUninit::assume_init`].
+    /// [`Arc::assume_init`].
     ///
     /// This method replaces the deprecated [`Self::try_new_uninit`] which shares
     /// its name with the unstable inherent [`Arc::try_new_uninit`].
@@ -162,13 +162,8 @@ pub trait TryArc<T>: Sized {
 
     /// Unwraps the value if this is the only strong reference, otherwise fallibly
     /// clones the inner data.
-    ///
-    /// This is a panic-free analogue of [`Arc::unwrap_or_clone`] using
-    /// [`TryClone`] instead of [`Clone`]. On failure, returns the original `Arc`
-    /// alongside the clone error so the caller retains access to the shared data.
-    ///
-    /// This method replaces [`Self::unwrap_or_try_clone`] under a name that
-    /// won't collide with future std additions.
+    /// 
+    /// Alias of [`Self::unwrap_or_try_clone`].
     fn unwrap_or_fallible_clone(self) -> Result<T, (Self, TryCloneError)>
     where
         T: Clone + crate::try_clone::TryClone,
@@ -399,7 +394,7 @@ impl crate::try_fmt::TryDebug for TryUpgradeError {
 /// Fallible operations on [`Weak`] pointers.
 ///
 /// Implemented for `Weak<T>`. Provides [`try_upgrade`](Self::try_upgrade), which
-/// upgrades a weak reference back into a strong [`Arc`] without panicking on
+/// upgrades a weak reference back into a strong [`Arc`] without aborting on
 /// refcount overflow (std's [`Weak::upgrade`] asserts in that scenario).
 pub trait TryWeak<T: ?Sized> {
     /// Attempts to upgrade this `Weak` pointer to an [`Arc`].
