@@ -367,6 +367,14 @@ pub trait TryDashMap<K, V, S = RandomState>: Sized {
 
     // ── Aliases with `fallible_` prefix ────────────────────────────────────
 
+    /// Alias for [`Self::try_entry_ref`].
+    fn fallible_entry_ref<'a>(&'a self, key: &K) -> Result<Entry<'a, K, V>, TryDashMapError>
+    where
+        K: TryClone + Eq + Hash,
+    {
+        Self::try_entry_ref(self, key)
+    }
+
     /// Alias for [`Self::try_new`].
     fn fallible_new() -> Result<DashMap<K, V, S>, TryDashMapError>
     where
@@ -496,37 +504,18 @@ pub trait TryDashMap<K, V, S = RandomState>: Sized {
         Self::try_entry_give_back_nonblock(self, key)
     }
 
-    // ── Extension ───────────────────────────────────────────────────────────
-
-    /// Fallibly extend the map with all key-value pairs from an iterator.
-    ///
-    /// Fallibly extend the map with all key-value pairs from an iterator source.
-    ///
-    /// Accepts anything that implements [`ResumableSource`](crate::recovery::ResumableSource).
-    /// Inserts each pair individually via [`Self::try_insert_give_back`] so that
-    /// on failure the consumed-but-uncommitted pair is returned in a
-    /// [`Resumable`](crate::recovery::Resumable).
-    ///
-    /// Note: elements already inserted before the failure are not rolled back.
-    fn try_extend<Src>(
-        &self,
-        source: Src,
-    ) -> Result<(), (TryDashMapError, crate::recovery::Resumable<Src::Inner>)>
-    where
-        Src: crate::recovery::ResumableSource<Item = (K, V)>;
-
-    /// Alias for [`Self::try_extend`].
-    fn fallible_extend<Src>(
-        &self,
-        source: Src,
-    ) -> Result<(), (TryDashMapError, crate::recovery::Resumable<Src::Inner>)>
-    where
-        Src: crate::recovery::ResumableSource<Item = (K, V)>,
-    {
-        Self::try_extend(self, source)
-    }
-
     // ── Capacity / shrink ───────────────────────────────────────────────────
+
+    /// Fallibly shrink the capacity of this DashMap to match its length.
+    ///
+    /// **Deprecated:** This method name conflicts with the unstable inherent
+    /// [`DashMap::try_shrink_to_fit`](dashmap::DashMap::try_shrink_to_fit).
+    /// Use [`Self::fallible_shrink_to_fit`] instead.
+    #[deprecated(
+        since = "0.1.0",
+        note = "conflicts with unstable DashMap::try_shrink_to_fit; use fallible_shrink_to_fit"
+    )]
+    fn try_shrink_to_fit(&self) -> Result<(), TryDashMapError>;
 
     /// Fallibly shrink the capacity of this DashMap to match its length.
     ///
@@ -534,9 +523,10 @@ pub trait TryDashMap<K, V, S = RandomState>: Sized {
     /// Returns [`TryDashMapError::Reserve`] if the allocation for the rebuilt
     /// table fails. Equivalent to [`DashMap::shrink_to_fit`](dashmap::DashMap::shrink_to_fit)
     /// but fallible.
-    fn try_shrink_to_fit(&self) -> Result<(), TryDashMapError>;
-
-    /// Alias for [`Self::try_shrink_to_fit`].
+    ///
+    /// This method replaces the deprecated [`Self::try_shrink_to_fit`] which
+    /// shares its name with the unstable inherent [`DashMap::try_shrink_to_fit`](dashmap::DashMap::try_shrink_to_fit).
+    #[allow(deprecated)]
     fn fallible_shrink_to_fit(&self) -> Result<(), TryDashMapError> {
         Self::try_shrink_to_fit(self)
     }
@@ -920,37 +910,6 @@ impl<K: Eq + Hash, V, S: BuildHasher + TryClone> TryDashMap<K, V, S> for DashMap
         }
     }
 
-    // ── Extension ───────────────────────────────────────────────────────────
-
-    fn try_extend<Src>(
-        &self,
-        source: Src,
-    ) -> Result<(), (TryDashMapError, crate::recovery::Resumable<Src::Inner>)>
-    where
-        Src: crate::recovery::ResumableSource<Item = (K, V)>,
-        K: Eq + Hash,
-    {
-        use crate::recovery::Resumable;
-
-        let (head, mut iter) = source.safe_into_iter();
-
-        if let Some(pair) = head
-            && let Err((k, v, e)) = Self::try_insert_give_back(self, pair.0, pair.1)
-        {
-            return Err((e, Resumable::new((k, v), iter)));
-        }
-
-        while let Some(pair) = iter.next() {
-            match Self::try_insert_give_back(self, pair.0, pair.1) {
-                Ok(_) => {}
-                Err((k, v, e)) => {
-                    return Err((e, Resumable::new((k, v), iter)));
-                }
-            }
-        }
-        Ok(())
-    }
-
     // ── Capacity / shrink ───────────────────────────────────────────────────
 
     fn try_shrink_to_fit(&self) -> Result<(), TryDashMapError> {
@@ -1068,7 +1027,7 @@ fn compute_hash<K: Eq + Hash, V, S: BuildHasher + TryClone>(
 
 // ── TryClone for DashMap<K, V, S> ──────────────────────────────────────────────
 
-/// Implements [`TryClone`](crate::try_clone::TryClone) for `DashMap<K, V, S>`
+/// Implements [`TryClone`] for `DashMap<K, V, S>`
 /// when keys and values are cloneable and the hasher factory can be cloned.
 ///
 /// Iterates over the map, clones each key-value pair fallibly, and inserts
@@ -1270,7 +1229,7 @@ mod tests {
     }
 
     #[test]
-    fn try_entry_or_try_default() {
+    fn try_entry_or_fallible_default() {
         let map: DashMap<String, Vec<i32>> = DashMap::new();
         __try_entry(&map, "a".to_string())
             .unwrap()
@@ -1289,7 +1248,7 @@ mod tests {
     }
 
     #[test]
-    fn try_entry_or_try_insert_with_ok() {
+    fn try_entry_or_fallible_insert_with_ok() {
         let map: DashMap<i32, String> = DashMap::new();
         let val = __try_entry(&map, 1)
             .unwrap()
@@ -1299,7 +1258,7 @@ mod tests {
     }
 
     #[test]
-    fn try_entry_or_try_insert_with_err_propagates() {
+    fn try_entry_or_fallible_insert_with_err_propagates() {
         let map: DashMap<i32, String> = DashMap::new();
         let result = __try_entry(&map, 1)
             .unwrap()
@@ -1625,23 +1584,18 @@ mod tests {
 
     #[test]
     fn try_extend_from_iterator() {
-        let map: DashMap<i32, &str> = DashMap::new();
-        map.try_extend([(1, "one"), (2, "two")]).unwrap();
+        use crate::try_extend::TryExtend;
+        let mut map: DashMap<i32, &str> = DashMap::new();
+        <_ as TryExtend<(i32, &str)>>::try_extend(&mut map, [(1, "one"), (2, "two")]).unwrap();
         assert_eq!(map.len(), 2);
     }
 
     #[test]
     fn try_extend_empty() {
-        let map: DashMap<i32, i32> = DashMap::new();
-        map.try_extend(iter::empty::<(i32, i32)>()).unwrap();
+        use crate::try_extend::TryExtend;
+        let mut map: DashMap<i32, i32> = DashMap::new();
+        <_ as TryExtend<(i32, i32)>>::try_extend(&mut map, iter::empty::<(i32, i32)>()).unwrap();
         assert!(map.is_empty());
-    }
-
-    #[test]
-    fn fallible_extend_alias_works() {
-        let map: DashMap<i32, i32> = DashMap::new();
-        map.fallible_extend([(1, 10), (2, 20)]).unwrap();
-        assert_eq!(map.len(), 2);
     }
 
     // ── Shrink ────────────────────────────────────────────────────────────────
@@ -1735,13 +1689,14 @@ mod tests {
 
     #[test]
     fn collect_then_extend() {
-        let map: DashMap<i32, &str> =
+        use crate::try_extend::TryExtend;
+        let mut map: DashMap<i32, &str> =
             <DashMap<i32, &str> as TryDashMap<_, _, RandomState>>::try_collect([
                 (1, "one"),
                 (2, "two"),
             ])
             .unwrap();
-        map.try_extend([(3, "three")]).unwrap();
+        <_ as TryExtend<(i32, &str)>>::try_extend(&mut map, [(3, "three")]).unwrap();
         assert_eq!(map.len(), 3);
     }
 
@@ -1768,10 +1723,18 @@ mod tests {
 
     #[test]
     fn dashmap_nth_alloc_fail_targets_correct_call() {
-        // DashMap::try_clone does multiple internal allocations (hasher clone +
-        // shard array + entry storage) before reaching fallible code, so nth-counting
-        // on try_clone is unreliable. Instead we verify nth behavior on try_insert.
-        let map: DashMap<u32, u32> = DashMap::new();
+        // Each `try_insert` performs exactly one heap allocation (the shard's
+        // initial bucket-table growth from the empty singleton), so failing
+        // the 2nd allocation makes the first insert succeed and the second
+        // fail. This requires that no *other* allocation occurs in between.
+        //
+        // With too few shards, hashbrown's growth strategy can trigger an
+        // internal rehash (capacity 3 → 6) during the *second* insert's slot
+        // search, consuming the 2nd allocation before `try_reserve` ever sees
+        // it — making the second insert unexpectedly succeed. Using 32 shards
+        // keeps each shard sparse enough that this never happens within two
+        // inserts, independent of the host's CPU count.
+        let map: DashMap<u32, u32> = DashMap::with_shard_amount(32);
         let (r1_ok, r2_err) = with_policy(FailPolicy::fail_nth_alloc(2), || {
             let r1 = map.try_insert(1, 10);
             let r2 = map.try_insert(2, 20);

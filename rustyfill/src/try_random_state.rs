@@ -55,6 +55,14 @@ pub trait TryRandomState {
     /// hash maps and sets, protecting against algorithmic complexity attacks in
     /// normal circumstances.
     fn try_new_infallible() -> Self;
+
+    /// Alias for [`Self::try_new_infallible`].
+    fn fallible_new_infallible() -> Self
+    where
+        Self: Sized,
+    {
+        Self::try_new_infallible()
+    }
 }
 
 impl TryRandomState for RandomState {

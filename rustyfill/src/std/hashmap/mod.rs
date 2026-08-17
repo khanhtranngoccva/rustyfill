@@ -5,5 +5,6 @@
 //! panicking on allocation failure.
 
 mod hashmap_;
+mod try_extend;
 
 pub use hashmap_::{TryHashMap, TryHashMapError};

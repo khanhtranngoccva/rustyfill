@@ -232,6 +232,18 @@ impl<V> SlotMap<DefaultKey, V> {
     pub fn try_with_capacity(capacity: usize) -> Result<Self, SlotMapError> {
         Self::try_with_capacity_and_key(capacity)
     }
+
+    // ── Aliases with `fallible_` prefix ────────────────────────────────────────
+
+    /// Alias for [`Self::try_new`].
+    pub fn fallible_new() -> Result<Self, SlotMapError> {
+        Self::try_new()
+    }
+
+    /// Alias for [`Self::try_with_capacity`].
+    pub fn fallible_with_capacity(capacity: usize) -> Result<Self, SlotMapError> {
+        Self::try_with_capacity(capacity)
+    }
 }
 
 impl<K: Key, V> SlotMap<K, V> {
@@ -245,7 +257,7 @@ impl<K: Key, V> SlotMap<K, V> {
     /// Creates a [`SlotMap`] with the given capacity and key type.
     ///
     /// Returns [`SlotMapError::Full`] if `capacity` would exceed the maximum
-    /// number of usable slots ([`MAX_SLOTS_LEN`] – 1), accounting for the
+    /// number of usable slots (`MAX_SLOTS_LEN` – 1), accounting for the
     /// sentinel that always occupies index 0.
     pub fn try_with_capacity_and_key(capacity: usize) -> Result<Self, SlotMapError> {
         if capacity >= MAX_SLOTS_LEN.saturating_sub(1) {
@@ -286,7 +298,7 @@ impl<K: Key, V> SlotMap<K, V> {
     /// Reserves capacity for at least `additional` more elements.
     ///
     /// Returns [`SlotMapError::Full`] if the resulting size would exceed the
-    /// maximum number of slots ([`MAX_SLOTS_LEN`] – 1 usable entries), ensuring
+    /// maximum number of slots (`MAX_SLOTS_LEN` – 1 usable entries), ensuring
     /// callers can rely on subsequent [`Self::try_insert`] calls succeeding
     /// (barring allocation failure).
     pub fn try_reserve(&mut self, additional: usize) -> Result<(), SlotMapError> {
@@ -365,6 +377,37 @@ impl<K: Key, V> SlotMap<K, V> {
         self.free_head = kd.idx() + 1;
         self.num_elems += 1;
         Ok(kd.into())
+    }
+
+    // ── Aliases with `fallible_` prefix ────────────────────────────────────────
+
+    /// Alias for [`Self::try_with_key`].
+    pub fn fallible_with_key() -> Result<Self, SlotMapError> {
+        Self::try_with_key()
+    }
+
+    /// Alias for [`Self::try_with_capacity_and_key`].
+    pub fn fallible_with_capacity_and_key(capacity: usize) -> Result<Self, SlotMapError> {
+        Self::try_with_capacity_and_key(capacity)
+    }
+
+    /// Alias for [`Self::try_reserve`].
+    pub fn fallible_reserve(&mut self, additional: usize) -> Result<(), SlotMapError> {
+        Self::try_reserve(self, additional)
+    }
+
+    /// Alias for [`Self::try_insert`].
+    pub fn fallible_insert(&mut self, value: V) -> Result<K, SlotMapError> {
+        Self::try_insert(self, value)
+    }
+
+    /// Alias for [`Self::try_insert_with_key`].
+    pub fn fallible_insert_with_key<F, E>(&mut self, f: F) -> Result<K, SlotMapError>
+    where
+        F: FnOnce(K) -> Result<V, E>,
+        E: Into<SlotMapError>,
+    {
+        Self::try_insert_with_key(self, f)
     }
 
     // ── Removal ─────────────────────────────────────────────────────────────────

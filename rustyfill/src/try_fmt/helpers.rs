@@ -61,6 +61,33 @@ pub trait FormatterExt<'f> {
 
     /// Returns a [`TryDebugTuple`] builder for formatting a tuple or a tuple struct.
     fn try_debug_tuple(&mut self, name: &'f str) -> TryDebugTuple<'_, 'f>;
+
+    // ── Aliases with `fallible_` prefix ────────────────────────────────────────
+
+    /// Alias for [`Self::try_debug_list`].
+    fn fallible_debug_list(&mut self) -> TryDebugList<'_, 'f> {
+        Self::try_debug_list(self)
+    }
+
+    /// Alias for [`Self::try_debug_set`].
+    fn fallible_debug_set(&mut self) -> TryDebugSet<'_, 'f> {
+        Self::try_debug_set(self)
+    }
+
+    /// Alias for [`Self::try_debug_map`].
+    fn fallible_debug_map(&mut self) -> TryDebugMap<'_, 'f> {
+        Self::try_debug_map(self)
+    }
+
+    /// Alias for [`Self::try_debug_struct`].
+    fn fallible_debug_struct(&mut self, name: &'f str) -> TryDebugStruct<'_, 'f> {
+        Self::try_debug_struct(self, name)
+    }
+
+    /// Alias for [`Self::try_debug_tuple`].
+    fn fallible_debug_tuple(&mut self, name: &'f str) -> TryDebugTuple<'_, 'f> {
+        Self::try_debug_tuple(self, name)
+    }
 }
 
 impl<'f> FormatterExt<'f> for fmt::Formatter<'f> {

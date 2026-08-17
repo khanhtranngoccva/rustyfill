@@ -49,6 +49,7 @@ pub mod std;
 mod sys;
 pub mod try_clone;
 pub mod try_default;
+pub mod try_extend;
 pub mod try_fmt;
 #[cfg(feature = "std")]
 pub mod try_random_state;

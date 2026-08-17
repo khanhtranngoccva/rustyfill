@@ -99,6 +99,11 @@ impl From<TryReserveError> for TryCloneError {
 pub trait TryClone: Clone {
     /// Attempt to clone `self`.
     fn try_clone(&self) -> Result<Self, TryCloneError>;
+
+    /// Alias for [`Self::try_clone`].
+    fn fallible_clone(&self) -> Result<Self, TryCloneError> {
+        Self::try_clone(self)
+    }
 }
 
 // ── Macro helpers ──────────────────────────────────────────────────────────────

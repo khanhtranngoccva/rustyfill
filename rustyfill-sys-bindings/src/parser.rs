@@ -2,7 +2,7 @@
 //! as well as `use` statements for module resolution.
 //!
 //! Also provides [`ParsedSource`] which bundles all outputs from a single parse
-//! pass, and [`register_source`] which feeds results directly into a
+//! pass, and the `register_source` method which feeds results directly into a
 //! [`ModuleResolver`](crate::resolver::ModuleResolver).
 //!
 //! When the AST yields no module declarations (e.g., because they're wrapped in

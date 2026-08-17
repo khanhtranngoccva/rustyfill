@@ -182,28 +182,16 @@ pub trait TryVec<T>: Sized {
     fn try_insert_give_back(&mut self, index: usize, value: T) -> Result<(), (T, TryVecError)>;
 
     /// Fallibly extend the vector with all elements from an iterator source.
+    /// Like [`Self::try_extend_from_slice_with_rollback`] but without rollback.
     ///
-    /// Accepts anything that implements [`ResumableSource`](crate::recovery::ResumableSource),
-    /// including both plain iterators and [`Resumable`](crate::recovery::Resumable)
-    /// wrappers from previous failures. The error type stays identical across
-    /// retries because `Resumable<I>` and bare iterators share the same inner type.
-    ///
-    /// Uses the iterator's size hint to reserve capacity upfront when available.
-    /// On reserve failure, returns a [`Resumable`](crate::recovery::Resumable)
-    /// containing any consumed-but-uncommitted element and the remainder of the
-    /// iterator, which the caller can pass right back in.
-    fn try_extend<S>(
+    /// If a clone fails mid-way, the vector is truncated back to its length at
+    /// the start of the call so that no partially-appended elements remain.
+    /// The error does not carry a remainder since the collection state is
+    /// restored to exactly what it was before the call.
+    fn try_extend_from_slice_with_rollback(
         &mut self,
-        source: S,
-    ) -> Result<(), (TryReserveError, crate::recovery::Resumable<S::Inner>)>
-    where
-        S: crate::recovery::ResumableSource<Item = T>;
-
-    /// Fallibly append all elements from another slice by cloning each one.
-    ///
-    /// Returns [`TryVecError::Reserve`] on capacity failure or
-    /// [`TryVecError::Clone`] if an element's [`TryClone::try_clone`] fails.
-    fn try_extend_from_slice(&mut self, other: &[T]) -> Result<(), TryVecError>
+        other: &[T],
+    ) -> Result<(), TryVecError>
     where
         T: TryClone;
 
@@ -325,23 +313,15 @@ pub trait TryVec<T>: Sized {
         Self::try_insert_give_back(self, index, value)
     }
 
-    /// Alias for [`Self::try_extend`].
-    fn fallible_extend<S>(
+    /// Alias for [`Self::try_extend_from_slice_with_rollback`].
+    fn fallible_extend_from_slice_with_rollback(
         &mut self,
-        source: S,
-    ) -> Result<(), (TryReserveError, crate::recovery::Resumable<S::Inner>)>
-    where
-        S: crate::recovery::ResumableSource<Item = T>,
-    {
-        Self::try_extend(self, source)
-    }
-
-    /// Alias for [`Self::try_extend_from_slice`].
-    fn fallible_extend_from_slice(&mut self, other: &[T]) -> Result<(), TryVecError>
+        other: &[T],
+    ) -> Result<(), TryVecError>
     where
         T: TryClone,
     {
-        Self::try_extend_from_slice(self, other)
+        Self::try_extend_from_slice_with_rollback(self, other)
     }
 
     /// Alias for [`Self::try_append`].
@@ -507,45 +487,10 @@ impl<T> TryVec<T> for Vec<T> {
         }
     }
 
-    fn try_extend<S>(
+    fn try_extend_from_slice_with_rollback(
         &mut self,
-        source: S,
-    ) -> Result<(), (TryReserveError, crate::recovery::Resumable<S::Inner>)>
-    where
-        S: crate::recovery::ResumableSource<Item = T>,
-    {
-        use crate::recovery::Resumable;
-
-        let (head, mut iter) = source.safe_into_iter();
-
-        // Drain the head element first if present.
-        if let Some(h) = head {
-            if self.len() == self.capacity()
-                && let Err(e) = self.try_reserve(1)
-            {
-                return Err((e.into(), Resumable::new(h, iter)));
-            }
-            self.push(h);
-        }
-
-        let (lower, _) = iter.size_hint();
-        if lower > 0
-            && let Err(e) = self.try_reserve(lower)
-        {
-            return Err((e.into(), Resumable::from_remainder(iter)));
-        }
-        while let Some(item) = iter.next() {
-            if self.len() == self.capacity()
-                && let Err(e) = self.try_reserve(1)
-            {
-                return Err((e.into(), Resumable::new(item, iter)));
-            }
-            self.push(item);
-        }
-        Ok(())
-    }
-
-    fn try_extend_from_slice(&mut self, other: &[T]) -> Result<(), TryVecError>
+        other: &[T],
+    ) -> Result<(), TryVecError>
     where
         T: TryClone,
     {
@@ -864,39 +809,44 @@ mod tests {
 
     #[test]
     fn try_extend_from_iterator() {
+        use crate::try_extend::TryExtend;
         let mut v: Vec<i32> = Vec::new();
-        v.try_extend(0..5).unwrap();
+        <_ as TryExtend<i32>>::try_extend(&mut v, 0..5).unwrap();
         assert_eq!(v, [0, 1, 2, 3, 4]);
     }
 
     #[test]
     fn try_extend_empty() {
+        use crate::try_extend::TryExtend;
         let mut v: Vec<i32> = Vec::new();
-        v.try_extend(iter::empty::<i32>()).unwrap();
+        <_ as TryExtend<i32>>::try_extend(&mut v, iter::empty::<i32>()).unwrap();
         assert!(v.is_empty());
     }
 
     #[test]
     fn try_extend_existing() {
+        use crate::try_extend::TryExtend;
         let mut v: Vec<i32> = Vec::new();
         v.try_push(1).unwrap();
-        v.try_extend([2, 3]).unwrap();
+        <_ as TryExtend<i32>>::try_extend(&mut v, [2, 3]).unwrap();
         assert_eq!(v, [1, 2, 3]);
     }
 
     #[test]
     fn try_extend_from_slice_clones_elements() {
+        use crate::try_extend::TryExtendFromSlice;
         let mut v: Vec<Vec<u8>> = Vec::new();
         v.try_push(vec![1]).unwrap();
         let slice: &[Vec<u8>] = &[vec![2], vec![3]];
-        v.try_extend_from_slice(slice).unwrap();
+        <_ as TryExtendFromSlice<'_, Vec<u8>>>::try_extend_from_slice(&mut v, slice).unwrap();
         assert_eq!(v, [vec![1], vec![2], vec![3]]);
     }
 
     #[test]
     fn try_extend_from_slice_empty() {
+        use crate::try_extend::TryExtendFromSlice;
         let mut v: Vec<i32> = Vec::new();
-        v.try_extend_from_slice(&[]).unwrap();
+        <_ as TryExtendFromSlice<'_, i32>>::try_extend_from_slice(&mut v, &[]).unwrap();
         assert!(v.is_empty());
     }
 
@@ -1321,10 +1271,11 @@ mod tests {
 
     #[test]
     fn vec_try_extend_fails_on_oom() {
+        use crate::try_extend::TryExtend;
         let items: Vec<u32> = vec![1, 2, 3];
         let mut v: Vec<u32> = Vec::new();
         let r = with_policy(FailPolicy::fail_next_alloc(), || {
-            v.try_extend(items.iter().copied())
+            <_ as TryExtend<u32>>::try_extend(&mut v, items.iter().copied())
         });
         assert!(r.is_err());
     }
@@ -1375,10 +1326,10 @@ mod tests {
     // ── Explicit rollback / TruncateGuard tests ─────────────────────────────
 
     #[test]
-    fn extend_from_slice_rollback_on_mid_way_clone_failure() {
-        // try_extend_from_slice on Vec<String> reserves capacity upfront,
-        // then clones each element via String::try_clone(). By failing the
-        // Nth allocation we can make a clone fail mid-way through the loop.
+    fn extend_from_slice_with_rollback_on_mid_way_clone_failure() {
+        // try_extend_from_slice_with_rollback on Vec<String> reserves capacity
+        // upfront, then clones each element via String::try_clone(). By failing
+        // the Nth allocation we can make a clone fail mid-way through the loop.
         // The TruncateGuard must drop all elements pushed before the failure.
         use lang_alloc::string::String;
 
@@ -1399,7 +1350,7 @@ mod tests {
         // be from the first or later String::try_clone() call.
         let r: Result<(), TryVecError> =
             with_policy(FailPolicy::fail_nth_alloc(2), || {
-                <Vec<String> as TryVec<String>>::try_extend_from_slice(&mut vec, &source)
+                <Vec<String> as TryVec<String>>::try_extend_from_slice_with_rollback(&mut vec, &source)
             });
 
         match r {
@@ -1429,10 +1380,10 @@ mod tests {
     }
 
     #[test]
-    fn extend_from_slice_no_partial_elements_after_rollback() {
-        // Verify that after a mid-way clone failure, the vec contains zero
-        // elements from the source slice — not even the ones cloned before
-        // the failure.
+    fn extend_from_slice_with_rollback_no_partial_elements_after_failure() {
+        // Verify that after a mid-way clone failure of the _with_rollback
+        // variant, the vec contains zero elements from the source slice — not
+        // even the ones cloned before the failure.
         use lang_alloc::string::String;
 
         let source: Vec<String> = vec![
@@ -1445,7 +1396,7 @@ mod tests {
 
         let _: Result<(), TryVecError> =
             with_policy(FailPolicy::fail_nth_alloc(3), || {
-                <Vec<String> as TryVec<String>>::try_extend_from_slice(&mut vec, &source)
+                <Vec<String> as TryVec<String>>::try_extend_from_slice_with_rollback(&mut vec, &source)
             });
 
         // Whatever happened, no source strings should appear in vec.
@@ -1454,6 +1405,51 @@ mod tests {
                 !elem.starts_with("src"),
                 "found a source element in vec after supposed rollback"
             );
+        }
+    }
+
+    #[test]
+    fn extend_from_slice_no_rollback_returns_remainder_and_keeps_prefix() {
+        // The standard try_extend_from_slice keeps already-cloned elements and
+        // returns the unprocessed tail alongside the error.
+        use lang_alloc::string::String;
+
+        let source: Vec<String> = vec![
+            "item0".into(), "item1".into(), "item2".into(), "item3".into(),
+            "item4".into(), "item5".into(), "item6".into(), "item7".into(),
+            "item8".into(), "item9".into(),
+        ];
+        let len_source = source.len();
+
+        let mut vec: Vec<String> = vec!["pre".into()];
+        let len_before = vec.len();
+
+        use crate::try_extend::TryExtendFromSlice;
+        let r: Result<(), (&[String], TryVecError)> =
+            with_policy(FailPolicy::fail_nth_alloc(2), || {
+                <Vec<String> as TryExtendFromSlice<'_, String>>::try_extend_from_slice(&mut vec, &source)
+            });
+
+        match r {
+            Err((remaining, err)) => {
+                matches!(err, TryVecError::Clone(_));
+                // Returned subslice must be a contiguous tail of `source`.
+                assert!(!remaining.is_empty());
+                let fail_idx = len_source - remaining.len();
+                assert_eq!(remaining, &source[fail_idx..]);
+                // No-rollback: every element before the failing index was pushed.
+                assert_eq!(vec.len(), len_before + fail_idx);
+                for i in 0..fail_idx {
+                    assert_eq!(vec[len_before + i], source[i]);
+                }
+                // Pre-existing elements are intact.
+                assert_eq!(vec[0], "pre");
+            }
+            Ok(()) => {
+                // If it succeeded (failure didn't hit a clone alloc point),
+                // all elements were appended.
+                assert_eq!(vec.len(), len_before + len_source);
+            }
         }
     }
 

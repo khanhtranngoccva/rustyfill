@@ -4,7 +4,6 @@
 //! ```text
 //! cargo xtask sanitize   # run tests on nightly with leak sanitizer
 //! cargo xtask miri       # run tests under Miri for UB detection
-//! cargo xtask panic      # verify the `panic` feature rejects panic=abort
 //! ```
 
 use std::process::Command;
@@ -15,12 +14,10 @@ fn main() {
     match subcommand.as_deref() {
         Some("sanitize") => cmd_sanitize(),
         Some("miri") => cmd_miri(),
-        Some("panic") => cmd_panic(),
         _ => {
             eprintln!("Usage:");
             eprintln!("  cargo xtask sanitize   — run tests on nightly with -Zsanitizer=leak");
             eprintln!("  cargo xtask miri       — run tests under Miri for undefined behavior");
-            eprintln!("  cargo xtask panic      — verify the `panic` feature rejects panic=abort");
             std::process::exit(1);
         }
     }
@@ -95,32 +92,3 @@ fn cmd_miri() {
     }
 }
 
-/// Verify that enabling the `panic` feature with `panic = "abort"` fails at
-/// build time. The btree wrappers rely on `catch_unwind`, which cannot intercept
-/// aborting panics, so the build script must reject this combination.
-fn cmd_panic() {
-    println!("Checking that the `panic` feature rejects panic=abort…");
-
-    let mut cmd = Command::new("cargo");
-    cmd.env("RUSTFLAGS", "-Cpanic=abort");
-    cmd.args(["check", "--features", "panic"]);
-
-    let status = cmd.status();
-    match status {
-        Ok(s) if !s.success() => {
-            // Expected failure — the build script should have errored.
-            println!("OK: build correctly rejected `panic` feature with panic=abort.");
-        }
-        Ok(_) => {
-            eprintln!(
-                "FAIL: cargo check succeeded with `panic` feature and panic=abort.\n\
-                 The build script should have rejected this combination."
-            );
-            std::process::exit(1);
-        }
-        Err(e) => {
-            eprintln!("Failed to spawn cargo: {}", e);
-            std::process::exit(1);
-        }
-    }
-}

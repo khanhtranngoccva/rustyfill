@@ -73,9 +73,27 @@ pub trait IoErrorExt {
     /// Like [`Self::new_or_oom`] but defaults to `ErrorKind::Other`.
     ///
     /// Falls back to `ErrorKind::OutOfMemory` if boxing fails.
-    fn other_or_oom<E>(source: E) -> io::Error
+    fn other_or_oom<E>(kind: io::ErrorKind, source: E) -> io::Error
     where
         E: error::Error + Send + Sync + 'static;
+
+    // ── Aliases with `fallible_` prefix ────────────────────────────────────────
+
+    /// Alias for [`Self::try_new`].
+    fn fallible_new<E>(kind: io::ErrorKind, source: E) -> Result<io::Error, AllocError>
+    where
+        E: error::Error + Send + Sync + 'static,
+    {
+        Self::try_new(kind, source)
+    }
+
+    /// Alias for [`Self::try_other`].
+    fn fallible_other<E>(source: E) -> Result<io::Error, AllocError>
+    where
+        E: error::Error + Send + Sync + 'static,
+    {
+        Self::try_other(source)
+    }
 }
 
 impl IoErrorExt for io::Error {
@@ -116,11 +134,11 @@ impl IoErrorExt for io::Error {
         Self::new_boxed(io::ErrorKind::Other, source)
     }
 
-    fn other_or_oom<E>(source: E) -> Self
+    fn other_or_oom<E>(kind: io::ErrorKind, source: E) -> Self
     where
         E: error::Error + Send + Sync + 'static,
     {
-        Self::new_or_oom(io::ErrorKind::Other, source)
+        Self::new_or_oom(kind, source)
     }
 }
 

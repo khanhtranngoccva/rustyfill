@@ -99,11 +99,7 @@ match vec.try_extend(Resumable::from_remainder(remaining)) {
 
 ## Features
 
-- **`panic`** — enables `TryBTreeMap` and `TryBTreeSet` wrappers that rely on `std::panic::catch_unwind`. Requires compiling with `panic = "unwind"`. The build script errors if this feature is enabled under `panic = "abort"`.
-    - Note that these structures does not work by default and is not resilient against true out-of-memory conditions, making them unsuitable for production scenarios: 
-        - The default OOM handler when linked against std aborts the process.
-        - Since panic allocates memory, these structures abort the process when absolutely no memory can be allocated.
-    - If you wish to use it anyway, you also need to call `std::alloc::set_alloc_error_hook` to prevent the default abort behavior and trigger a panic, but you risk non-cooperating code interfering with the process.
+- **`btree-entry`** — enables fallible B-tree map operations via direct manipulation of internal node allocations (see `rustyfill-sys`): `TryBTreeMap::try_insert` on `BTreeMap<K, V>` (plain insert semantics, returns a `Result`), plus `TryBTreeMapEntry` (`try_or_insert`-family) and `TryBTreeMapVacantEntry` (`try_insert`) on the standard Entry/VacantEntry types. The key lookup in the standard `BTreeMap::entry()` is allocation-free, so all three are safe under an intermittently failing allocator — only the split cascade can fail, and it does so gracefully. For fully fallible trees (including removal) prefer the [`scapegoat`](https://crates.io/crates/scapegoat) crate or [`fallible_collections`](https://crates.io/crates/fallible_collections).
 - **`unstable`** - enables `TryDashMap` and `TryDashSet`. Currently, they do not work, because the fallible construction API is not there yet, although [these APIs are pending review](https://github.com/xacrimon/dashmap/pull/372). They might be removed from this crate and moved into a downstream crate to allow usage in libraries.
 
 ## Hasher factories

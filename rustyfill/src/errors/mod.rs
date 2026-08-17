@@ -6,9 +6,9 @@
 //! constructors that return [`Result`] so callers can handle out-of-memory
 //! gracefully instead of crashing mid-recovery.
 //!
-//! The [`core`] submodule provides `TryDebug` / `TryDisplay` implementations
+//! The `core` submodule provides `TryDebug` / `TryDisplay` implementations
 //! for well-known `core` error types and is available in `no_std` environments.
-//! The [`std`] submodule (gated behind the `std` feature) adds `IoErrorExt`
+//! The `std` submodule (gated behind the `std` feature) adds `IoErrorExt`
 //! for fallible `std::io::Error` construction and impls for `std`-only error types.
 
 mod core;

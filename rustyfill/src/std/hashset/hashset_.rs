@@ -284,6 +284,14 @@ pub trait TryHashSet<T, S = RandomState>: Sized {
     /// allocation for the rebuilt table fails, or [`TryHashSetError::Clone`] if
     /// duplicating the hasher factory fails. Equivalent to
     /// [`HashSet::shrink_to_fit`] but fallible.
+    ///
+    /// **Deprecated:** This method name conflicts with the unstable inherent
+    /// [`HashSet::try_shrink_to_fit`](lang_std::collections::hash_set::HashSet::try_shrink_to_fit).
+    /// Use [`Self::fallible_shrink_to_fit`] instead.
+    #[deprecated(
+        since = "0.1.0",
+        note = "conflicts with unstable HashSet::try_shrink_to_fit; use fallible_shrink_to_fit"
+    )]
     fn try_shrink_to_fit(&mut self) -> Result<(), TryHashSetError>
     where
         S: TryClone;
@@ -297,11 +305,30 @@ pub trait TryHashSet<T, S = RandomState>: Sized {
     /// duplicated. Returns [`TryHashSetError::Reserve`] if the allocation fails,
     /// or [`TryHashSetError::Clone`] if duplicating the hasher factory fails.
     /// Equivalent to [`HashSet::shrink_to`] but fallible.
+    ///
+    /// **Deprecated:** This method name conflicts with the unstable inherent
+    /// [`HashSet::try_shrink_to`](lang_std::collections::hash_set::HashSet::try_shrink_to).
+    /// Use [`Self::fallible_shrink_to`] instead.
+    #[deprecated(
+        since = "0.1.0",
+        note = "conflicts with unstable HashSet::try_shrink_to; use fallible_shrink_to"
+    )]
     fn try_shrink_to(&mut self, min_capacity: usize) -> Result<(), TryHashSetError>
     where
         S: TryClone;
 
-    /// Alias for [`Self::try_shrink_to_fit`].
+    /// Fallibly shrink the capacity of this hash set to match its length.
+    ///
+    /// Rebuilds the internal table so that it holds approximately `len` elements.
+    /// Requires `S: TryClone` so the hasher can be safely duplicated for the new
+    /// table without risking a panic. Returns [`TryHashSetError::Reserve`] if the
+    /// allocation for the rebuilt table fails, or [`TryHashSetError::Clone`] if
+    /// duplicating the hasher factory fails. Equivalent to
+    /// [`HashSet::shrink_to_fit`] but fallible.
+    ///
+    /// This method replaces the deprecated [`Self::try_shrink_to_fit`] which
+    /// shares its name with the unstable inherent [`HashSet::try_shrink_to_fit`](lang_std::collections::hash_set::HashSet::try_shrink_to_fit).
+    #[allow(deprecated)]
     fn fallible_shrink_to_fit(&mut self) -> Result<(), TryHashSetError>
     where
         S: TryClone,
@@ -309,7 +336,19 @@ pub trait TryHashSet<T, S = RandomState>: Sized {
         Self::try_shrink_to_fit(self)
     }
 
-    /// Alias for [`Self::try_shrink_to`].
+    /// Fallibly shrink the capacity of this hash set to hold at least
+    /// `min_capacity` elements.
+    ///
+    /// If the current capacity is already less than or equal to `min_capacity`,
+    /// does nothing and returns `Ok(())`. Otherwise rebuilds the table with the
+    /// target capacity. Requires `S: TryClone` so the hasher can be safely
+    /// duplicated. Returns [`TryHashSetError::Reserve`] if the allocation fails,
+    /// or [`TryHashSetError::Clone`] if duplicating the hasher factory fails.
+    /// Equivalent to [`HashSet::shrink_to`] but fallible.
+    ///
+    /// This method replaces the deprecated [`Self::try_shrink_to`] which shares
+    /// its name with the unstable inherent [`HashSet::try_shrink_to`](lang_std::collections::hash_set::HashSet::try_shrink_to).
+    #[allow(deprecated)]
     fn fallible_shrink_to(&mut self, min_capacity: usize) -> Result<(), TryHashSetError>
     where
         S: TryClone,
@@ -354,6 +393,7 @@ pub trait TryHashSet<T, S = RandomState>: Sized {
 
 // ── Implementation ────────────────────────────────────────────────────────────
 
+#[allow(deprecated)]
 impl<T: Eq + Hash, S: BuildHasher> TryHashSet<T, S> for HashSet<T, S> {
     // ── Construction ────────────────────────────────────────────────────────
 

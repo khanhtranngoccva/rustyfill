@@ -110,4 +110,9 @@ pub trait TryToOwned: ToOwned {
     /// Construct the owned version of `self`, falling back to an error on
     /// allocation failure rather than panicking.
     fn try_to_owned(&self) -> Result<Self::Owned, TryToOwnedError>;
+
+    /// Alias for [`Self::try_to_owned`].
+    fn fallible_to_owned(&self) -> Result<Self::Owned, TryToOwnedError> {
+        Self::try_to_owned(self)
+    }
 }

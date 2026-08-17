@@ -1,6 +1,6 @@
 //! Iterator recovery for fallible extension operations.
 //!
-//! When a [`try_extend`](crate::alloc::vec::TryVec::try_extend)-style operation fails,
+//! When a [`try_extend`](crate::try_extend::TryExtend::try_extend)-style operation fails,
 //! elements from the iterator may have been consumed but not yet committed to
 //! the collection. This module provides [`Resumable`] so that callers can
 //! re-package a stranded element alongside the remainder and pass it back in.

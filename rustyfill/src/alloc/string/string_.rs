@@ -161,6 +161,14 @@ pub trait TryString: Sized {
     /// May reallocate if the current allocation is larger than needed.
     /// Returns [`TryStringError::Alloc`] if the re-allocation fails.
     /// Equivalent to `String::shrink_to_fit()` but fallible.
+    ///
+    /// **Deprecated:** This method name conflicts with the unstable inherent
+    /// [`String::try_shrink_to_fit`](lang_alloc::string::String::try_shrink_to_fit).
+    /// Use [`Self::fallible_shrink_to_fit`] instead.
+    #[deprecated(
+        since = "0.1.0",
+        note = "conflicts with unstable String::try_shrink_to_fit; use fallible_shrink_to_fit"
+    )]
     fn try_shrink_to_fit(&mut self) -> Result<(), TryStringError>;
 
     /// Fallibly shrink the capacity of this `String` to at least `min_capacity`.
@@ -169,6 +177,14 @@ pub trait TryString: Sized {
     /// does nothing and returns `Ok(())`. Otherwise reallocates down.
     /// Returns [`TryStringError::Alloc`] if the re-allocation fails.
     /// Equivalent to `String::shrink_to(min_capacity)` but fallible.
+    ///
+    /// **Deprecated:** This method name conflicts with the unstable inherent
+    /// [`String::try_shrink_to`](lang_alloc::string::String::try_shrink_to).
+    /// Use [`Self::fallible_shrink_to`] instead.
+    #[deprecated(
+        since = "0.1.0",
+        note = "conflicts with unstable String::try_shrink_to; use fallible_shrink_to"
+    )]
     fn try_shrink_to(&mut self, min_capacity: usize) -> Result<(), TryStringError>;
 
     // ── Aliases with `fallible_` prefix ────────────────────────────────────
@@ -211,17 +227,35 @@ pub trait TryString: Sized {
         Self::try_insert_str(self, idx, s)
     }
 
-    /// Alias for [`Self::try_shrink_to_fit`].
+    /// Fallibly shrink the capacity of this `String` to match its length.
+    ///
+    /// May reallocate if the current allocation is larger than needed.
+    /// Returns [`TryStringError::Alloc`] if the re-allocation fails.
+    /// Equivalent to `String::shrink_to_fit()` but fallible.
+    ///
+    /// This method replaces the deprecated [`Self::try_shrink_to_fit`] which
+    /// shares its name with the unstable inherent [`String::try_shrink_to_fit`](lang_alloc::string::String::try_shrink_to_fit).
+    #[allow(deprecated)]
     fn fallible_shrink_to_fit(&mut self) -> Result<(), TryStringError> {
         Self::try_shrink_to_fit(self)
     }
 
-    /// Alias for [`Self::try_shrink_to`].
+    /// Fallibly shrink the capacity of this `String` to at least `min_capacity`.
+    ///
+    /// If the current capacity is already less than or equal to `min_capacity`,
+    /// does nothing and returns `Ok(())`. Otherwise reallocates down.
+    /// Returns [`TryStringError::Alloc`] if the re-allocation fails.
+    /// Equivalent to `String::shrink_to(min_capacity)` but fallible.
+    ///
+    /// This method replaces the deprecated [`Self::try_shrink_to`] which shares
+    /// its name with the unstable inherent [`String::try_shrink_to`](lang_alloc::string::String::try_shrink_to).
+    #[allow(deprecated)]
     fn fallible_shrink_to(&mut self, min_capacity: usize) -> Result<(), TryStringError> {
         Self::try_shrink_to(self, min_capacity)
     }
 }
 
+#[allow(deprecated)]
 #[allow(deprecated)]
 impl TryString for String {
     fn try_with_capacity(capacity: usize) -> Result<String, TryReserveError> {

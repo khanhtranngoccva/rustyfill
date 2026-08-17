@@ -1,10 +1,9 @@
 //! Hasher factory wrappers for fallible collections.
 //!
 //! This module provides two approaches to wrapping a [`BuildHasher`] so it works
-//! with the fallible collection traits ([`TryHashMap`](crate::std::hashmap::TryHashMap),
-//! [`TryHashSet`](crate::std::hashset::TryHashSet), `TryDashMap`,
-//! etc.), which require the hasher to implement [`TryClone`] and optionally
-//! [`TryDefault`].
+//! with the fallible collection traits ([`TryHashMap`], [`TryHashSet`],
+//! `TryDashMap`, etc.), which require the hasher to implement [`TryClone`] and
+//! optionally [`TryDefault`].
 //!
 //! # `CopyHasherFactory` — misuse-resistant, zero-allocation cloning
 //!
@@ -24,19 +23,23 @@
 //! # `ArbitraryHasherFactory` — ergonomic, best-effort safety nets
 //!
 //! [`ArbitraryHasherFactory<H>`] accepts *any* [`BuildHasher`], including those
-//! that allocate internally (e.g. [`RandomState`](::lang_std::hash::RandomState)). It
-//! automatically implements [`TryClone`] when `H: Clone` and [`TryDefault`] when
-//! `H: Default`.
+//! that allocate internally (e.g. [`RandomState`]). It automatically implements
+//! [`TryClone`] when `H: Clone` and [`TryDefault`] when `H: Default`.
 //!
 //! Because cloning or defaulting an arbitrary hasher may panic (e.g. on OOM
-//! during internal allocation), these implementations use
-//! [`::lang_std::panic::catch_unwind`] as a best-effort safety net: if `clone()` or
-//! [`Default::default()`] panics, the panic is caught and returned as an error
-//! rather than unwinding through the caller. This means fallible collection
-//! operations remain non-panicking even with allocating hashers.
+//! during internal allocation), these implementations use [`catch_unwind`] as a
+//! best-effort safety net: if `clone()` or [`Default::default()`] panics, the
+//! panic is caught and returned as an error rather than unwinding through the
+//! caller. This means fallible collection operations remain non-panicking even
+//! with allocating hashers.
 //!
 //! # Notes
 //! - These types only guard against panics during creation of hasher factories. The user must ensure that the invocation via build_hasher does not implicitly panic, although it is practically never the case for the sake of performance.
+//!
+//! [`TryHashMap`]: https://docs.rs/rustyfill/latest/rustyfill/std/hashmap/struct.TryHashMap.html
+//! [`TryHashSet`]: https://docs.rs/rustyfill/latest/rustyfill/std/hashset/struct.TryHashSet.html
+//! [`RandomState`]: https://doc.rust-lang.org/std/hash/struct.RandomState.html
+//! [`catch_unwind`]: https://doc.rust-lang.org/std/panic/fn.catch_unwind.html
 use crate::{
     try_clone::{TryClone, TryCloneError},
     try_default::{TryDefault, TryDefaultError},
@@ -216,8 +219,8 @@ where
 /// Popular third-party hashers like `ahash::RandomState`, FxHash, FNV, DJB2, and
 /// similar integer-only builders typically satisfy this bound.
 ///
-/// For hashers that allocate internally (e.g. [`RandomState`](lang_std::hash::RandomState)),
-/// use [`ArbitraryHasherFactory`] instead.
+/// For hashers that allocate internally (e.g. [`RandomState`]), use
+/// [`ArbitraryHasherFactory`] instead.
 ///
 /// # Example
 ///
@@ -250,6 +253,8 @@ where
 /// let copy = factory;          // bitwise copy, no allocation
 /// assert_eq!(factory.hash_one(42u64), copy.hash_one(42u64));
 /// ```
+///
+/// [`RandomState`]: https://doc.rust-lang.org/std/hash/struct.RandomState.html
 #[derive(Clone, Copy, Default)]
 pub struct CopyHasherFactory<H: CopyBuildHasher> {
     inner: H,
@@ -316,21 +321,19 @@ impl<H: CopyBuildHasher + Eq> Eq for CopyHasherFactory<H> {}
 /// Unlike [`CopyHasherFactory`], which requires the inner hasher to be [`Copy`],
 /// `ArbitraryHasherFactory<H>` only requires `H: BuildHasher`. This makes it
 /// compatible with any hasher factory, including those that allocate or open system
-/// resources internally (e.g. [`RandomState`](lang_std::hash::RandomState) opens a file in
-/// the kernel for every thread and panics if it fails).
+/// resources internally (e.g. [`RandomState`] opens a file in the kernel for every
+/// thread and panics if it fails).
 ///
 /// # Ergonomic integration with fallible collections
 ///
 /// This type automatically implements [`TryClone`] (when `H: Clone`) and
 /// [`TryDefault`] (when `H: Default`), so it slots directly into the hasher
-/// bounds required by [`TryHashMap`](crate::std::hashmap::TryHashMap),
-/// [`TryHashSet`](crate::std::hashset::TryHashSet),
-/// `TryDashMap`, and
+/// bounds required by [`TryHashMap`], [`TryHashSet`], `TryDashMap`, and
 /// `TryDashSet`.
 ///
 /// Because cloning or defaulting an arbitrary hasher may panic (e.g. on OOM
 /// during internal allocation), these implementations wrap the call in
-/// [`lang_std::panic::catch_unwind`] as a best-effort safety net. If `clone()` or
+/// [`catch_unwind`] as a best-effort safety net. If `clone()` or
 /// [`Default::default()`] panics, the panic is caught and returned as an error
 /// rather than unwinding through the caller. This keeps fallible collection
 /// operations non-panicking even with allocating hashers.
@@ -356,10 +359,9 @@ impl<H: CopyBuildHasher + Eq> Eq for CopyHasherFactory<H> {}
 /// # When to use
 ///
 /// Use `ArbitraryHasherFactory` when your hasher doesn't satisfy [`Copy`] (most
-/// notably [`RandomState`](lang_std::hash::RandomState)) but you still want fallible
-/// collection operations. Prefer [`CopyHasherFactory`] when the hasher is
-/// stack-only, since it avoids allocation entirely and provides stronger compile-time
-/// guarantees.
+/// notably [`RandomState`]) but you still want fallible collection operations.
+/// Prefer [`CopyHasherFactory`] when the hasher is stack-only, since it avoids
+/// allocation entirely and provides stronger compile-time guarantees.
 ///
 /// # Example
 ///
@@ -375,6 +377,11 @@ impl<H: CopyBuildHasher + Eq> Eq for CopyHasherFactory<H> {}
 /// map.insert("key", 42);
 /// assert_eq!(map["key"], 42);
 /// ```
+///
+/// [`TryHashMap`]: https://docs.rs/rustyfill/latest/rustyfill/std/hashmap/struct.TryHashMap.html
+/// [`TryHashSet`]: https://docs.rs/rustyfill/latest/rustyfill/std/hashset/struct.TryHashSet.html
+/// [`RandomState`]: https://doc.rust-lang.org/std/hash/struct.RandomState.html
+/// [`catch_unwind`]: https://doc.rust-lang.org/std/panic/fn.catch_unwind.html
 pub struct ArbitraryHasherFactory<H: BuildHasher> {
     inner: H,
 }
@@ -389,8 +396,8 @@ impl<H: BuildHasher> ArbitraryHasherFactory<H> {
     ///
     /// - Cloning the inner hasher may panic at runtime (e.g. on OOM during
     ///   internal allocation). The [`TryClone`] implementation uses
-    ///   [`lang_std::panic::catch_unwind`] to catch such panics and return them as
-    ///   errors, so fallible collection operations remain non-panicking.
+    ///   [`catch_unwind`] to catch such panics and return them as errors, so
+    ///   fallible collection operations remain non-panicking.
     /// - Default construction may panic similarly; [`TryDefault`] applies the
     ///   same best-effort panic-catching strategy.
     /// - This container is **not** [`Copy`]. Any operation that duplicates the
@@ -398,6 +405,8 @@ impl<H: BuildHasher> ArbitraryHasherFactory<H> {
     ///
     /// No undefined behaviour can result from misuse — the worst outcome is an
     /// unhandled `Err` downstream rather than a panic propagating unexpectedly.
+    ///
+    /// [`catch_unwind`]: https://doc.rust-lang.org/std/panic/fn.catch_unwind.html
     #[inline]
     pub const unsafe fn new(inner: H) -> Self {
         Self { inner }

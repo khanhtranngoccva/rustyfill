@@ -6,7 +6,9 @@
 //! operate on a single shard at a time.
 
 mod dashmap_;
+mod dashmap_extend;
 mod dashset_;
+mod dashset_extend;
 pub mod mapref;
 
 pub use dashmap_::{TryDashMap, TryDashMapError, TryDashMapNonblockError};

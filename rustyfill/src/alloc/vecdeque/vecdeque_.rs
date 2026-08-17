@@ -236,20 +236,51 @@ pub trait TryVecDeque<T>: Sized {
     /// Converts the deque into a contiguous [`Vec`], shrinks the vector's buffer,
     /// and converts back. This is necessary because `VecDeque`'s internal ring
     /// buffer layout is opaque — we cannot directly reallocate its storage.
+    ///
+    /// **Deprecated:** This method name conflicts with the unstable inherent
+    /// [`VecDeque::try_shrink_to_fit`](lang_alloc::collections::vec_deque::VecDeque::try_shrink_to_fit).
+    /// Use [`Self::fallible_shrink_to_fit`] instead.
+    #[deprecated(
+        since = "0.1.0",
+        note = "conflicts with unstable VecDeque::try_shrink_to_fit; use fallible_shrink_to_fit"
+    )]
     fn try_shrink_to_fit(&mut self) -> Result<(), TryVecDequeError>;
 
     /// Fallibly shrink the capacity of this deque to at least `min_capacity`.
     ///
     /// Converts the deque into a contiguous [`Vec`], shrinks the vector's buffer,
     /// and converts back. The effective minimum capacity is `max(len, min_capacity)`.
+    ///
+    /// **Deprecated:** This method name conflicts with the unstable inherent
+    /// [`VecDeque::try_shrink_to`](lang_alloc::collections::vec_deque::VecDeque::try_shrink_to).
+    /// Use [`Self::fallible_shrink_to`] instead.
+    #[deprecated(
+        since = "0.1.0",
+        note = "conflicts with unstable VecDeque::try_shrink_to; use fallible_shrink_to"
+    )]
     fn try_shrink_to(&mut self, min_capacity: usize) -> Result<(), TryVecDequeError>;
 
-    /// Alias for [`Self::try_shrink_to_fit`].
+    /// Fallibly shrink the capacity of this deque to match its length.
+    ///
+    /// Converts the deque into a contiguous [`Vec`], shrinks the vector's buffer,
+    /// and converts back. This is necessary because `VecDeque`'s internal ring
+    /// buffer layout is opaque — we cannot directly reallocate its storage.
+    ///
+    /// This method replaces the deprecated [`Self::try_shrink_to_fit`] which
+    /// shares its name with the unstable inherent [`VecDeque::try_shrink_to_fit`](lang_alloc::collections::vec_deque::VecDeque::try_shrink_to_fit).
+    #[allow(deprecated)]
     fn fallible_shrink_to_fit(&mut self) -> Result<(), TryVecDequeError> {
         Self::try_shrink_to_fit(self)
     }
 
-    /// Alias for [`Self::try_shrink_to`].
+    /// Fallibly shrink the capacity of this deque to at least `min_capacity`.
+    ///
+    /// Converts the deque into a contiguous [`Vec`], shrinks the vector's buffer,
+    /// and converts back. The effective minimum capacity is `max(len, min_capacity)`.
+    ///
+    /// This method replaces the deprecated [`Self::try_shrink_to`] which shares
+    /// its name with the unstable inherent [`VecDeque::try_shrink_to`](lang_alloc::collections::vec_deque::VecDeque::try_shrink_to).
+    #[allow(deprecated)]
     fn fallible_shrink_to(&mut self, min_capacity: usize) -> Result<(), TryVecDequeError> {
         Self::try_shrink_to(self, min_capacity)
     }
@@ -301,6 +332,7 @@ pub trait TryVecDeque<T>: Sized {
     }
 }
 
+#[allow(deprecated)]
 impl<T> TryVecDeque<T> for VecDeque<T> {
     // ── Construction ────────────────────────────────────────────────────────
 

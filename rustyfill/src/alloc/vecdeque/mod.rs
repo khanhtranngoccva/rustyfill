@@ -4,6 +4,7 @@
 //! extension, and capacity management — returning [`Result`] values instead of
 //! panicking on allocation failure.
 
+mod try_extend;
 mod vecdeque_;
 
 pub use vecdeque_::{TryVecDeque, TryVecDequeError};

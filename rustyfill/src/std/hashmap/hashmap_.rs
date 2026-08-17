@@ -331,46 +331,6 @@ pub trait TryHashMap<K, V, S = RandomState>: Sized {
 
     /// Fallibly extend the map with all key-value pairs from an iterator source.
     ///
-    /// Accepts anything that implements [`ResumableSource`](crate::recovery::ResumableSource).
-    /// On reserve failure, returns a [`Resumable`](crate::recovery::Resumable)
-    /// containing any consumed-but-uncommitted pair and the remainder of the
-    /// iterator, which the caller can pass right back in.
-    fn try_extend<Src>(
-        &mut self,
-        source: Src,
-    ) -> Result<(), (TryReserveError, crate::recovery::Resumable<Src::Inner>)>
-    where
-        Src: crate::recovery::ResumableSource<Item = (K, V)>;
-
-    /// Fallibly extend the map by cloning key-value pairs from a slice.
-    ///
-    /// Returns [`TryHashMapError::Reserve`] on capacity failure or
-    /// [`TryHashMapError::Clone`] if a key or value clone fails.
-    fn try_extend_from_slice(&mut self, other: &[(K, V)]) -> Result<(), TryHashMapError>
-    where
-        K: Eq + Hash + TryClone,
-        V: TryClone;
-
-    /// Alias for [`Self::try_extend`].
-    fn fallible_extend<Src>(
-        &mut self,
-        source: Src,
-    ) -> Result<(), (TryReserveError, crate::recovery::Resumable<Src::Inner>)>
-    where
-        Src: crate::recovery::ResumableSource<Item = (K, V)>,
-    {
-        Self::try_extend(self, source)
-    }
-
-    /// Alias for [`Self::try_extend_from_slice`].
-    fn fallible_extend_from_slice(&mut self, other: &[(K, V)]) -> Result<(), TryHashMapError>
-    where
-        K: Eq + Hash + TryClone,
-        V: TryClone,
-    {
-        Self::try_extend_from_slice(self, other)
-    }
-
     // ── Capacity / shrink ───────────────────────────────────────────────────
 
     /// Fallibly shrink the capacity of this hash map to match its length.
@@ -381,6 +341,14 @@ pub trait TryHashMap<K, V, S = RandomState>: Sized {
     /// allocation for the rebuilt table fails, or [`TryHashMapError::Clone`] if
     /// duplicating the hasher factory fails. Equivalent to
     /// [`HashMap::shrink_to_fit`] but fallible.
+    ///
+    /// **Deprecated:** This method name conflicts with the unstable inherent
+    /// [`HashMap::try_shrink_to_fit`](lang_std::collections::hash_map::HashMap::try_shrink_to_fit).
+    /// Use [`Self::fallible_shrink_to_fit`] instead.
+    #[deprecated(
+        since = "0.1.0",
+        note = "conflicts with unstable HashMap::try_shrink_to_fit; use fallible_shrink_to_fit"
+    )]
     fn try_shrink_to_fit(&mut self) -> Result<(), TryHashMapError>
     where
         S: TryClone;
@@ -394,11 +362,28 @@ pub trait TryHashMap<K, V, S = RandomState>: Sized {
     /// duplicated. Returns [`TryHashMapError::Reserve`] if the allocation fails,
     /// or [`TryHashMapError::Clone`] if duplicating the hasher factory fails.
     /// Equivalent to [`HashMap::shrink_to`] but fallible.
+    ///
+    /// **Deprecated:** This method name conflicts with the unstable inherent
+    /// [`HashMap::try_shrink_to`](lang_std::collections::hash_map::HashMap::try_shrink_to).
+    /// Use [`Self::fallible_shrink_to`] instead.
+    #[deprecated(
+        since = "0.1.0",
+        note = "conflicts with unstable HashMap::try_shrink_to; use fallible_shrink_to"
+    )]
     fn try_shrink_to(&mut self, min_capacity: usize) -> Result<(), TryHashMapError>
     where
         S: TryClone;
 
-    /// Alias for [`Self::try_shrink_to_fit`].
+    /// Fallibly shrink the capacity of this hash map to match its length.
+    ///
+    /// Rebuilds the underlying table without risking a panic. Returns
+    /// [`TryHashMapError::Reserve`] if the allocation for the rebuilt table
+    /// fails, or [`TryHashMapError::Clone`] if duplicating the hasher factory
+    /// fails. Equivalent to [`HashMap::shrink_to_fit`] but fallible.
+    ///
+    /// This method replaces the deprecated [`Self::try_shrink_to_fit`] which
+    /// shares its name with the unstable inherent [`HashMap::try_shrink_to_fit`](lang_std::collections::hash_map::HashMap::try_shrink_to_fit).
+    #[allow(deprecated)]
     fn fallible_shrink_to_fit(&mut self) -> Result<(), TryHashMapError>
     where
         S: TryClone,
@@ -406,7 +391,19 @@ pub trait TryHashMap<K, V, S = RandomState>: Sized {
         Self::try_shrink_to_fit(self)
     }
 
-    /// Alias for [`Self::try_shrink_to`].
+    /// Fallibly shrink the capacity of this hash map to hold at least
+    /// `min_capacity` elements.
+    ///
+    /// If the current capacity is already less than or equal to `min_capacity`,
+    /// does nothing and returns `Ok(())`. Otherwise rebuilds the table with the
+    /// target capacity. Requires `S: TryClone` so the hasher can be safely
+    /// duplicated. Returns [`TryHashMapError::Reserve`] if the allocation fails,
+    /// or [`TryHashMapError::Clone`] if duplicating the hasher factory fails.
+    /// Equivalent to [`HashMap::shrink_to`] but fallible.
+    ///
+    /// This method replaces the deprecated [`Self::try_shrink_to`] which shares
+    /// its name with the unstable inherent [`HashMap::try_shrink_to`](lang_std::collections::hash_map::HashMap::try_shrink_to).
+    #[allow(deprecated)]
     fn fallible_shrink_to(&mut self, min_capacity: usize) -> Result<(), TryHashMapError>
     where
         S: TryClone,
@@ -535,73 +532,6 @@ impl<K: Eq + Hash, V, S: BuildHasher> TryHashMap<K, V, S> for HashMap<K, V, S> {
         self.try_reserve(1)
             .map_err(|e| TryHashMapError::Reserve(e.into()))?;
         Ok(self.entry(key))
-    }
-
-    // ── Extension ───────────────────────────────────────────────────────────
-
-    fn try_extend<Src>(
-        &mut self,
-        source: Src,
-    ) -> Result<(), (TryReserveError, crate::recovery::Resumable<Src::Inner>)>
-    where
-        Src: crate::recovery::ResumableSource<Item = (K, V)>,
-    {
-        use crate::recovery::Resumable;
-
-        let (head, mut iter) = source.safe_into_iter();
-
-        if let Some(pair) = head {
-            if self.len() == self.capacity()
-                && let Err(e) = self.try_reserve(1)
-            {
-                return Err((e.into(), Resumable::new(pair, iter)));
-            }
-            self.insert(pair.0, pair.1);
-        }
-
-        let (lower, _) = iter.size_hint();
-        if lower > 0
-            && let Err(e) = self.try_reserve(lower)
-        {
-            return Err((e.into(), Resumable::from_remainder(iter)));
-        }
-        while let Some(pair) = iter.next() {
-            if self.len() == self.capacity()
-                && let Err(e) = self.try_reserve(1)
-            {
-                return Err((e.into(), Resumable::new(pair, iter)));
-            }
-            self.insert(pair.0, pair.1);
-        }
-        Ok(())
-    }
-
-    fn try_extend_from_slice(&mut self, other: &[(K, V)]) -> Result<(), TryHashMapError>
-    where
-        K: Eq + Hash + TryClone,
-        V: TryClone,
-    {
-        if other.is_empty() {
-            return Ok(());
-        }
-        let len_before = self.len();
-        self.try_reserve(other.len())
-            .map_err(|e| TryHashMapError::Reserve(e.into()))?;
-        for (key, value) in other {
-            match (key.try_clone(), value.try_clone()) {
-                (Ok(k), Ok(v)) => {
-                    self.insert(k, v);
-                }
-                (Err(e), _) | (_, Err(e)) => {
-                    // Drain the elements we already inserted.
-                    for _ in 0..self.len() - len_before {
-                        self.drain().next();
-                    }
-                    return Err(TryHashMapError::Clone(e));
-                }
-            }
-        }
-        Ok(())
     }
 
     // ── Capacity / shrink ───────────────────────────────────────────────────
@@ -841,42 +771,61 @@ mod tests {
 
     #[test]
     fn try_extend_from_iterator() {
+        use crate::try_extend::TryExtend;
         let mut map: HashMap<i32, &str> = HashMap::new();
-        map.try_extend([(1, "one"), (2, "two")]).unwrap();
+        <_ as TryExtend<(i32, &str)>>::try_extend(&mut map, [(1, "one"), (2, "two")]).unwrap();
         assert_eq!(map.len(), 2);
         assert_eq!(map[&1], "one");
     }
 
     #[test]
     fn try_extend_empty() {
+        use crate::try_extend::TryExtend;
         let mut map: HashMap<i32, i32> = HashMap::new();
-        map.try_extend(iter::empty::<(i32, i32)>()).unwrap();
+        <_ as TryExtend<(i32, i32)>>::try_extend(&mut map, iter::empty::<(i32, i32)>()).unwrap();
         assert!(map.is_empty());
     }
 
     #[test]
     fn try_extend_existing() {
+        use crate::try_extend::TryExtend;
         let mut map: HashMap<i32, &str> = HashMap::new();
         map.fallible_insert(1, "one").unwrap();
-        map.try_extend([(2, "two"), (3, "three")]).unwrap();
+        <_ as TryExtend<(i32, &str)>>::try_extend(&mut map, [(2, "two"), (3, "three")]).unwrap();
         assert_eq!(map.len(), 3);
     }
 
     #[test]
     fn try_extend_from_slice_clones() {
+        use crate::try_extend::TryExtendFromSlice;
         let mut map: HashMap<String, Vec<u8>> = HashMap::new();
         map.fallible_insert("a".to_string(), vec![1]).unwrap();
         let slice: &[(String, Vec<u8>)] = &[("b".to_string(), vec![2, 3])];
-        map.try_extend_from_slice(slice).unwrap();
+        <_ as TryExtendFromSlice<'_, (String, Vec<u8>)>>::try_extend_from_slice(&mut map, slice)
+            .unwrap();
         assert_eq!(map.len(), 2);
         assert_eq!(map["b"], vec![2, 3]);
     }
 
     #[test]
     fn try_extend_from_slice_empty() {
+        use crate::try_extend::TryExtendFromSlice;
         let mut map: HashMap<i32, i32> = HashMap::new();
-        map.try_extend_from_slice(&[]).unwrap();
+        <_ as TryExtendFromSlice<'_, (i32, i32)>>::try_extend_from_slice(&mut map, &[]).unwrap();
         assert!(map.is_empty());
+    }
+
+    #[test]
+    fn try_extend_from_slice_later_entry_overwrites_earlier_key() {
+        use crate::try_extend::TryExtendFromSlice;
+        // A later entry in the source overwrites an earlier one for the same key.
+        // The final value must be the last occurrence, matching `Extend` semantics.
+        let mut map: HashMap<&str, i32> = HashMap::new();
+        let slice: &[(&str, i32)] = &[("k", 1), ("j", 9), ("k", 2)];
+        <_ as TryExtendFromSlice<'_, (&str, i32)>>::try_extend_from_slice(&mut map, slice).unwrap();
+        assert_eq!(map["k"], 2);
+        assert_eq!(map["j"], 9);
+        assert_eq!(map.len(), 2);
     }
 
     // ── Shrink ────────────────────────────────────────────────────────────────
@@ -1101,23 +1050,26 @@ mod tests {
 
     #[test]
     fn collect_then_extend() {
+        use crate::try_extend::TryExtend;
         let mut a: HashMap<i32, &str> =
             <HashMap<i32, &str> as TryHashMap<_, _, RandomState>>::try_collect([
                 (1, "one"),
                 (2, "two"),
             ])
             .unwrap();
-        a.try_extend([(3, "three")]).unwrap();
+        <_ as TryExtend<(i32, &str)>>::try_extend(&mut a, [(3, "three")]).unwrap();
         assert_eq!(a.len(), 3);
         assert_eq!(a[&3], "three");
     }
 
     #[test]
-    fn extend_from_slice_rollback_on_failure_type() {
-        // We can't easily force a clone failure, but we verify the error type.
+    fn extend_from_slice_success_error_type_shape() {
+        use crate::try_extend::TryExtendFromSlice;
+        // Verify the success path and the (remaining_subslice, error) tuple shape.
         let mut map: HashMap<String, Vec<u8>> = HashMap::new();
         let slice: &[(String, Vec<u8>)] = &[("x".to_string(), vec![1])];
-        let result: Result<(), TryHashMapError> = map.try_extend_from_slice(slice);
+        let result: Result<(), (&[(String, Vec<u8>)], TryHashMapError)> =
+            <_ as TryExtendFromSlice<'_, (String, Vec<u8>)>>::try_extend_from_slice(&mut map, slice);
         assert!(result.is_ok());
         assert_eq!(map["x"], vec![1]);
     }
@@ -1218,13 +1170,14 @@ mod tests {
         assert!(r3_ok, "third alloc should succeed");
     }
 
-    // ── Explicit rollback tests (mid-operation clone failure) ───────────────
+    // ── Mid-operation clone failure: no rollback, remainder returned ─────────
 
     #[test]
-    fn extend_from_slice_rollback_on_mid_way_clone_failure() {
-        // try_extend_from_slice on HashMap<String, String> reserves capacity
-        // upfront, then clones each key/value pair. A mid-way clone failure
-        // must drain all elements already inserted during this call.
+    fn extend_from_slice_returns_remaining_subslice_on_clone_failure() {
+        // A mid-way clone failure must NOT roll back already-inserted entries
+        // (keys may have been overwritten by later source entries, so removing
+        // them would resurrect stale values). Instead, it returns the
+        // unprocessed tail of the slice alongside the error.
         use lang_alloc::string::String;
 
         let source: Vec<(String, String)> = vec![
@@ -1234,78 +1187,100 @@ mod tests {
             ("key6".into(), "val6".into()), ("key7".into(), "val7".into()),
             ("key8".into(), "val8".into()), ("key9".into(), "val9".into()),
         ];
-        let len_source = source.len();
 
-        // Pre-populate with 3 entries to verify they survive rollback.
-        let mut map: HashMap<String, String> = HashMap::from([
-            ("pre_k0".into(), "pre_v0".into()),
-            ("pre_k1".into(), "pre_v1".into()),
-            ("pre_k2".into(), "pre_v2".into()),
-        ]);
-        let len_before = map.len();
+        let mut map: HashMap<String, String> = HashMap::new();
 
-        let r: Result<(), TryHashMapError> =
+        use crate::try_extend::TryExtendFromSlice;
+        let r: Result<(), (&[(String, String)], TryHashMapError)> =
             with_policy(FailPolicy::fail_nth_alloc(2), || {
-                <HashMap<String, String> as TryHashMap<String, String, RandomState>>::try_extend_from_slice(&mut map, &source)
+                <HashMap<String, String> as TryExtendFromSlice<'_, (String, String)>>::try_extend_from_slice(&mut map, &source)
             });
 
         match r {
-            Err(TryHashMapError::Clone(_)) => {
-                // Clone failed mid-way — drain-based rollback must have fired.
-                assert_eq!(
-                    map.len(),
-                    len_before,
-                    "drain rollback did not restore length: expected {}, got {}",
-                    len_before,
-                    map.len()
-                );
-                // Pre-existing entries must be intact.
-                assert_eq!(map["pre_k0"], "pre_v0");
-                assert_eq!(map["pre_k1"], "pre_v1");
-                assert_eq!(map["pre_k2"], "pre_v2");
-                // No source keys should appear.
-                for (sk, _) in &source {
+            Err((remaining, err)) => {
+                matches!(err, TryHashMapError::Clone(_));
+                // The returned subslice must be a contiguous tail of `source`.
+                assert!(!remaining.is_empty());
+                let fail_idx = source.len() - remaining.len();
+                assert_eq!(remaining, &source[fail_idx..]);
+                // Every entry before the failing index was inserted (no rollback).
+                for i in 0..fail_idx {
+                    assert_eq!(map[&source[i].0], source[i].1);
+                }
+                // Entries at or after the failing index were never inserted.
+                for i in fail_idx..source.len() {
                     assert!(
-                        !map.contains_key(sk.as_str()),
-                        "source key found in map after rollback"
+                        !map.contains_key(source[i].0.as_str()),
+                        "entry at failing index or beyond should not be present"
                     );
                 }
             }
             Ok(()) => {
-                assert_eq!(map.len(), len_before + len_source);
-            }
-            Err(other) => {
-                panic!("unexpected error variant: {:?}", other);
+                // If no allocation failed, everything landed.
+                assert_eq!(map.len(), source.len());
             }
         }
     }
 
     #[test]
-    fn extend_from_slice_rollback_with_existing_entries_only() {
-        // Edge case: start with an empty map so that any remaining entries
-        // after rollback would be immediately visible as corruption.
+    fn extend_from_slice_no_rollback_preserves_overwritten_keys() {
+        // The critical scenario motivating "no rollback": the source contains
+        // duplicate keys where a LATER entry overwrites an EARLIER one. Both
+        // "dup" entries are placed at the front so they are always processed
+        // before any mid-slice clone failure can occur. If we had drained
+        // already-inserted entries on that later failure, "dup" would have been
+        // removed entirely (resurrecting nothing, but losing the valid last
+        // value). With no-rollback, "dup" must retain its LAST value "second".
         use lang_alloc::string::String;
 
         let source: Vec<(String, String)> = vec![
-            ("k0".into(), "v0".into()), ("k1".into(), "v1".into()),
-            ("k2".into(), "v2".into()), ("k3".into(), "v3".into()),
-            ("k4".into(), "v4".into()), ("k5".into(), "v5".into()),
-            ("k6".into(), "v6".into()), ("k7".into(), "v7".into()),
-            ("k8".into(), "v8".into()), ("k9".into(), "v9".into()),
+            ("dup".into(), "first".into()),   // index 0: dup -> "first"
+            ("dup".into(), "second".into()),  // index 1: dup -> "second" (overwrite)
+            ("a".into(), "va".into()),
+            ("b".into(), "vb".into()),
+            ("c".into(), "vc".into()),
+            ("d".into(), "vd".into()),
+            ("e".into(), "ve".into()),
+            ("f".into(), "vf".into()),
+            ("g".into(), "vg".into()),
+            ("h".into(), "vh".into()),
+            ("i".into(), "vi".into()),
+            ("j".into(), "vj".into()),
         ];
 
         let mut map: HashMap<String, String> = HashMap::new();
 
-        let _: Result<(), TryHashMapError> =
-            with_policy(FailPolicy::fail_nth_alloc(3), || {
-                <HashMap<String, String> as TryHashMap<String, String, RandomState>>::try_extend_from_slice(&mut map, &source)
+        use crate::try_extend::TryExtendFromSlice;
+        // Fail a clone well past indices 0..2 so both "dup" entries are
+        // guaranteed to be committed before the failure fires.
+        let r: Result<(), (&[(String, String)], TryHashMapError)> =
+            with_policy(FailPolicy::fail_nth_alloc(8), || {
+                <HashMap<String, String> as TryExtendFromSlice<'_, (String, String)>>::try_extend_from_slice(&mut map, &source)
             });
 
-        // After rollback, the map must be empty (we started empty and rolled back).
-        assert!(
-            map.is_empty(),
-            "map should be empty after full rollback, but has {} entries",
-            map.len()
-        );
+        match r {
+            Err((remaining, err)) => {
+                matches!(err, TryHashMapError::Clone(_));
+                // The failure must have occurred strictly after both "dup"
+                // entries were processed, i.e. the remaining tail starts at
+                // some index >= 2.
+                let fail_idx = source.len() - remaining.len();
+                assert!(
+                    fail_idx >= 2,
+                    "failure should land past the two 'dup' entries, got index {}",
+                    fail_idx
+                );
+                // No-rollback: "dup" survived with its LAST (overwriting) value.
+                assert_eq!(
+                    map.get("dup"),
+                    Some(&"second".to_string()),
+                    "overwritten key must keep its LAST value, not the earlier stale one"
+                );
+            }
+            Ok(()) => {
+                // No allocation failed — everything landed, including the overwrite.
+                assert_eq!(map.get("dup"), Some(&"second".to_string()));
+            }
+        }
     }
 }

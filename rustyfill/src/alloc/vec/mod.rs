@@ -5,6 +5,7 @@
 
 pub(crate) mod raw_manipulation;
 mod slice_;
+mod try_extend;
 mod vec_;
 
 #[cfg_attr(not(feature = "std"), expect(unused))]

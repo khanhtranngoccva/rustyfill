@@ -29,6 +29,7 @@
 pub use crate::recovery::{Resumable, ResumableSource, Stallable};
 pub use crate::try_clone::TryClone;
 pub use crate::try_default::TryDefault;
+pub use crate::try_extend::{TryExtend, TryExtendFromSlice};
 pub use crate::try_fmt::{TryDebug, TryDisplay, TryLowerHex, TryUpperHex};
 pub use crate::try_to_owned::TryToOwned;
 
@@ -84,16 +85,12 @@ pub use crate::std::path::{TryPath, TryPathBuf};
 #[cfg(feature = "unstable")]
 pub use crate::dashmap::{TryDashMap, TryDashSet};
 
-// ── BTreeMap & BTreeSet (deprecated — use the `scapegoat` crate) ─────────────
-
-#[cfg(feature = "panic")]
-#[allow(deprecated)]
-pub use crate::alloc::btrees::{TryBTreeMap, TryBTreeSet};
-
 // ── BTreeMap entry API (requires `btree-entry` feature) ───────────────────────
 
 #[cfg(feature = "btree-entry")]
-pub use crate::alloc::btrees::entry::{TryBTreeMapEntry, TryBTreeMapEntryError};
+pub use crate::alloc::btrees::entry::{
+    TryBTreeMap, TryBTreeMapEntry, TryBTreeMapVacantEntry, TryBTreeMapEntryError,
+};
 
 // ── RefCell ──────────────────────────────────────────
 

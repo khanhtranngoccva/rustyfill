@@ -1,25 +1,19 @@
-//! Custom allocation types, allocation errors, and panic payload wrapper.
+//! Custom allocation types and allocation errors.
 //!
 //! The [`alloc`](lang_alloc) (alloc) crate's `AllocError` is not exposed on stable Rust,
 //! so we provide our own equivalent for use across this library. We also provide
-//! [`PayloadBox`], an owning wrapper around the raw panic payload from
-//! `catch_unwind`, and [`TryReserveError`], a unified polyfill for
-//! capacity-reservation failures across different collection backends.
+//! [`TryReserveError`], a unified polyfill for capacity-reservation failures
+//! across different collection backends.
 
-use crate::try_fmt::AssertDebug;
 use crate::try_fmt::{TryDebug, helpers::FormatterExt};
-use lang_alloc::borrow::Cow;
-use lang_alloc::boxed::Box;
 use lang_alloc::collections;
-use lang_alloc::string::String as AllocString;
 use lang_core::alloc::Layout;
-use lang_core::any;
 use lang_core::error;
 use lang_core::fmt::{self, Debug};
 
 pub mod arc;
 pub mod boxed;
-#[cfg(all(feature = "std", any(feature = "panic", feature = "btree-entry")))]
+#[cfg(all(feature = "std", feature = "btree-entry"))]
 pub mod btrees;
 pub mod ffi;
 pub mod rc;
@@ -115,34 +109,3 @@ impl error::Error for TryReserveError {
     }
 }
 
-/// Owning wrapper around the raw panic payload from [`lang_std::panic::catch_unwind`].
-///
-/// Holds the `Box<dyn Any + Send>` verbatim so that constructing the error
-/// after catching a panic performs zero additional allocations.
-#[derive(Debug)]
-pub struct PayloadBox(pub Box<dyn any::Any + Send>);
-
-impl PayloadBox {
-    /// Extract a human-readable message from the payload.
-    ///
-    /// May allocate if the payload contains a `&str` or `String`.
-    /// Callers should only invoke this outside of tight/OOM-sensitive paths
-    /// (e.g. during logging or display formatting).
-    pub fn message(&self) -> Cow<'_, str> {
-        if let Some(s) = self.0.downcast_ref::<&str>() {
-            Cow::Borrowed(*s)
-        } else if let Some(s) = self.0.downcast_ref::<AllocString>() {
-            Cow::Borrowed(s.as_str())
-        } else {
-            Cow::Borrowed("allocation panic (non-string payload)")
-        }
-    }
-}
-
-impl TryDebug for PayloadBox {
-    fn try_fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.try_debug_struct("PayloadBox")
-            .field("0", &AssertDebug(&*self.0))
-            .finish()
-    }
-}

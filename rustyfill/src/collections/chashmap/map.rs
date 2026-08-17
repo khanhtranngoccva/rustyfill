@@ -235,6 +235,18 @@ impl<K: Eq + Hash, V> ConcurrentHashMap<K, V, RandomState> {
     pub fn try_with_capacity(capacity: usize) -> Result<Self, ConcurrentHashMapError> {
         Self::try_with_capacity_and_shards(capacity, 32)
     }
+
+    // ── Aliases with `fallible_` prefix ────────────────────────────────────────
+
+    /// Alias for [`Self::try_new`].
+    pub fn fallible_new() -> Result<Self, ConcurrentHashMapError> {
+        Self::try_new()
+    }
+
+    /// Alias for [`Self::try_with_capacity`].
+    pub fn fallible_with_capacity(capacity: usize) -> Result<Self, ConcurrentHashMapError> {
+        Self::try_with_capacity(capacity)
+    }
 }
 
 impl<K: Eq + Hash, V, S: BuildHasher> ConcurrentHashMap<K, V, S> {
@@ -617,6 +629,143 @@ impl<K: Eq + Hash, V, S: BuildHasher> ConcurrentHashMap<K, V, S> {
                 .map_err(|_| ConcurrentHashMapError::Reserve(TryReserveError::Other))?;
         }
         Ok(())
+    }
+
+    // ── Aliases with `fallible_` prefix ────────────────────────────────────────
+
+    /// Alias for [`Self::try_with_hasher`].
+    pub fn fallible_with_hasher(hasher: S) -> Result<Self, ConcurrentHashMapError> {
+        Self::try_with_hasher(hasher)
+    }
+
+    /// Alias for [`Self::try_with_capacity_and_hasher`].
+    pub fn fallible_with_capacity_and_hasher(
+        capacity: usize,
+        hasher: S,
+    ) -> Result<Self, ConcurrentHashMapError> {
+        Self::try_with_capacity_and_hasher(capacity, hasher)
+    }
+
+    /// Alias for [`Self::try_with_shards`].
+    pub fn fallible_with_shards(shard_count: usize) -> Result<Self, ConcurrentHashMapError>
+    where
+        S: TryDefault,
+    {
+        Self::try_with_shards(shard_count)
+    }
+
+    /// Alias for [`Self::try_with_capacity_and_shards`].
+    pub fn fallible_with_capacity_and_shards(
+        capacity: usize,
+        shard_count: usize,
+    ) -> Result<Self, ConcurrentHashMapError>
+    where
+        S: TryDefault,
+    {
+        Self::try_with_capacity_and_shards(capacity, shard_count)
+    }
+
+    /// Alias for [`Self::try_with_hasher_and_shards`].
+    pub fn fallible_with_hasher_and_shards(
+        hasher: S,
+        shard_count: usize,
+    ) -> Result<Self, ConcurrentHashMapError> {
+        Self::try_with_hasher_and_shards(hasher, shard_count)
+    }
+
+    /// Alias for [`Self::try_with_capacity_and_hasher_and_shards`].
+    pub fn fallible_with_capacity_and_hasher_and_shards(
+        capacity: usize,
+        hasher: S,
+        shard_count: usize,
+    ) -> Result<Self, ConcurrentHashMapError> {
+        Self::try_with_capacity_and_hasher_and_shards(capacity, hasher, shard_count)
+    }
+
+    /// Alias for [`Self::try_insert`].
+    pub fn fallible_insert(&self, key: K, value: V) -> Result<Option<V>, ConcurrentHashMapError>
+    where
+        K: Eq + Hash,
+    {
+        Self::try_insert(self, key, value)
+    }
+
+    /// Alias for [`Self::try_insert_give_back`].
+    pub fn fallible_insert_give_back(
+        &self,
+        key: K,
+        value: V,
+    ) -> Result<Option<V>, (K, V, ConcurrentHashMapError)>
+    where
+        K: Eq + Hash,
+    {
+        Self::try_insert_give_back(self, key, value)
+    }
+
+    /// Alias for [`Self::try_insert_unique`].
+    pub fn fallible_insert_unique(
+        &self,
+        key: K,
+        value: V,
+    ) -> Result<(), (K, V, ConcurrentHashMapError)>
+    where
+        K: Eq + Hash + Clone,
+    {
+        Self::try_insert_unique(self, key, value)
+    }
+
+    /// Alias for [`Self::try_remove`].
+    pub fn fallible_remove(&self, key: K) -> Result<Option<V>, ConcurrentHashMapError>
+    where
+        K: Eq + Hash,
+    {
+        Self::try_remove(self, key)
+    }
+
+    /// Alias for [`Self::try_remove_entry`].
+    pub fn fallible_remove_entry(
+        &self,
+        key: K,
+    ) -> Result<Option<(K, V)>, ConcurrentHashMapError>
+    where
+        K: Eq + Hash,
+    {
+        Self::try_remove_entry(self, key)
+    }
+
+    /// Alias for [`Self::try_entry`].
+    pub fn fallible_entry(&self, key: K) -> Result<Entry<'_, K, V>, ConcurrentHashMapError>
+    where
+        K: Eq + Hash,
+    {
+        Self::try_entry(self, key)
+    }
+
+    /// Alias for [`Self::try_entry_nonblock`].
+    pub fn fallible_entry_nonblock(
+        &self,
+        key: K,
+    ) -> Result<Option<Entry<'_, K, V>>, ConcurrentHashMapNonblockError>
+    where
+        K: Eq + Hash,
+    {
+        Self::try_entry_nonblock(self, key)
+    }
+
+    /// Alias for [`Self::try_entry_give_back`].
+    pub fn fallible_entry_give_back(
+        &self,
+        key: K,
+    ) -> Result<Entry<'_, K, V>, (K, ConcurrentHashMapError)>
+    where
+        K: Eq + Hash,
+    {
+        Self::try_entry_give_back(self, key)
+    }
+
+    /// Alias for [`Self::try_reserve`].
+    pub fn fallible_reserve(&self, additional: usize) -> Result<(), ConcurrentHashMapError> {
+        Self::try_reserve(self, additional)
     }
 
     // ── Iteration ─────────────────────────────────────────────────────────

@@ -102,6 +102,14 @@ pub trait TryDefault {
     fn try_default() -> Result<Self, TryDefaultError>
     where
         Self: Sized;
+
+    /// Alias for [`Self::try_default`].
+    fn fallible_default() -> Result<Self, TryDefaultError>
+    where
+        Self: Sized,
+    {
+        Self::try_default()
+    }
 }
 
 // ── Macro helpers ──────────────────────────────────────────────────────────────

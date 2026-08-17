@@ -176,7 +176,7 @@ impl<K: Key, V> SecondaryMap<K, V> {
     /// Creates a [`SecondaryMap`] with the given capacity.
     ///
     /// Returns [`SecondaryMapError::Overflow`] if `capacity` would exceed the
-    /// maximum number of usable slots ([`MAX_SLOTS_LEN`] – 1), accounting for
+    /// maximum number of usable slots (`MAX_SLOTS_LEN` – 1), accounting for
     /// the sentinel that always occupies index 0.
     pub fn try_with_capacity(capacity: usize) -> Result<Self, SecondaryMapError> {
         if capacity >= MAX_SLOTS_LEN.saturating_sub(1) {
@@ -212,7 +212,7 @@ impl<K: Key, V> SecondaryMap<K, V> {
     /// Tries to set the capacity to at least `new_capacity`.
     ///
     /// Returns [`SecondaryMapError::Overflow`] if `new_capacity` would exceed
-    /// the maximum number of usable slots ([`MAX_SLOTS_LEN`] – 1).
+    /// the maximum number of usable slots (`MAX_SLOTS_LEN` – 1).
     pub fn try_set_capacity(&mut self, new_capacity: usize) -> Result<(), SecondaryMapError> {
         if new_capacity >= MAX_SLOTS_LEN.saturating_sub(1) {
             return Err(SecondaryMapError::Overflow);
@@ -406,6 +406,49 @@ impl<K: Key, V> SecondaryMap<K, V> {
                 _k: PhantomData,
             })))
         }
+    }
+
+    // ── Aliases with `fallible_` prefix ────────────────────────────────────────
+
+    /// Alias for [`Self::try_new`].
+    pub fn fallible_new() -> Result<Self, SecondaryMapError> {
+        Self::try_new()
+    }
+
+    /// Alias for [`Self::try_with_capacity`].
+    pub fn fallible_with_capacity(capacity: usize) -> Result<Self, SecondaryMapError> {
+        Self::try_with_capacity(capacity)
+    }
+
+    /// Alias for [`Self::try_set_capacity`].
+    pub fn fallible_set_capacity(&mut self, new_capacity: usize) -> Result<(), SecondaryMapError> {
+        Self::try_set_capacity(self, new_capacity)
+    }
+
+    /// Alias for [`Self::try_insert`].
+    pub fn fallible_insert(
+        &mut self,
+        key: K,
+        value: V,
+    ) -> Result<Option<V>, SecondaryMapError> {
+        Self::try_insert(self, key, value)
+    }
+
+    /// Alias for [`Self::try_insert_give_back`].
+    pub fn fallible_insert_give_back(
+        &mut self,
+        key: K,
+        value: V,
+    ) -> Result<Option<V>, (V, SecondaryMapError)> {
+        Self::try_insert_give_back(self, key, value)
+    }
+
+    /// Alias for [`Self::try_entry`].
+    pub fn fallible_entry(
+        &mut self,
+        key: K,
+    ) -> Result<Option<Entry<'_, K, V>>, SecondaryMapError> {
+        Self::try_entry(self, key)
     }
 
     // ── Iterators ──────────────────────────────────────────────────────────────

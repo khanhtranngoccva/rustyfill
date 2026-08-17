@@ -5,5 +5,6 @@
 //! panicking on allocation failure.
 
 mod hashset_;
+mod try_extend;
 
 pub use hashset_::{TryHashSet, TryHashSetError};

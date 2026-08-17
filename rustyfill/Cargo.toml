@@ -55,17 +55,9 @@ std = [
     "parking_lot/default",
     "crossbeam-utils/default",
 ]
-# Deprecated: enables the B-tree map/set fallible wrappers which rely on
-# `catch_unwind`. This approach cannot survive genuine OOM because
-# `handle_alloc_error` calls `abort()` rather than panicking, so `catch_unwind`
-# never catches anything. Use the `scapegoat` crate for fallible trees instead.
-# Retained for backward compatibility only. Requires `panic = "unwind"` (the
-    # default); the build script errors if enabled under `panic = "abort"`.
-panic = ["std"]
 # Enables fallible B-tree entry operations via direct manipulation of internal
-# node allocations using rustyfill-sys bindings. This approach properly handles
-# OOM by returning Result instead of panicking, unlike the deprecated catch_unwind
-# approach in the `panic` feature.
+# node allocations using rustyfill-sys bindings. Properly handles OOM by
+# returning Result instead of panicking.
 btree-entry = ["dep:rustyfill-sys", "std"]
 # Enables DashMap/DashSet wrappers. These do NOT guarantee panic-free behavior:
 # `DashMap::new()` implicitly allocates shards and has no fallible constructor,
