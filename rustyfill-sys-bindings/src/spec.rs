@@ -59,48 +59,33 @@ fn core_target() -> BindingTarget {
 fn alloc_target() -> BindingTarget {
     let mut target = BindingTarget::new("alloc");
 
+    // Mirror collections::TryReserveError and its TryReserveErrorKind enum. The
+    // main crate re-exports the standard library's own `TryReserveError` and
+    // constructs it by transmuting from this generated mirror (see
+    // `rustyfill/src/alloc.rs`). Because these bindings are emitted directly
+    // from the std source, any change to the real type's fields or variants in
+    // the standard library breaks compilation here — surfacing layout drift at
+    // build time rather than letting a hand-written mirror silently diverge.
+    target.declare_struct("collections::TryReserveError");
+    target.declare_struct("collections::TryReserveErrorKind");
+    // The real `TryReserveError` derives Clone/PartialEq/Eq/Debug and embeds a
+    // `kind: TryReserveErrorKind`, so the mirrored enum must carry the same set
+    // for those container derives to expand. Inject them explicitly rather than
+    // relying on the generator to pick up std's per-type derives.
+    for derive in ["Clone", "PartialEq", "Eq", "Debug"] {
+        target.add_derive("collections::TryReserveErrorKind", derive);
+    }
+
     // ── B-tree containers ───────────────────────────────────────────────────
-    // Public container shells plus every type reachable through their fields.
-    // Private internals (node markers, handles, ranges, iterators) are
-    // declared explicitly so that the field-publicity check passes and every
-    // reference routes to a mirrored definition in our tree.
+    // Only the two public container shells are mirrored. Their iterators,
+    // cursors, range views, and set-algebra engines are peripheral to the
+    // fallible-insertion polyfill and are deliberately left undeclared: any
+    // references to them route straight back to the original builtin types.
     target.declare_struct("collections::btree::map::BTreeMap");
     target.declare_struct("collections::btree::set::BTreeSet");
 
-    // map.rs public API surface (containers, iterators, cursors, entry).
-    target.declare_struct("collections::btree::map::Iter");
-    target.declare_struct("collections::btree::map::IterMut");
-    target.declare_struct("collections::btree::map::IntoIter");
-    target.declare_struct("collections::btree::map::Keys");
-    target.declare_struct("collections::btree::map::Values");
-    target.declare_struct("collections::btree::map::ValuesMut");
-    target.declare_struct("collections::btree::map::IntoKeys");
-    target.declare_struct("collections::btree::map::IntoValues");
-    target.declare_struct("collections::btree::map::Range");
-    target.declare_struct("collections::btree::map::RangeMut");
-    target.declare_struct("collections::btree::map::ExtractIf");
-    target.declare_struct("collections::btree::map::ExtractIfInner");
-    target.declare_struct("collections::btree::map::Cursor");
-    target.declare_struct("collections::btree::map::CursorMut");
-    target.declare_struct("collections::btree::map::CursorMutKey");
-    target.declare_struct("collections::btree::map::UnorderedKeyError");
-
-    // set.rs public API surface.
-    target.declare_struct("collections::btree::set::Iter");
-    target.declare_struct("collections::btree::set::IntoIter");
-    target.declare_struct("collections::btree::set::Range");
-    target.declare_struct("collections::btree::set::Difference");
-    target.declare_struct("collections::btree::set::DifferenceInner");
-    target.declare_struct("collections::btree::set::SymmetricDifference");
-    target.declare_struct("collections::btree::set::Intersection");
-    target.declare_struct("collections::btree::set::IntersectionInner");
-    target.declare_struct("collections::btree::set::Union");
-    target.declare_struct("collections::btree::set::ExtractIf");
-    target.declare_struct("collections::btree::set::Cursor");
-    target.declare_struct("collections::btree::set::CursorMut");
-    target.declare_struct("collections::btree::set::CursorMutKey");
-
-    // Entry API (map/entry.rs and set/entry.rs).
+    // Entry API (map/entry.rs and set/entry.rs). The fallible entry methods
+    // manipulate these directly, so they must be mirrored.
     target.declare_struct("collections::btree::map::entry::Entry");
     target.declare_struct("collections::btree::map::entry::VacantEntry");
     target.declare_struct("collections::btree::map::entry::OccupiedEntry");
@@ -137,23 +122,8 @@ fn alloc_target() -> BindingTarget {
     target.declare_struct("collections::btree::node::marker::KV");
     target.declare_struct("collections::btree::node::marker::Edge");
 
-    // navigate.rs: leaf-range navigation state used by iterators.
-    target.declare_struct("collections::btree::navigate::LazyLeafRange");
-    target.declare_struct("collections::btree::navigate::LeafRange");
-    target.declare_struct("collections::btree::navigate::LazyLeafHandle");
-
-    // search.rs: bound classification for lookups.
-    target.declare_struct("collections::btree::search::SearchBound");
-
-    // borrow.rs: stacked-borrow helper for mutable iteration.
+    // borrow.rs: stacked-borrow helper used by the fallible entry methods.
     target.declare_struct("collections::btree::borrow::DormantMutRef");
-
-    // merge_iter.rs: dual-iterator engine behind set Difference/SymmetricDiff/Union.
-    target.declare_struct("collections::btree::merge_iter::MergeIterInner");
-    target.declare_struct("collections::btree::merge_iter::Peeked");
-
-    // dedup_sorted_iter.rs: wrapper used by from_sorted-style construction.
-    target.declare_struct("collections::btree::dedup_sorted_iter::DedupSortedIter");
 
     // set_val.rs: zero-sized value type making BTreeSet a BTreeMap<T, SetValZST>.
     target.declare_struct("collections::btree::set_val::SetValZST");
@@ -162,13 +132,6 @@ fn alloc_target() -> BindingTarget {
     // Box struct owned by this crate rather than the real alloc::boxed::Box.
     // This avoids the unstable allocator_api feature entirely.
     target.declare_struct("boxed::Box");
-
-    // Mirror collections::TryReserveError and its TryReserveErrorKind enum so the
-    // polyfill can construct capacity-reservation errors with diagnostic detail
-    // (layout of the failed allocation, or overflow). The private `kind` field is
-    // widened to public during emission.
-    target.declare_struct("collections::TryReserveError");
-    target.declare_struct("collections::TryReserveErrorKind");
 
     // Ignore Allocator trait: the polyfill only operates over the global
     // allocator (a ZST), so callers cast references to unit structs and

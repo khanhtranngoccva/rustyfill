@@ -20,7 +20,6 @@ use crate::alloc::vec::{TrySlice, TryVecError};
 use crate::try_clone::{TryClone, TryCloneError};
 use crate::try_default::{TryDefault, TryDefaultError};
 use crate::try_fmt::{TryDebug, helpers::FormatterExt};
-use lang_alloc::collections::TryReserveError as StdTryReserveError;
 use lang_alloc::ffi::CString;
 use lang_alloc::vec::Vec;
 use lang_core::fmt;
@@ -69,12 +68,6 @@ impl From<AllocError> for TryCStringError {
 impl From<TryReserveError> for TryCStringError {
     fn from(err: TryReserveError) -> Self {
         Self::Reserve(err)
-    }
-}
-
-impl From<StdTryReserveError> for TryCStringError {
-    fn from(err: StdTryReserveError) -> Self {
-        Self::Reserve(TryReserveError::from(err))
     }
 }
 

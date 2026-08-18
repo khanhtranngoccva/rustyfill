@@ -153,7 +153,7 @@ mod alloc_inner {
         let ptr = unsafe {
             let raw = alloc::alloc(layout);
             if raw.is_null() {
-                return Err(AllocError { layout });
+                return Err(AllocError);
             }
             raw.cast::<MaybeUninit<T>>()
         };
@@ -169,7 +169,7 @@ mod alloc_inner {
         let ptr = unsafe {
             let raw = alloc::alloc_zeroed(layout);
             if raw.is_null() {
-                return Err(AllocError { layout });
+                return Err(AllocError);
             }
             raw.cast::<MaybeUninit<T>>()
         };

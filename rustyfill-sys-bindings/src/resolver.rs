@@ -104,6 +104,12 @@ pub struct ModuleResolver {
     /// resolution (Phase 1c) are NOT in this set, so generated use statements
     /// won't reference modules that won't be emitted.
     emittable_files: HashSet<String>,
+    /// Canonical paths (`lib::module::Leaf`) of types explicitly declared in the
+    /// loader spec. Consulted by the existence checks below so they only count
+    /// items the emitter will actually mirror. Without this, checks would count
+    /// peripheral public items (iterators, cursors, range views, …) that the
+    /// emitter now filters out, producing dangling re-exports.
+    declared_paths: HashSet<String>,
 }
 
 impl ModuleResolver {
@@ -116,7 +122,15 @@ impl ModuleResolver {
             visiting: HashSet::new(),
             sources: HashMap::new(),
             emittable_files: HashSet::new(),
+            declared_paths: HashSet::new(),
         }
+    }
+
+    /// Populate the set of spec-declared canonical paths. Called once after the
+    /// type registry is built, before any use-statement generation, so the
+    /// existence checks agree with what the emitter will actually output.
+    pub fn set_declared_paths(&mut self, paths: impl IntoIterator<Item = String>) {
+        self.declared_paths = paths.into_iter().collect();
     }
 
     /// Register a canonical file path. This populates the module tree so that
@@ -699,21 +713,83 @@ impl ModuleResolver {
         None
     }
 
-    /// Check if a module file has any parsed items (structs, enums, etc.).
-    /// Modules with only functions or constants won't have items and thus
-    /// won't produce emitted content.
+    /// Whether a parsed item counts as *emitted* content: it must be a data
+    /// structure AND explicitly declared in the spec. This mirrors the emitter's
+    /// own filter so that use-statement generation doesn't reference modules or
+    /// items the emitter stripped out (iterators, cursors, range views, …).
+    fn is_emitted_item(&self, item: &crate::parser::ParsedItem, module_path: &str) -> bool {
+        let is_data_type = matches!(
+            item.kind,
+            crate::parser::ItemKind::Struct
+                | crate::parser::ItemKind::Enum
+                | crate::parser::ItemKind::Union
+                | crate::parser::ItemKind::TypeAlias
+        );
+        if !is_data_type {
+            return false;
+        }
+        // If no declared set was supplied, fall back to the old behaviour
+        // (count every data type) so callers that don't care still work.
+        if self.declared_paths.is_empty() {
+            return true;
+        }
+        // Build the module+leaf portion with `::` separators (matching the
+        // canonical path format used by the registry), then try each known
+        // library prefix. The resolver doesn't track which library a file
+        // belongs to, so we check against all three (core/alloc/std).
+        let module_qualified = module_path.replace('/', "::");
+        let suffix = if module_qualified.is_empty() {
+            item.name.clone()
+        } else {
+            format!("{}::{}", module_qualified, item.name)
+        };
+        for lib in ["core", "alloc", "std"] {
+            if self.declared_paths.contains(&format!("{}::{}", lib, suffix)) {
+                return true;
+            }
+        }
+        false
+    }
+
+    /// Check if a module file will emit any data-structure content. Modules whose
+    /// only public items are now filtered out (e.g., a set-side entry module whose
+    /// types all route to their map-side mirrors) correctly report empty here, so
+    /// stale re-exports of them are dropped.
     pub fn module_has_items(&self, file_path: &str) -> bool {
+        let module_path = Self::file_to_module_path_str(file_path);
         match self.sources.get(file_path) {
-            Some(s) => !s.items.is_empty(),
+            Some(s) => s
+                .items
+                .iter()
+                .any(|i| self.is_emitted_item(i, &module_path)),
             None => false,
         }
     }
 
     /// Check whether a specific named item (struct, enum, union, const, type alias)
-    /// exists in the parsed source for the given file path.
+    /// will actually be emitted from the given file path.
     pub fn item_exists_in_module(&self, file_path: &str, item_name: &str) -> bool {
+        let module_path = Self::file_to_module_path_str(file_path);
         match self.sources.get(file_path) {
-            Some(s) => s.items.iter().any(|i| i.name == item_name),
+            Some(s) => s
+                .items
+                .iter()
+                .any(|i| i.name == item_name && self.is_emitted_item(i, &module_path)),
+            None => false,
+        }
+    }
+
+    /// Raw existence probe: does an item with this name appear anywhere in the
+    /// parsed source for the file — as a top-level item OR as an inline module?
+    /// Unlike [`item_exists_in_module`], this ignores the spec-declaration filter,
+    /// because import emission must succeed even when the imported name is a
+    /// submodule (e.g., `marker`) or a declared type whose *container* file has
+    /// no other declared items. Used only to decide whether a resolved import
+    /// points at something real; it never gates what gets emitted.
+    pub fn item_present_raw(&self, file_path: &str, item_name: &str) -> bool {
+        match self.sources.get(file_path) {
+            Some(s) => s.items.iter().any(|i| i.name == item_name)
+                || s.inline_modules.iter().any(|(name, _)| name == item_name),
             None => false,
         }
     }
@@ -801,9 +877,14 @@ impl ModuleResolver {
                         }
                         // Additionally, check that the specific item actually exists
                         // in the parsed source. If the module was discovered but doesn't
-                        // contain this particular type (e.g., io/mod.rs has structs but
-                        // not Error), skip the import.
-                        if !self.item_exists_in_module(tf, item_name) {
+                        // contain this particular name (e.g., io/mod.rs has structs but
+                        // not Error), skip the import. Use the raw presence probe here —
+                        // NOT the declaration-filtered one — because a valid import can
+                        // target a submodule (e.g., `marker`) or a declared type whose
+                        // container file carries no other declared items. Filtering by
+                        // declaration would silently drop these imports and leave the
+                        // generated code referencing unimported names.
+                        if !self.item_present_raw(tf, item_name) {
                             continue;
                         }
                     } else {

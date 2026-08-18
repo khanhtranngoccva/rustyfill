@@ -59,7 +59,6 @@ use crate::alloc::AllocError;
 use lang_alloc::collections::BTreeMap;
 use lang_alloc::collections::btree_map::{Entry, VacantEntry};
 
-use lang_alloc::alloc::Layout;
 use lang_core::fmt;
 use lang_core::marker::PhantomData;
 use lang_core::mem;
@@ -89,13 +88,10 @@ mod sys {
 type InsertResult<'a, K, V> =
     Result<(sys::NodeRef<sys::Mut<'a>, K, V, sys::LeafOrInternal>, usize), (K, V, AllocError)>;
 
-/// Construct an [`AllocError`] carrying a placeholder layout. Used when a
-/// fallible allocation primitive (e.g. `Vec::try_reserve`) reports failure
-/// without exposing the exact `Layout` that failed.
+/// Construct an [`AllocError`]. Used when a fallible allocation primitive
+/// (e.g. `Vec::try_reserve`) reports failure.
 fn alloc_error() -> AllocError {
-    AllocError {
-        layout: unsafe { Layout::from_size_align_unchecked(1, 1) },
-    }
+    AllocError
 }
 
 // ── Error types ───────────────────────────────────────────────────────────────
@@ -1681,7 +1677,6 @@ mod tests {
         };
         assert_eq!(key, 1);
         assert_eq!(val, 10);
-        assert!(alloc_err.layout.size() >= 1);
         assert!(map.is_empty());
     }
 
@@ -1698,7 +1693,6 @@ mod tests {
         let (returned_key, returned_val, err) = r.unwrap_err();
         assert_eq!(returned_key, 1);
         assert_eq!(returned_val, 2);
-        assert!(err.layout.size() >= 1);
         assert!(map.is_empty());
     }
 
@@ -1716,7 +1710,6 @@ mod tests {
         let (returned_key, returned_val, err) = r.unwrap_err();
         assert_eq!(returned_key, 11);
         assert_eq!(returned_val, 110);
-        assert!(err.layout.size() >= 1);
         assert_eq!(map.len(), 11);
         for i in 0..11 {
             assert_eq!(map[&i], i * 10);
@@ -1737,7 +1730,6 @@ mod tests {
             Err((k, v, err)) => {
                 assert_eq!(k, 31);
                 assert_eq!(v, 310);
-                assert!(err.layout.size() >= 1);
                 assert_eq!(map.len(), 30);
                 for i in 0..30 {
                     assert_eq!(map[&i], i * 10);
@@ -1912,7 +1904,6 @@ mod tests {
         let (returned_key, returned_val, err) = r.unwrap_err();
         assert_eq!(returned_key, 11);
         assert_eq!(returned_val, 110);
-        assert!(err.layout.size() >= 1);
         // Tree untouched: still 11 entries, all values preserved.
         assert_eq!(map.len(), 11);
         for i in 0..11 {
@@ -2002,7 +1993,6 @@ mod tests {
             TryBTreeMap::try_insert(&mut map, 1, 2)
         });
         assert!(r.is_err(), "first insert should fail on OOM");
-        assert!(r.unwrap_err().layout.size() >= 1);
         assert!(map.is_empty());
     }
 
@@ -2017,7 +2007,6 @@ mod tests {
             TryBTreeMap::try_insert(&mut map, 11, 110)
         });
         assert!(r.is_err(), "split allocation should fail on OOM");
-        assert!(r.unwrap_err().layout.size() >= 1);
         // Tree untouched: still 11 entries, all values preserved.
         assert_eq!(map.len(), 11);
         for i in 0..11 {
@@ -2037,7 +2026,6 @@ mod tests {
         });
         match r {
             Err(e) => {
-                assert!(e.layout.size() >= 1);
                 assert_eq!(map.len(), 30);
                 for i in 0..30 {
                     assert_eq!(map[&i], i * 10);
@@ -2807,7 +2795,6 @@ mod tests {
             Entry::Occupied(_) => unreachable!(),
         });
         assert!(r.is_err());
-        assert!(r.unwrap_err().layout.size() >= 1);
         assert!(map.is_empty());
     }
 

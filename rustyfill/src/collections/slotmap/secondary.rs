@@ -146,12 +146,6 @@ impl From<TryReserveError> for SecondaryMapError {
     }
 }
 
-impl From<lang_alloc::collections::TryReserveError> for SecondaryMapError {
-    fn from(e: lang_alloc::collections::TryReserveError) -> Self {
-        Self::Reserve(TryReserveError::from(e))
-    }
-}
-
 // ── SecondaryMap ────────────────────────────────────────────────────────────────
 
 /// Secondary map that associates extra data with keys from a [`SlotMap`](crate::collections::slotmap::SlotMap).

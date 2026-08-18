@@ -21,7 +21,7 @@
 //! assert!(a.ptr_eq(&b)); // Same underlying Arc
 //! ```
 
-use crate::alloc::TryReserveError;
+use crate::alloc::TryReserveErrorExt;
 use crate::collections::chashmap::ConcurrentHashMap;
 use crate::std::arc::{TryArc, TryWeak};
 use crate::try_clone::TryClone;
@@ -32,6 +32,7 @@ use crate::try_fmt::TryDebug;
 use crate::try_to_owned::{TryToOwned, TryToOwnedError};
 use lang_alloc::borrow::ToOwned;
 use lang_alloc::string::String;
+use lang_core::alloc::Layout;
 use lang_core::fmt;
 use lang_core::hash::Hash;
 use lang_std::ffi::{CStr, CString, OsStr, OsString};
@@ -378,7 +379,7 @@ where
         })
         .is_err()
     {
-        return Err(TryToOwnedError::Reserve(TryReserveError::Other));
+        return Err(TryToOwnedError::Reserve(TryReserveErrorExt::new_alloc(Layout::new::<u8>())));
     }
 
     let create_new_arc = || -> Result<Arc<B::Owned>, TryToOwnedError> {

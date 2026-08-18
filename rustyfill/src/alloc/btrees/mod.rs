@@ -15,7 +15,7 @@
 //! of panicking. The key lookup performed by the standard `BTreeMap::entry()`
 //! is allocation-free (a pure pointer descent), so all three traits are safe to
 //! call under an intermittently failing allocator — only the split cascade can
-//! fail, and it does so gracefully. Requires the `btree-entry` feature.
+//! fail, and it does so gracefully.
 //!
 //! An earlier revision of this crate shipped `catch_unwind`-based `TryBTreeMap`
 //! and `TryBTreeSet` wrappers (the `panic` feature). Those have been removed:
@@ -25,7 +25,5 @@
 //! panicked mutation — e.g. elements stranded mid-promotion during a split can be
 //! silently lost.
 
-#[cfg(feature = "btree-entry")]
 pub mod entry;
-#[cfg(feature = "btree-entry")]
 mod entry_try_extend;

@@ -245,7 +245,7 @@ impl TypeRegistry {
             .map(|p| (suffix_overlap(p, module_context), p))
             .collect();
         let mut scored_sorted = scored;
-        scored_sorted.sort_by(|a, b| b.0.cmp(&a.0));
+        scored_sorted.sort_by_key(|b| std::cmp::Reverse(b.0));
 
         // Among the highest-scoring candidates, prefer declared, then exported.
         let max_score = scored_sorted.first().map(|(s, _)| *s).unwrap_or(0);
@@ -277,6 +277,22 @@ impl TypeRegistry {
     /// Iterate over all declared types.
     pub fn declared_paths(&self) -> impl Iterator<Item = &String> {
         self.declared.iter()
+    }
+
+    /// True when a type at `lib_name::{module_path}::{leaf}` is explicitly
+    /// declared in the loader spec. Used by the emitter to restrict output to
+    /// declared data structures only, so peripheral public items that merely sit
+    /// alongside them (iterators, cursors, range views, …) are not mirrored
+    /// unless they are part of the polyfill's core surface.
+    pub fn is_declared_in_module(&self, lib_name: &str, module_path: &str, leaf: &str) -> bool {
+        let mut canonical = String::from(lib_name);
+        if !module_path.is_empty() {
+            canonical.push_str("::");
+            canonical.push_str(module_path);
+        }
+        canonical.push_str("::");
+        canonical.push_str(leaf);
+        self.declared.contains(&canonical)
     }
 }
 
@@ -898,6 +914,9 @@ pub struct EmitConfig<'a> {
     /// Registry of known/declared types, used to route field references to
     /// mirrored bindings (declared) or original types (public, undeclared).
     pub type_registry: &'a TypeRegistry,
+    /// Additional derive traits to inject into emitted definitions, keyed by
+    /// canonical path relative to the library root.
+    pub extra_derives: &'a std::collections::HashMap<String, Vec<String>>,
 }
 
 /// Mangled name for the per-target preamble module. Unlikely to collide with
@@ -1039,7 +1058,7 @@ pub fn preamble_content() -> String {
 /// Derives that are safe to keep on mirrored types — the derived trait only
 /// requires the type's own fields to implement it, and our mirrored fields
 /// use the same (or simpler) types as the original.
-const SAFE_DERIVES: &[&str] = &["PartialEq", "Eq"];
+const SAFE_DERIVES: &[&str] = &["PartialEq", "Eq", "Debug", "Clone"];
 
 fn is_emittable_attr(attr: &syn::Attribute) -> bool {
     let Some(ident) = attr.path().get_ident() else {
@@ -1102,7 +1121,6 @@ fn is_blocked_attr_name(name: &str) -> bool {
             | "allow_internal_unstable"
             | "deny_internal_unstable"
             | "diagnostic"
-            | "derive"
     ) || name.starts_with("rustc_")
 }
 
@@ -1279,6 +1297,22 @@ pub fn emit_parsed_items(
     let guard = LocalNameGuard::new(Some(&local_names));
 
     for item in items {
+        // Constants are always emitted: file-level consts (e.g., `const B` in
+        // btree/node.rs) are referenced by bare name from the data structures
+        // that follow them, so dropping one would leave its dependents dangling.
+        // They carry no cross-module surface, so they're safe to keep wholesale.
+        let is_const = item.kind == ItemKind::Const;
+        // For data structures, restrict output to types explicitly declared in
+        // the loader spec. This keeps peripheral public items that live
+        // alongside the core data structures (iterators, cursors, range views,
+        // set-algebra engines, …) out of the mirrored tree unless they are
+        // needed by the polyfill. Any reference to such an undeclared type
+        // routes back to the original builtin crate instead.
+        if !is_const
+            && !config.type_registry.is_declared_in_module(config.lib_name, module_path, &item.name)
+        {
+            continue;
+        }
         // Skip items whose fully qualified path matches an ignored struct.
         let fq_path = if module_path.is_empty() {
             item.name.clone()
@@ -1296,6 +1330,7 @@ pub fn emit_parsed_items(
             config.type_registry,
             module_path,
             &guard,
+            config.extra_derives,
         );
     }
 
@@ -1310,6 +1345,7 @@ fn emit_item(
     type_registry: &TypeRegistry,
     module_ctx: &str,
     guard: &LocalNameGuard<'_>,
+    extra_derives: &std::collections::HashMap<String, Vec<String>>,
 ) {
     // The full_tokens already include all attributes + the item definition.
     // Pipeline:
@@ -1373,7 +1409,14 @@ fn emit_item(
     // The tokens already carry the filtered attributes (doc/internal attrs were
     // stripped by [`strip_blocked_attributes`]), so the AST-based reference
     // rewrite parses them directly without re-prepending `item.attrs`.
-    let rerouted = rewrite_item_references_rerouted(&const_stripped, item, type_registry, module_ctx, guard);
+    let rerouted = rewrite_item_references_rerouted(
+        &const_stripped,
+        item,
+        type_registry,
+        module_ctx,
+        guard,
+        extra_derives,
+    );
     let widened = widen_visibility(rerouted);
     let rewritten = rewrite_crate_paths(widened, preamble_use_path, path_replacements);
     write!(out, "{}", rewritten).ok();
@@ -1497,13 +1540,92 @@ fn rewrite_item_references_rerouted(
     registry: &TypeRegistry,
     module_ctx: &str,
     guard: &LocalNameGuard<'_>,
+    extra_derives: &std::collections::HashMap<String, Vec<String>>,
 ) -> TokenStream {
     let name = item.name.as_str();
     let kind = item.kind;
+    // Compute the path relative to the library root (matching the spec's key
+    // format) so we can look up any spec-requested extra derives.
+    let rel_path = if module_ctx.is_empty() {
+        name.to_string()
+    } else {
+        format!("{}::{}", module_ctx.replace('/', "::"), name)
+    };
+    let injected_derives = extra_derives.get(&rel_path).cloned().unwrap_or_default();
+
+    fn inject_derives(attrs: &mut Vec<syn::Attribute>, new_traits: &[String]) {
+        if new_traits.is_empty() {
+            return;
+        }
+        // Find an existing derive attribute and merge into it, or create one.
+        let existing_idx = attrs.iter().position(|a| a.path().is_ident("derive"));
+        match existing_idx {
+            Some(idx) => {
+                if let syn::Meta::List(list) = &mut attrs[idx].meta {
+                    // Parse existing trait names from the token stream.
+                    let existing_tokens: Vec<String> = list
+                        .tokens
+                        .clone()
+                        .into_iter()
+                        .filter_map(|tt| match tt {
+                            proc_macro2::TokenTree::Ident(id) => Some(id.to_string()),
+                            _ => None,
+                        })
+                        .collect();
+                    let mut all = existing_tokens;
+                    for t in new_traits {
+                        if !all.contains(t) {
+                            all.push(t.clone());
+                        }
+                    }
+                    // Rebuild the token stream as a comma-separated ident list.
+                    let mut new_tokens = proc_macro2::TokenStream::new();
+                    for (i, name) in all.iter().enumerate() {
+                        if i > 0 {
+                            new_tokens.extend(
+                                ",".to_string()
+                                    .parse::<proc_macro2::TokenStream>()
+                                    .unwrap(),
+                            );
+                        }
+                        new_tokens.extend(
+                            name.parse::<proc_macro2::TokenStream>().unwrap(),
+                        );
+                    }
+                    list.tokens = new_tokens;
+                }
+            }
+            None => {
+                let mut tokens = proc_macro2::TokenStream::new();
+                for (i, t) in new_traits.iter().enumerate() {
+                    if i > 0 {
+                        tokens.extend(",".parse::<proc_macro2::TokenStream>().unwrap());
+                    }
+                    tokens.extend(t.parse::<proc_macro2::TokenStream>().unwrap());
+                }
+                let meta = syn::Meta::List(syn::MetaList {
+                    path: syn::Path::from(syn::Ident::new(
+                        "derive",
+                        proc_macro2::Span::call_site(),
+                    )),
+                    delimiter: syn::MacroDelimiter::Paren(syn::token::Paren::default()),
+                    tokens,
+                });
+                attrs.push(syn::Attribute {
+                    pound_token: syn::token::Pound::default(),
+                    style: syn::AttrStyle::Outer,
+                    bracket_token: syn::token::Bracket::default(),
+                    meta,
+                });
+            }
+        }
+    }
+
     match item.kind {
         ItemKind::Struct => match syn::parse2::<ItemStruct>(tokens.clone()) {
             Ok(mut node) => {
                 node.attrs.retain(is_emittable_attr);
+                inject_derives(&mut node.attrs, &injected_derives);
                 rewrite_struct_node(node, registry, module_ctx, guard)
             }
             Err(_) => rewrite_crate_paths_legacy(tokens.clone(), name, registry, kind, guard),
@@ -1511,6 +1633,7 @@ fn rewrite_item_references_rerouted(
         ItemKind::Enum => match syn::parse2::<syn::ItemEnum>(tokens.clone()) {
             Ok(mut node) => {
                 node.attrs.retain(is_emittable_attr);
+                inject_derives(&mut node.attrs, &injected_derives);
                 rewrite_enum_node(node, registry, module_ctx, guard)
             }
             Err(_) => rewrite_crate_paths_legacy(tokens.clone(), name, registry, kind, guard),
@@ -1518,6 +1641,7 @@ fn rewrite_item_references_rerouted(
         ItemKind::Union => match syn::parse2::<syn::ItemUnion>(tokens.clone()) {
             Ok(mut node) => {
                 node.attrs.retain(is_emittable_attr);
+                inject_derives(&mut node.attrs, &injected_derives);
                 rewrite_union_node(node, registry, module_ctx, guard)
             }
             Err(_) => rewrite_crate_paths_legacy(tokens.clone(), name, registry, kind, guard),
@@ -2212,37 +2336,11 @@ pub fn emit_binding_file(output_path: &Path, items: &[ParsedItem], config: &Emit
 /// derive (because their inner types lack the corresponding impls in our
 /// synthetic tree). These are stubs sufficient for type-checking; the polyfill
 /// provides real implementations where needed.
-fn append_manual_impls(content: &mut String, relative_file_path: &str) {
-    match relative_file_path {
-        "collections/btree/map.rs" => {
-            content.push_str("\n");
-            content.push_str("impl<'a, K, V> core::iter::Iterator for Iter<'a, K, V> {\n");
-            content.push_str("    type Item = (&'a K, &'a V);\n");
-            content.push_str("    fn next(&mut self) -> Option<Self::Item> { None }\n");
-            content.push_str("}\n");
-            content.push_str("impl<'a, K, V> core::iter::Iterator for Keys<'a, K, V> {\n");
-            content.push_str("    type Item = &'a K;\n");
-            content.push_str("    fn next(&mut self) -> Option<Self::Item> { self.inner.next().map(|(k, _)| k) }\n");
-            content.push_str("}\n");
-            content.push_str("impl<K, V, A: Clone> core::fmt::Debug for IntoIter<K, V, A> {\n");
-            content.push_str("    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result { f.write_str(\"IntoIter\") }\n");
-            content.push_str("}\n");
-            content.push_str("impl<'a, K, V> core::fmt::Debug for Range<'a, K, V> {\n");
-            content.push_str("    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result { f.write_str(\"Range\") }\n");
-            content.push_str("}\n");
-            content.push_str("impl<'a, K, V> core::clone::Clone for Cursor<'a, K, V> {\n");
-            content.push_str("    fn clone(&self) -> Self { panic!(\"not supported in polyfill\") }\n");
-            content.push_str("}\n");
-        }
-        "collections/btree/set.rs" => {
-            content.push_str("\n");
-            content.push_str("impl<'a, T: 'a> core::iter::Iterator for Iter<'a, T> {\n");
-            content.push_str("    type Item = &'a T;\n");
-            content.push_str("    fn next(&mut self) -> Option<Self::Item> { self.iter.next() }\n");
-            content.push_str("}\n");
-        }
-        _ => {}
-    }
+fn append_manual_impls(_content: &mut String, _relative_file_path: &str) {
+    // No hand-written trait impls are currently required. The mirrored B-tree
+    // node types that once needed stub `Iterator`/`Debug`/`Clone` impls have
+    // been reduced to their core data structures; any ergonomic methods belong
+    // in the main crate rather than the bindings generator.
 }
 
 /// Emit the preamble module file for a given target library.

@@ -2,7 +2,6 @@
     "rust-analyzer.cargo.features": [
         "std",
         "unstable",
-        "btree-entry",
     ],
     "rust-analyzer.cargo.noDefaultFeatures": true
 }

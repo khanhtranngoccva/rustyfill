@@ -24,7 +24,7 @@ use lang_core::cmp;
 use lang_core::cmp::Eq;
 use lang_core::fmt;
 use lang_std::collections::hash_map;
-use lang_std::collections::{HashMap, TryReserveError as StdTryReserveError};
+use lang_std::collections::HashMap;
 use lang_std::hash::{BuildHasher, Hash, RandomState};
 
 // ── Error type ────────────────────────────────────────────────────────────────
@@ -114,12 +114,6 @@ impl From<TryDefaultError> for TryHashMapError {
             TryDefaultError::Overflow => Self::Overflow,
             TryDefaultError::Other(msg) => Self::Other(msg),
         }
-    }
-}
-
-impl From<StdTryReserveError> for TryHashMapError {
-    fn from(e: StdTryReserveError) -> Self {
-        Self::Reserve(TryReserveError::from(e))
     }
 }
 

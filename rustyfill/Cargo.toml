@@ -6,7 +6,7 @@ edition = "2024"
 [dependencies]
 dashmap = { workspace = true, optional = true }
 rustyfill-macros = { workspace = true }
-rustyfill-sys = { path = "../rustyfill-sys", optional = true }
+rustyfill-sys = { path = "../rustyfill-sys" }
 hashbrown = { workspace = true }
 libc = { workspace = true, optional = true }
 once_cell = { workspace = true }
@@ -55,14 +55,6 @@ std = [
     "parking_lot/default",
     "crossbeam-utils/default",
 ]
-# Enables fallible B-tree entry operations via direct manipulation of internal
-# node allocations using rustyfill-sys bindings. Properly handles OOM by
-# returning Result instead of panicking.
-# Enables fallible B-tree entry operations by manipulating mirrored node types
-# from rustyfill-sys directly. Also enables drop-annotations on the sys crate
-# so emitted fields carry #[rustyfill_drop = "yes" | "maybe-no"] markers
-# distinguishing fields that will run real drop glue from those that may not.
-btree-entry = ["dep:rustyfill-sys", "rustyfill-sys/drop-annotations", "std"]
 # Enables DashMap/DashSet wrappers. These do NOT guarantee panic-free behavior:
 # `DashMap::new()` implicitly allocates shards and has no fallible constructor,
 # so construction can still panic under memory pressure. Only enable this if you

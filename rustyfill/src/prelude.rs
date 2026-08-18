@@ -26,6 +26,11 @@
 
 // ── Foundational traits (always available, no_std-compatible) ─────────────────
 
+/// Extension trait providing constructors and accessors for
+/// [`crate::alloc::TryReserveError`]. Imported so that `new_alloc`,
+/// `new_capacity_overflow`, `is_alloc`, and `is_capacity_overflow` are in scope
+/// wherever the prelude is glob-imported.
+pub use crate::alloc::TryReserveErrorExt;
 pub use crate::recovery::{Resumable, ResumableSource, Stallable};
 pub use crate::try_clone::TryClone;
 pub use crate::try_default::TryDefault;
@@ -85,9 +90,9 @@ pub use crate::std::path::{TryPath, TryPathBuf};
 #[cfg(feature = "unstable")]
 pub use crate::dashmap::{TryDashMap, TryDashSet};
 
-// ── BTreeMap entry API (requires `btree-entry` feature) ───────────────────────
+// ── BTreeMap entry API (requires `std` feature) ───────────────────────────────
 
-#[cfg(feature = "btree-entry")]
+#[cfg(feature = "std")]
 pub use crate::alloc::btrees::entry::{
     TryBTreeMap, TryBTreeMapEntry, TryBTreeMapEntryWithError, TryBTreeMapEntryWithGiveBackError,
     TryBTreeMapExtendFromSliceError, TryBTreeMapVacantEntry,

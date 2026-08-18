@@ -172,7 +172,7 @@ impl TryClone for Box<str> {
         let layout = Layout::array::<u8>(len).map_err(|_| TryCloneError::Overflow)?;
         let ptr = unsafe { alloc::alloc(layout) };
         if ptr.is_null() {
-            return Err(TryCloneError::Alloc(AllocError { layout }));
+            return Err(TryCloneError::Alloc(AllocError));
         }
 
         // Wrap immediately in a Box<[u8]> so that Drop cleans up on any panic

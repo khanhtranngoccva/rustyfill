@@ -1,12 +1,13 @@
 //! Core [`ConcurrentHashMap`] implementation.
 
 use crate::alloc::vec::SliceInitGuard;
-use crate::alloc::{AllocError, TryReserveError};
+use crate::alloc::{AllocError, TryReserveError, TryReserveErrorExt};
 use crate::try_clone::{TryClone, TryCloneError};
 use crate::try_default::{TryDefault, TryDefaultError};
 use crate::try_fmt::{TryDebug, helpers::FormatterExt};
 use lang_alloc;
 use lang_alloc::boxed::Box;
+use lang_core::alloc::Layout;
 use lang_core::borrow::Borrow;
 use lang_core::fmt;
 use lang_core::hash::{BuildHasher, Hash};
@@ -318,7 +319,7 @@ impl<K: Eq + Hash, V, S: BuildHasher> ConcurrentHashMap<K, V, S> {
             .map_err(|_| ConcurrentHashMapError::Overflow)?;
         let ptr = unsafe { lang_alloc::alloc::alloc(layout) };
         if ptr.is_null() {
-            return Err(ConcurrentHashMapError::Alloc(AllocError { layout }));
+            return Err(ConcurrentHashMapError::Alloc(AllocError));
         }
 
         // Wrap immediately in a Box so Drop cleans up the allocation on panic.
@@ -626,7 +627,9 @@ impl<K: Eq + Hash, V, S: BuildHasher> ConcurrentHashMap<K, V, S> {
             let mut table = shard.write_table();
             table
                 .try_reserve(per_shard, |(k, _v): &(K, V)| self.hasher.hash_one(k))
-                .map_err(|_| ConcurrentHashMapError::Reserve(TryReserveError::Other))?;
+                .map_err(|_| {
+                    ConcurrentHashMapError::Reserve(TryReserveErrorExt::new_alloc(Layout::new::<u8>()))
+                })?;
         }
         Ok(())
     }
@@ -842,7 +845,9 @@ impl<K: Eq + Hash, V, S: BuildHasher> ConcurrentHashMap<K, V, S> {
 
         guard
             .try_reserve(1, |(k, _v): &(K, V)| self.hasher.hash_one(k))
-            .map_err(|_| ConcurrentHashMapError::Reserve(TryReserveError::Other))?;
+            .map_err(|_| {
+                ConcurrentHashMapError::Reserve(TryReserveErrorExt::new_alloc(Layout::new::<u8>()))
+            })?;
 
         match guard.find_or_find_insert_slot(
             hash,
@@ -875,7 +880,11 @@ impl<K: Eq + Hash, V, S: BuildHasher> ConcurrentHashMap<K, V, S> {
 
         guard
             .try_reserve(1, |(k, _v): &(K, V)| self.hasher.hash_one(k))
-            .map_err(|_| ConcurrentHashMapNonblockError::Reserve(TryReserveError::Other))?;
+            .map_err(|_| {
+                ConcurrentHashMapNonblockError::Reserve(TryReserveErrorExt::new_alloc(
+                    Layout::new::<u8>(),
+                ))
+            })?;
 
         match guard.find_or_find_insert_slot(
             hash,
@@ -904,7 +913,10 @@ impl<K: Eq + Hash, V, S: BuildHasher> ConcurrentHashMap<K, V, S> {
             .try_reserve(1, |(k, _v): &(K, V)| self.hasher.hash_one(k))
             .is_err()
         {
-            return Err((key, ConcurrentHashMapError::Reserve(TryReserveError::Other)));
+            return Err((
+                key,
+                ConcurrentHashMapError::Reserve(TryReserveErrorExt::new_alloc(Layout::new::<u8>())),
+            ));
         }
 
         match guard.find_or_find_insert_slot(

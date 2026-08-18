@@ -14,8 +14,8 @@
 //! | `VecDeque<T>`      | [`crate::alloc::vecdeque`]                     | (always)    |
 //! | `HashMap<K,V,S>`   | [`crate::std::hashmap`]                        | `std`       |
 //! | `HashSet<T, S>`    | [`crate::std::hashset`]                        | `std`       |
-//! | `BTreeMap<K,V>`    | [`crate::alloc::btrees`]                       | `btree-entry` |
-//! | `BTreeSet<T>`      | [`crate::alloc::btrees`]                       | `btree-entry` |
+//! | `BTreeMap<K,V>`    | [`crate::alloc::btrees`]                       | `std`         |
+//! | `BTreeSet<T>`      | [`crate::alloc::btrees`]                       | `std`         |
 //! | `DashMap<K,V,S>`   | [`crate::dashmap`]                             | `unstable`  |
 //! | `DashSet<T, S>`    | [`crate::dashmap`]                             | `unstable`  |
 //!
@@ -66,8 +66,8 @@
 //! | `VecDeque<T>`      | `T`         | `TryVecDequeError`       | `&'s [T]`                | (always)    |
 //! | `HashMap<K,V,S>`   | `(K, V)`    | `TryHashMapError`        | `&'s [(K, V)]`           | `std`       |
 //! | `HashSet<T, S>`    | `T`         | `TryHashSetError`        | `&'s [T]`                | `std`       |
-//! | `BTreeMap<K,V>`    | `(K, V)`    | `AllocError` / `TryBTreeMapExtendFromSliceError`¹ | `&'s [(K, V)]` | `btree-entry` |
-//! | `BTreeSet<T>`      | `T`         | `AllocError` / `TryBTreeMapExtendFromSliceError`¹ | `&'s [T]`      | `btree-entry` |
+//! | `BTreeMap<K,V>`    | `(K, V)`    | `AllocError` / `TryBTreeMapExtendFromSliceError`¹ | `&'s [(K, V)]` | `std`         |
+//! | `BTreeSet<T>`      | `T`         | `AllocError` / `TryBTreeMapExtendFromSliceError`¹ | `&'s [T]`      | `std`         |
 //! | `DashMap<K,V,S>`   | `(K, V)`    | `TryDashMapError`        | `&'s [(K, V)]`           | `unstable`  |
 //! | `DashSet<T, S>`    | `T`         | `TryDashSetError`        | `&'s [T]`                | `unstable`  |
 //!

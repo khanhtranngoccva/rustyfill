@@ -19,6 +19,10 @@
     all(nightly_compiler = "true", target_os = "uefi"),
     feature(io_const_error)
 )]
+// On nightly, expose the real `core::alloc::AllocError` (used by `crate::alloc`).
+#![cfg_attr(nightly_compiler = "true", feature(allocator_api))]
+// On nightly, expose the real `TryReserveErrorKind` and its `.kind()` accessor.
+#![cfg_attr(nightly_compiler = "true", feature(try_reserve_kind))]
 #![no_std]
 
 // Register `std` and `alloc` under alias names so they're accessible via absolute

@@ -68,6 +68,13 @@ pub struct BindingTarget {
     /// `"collections::btree::set::Iter"` means the `Iter` struct inside
     /// `alloc::collections::btree::set`.
     pub ignored_structs: Vec<String>,
+    /// Additional derive traits to inject into the emitted definition of a
+    /// declared type when the original source lacks them. Keyed by the
+    /// canonical path (relative to the library root) of the type. For example,
+    /// `"collections::TryReserveErrorKind": vec!["Clone"]` adds `#[derive(Clone)]`
+    /// to the mirrored enum even though the std source only derives
+    /// `PartialEq, Eq, Debug`.
+    pub extra_derives: std::collections::HashMap<String, Vec<String>>,
 }
 
 impl LoaderSpec {
@@ -95,7 +102,17 @@ impl BindingTarget {
             declared_structs: Vec::new(),
             path_replacements: Vec::new(),
             ignored_structs: Vec::new(),
+            extra_derives: std::collections::HashMap::new(),
         }
+    }
+
+    /// Register an additional derive trait to inject into a declared type's
+    /// emitted definition. The path is relative to the library root.
+    pub fn add_derive(&mut self, path: &str, trait_name: &str) {
+        self.extra_derives
+            .entry(path.to_string())
+            .or_default()
+            .push(trait_name.to_string());
     }
 
     /// Declare a struct to bind by its path within the library, e.g.

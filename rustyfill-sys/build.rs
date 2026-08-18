@@ -70,6 +70,20 @@ fn main() {
         .map(|t| (t.lib_name.clone(), t.ignored_structs.clone()))
         .collect();
 
+    // Build per-library extra-derive maps (canonical path → list of derive traits).
+    let extra_derives_by_lib: HashMap<String, std::collections::HashMap<String, Vec<String>>> =
+        spec
+            .targets
+            .iter()
+            .map(|t| {
+                let mut map = std::collections::HashMap::new();
+                for (path, derives) in &t.extra_derives {
+                    map.insert(path.clone(), derives.clone());
+                }
+                (t.lib_name.clone(), map)
+            })
+            .collect();
+
     // Collect all ignored names: both path replacement leaves AND ignored struct
     // leaf names, so the resolver can skip re-exports of items that won't be emitted.
     let mut all_ignored_names: HashSet<String> = replacement_entries_slice
@@ -436,6 +450,12 @@ fn main() {
         }
     }
 
+    // Hand the resolver the same declared-path set the emitter uses to filter
+    // output. This keeps use-statement generation in sync with emission so that
+    // modules whose items were all filtered out (e.g., set-side entry types that
+    // route to map-side mirrors) don't leave behind dangling re-exports.
+    resolver.set_declared_paths(registry.declared_paths().cloned());
+
     // Field-type publicity check: every field of a declared struct must refer
     // to either a declared type (mirrored) or a public type (original).
     // Private undeclared types are hard errors.
@@ -472,6 +492,11 @@ fn main() {
             .cloned()
             .unwrap_or_default();
 
+        let target_extra_derives = extra_derives_by_lib
+            .get(lib_name)
+            .cloned()
+            .unwrap_or_default();
+
         let has_content = emit_binding_file(
             &emit_path,
             &parsed.items,
@@ -484,6 +509,7 @@ fn main() {
                 ignored_structs: &target_ignored_structs,
                 relative_file_path: file_path,
                 type_registry: &registry,
+                extra_derives: &target_extra_derives,
             },
         );
 
@@ -525,6 +551,7 @@ fn main() {
                     ignored_structs: &target_ignored_structs,
                     relative_file_path: &inline_rel_path,
                     type_registry: &registry,
+                    extra_derives: &target_extra_derives,
                 },
             );
 

@@ -15,14 +15,14 @@
 //! [`TryDefault`](crate::try_default::TryDefault) for `String`.
 
 use crate::alloc::AllocError;
-use crate::alloc::TryReserveError;
+use crate::alloc::{TryReserveError, TryReserveErrorExt};
 use crate::alloc::vec::{TryVec, TryVecError};
 use crate::try_clone::{TryClone, TryCloneError};
 use crate::try_default::{TryDefault, TryDefaultError};
 use crate::try_fmt::{TryDebug, helpers::FormatterExt};
-use lang_alloc::collections::TryReserveError as StdTryReserveError;
 use lang_alloc::string::String;
 use lang_alloc::vec::Vec;
+use lang_core::alloc::Layout;
 use lang_core::fmt;
 use lang_core::mem;
 
@@ -66,12 +66,6 @@ impl From<AllocError> for TryStringError {
 impl From<TryReserveError> for TryStringError {
     fn from(err: TryReserveError) -> Self {
         Self::Reserve(err)
-    }
-}
-
-impl From<StdTryReserveError> for TryStringError {
-    fn from(err: StdTryReserveError) -> Self {
-        Self::Reserve(TryReserveError::from(err))
     }
 }
 
@@ -304,7 +298,7 @@ impl TryString for String {
             // Distinguish: if the string grew since the last successful call,
             // it was an OOM; otherwise it was a format error (shouldn't happen
             // with valid Arguments, so treat as OOM conservatively).
-            TryReserveError::Other
+            TryReserveErrorExt::new_alloc(Layout::new::<u8>())
         })
     }
 

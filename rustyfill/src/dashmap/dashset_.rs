@@ -3,7 +3,7 @@
 //! To be implemented in a subsequent chunk, following the same pattern as
 //! [`TryDashMap`](super::dashmap_::TryDashMap).
 
-use crate::alloc::{AllocError, TryReserveError};
+use crate::alloc::{AllocError, TryReserveError, TryReserveErrorExt};
 use crate::dashmap::TryDashMap;
 use crate::prelude::{TryClone, TryDefault};
 use crate::try_clone::TryCloneError;
@@ -329,7 +329,9 @@ impl<T: Eq + Hash, S: BuildHasher + TryClone> TryDashSet<T, S> for DashSet<T, S>
         if capacity > 0 {
             convert_mut(&mut set)
                 .try_reserve(capacity)
-                .map_err(|e| TryDashSetError::Reserve(TryReserveError::from(e)))?;
+                .map_err(|_| {
+                    TryDashSetError::Reserve(TryReserveErrorExt::new_alloc(Layout::new::<u8>()))
+                })?;
         }
         Ok(set)
     }
@@ -342,7 +344,9 @@ impl<T: Eq + Hash, S: BuildHasher + TryClone> TryDashSet<T, S> for DashSet<T, S>
         if capacity > 0 {
             convert_mut(&mut set)
                 .try_reserve(capacity)
-                .map_err(|e| TryDashSetError::Reserve(TryReserveError::from(e)))?;
+                .map_err(|_| {
+                    TryDashSetError::Reserve(TryReserveErrorExt::new_alloc(Layout::new::<u8>()))
+                })?;
         }
         Ok(set)
     }

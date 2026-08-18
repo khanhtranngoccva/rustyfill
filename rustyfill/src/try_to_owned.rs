@@ -15,7 +15,6 @@ use crate::alloc::{AllocError, TryReserveError};
 use crate::try_clone::TryCloneError;
 use crate::try_fmt::{TryDebug, helpers::FormatterExt};
 use lang_alloc::borrow::ToOwned;
-use lang_alloc::collections::TryReserveError as StdTryReserveError;
 use lang_core::error;
 use lang_core::fmt;
 
@@ -81,12 +80,6 @@ impl From<AllocError> for TryToOwnedError {
 impl From<TryReserveError> for TryToOwnedError {
     fn from(err: TryReserveError) -> Self {
         Self::Reserve(err)
-    }
-}
-
-impl From<StdTryReserveError> for TryToOwnedError {
-    fn from(err: StdTryReserveError) -> Self {
-        Self::Reserve(TryReserveError::from(err))
     }
 }
 

@@ -191,7 +191,7 @@ impl<T: TryClone> TryClone for Box<[T]> {
         let layout = Layout::array::<T>(len).map_err(|_| TryCloneError::Overflow)?;
         let ptr = unsafe { alloc::alloc(layout) };
         if ptr.is_null() {
-            return Err(TryCloneError::Alloc(AllocError { layout }));
+            return Err(TryCloneError::Alloc(AllocError));
         }
 
         // Wrap immediately in a Box so Drop cleans up the allocation on panic.

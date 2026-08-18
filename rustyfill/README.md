@@ -99,8 +99,12 @@ match vec.try_extend(Resumable::from_remainder(remaining)) {
 
 ## Features
 
-- **`btree-entry`** — enables fallible B-tree map operations via direct manipulation of internal node allocations (see `rustyfill-sys`): `TryBTreeMap::try_insert` on `BTreeMap<K, V>` (plain insert semantics, returns a `Result`), plus `TryBTreeMapEntry` (`try_or_insert`-family) and `TryBTreeMapVacantEntry` (`try_insert`) on the standard Entry/VacantEntry types. The key lookup in the standard `BTreeMap::entry()` is allocation-free, so all three are safe under an intermittently failing allocator — only the split cascade can fail, and it does so gracefully. For fully fallible trees (including removal) prefer the [`scapegoat`](https://crates.io/crates/scapegoat) crate or [`fallible_collections`](https://crates.io/crates/fallible_collections).
+- **`std`** *(default)* — enables `std` support: path/FFI string wrappers, `RandomState` helpers, hash collections, and the fallible B-tree entry API. When disabled the crate is `no_std` (with `alloc`).
 - **`unstable`** - enables `TryDashMap` and `TryDashSet`. Currently, they do not work, because the fallible construction API is not there yet, although [these APIs are pending review](https://github.com/xacrimon/dashmap/pull/372). They might be removed from this crate and moved into a downstream crate to allow usage in libraries.
+
+### Fallible B-tree entry API
+
+The fallible B-tree map operations live in `crate::alloc::btrees` and are available whenever `std` is enabled. They manipulate mirrored internal node allocations (see `rustyfill-sys`): `TryBTreeMap::try_insert` on `BTreeMap<K, V>` (plain insert semantics, returns a `Result`), plus `TryBTreeMapEntry` (`try_or_insert`-family) and `TryBTreeMapVacantEntry` (`try_insert`) on the standard Entry/VacantEntry types. The key lookup in the standard `BTreeMap::entry()` is allocation-free, so all three are safe under an intermittently failing allocator — only the split cascade can fail, and it does so gracefully. For fully fallible trees (including removal) prefer the [`scapegoat`](https://crates.io/crates/scapegoat) crate or [`fallible_collections`](https://crates.io/crates/fallible_collections).
 
 ## Hasher factories
 

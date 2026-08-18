@@ -23,7 +23,7 @@ use crate::try_fmt::{TryDebug, helpers::FormatterExt};
 use lang_core::cmp;
 use lang_core::fmt;
 use lang_std::cmp::Eq;
-use lang_std::collections::{HashSet, TryReserveError as StdTryReserveError};
+use lang_std::collections::HashSet;
 use lang_std::hash::{BuildHasher, Hash, RandomState};
 
 // ── Error type ────────────────────────────────────────────────────────────────
@@ -113,12 +113,6 @@ impl From<TryDefaultError> for TryHashSetError {
             TryDefaultError::Overflow => Self::Overflow,
             TryDefaultError::Other(msg) => Self::Other(msg),
         }
-    }
-}
-
-impl From<StdTryReserveError> for TryHashSetError {
-    fn from(e: StdTryReserveError) -> Self {
-        Self::Reserve(TryReserveError::from(e))
     }
 }
 

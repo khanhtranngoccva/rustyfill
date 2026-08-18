@@ -1187,11 +1187,10 @@ fn text_scan_source(source: &str, cfg: &CfgContext) -> TextScanResult {
                 });
             }
         } else if trimmed.starts_with("use ") || trimmed.starts_with("pub use ") {
-            // Extract use statements via text scan
+            // Extract use statements via text scan. A grouped import with a
+            // `self` alias yields two statements (module import + glob).
             let use_line = trimmed.strip_suffix(';').unwrap_or(trimmed);
-            if let Some(stmt) = text_parse_use_statement(use_line) {
-                use_statements.push(stmt);
-            }
+            use_statements.extend(text_parse_use_statement(use_line));
             i += 1;
         } else {
             i += 1;
@@ -1296,10 +1295,14 @@ fn strip_comments_and_strings(source: &str) -> String {
     result
 }
 
-/// Attempt to parse a use statement from text into a UseStatement.
-/// Handles simple paths, glob imports, and grouped imports (treating grouped
-/// imports as glob imports of the base path for resolution purposes).
-fn text_parse_use_statement(text: &str) -> Option<UseStatement> {
+/// Attempt to parse a use statement from text into one or more UseStatements.
+/// Returns a vector because a grouped import containing `self`
+/// (`use foo::bar::{self, a, b}`) expands to two logical statements: a
+/// module import of `foo::bar` (from the `self` alias, which brings the module
+/// name itself into scope so `bar::item` paths resolve) plus a glob of the
+/// base path (approximating the named items). Returning nothing leaves the
+/// caller unchanged.
+fn text_parse_use_statement(text: &str) -> Vec<UseStatement> {
     let visibility = if text.starts_with("pub use") {
         Visibility::Public
     } else {
@@ -1307,47 +1310,64 @@ fn text_parse_use_statement(text: &str) -> Option<UseStatement> {
     };
 
     let path_str = if visibility == Visibility::Public {
-        text.strip_prefix("pub use ")?
+        text.strip_prefix("pub use ").unwrap_or("")
     } else {
-        text.strip_prefix("use ")?
+        text.strip_prefix("use ").unwrap_or("")
     };
 
     // Handle glob imports
     if let Some(path) = path_str.strip_suffix("::*") {
         let segments = parse_path_segments_text(path);
-        let plist = PathSegmentList { segments };
-        return Some(UseStatement {
+        if segments.is_empty() {
+            return Vec::new();
+        }
+        return vec![UseStatement {
             visibility,
-            kind: UseKind::Glob(plist),
-        });
+            kind: UseKind::Glob(PathSegmentList { segments }),
+        }];
     }
 
-    // Handle grouped imports: `use foo::bar::{a, b, c}` → treat as glob of `foo::bar`
-    // for resolution purposes. Extract the base path before `{`.
+    // Handle grouped imports: `use foo::bar::{a, b, c}` → treat as glob of
+    // `foo::bar` for resolution purposes. If the group contains `self`, also
+    // emit a module import of the base path so the module name itself is
+    // brought into scope (matching the AST path's handling of the `self`
+    // alias, which the text scanner would otherwise drop).
     if let Some(brace_pos) = path_str.find('{') {
         let base_path = path_str[..brace_pos].trim();
         if !base_path.is_empty() {
             let segments = parse_path_segments_text(base_path);
             if !segments.is_empty() {
-                let plist = PathSegmentList { segments };
-                return Some(UseStatement {
-                    visibility,
-                    kind: UseKind::Glob(plist),
-                });
+                let has_self = path_str[brace_pos + 1..path_str
+                    .find('}')
+                    .unwrap_or(path_str.len())]
+                    .split(',')
+                    .any(|m| m.trim() == "self");
+                let mut stmts = vec![UseStatement {
+                    visibility: visibility.clone(),
+                    kind: UseKind::Glob(PathSegmentList {
+                        segments: segments.clone(),
+                    }),
+                }];
+                if has_self {
+                    stmts.push(UseStatement {
+                        visibility,
+                        kind: UseKind::Single(PathSegmentList { segments }, None),
+                    });
+                }
+                return stmts;
             }
         }
     }
 
     // Handle simple path imports
     let segments = parse_path_segments_text(path_str);
-    if !segments.is_empty() {
-        let plist = PathSegmentList { segments };
-        Some(UseStatement {
-            visibility,
-            kind: UseKind::Single(plist, None),
-        })
+    if segments.is_empty() {
+        Vec::new()
     } else {
-        None
+        vec![UseStatement {
+            visibility,
+            kind: UseKind::Single(PathSegmentList { segments }, None),
+        }]
     }
 }
 
@@ -1742,6 +1762,9 @@ mod child;
         // builtin crate (`__rustyfill_builtin_core`) instead of through the
         // synthetic tree or the preamble.
         let mut registry = TypeRegistry::empty();
+        // The struct under test must be declared for the emitter to keep it;
+        // otherwise the declaration filter drops undeclared data structures.
+        registry.insert_declared("alloc::TestStruct", "");
         registry.register(
             "core::marker::PhantomData",
             ItemVisibility::Public,
@@ -1766,6 +1789,7 @@ mod child;
                 ignored_structs: &[],
                 relative_file_path: "",
                 type_registry: &registry,
+                extra_derives: &std::collections::HashMap::new(),
             },
             "crate::__prelude",
             &[],
@@ -1782,6 +1806,7 @@ mod child;
         // `crate::std::` path into the merged synthetic tree (all libraries
         // merge under one `std` wrapper module in the manifest).
         let mut registry_declared = TypeRegistry::empty();
+        registry_declared.insert_declared("alloc::TestStruct", "");
         registry_declared.insert_declared("core::marker::PhantomData", "core/marker.rs");
         let declared_out = emit_parsed_items(
             &[item.clone()],
@@ -1794,6 +1819,7 @@ mod child;
                 ignored_structs: &[],
                 relative_file_path: "",
                 type_registry: &registry_declared,
+                extra_derives: &std::collections::HashMap::new(),
             },
             "crate::__prelude",
             &[],
@@ -1858,6 +1884,7 @@ mod child;
                 ignored_structs: &[],
                 relative_file_path: "",
                 type_registry: &TypeRegistry::empty(),
+                extra_derives: &std::collections::HashMap::new(),
             },
             "crate::__prelude",
             &[],

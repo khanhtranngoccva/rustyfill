@@ -1,6 +1,5 @@
 pub use crate::alloc::arc;
 pub use crate::alloc::boxed;
-#[cfg(feature = "btree-entry")]
 pub use crate::alloc::btrees;
 pub use crate::core::cell;
 pub mod ffi;
