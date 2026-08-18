@@ -136,14 +136,6 @@ pub trait TryOsString: Sized {
     /// May reallocate if the current allocation is larger than needed.
     /// Returns [`TryOsStringError::Alloc`] if the re-allocation fails.
     /// Equivalent to `OsString::shrink_to_fit()` but fallible.
-    ///
-    /// **Deprecated:** This method name conflicts with the unstable inherent
-    /// [`OsString::try_shrink_to_fit`](lang_std::ffi::os::OsString::try_shrink_to_fit).
-    /// Use [`Self::fallible_shrink_to_fit`] instead.
-    #[deprecated(
-        since = "0.1.0",
-        note = "conflicts with unstable OsString::try_shrink_to_fit; use fallible_shrink_to_fit"
-    )]
     fn try_shrink_to_fit(&mut self) -> Result<(), TryOsStringError>;
 
     /// Fallibly shrink the capacity of this `OsString` to at least `min_capacity`.
@@ -152,14 +144,6 @@ pub trait TryOsString: Sized {
     /// does nothing and returns `Ok(())`. Otherwise reallocates down.
     /// Returns [`TryOsStringError::Alloc`] if the re-allocation fails.
     /// Equivalent to `OsString::shrink_to(min_capacity)` but fallible.
-    ///
-    /// **Deprecated:** This method name conflicts with the unstable inherent
-    /// [`OsString::try_shrink_to`](lang_std::ffi::os::OsString::try_shrink_to).
-    /// Use [`Self::fallible_shrink_to`] instead.
-    #[deprecated(
-        since = "0.1.0",
-        note = "conflicts with unstable OsString::try_shrink_to; use fallible_shrink_to"
-    )]
     fn try_shrink_to(&mut self, min_capacity: usize) -> Result<(), TryOsStringError>;
 
     // ── Conversion ──────────────────────────────────────────────────────────
@@ -202,26 +186,14 @@ pub trait TryOsString: Sized {
 
     /// Fallibly shrink the capacity of this `OsString` to match its length.
     ///
-    /// May reallocate if the current allocation is larger than needed.
-    /// Returns [`TryOsStringError::Alloc`] if the re-allocation fails.
-    /// Equivalent to `OsString::shrink_to_fit()` but fallible.
-    ///
-    /// This method replaces the deprecated [`Self::try_shrink_to_fit`] which
-    /// shares its name with the unstable inherent [`OsString::try_shrink_to_fit`](lang_std::ffi::os::OsString::try_shrink_to_fit).
-    #[allow(deprecated)]
+    /// Alias for [`Self::try_shrink_to_fit`].
     fn fallible_shrink_to_fit(&mut self) -> Result<(), TryOsStringError> {
         Self::try_shrink_to_fit(self)
     }
 
     /// Fallibly shrink the capacity of this `OsString` to at least `min_capacity`.
     ///
-    /// If the current capacity is already less than or equal to `min_capacity`,
-    /// does nothing and returns `Ok(())`. Otherwise reallocates down.
-    /// Returns [`TryOsStringError::Alloc`] if the re-allocation fails.
-    /// Equivalent to `OsString::shrink_to(min_capacity)` but fallible.
-    ///
-    /// This method replaces the deprecated [`Self::try_shrink_to`] which shares
-    /// its name with the unstable inherent [`OsString::try_shrink_to`](lang_std::ffi::os::OsString::try_shrink_to).
+    /// Alias for [`Self::try_shrink_to`].
     #[allow(deprecated)]
     fn fallible_shrink_to(&mut self, min_capacity: usize) -> Result<(), TryOsStringError> {
         Self::try_shrink_to(self, min_capacity)
@@ -312,7 +284,7 @@ impl TryClone for OsString {
         let mut out = OsString::new();
         if !self.is_empty() {
             out.try_reserve(self.len())
-                .map_err(|e| TryCloneError::Reserve(e.into()))?;
+                .map_err(TryCloneError::Reserve)?;
         }
         out.push(self);
         Ok(out)

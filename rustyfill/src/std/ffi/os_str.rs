@@ -122,7 +122,7 @@ impl TryOsStr for OsStr {
         let mut out = OsString::new();
         if !self.is_empty() {
             out.try_reserve(self.len())
-                .map_err(|e| TryOsStrError::Reserve(e.into()))?;
+                .map_err(TryOsStrError::Reserve)?;
         }
         out.push(self);
         Ok(out)

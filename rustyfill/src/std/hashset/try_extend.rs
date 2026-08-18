@@ -1,6 +1,5 @@
 //! [`TryExtend`] / [`TryExtendFromSlice`] implementations for `HashSet<T, S>`.
 
-use crate::alloc::TryReserveError;
 use crate::recovery::Resumable;
 use crate::std::hashset::TryHashSetError;
 use crate::try_clone::TryClone;
@@ -21,7 +20,7 @@ where
             return Ok(());
         }
         self.try_reserve(other.len())
-            .map_err(|e| (other, TryHashSetError::Reserve(TryReserveError::from(e))))?;
+            .map_err(|e| (other, TryHashSetError::Reserve(e)))?;
         for (i, elem) in other.iter().enumerate() {
             match elem.try_clone() {
                 Ok(cloned) => {
@@ -60,7 +59,7 @@ where
                 && let Err(e) = self.try_reserve(1)
             {
                 return Err((
-                    TryHashSetError::from(TryReserveError::from(e)),
+                    TryHashSetError::from(e),
                     Resumable::new(value, iter),
                 ));
             }
@@ -72,7 +71,7 @@ where
             && let Err(e) = self.try_reserve(lower)
         {
             return Err((
-                TryHashSetError::from(TryReserveError::from(e)),
+                TryHashSetError::from(e),
                 Resumable::from_remainder(iter),
             ));
         }
@@ -81,7 +80,7 @@ where
                 && let Err(e) = self.try_reserve(1)
             {
                 return Err((
-                    TryHashSetError::from(TryReserveError::from(e)),
+                    TryHashSetError::from(e),
                     Resumable::new(value, iter),
                 ));
             }

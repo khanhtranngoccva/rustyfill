@@ -1,6 +1,5 @@
 //! [`TryExtend`] / [`TryExtendFromSlice`] implementations for `HashMap<K, V, S>`.
 
-use crate::alloc::TryReserveError;
 use crate::recovery::Resumable;
 use crate::std::hashmap::TryHashMapError;
 use crate::try_clone::TryClone;
@@ -25,7 +24,7 @@ where
             return Ok(());
         }
         self.try_reserve(other.len())
-            .map_err(|e| (other, TryHashMapError::Reserve(TryReserveError::from(e))))?;
+            .map_err(|e| (other, TryHashMapError::Reserve(e)))?;
         for (i, (key, value)) in other.iter().enumerate() {
             match (key.try_clone(), value.try_clone()) {
                 (Ok(k), Ok(v)) => {
@@ -65,7 +64,7 @@ where
                 && let Err(e) = self.try_reserve(1)
             {
                 return Err((
-                    TryHashMapError::from(TryReserveError::from(e)),
+                    TryHashMapError::from(e),
                     Resumable::new(pair, iter),
                 ));
             }
@@ -77,7 +76,7 @@ where
             && let Err(e) = self.try_reserve(lower)
         {
             return Err((
-                TryHashMapError::from(TryReserveError::from(e)),
+                TryHashMapError::from(e),
                 Resumable::from_remainder(iter),
             ));
         }
@@ -86,7 +85,7 @@ where
                 && let Err(e) = self.try_reserve(1)
             {
                 return Err((
-                    TryHashMapError::from(TryReserveError::from(e)),
+                    TryHashMapError::from(e),
                     Resumable::new(pair, iter),
                 ));
             }

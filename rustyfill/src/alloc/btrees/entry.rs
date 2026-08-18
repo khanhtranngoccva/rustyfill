@@ -144,10 +144,6 @@ impl<K, V, E> TryBTreeMapEntryWithGiveBackError<K, V, E> {
     }
 }
 
-/// Deprecated alias for [`TryBTreeMapEntryWithGiveBackError`].
-#[deprecated(since = "0.1.0", note = "renamed to TryBTreeMapEntryWithGiveBackError")]
-pub type TryEntryWithGiveBackError<K, V, E> = TryBTreeMapEntryWithGiveBackError<K, V, E>;
-
 /// Error returned by the non-give-back fallible-closure entry methods
 /// (`or_fallible_insert_with`, `or_fallible_insert_with_key`).
 ///
@@ -190,10 +186,6 @@ impl<E> TryBTreeMapEntryWithError<E> {
         matches!(self, Self::Closure(..))
     }
 }
-
-/// Deprecated alias for [`TryBTreeMapEntryWithError`].
-#[deprecated(since = "0.1.0", note = "renamed to TryBTreeMapEntryWithError")]
-pub type TryEntryWithError<E> = TryBTreeMapEntryWithError<E>;
 
 /// Error returned by [`TryExtendFromSlice`](crate::try_extend::TryExtendFromSlice)
 /// implementations on `BTreeMap` and `BTreeSet`.
@@ -1119,7 +1111,10 @@ impl<'a, K, V> CommitPlan<'a, K, V> {
                 node: start_node,
                 _marker: PhantomData,
             };
-            #[allow(clippy::while_let_loop, reason = "stops at first non-splitting ancestor or root")]
+            #[allow(
+                clippy::while_let_loop,
+                reason = "stops at first non-splitting ancestor or root"
+            )]
             loop {
                 match ascend(cur) {
                     AscendResult::Parent(parent_handle) => {
@@ -1157,7 +1152,10 @@ impl<'a, K, V> CommitPlan<'a, K, V> {
         // a non-splitting ancestor — i.e. every ancestor on the path splits, so
         // the final promotion has nowhere to land and forces a fresh root level.
         let mut new_root = false;
-        #[allow(clippy::while_let_loop, reason = "stops at first non-splitting ancestor or root")]
+        #[allow(
+            clippy::while_let_loop,
+            reason = "stops at first non-splitting ancestor or root"
+        )]
         loop {
             match ascend(cur) {
                 AscendResult::Parent(parent_handle) => {
@@ -1671,7 +1669,7 @@ mod tests {
         assert!(r.is_err());
         let err = r.unwrap_err();
         assert!(err.is_alloc());
-        let (key, val, alloc_err) = match err {
+        let (key, val, _alloc_err) = match err {
             TryBTreeMapEntryWithGiveBackError::Alloc(k, v, e) => (k, v, e),
             _ => unreachable!(),
         };
@@ -1690,7 +1688,7 @@ mod tests {
             map.entry(1).or_try_insert_give_back(2)
         });
         assert!(r.is_err(), "insertion should fail on OOM");
-        let (returned_key, returned_val, err) = r.unwrap_err();
+        let (returned_key, returned_val, _err) = r.unwrap_err();
         assert_eq!(returned_key, 1);
         assert_eq!(returned_val, 2);
         assert!(map.is_empty());
@@ -1707,7 +1705,7 @@ mod tests {
             map.entry(11).or_try_insert_give_back(110)
         });
         assert!(r.is_err(), "split allocation should fail on OOM");
-        let (returned_key, returned_val, err) = r.unwrap_err();
+        let (returned_key, returned_val, _err) = r.unwrap_err();
         assert_eq!(returned_key, 11);
         assert_eq!(returned_val, 110);
         assert_eq!(map.len(), 11);
@@ -1727,7 +1725,7 @@ mod tests {
             map.entry(31).or_try_insert_give_back(310)
         });
         match r {
-            Err((k, v, err)) => {
+            Err((k, v, _err)) => {
                 assert_eq!(k, 31);
                 assert_eq!(v, 310);
                 assert_eq!(map.len(), 30);
@@ -1901,7 +1899,7 @@ mod tests {
             map.entry(11).or_try_insert_give_back(110)
         });
         assert!(r.is_err(), "probe buffer reservation should fail on OOM");
-        let (returned_key, returned_val, err) = r.unwrap_err();
+        let (returned_key, returned_val, _err) = r.unwrap_err();
         assert_eq!(returned_key, 11);
         assert_eq!(returned_val, 110);
         // Tree untouched: still 11 entries, all values preserved.
@@ -2025,7 +2023,7 @@ mod tests {
             TryBTreeMap::try_insert(&mut map, 31, 310)
         });
         match r {
-            Err(e) => {
+            Err(_e) => {
                 assert_eq!(map.len(), 30);
                 for i in 0..30 {
                     assert_eq!(map[&i], i * 10);

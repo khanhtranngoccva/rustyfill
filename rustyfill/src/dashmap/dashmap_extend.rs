@@ -21,8 +21,7 @@ where
         other: &'s [(K, V)],
     ) -> Result<(), (&'s [(K, V)], TryDashMapError)> {
         let this: &Self = self;
-        let mut i = 0usize;
-        for (key, value) in other.iter() {
+        for (i, (key, value)) in other.iter().enumerate() {
             if let Err((_, _, err)) = <Self as TryDashMap<K, V, S>>::try_insert_give_back(
                 this,
                 key.clone(),
@@ -30,7 +29,6 @@ where
             ) {
                 return Err((&other[i..], err));
             }
-            i += 1;
         }
         Ok(())
     }

@@ -236,28 +236,12 @@ pub trait TryVecDeque<T>: Sized {
     /// Converts the deque into a contiguous [`Vec`], shrinks the vector's buffer,
     /// and converts back. This is necessary because `VecDeque`'s internal ring
     /// buffer layout is opaque — we cannot directly reallocate its storage.
-    ///
-    /// **Deprecated:** This method name conflicts with the unstable inherent
-    /// [`VecDeque::try_shrink_to_fit`](lang_alloc::collections::vec_deque::VecDeque::try_shrink_to_fit).
-    /// Use [`Self::fallible_shrink_to_fit`] instead.
-    #[deprecated(
-        since = "0.1.0",
-        note = "conflicts with unstable VecDeque::try_shrink_to_fit; use fallible_shrink_to_fit"
-    )]
     fn try_shrink_to_fit(&mut self) -> Result<(), TryVecDequeError>;
 
     /// Fallibly shrink the capacity of this deque to at least `min_capacity`.
     ///
     /// Converts the deque into a contiguous [`Vec`], shrinks the vector's buffer,
     /// and converts back. The effective minimum capacity is `max(len, min_capacity)`.
-    ///
-    /// **Deprecated:** This method name conflicts with the unstable inherent
-    /// [`VecDeque::try_shrink_to`](lang_alloc::collections::vec_deque::VecDeque::try_shrink_to).
-    /// Use [`Self::fallible_shrink_to`] instead.
-    #[deprecated(
-        since = "0.1.0",
-        note = "conflicts with unstable VecDeque::try_shrink_to; use fallible_shrink_to"
-    )]
     fn try_shrink_to(&mut self, min_capacity: usize) -> Result<(), TryVecDequeError>;
 
     /// Fallibly shrink the capacity of this deque to match its length.
@@ -265,10 +249,6 @@ pub trait TryVecDeque<T>: Sized {
     /// Converts the deque into a contiguous [`Vec`], shrinks the vector's buffer,
     /// and converts back. This is necessary because `VecDeque`'s internal ring
     /// buffer layout is opaque — we cannot directly reallocate its storage.
-    ///
-    /// This method replaces the deprecated [`Self::try_shrink_to_fit`] which
-    /// shares its name with the unstable inherent [`VecDeque::try_shrink_to_fit`](lang_alloc::collections::vec_deque::VecDeque::try_shrink_to_fit).
-    #[allow(deprecated)]
     fn fallible_shrink_to_fit(&mut self) -> Result<(), TryVecDequeError> {
         Self::try_shrink_to_fit(self)
     }
@@ -277,10 +257,6 @@ pub trait TryVecDeque<T>: Sized {
     ///
     /// Converts the deque into a contiguous [`Vec`], shrinks the vector's buffer,
     /// and converts back. The effective minimum capacity is `max(len, min_capacity)`.
-    ///
-    /// This method replaces the deprecated [`Self::try_shrink_to`] which shares
-    /// its name with the unstable inherent [`VecDeque::try_shrink_to`](lang_alloc::collections::vec_deque::VecDeque::try_shrink_to).
-    #[allow(deprecated)]
     fn fallible_shrink_to(&mut self, min_capacity: usize) -> Result<(), TryVecDequeError> {
         Self::try_shrink_to(self, min_capacity)
     }
@@ -332,7 +308,6 @@ pub trait TryVecDeque<T>: Sized {
     }
 }
 
-#[allow(deprecated)]
 impl<T> TryVecDeque<T> for VecDeque<T> {
     // ── Construction ────────────────────────────────────────────────────────
 
@@ -350,9 +325,7 @@ impl<T> TryVecDeque<T> for VecDeque<T> {
     {
         let mut deque = VecDeque::<T>::new();
         if n > 0 {
-            deque
-                .try_reserve(n)
-                .map_err(|e| TryVecDequeError::Reserve(e.into()))?;
+            deque.try_reserve(n).map_err(TryVecDequeError::Reserve)?;
         }
         for _ in 0..n {
             deque.push_back(value.try_clone().map_err(TryVecDequeError::Clone)?);
@@ -395,7 +368,7 @@ impl<T> TryVecDeque<T> for VecDeque<T> {
         if !slice.is_empty() {
             deque
                 .try_reserve(slice.len())
-                .map_err(|e| TryVecDequeError::Reserve(e.into()))?;
+                .map_err(TryVecDequeError::Reserve)?;
         }
         for item in slice {
             deque.push_back(item.try_clone().map_err(TryVecDequeError::Clone)?);
@@ -417,7 +390,7 @@ impl<T> TryVecDeque<T> for VecDeque<T> {
                 self.push_back(value);
                 Ok(())
             }
-            Err(e) => Err((value, e.into())),
+            Err(e) => Err((value, e)),
         }
     }
 
@@ -433,7 +406,7 @@ impl<T> TryVecDeque<T> for VecDeque<T> {
                 self.push_front(value);
                 Ok(())
             }
-            Err(e) => Err((value, e.into())),
+            Err(e) => Err((value, e)),
         }
     }
 
@@ -447,8 +420,7 @@ impl<T> TryVecDeque<T> for VecDeque<T> {
         if index > self.len() {
             return Err(TryVecDequeError::Other("insert index out of bounds"));
         }
-        self.try_reserve(1)
-            .map_err(|e| TryVecDequeError::Reserve(e.into()))?;
+        self.try_reserve(1).map_err(TryVecDequeError::Reserve)?;
         self.insert(index, value);
         Ok(())
     }
@@ -466,7 +438,7 @@ impl<T> TryVecDeque<T> for VecDeque<T> {
                 self.insert(index, value);
                 Ok(())
             }
-            Err(e) => Err((value, TryVecDequeError::Reserve(e.into()))),
+            Err(e) => Err((value, TryVecDequeError::Reserve(e))),
         }
     }
 
@@ -495,7 +467,7 @@ impl<T> TryVecDeque<T> for VecDeque<T> {
             if self.len() == self.capacity()
                 && let Err(e) = self.try_reserve(1)
             {
-                return Err((e.into(), Resumable::new(item, iter)));
+                return Err((e, Resumable::new(item, iter)));
             }
             self.push_back(item);
         }
@@ -504,13 +476,13 @@ impl<T> TryVecDeque<T> for VecDeque<T> {
         if lower > 0
             && let Err(e) = self.try_reserve(lower)
         {
-            return Err((e.into(), Resumable::from_remainder(iter)));
+            return Err((e, Resumable::from_remainder(iter)));
         }
         while let Some(item) = iter.next() {
             if self.len() == self.capacity()
                 && let Err(e) = self.try_reserve(1)
             {
-                return Err((e.into(), Resumable::new(item, iter)));
+                return Err((e, Resumable::new(item, iter)));
             }
             self.push_back(item);
         }
@@ -535,7 +507,7 @@ impl<T> TryVecDeque<T> for VecDeque<T> {
             return Ok(());
         }
         self.try_reserve(other.len())
-            .map_err(|e| TryVecDequeError::Reserve(e.into()))?;
+            .map_err(TryVecDequeError::Reserve)?;
         let guard = TruncateGuard::new(self);
         for item in other {
             match item.try_clone() {
@@ -578,8 +550,7 @@ impl<T> TryVecDeque<T> for VecDeque<T> {
         }
 
         let count = end - start;
-        self.try_reserve(count)
-            .map_err(|e| TryVecDequeError::Reserve(e.into()))?;
+        self.try_reserve(count).map_err(TryVecDequeError::Reserve)?;
         let guard = TruncateGuard::new(self);
         for i in start..end {
             match guard.deque[i].try_clone() {
@@ -605,8 +576,7 @@ impl<T> TryVecDeque<T> for VecDeque<T> {
             return Ok(());
         }
         let extra = new_len - current;
-        self.try_reserve(extra)
-            .map_err(|e| TryVecDequeError::Reserve(e.into()))?;
+        self.try_reserve(extra).map_err(TryVecDequeError::Reserve)?;
         let guard = TruncateGuard::new(self);
         for _ in 0..extra {
             match value.try_clone() {
@@ -677,7 +647,7 @@ impl<T: TryClone> TryClone for VecDeque<T> {
         let mut out = VecDeque::<T>::new();
         if !self.is_empty() {
             out.try_reserve(self.len())
-                .map_err(|e| crate::try_clone::TryCloneError::Reserve(e.into()))?;
+                .map_err(crate::try_clone::TryCloneError::Reserve)?;
         }
         for elem in self.iter() {
             match elem.try_clone() {

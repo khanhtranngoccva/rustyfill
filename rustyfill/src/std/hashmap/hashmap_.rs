@@ -23,8 +23,8 @@ use crate::try_fmt::{TryDebug, helpers::FormatterExt};
 use lang_core::cmp;
 use lang_core::cmp::Eq;
 use lang_core::fmt;
-use lang_std::collections::hash_map;
 use lang_std::collections::HashMap;
+use lang_std::collections::hash_map;
 use lang_std::hash::{BuildHasher, Hash, RandomState};
 
 // ── Error type ────────────────────────────────────────────────────────────────
@@ -185,7 +185,8 @@ pub trait TryHashMap<K, V, S = RandomState>: Sized {
     /// Returns `Ok(None)` if the key was not previously present, or
     /// `Ok(Some(old_value))` if the key existed and was replaced.
     ///
-    /// Unlike the original [`HashMap::try_insert`], key collisions cause the old value to be evicted. See [`Self::try_insert_unique`] for the original behavior.
+    /// Unlike the original [`HashMap::try_insert`], key collisions cause the old value to be evicted. 
+    /// See [`Self::try_insert_unique`] for the fallible version of the original behavior.
     ///
     /// **Deprecated:** This method name conflicts with the inherent
     /// [`HashMap::try_insert`]. Use [`Self::fallible_insert`] instead.
@@ -323,10 +324,6 @@ pub trait TryHashMap<K, V, S = RandomState>: Sized {
 
     // ── Extension ───────────────────────────────────────────────────────────
 
-    /// Fallibly extend the map with all key-value pairs from an iterator source.
-    ///
-    // ── Capacity / shrink ───────────────────────────────────────────────────
-
     /// Fallibly shrink the capacity of this hash map to match its length.
     ///
     /// Rebuilds the internal table so that it holds approximately `len` elements.
@@ -335,14 +332,6 @@ pub trait TryHashMap<K, V, S = RandomState>: Sized {
     /// allocation for the rebuilt table fails, or [`TryHashMapError::Clone`] if
     /// duplicating the hasher factory fails. Equivalent to
     /// [`HashMap::shrink_to_fit`] but fallible.
-    ///
-    /// **Deprecated:** This method name conflicts with the unstable inherent
-    /// [`HashMap::try_shrink_to_fit`](lang_std::collections::hash_map::HashMap::try_shrink_to_fit).
-    /// Use [`Self::fallible_shrink_to_fit`] instead.
-    #[deprecated(
-        since = "0.1.0",
-        note = "conflicts with unstable HashMap::try_shrink_to_fit; use fallible_shrink_to_fit"
-    )]
     fn try_shrink_to_fit(&mut self) -> Result<(), TryHashMapError>
     where
         S: TryClone;
@@ -356,28 +345,13 @@ pub trait TryHashMap<K, V, S = RandomState>: Sized {
     /// duplicated. Returns [`TryHashMapError::Reserve`] if the allocation fails,
     /// or [`TryHashMapError::Clone`] if duplicating the hasher factory fails.
     /// Equivalent to [`HashMap::shrink_to`] but fallible.
-    ///
-    /// **Deprecated:** This method name conflicts with the unstable inherent
-    /// [`HashMap::try_shrink_to`](lang_std::collections::hash_map::HashMap::try_shrink_to).
-    /// Use [`Self::fallible_shrink_to`] instead.
-    #[deprecated(
-        since = "0.1.0",
-        note = "conflicts with unstable HashMap::try_shrink_to; use fallible_shrink_to"
-    )]
     fn try_shrink_to(&mut self, min_capacity: usize) -> Result<(), TryHashMapError>
     where
         S: TryClone;
 
     /// Fallibly shrink the capacity of this hash map to match its length.
     ///
-    /// Rebuilds the underlying table without risking a panic. Returns
-    /// [`TryHashMapError::Reserve`] if the allocation for the rebuilt table
-    /// fails, or [`TryHashMapError::Clone`] if duplicating the hasher factory
-    /// fails. Equivalent to [`HashMap::shrink_to_fit`] but fallible.
-    ///
-    /// This method replaces the deprecated [`Self::try_shrink_to_fit`] which
-    /// shares its name with the unstable inherent [`HashMap::try_shrink_to_fit`](lang_std::collections::hash_map::HashMap::try_shrink_to_fit).
-    #[allow(deprecated)]
+    /// Alias for [`Self::try_shrink_to_fit`].
     fn fallible_shrink_to_fit(&mut self) -> Result<(), TryHashMapError>
     where
         S: TryClone,
@@ -388,16 +362,7 @@ pub trait TryHashMap<K, V, S = RandomState>: Sized {
     /// Fallibly shrink the capacity of this hash map to hold at least
     /// `min_capacity` elements.
     ///
-    /// If the current capacity is already less than or equal to `min_capacity`,
-    /// does nothing and returns `Ok(())`. Otherwise rebuilds the table with the
-    /// target capacity. Requires `S: TryClone` so the hasher can be safely
-    /// duplicated. Returns [`TryHashMapError::Reserve`] if the allocation fails,
-    /// or [`TryHashMapError::Clone`] if duplicating the hasher factory fails.
-    /// Equivalent to [`HashMap::shrink_to`] but fallible.
-    ///
-    /// This method replaces the deprecated [`Self::try_shrink_to`] which shares
-    /// its name with the unstable inherent [`HashMap::try_shrink_to`](lang_std::collections::hash_map::HashMap::try_shrink_to).
-    #[allow(deprecated)]
+    /// Alias for [`Self::fallible_shrink_to_fit`].
     fn fallible_shrink_to(&mut self, min_capacity: usize) -> Result<(), TryHashMapError>
     where
         S: TryClone,
@@ -444,7 +409,6 @@ pub trait TryHashMap<K, V, S = RandomState>: Sized {
 
 // ── Implementation ────────────────────────────────────────────────────────────
 
-#[allow(deprecated)]
 impl<K: Eq + Hash, V, S: BuildHasher> TryHashMap<K, V, S> for HashMap<K, V, S> {
     // ── Construction ────────────────────────────────────────────────────────
 
@@ -484,8 +448,7 @@ impl<K: Eq + Hash, V, S: BuildHasher> TryHashMap<K, V, S> for HashMap<K, V, S> {
     where
         K: Eq + Hash,
     {
-        self.try_reserve(1)
-            .map_err(|e| TryHashMapError::Reserve(e.into()))?;
+        self.try_reserve(1).map_err(TryHashMapError::Reserve)?;
         Ok(self.insert(key, value))
     }
 
@@ -499,7 +462,7 @@ impl<K: Eq + Hash, V, S: BuildHasher> TryHashMap<K, V, S> for HashMap<K, V, S> {
     {
         match self.try_reserve(1) {
             Ok(()) => Ok(self.insert(key, value)),
-            Err(e) => Err((key, value, TryHashMapError::Reserve(e.into()))),
+            Err(e) => Err((key, value, TryHashMapError::Reserve(e))),
         }
     }
 
@@ -515,7 +478,7 @@ impl<K: Eq + Hash, V, S: BuildHasher> TryHashMap<K, V, S> for HashMap<K, V, S> {
                 self.insert(key, value);
                 Ok(())
             }
-            Err(e) => Err((key, value, TryHashMapError::Reserve(e.into()))),
+            Err(e) => Err((key, value, TryHashMapError::Reserve(e))),
         }
     }
 
@@ -523,8 +486,7 @@ impl<K: Eq + Hash, V, S: BuildHasher> TryHashMap<K, V, S> for HashMap<K, V, S> {
     where
         K: Eq + Hash,
     {
-        self.try_reserve(1)
-            .map_err(|e| TryHashMapError::Reserve(e.into()))?;
+        self.try_reserve(1).map_err(TryHashMapError::Reserve)?;
         Ok(self.entry(key))
     }
 
@@ -550,7 +512,7 @@ impl<K: Eq + Hash, V, S: BuildHasher> TryHashMap<K, V, S> for HashMap<K, V, S> {
         let mut new_map = HashMap::with_capacity_and_hasher(0, hasher);
         new_map
             .try_reserve(target)
-            .map_err(|e| TryHashMapError::Reserve(e.into()))?;
+            .map_err(TryHashMapError::Reserve)?;
         for (k, v) in self.drain() {
             new_map.insert(k, v);
         }
@@ -619,7 +581,7 @@ where
         if !self.is_empty() {
             // Reserve space first so allocation failures are caught early.
             out.try_reserve(self.len())
-                .map_err(|e| TryCloneError::Reserve(e.into()))?;
+                .map_err(TryCloneError::Reserve)?;
         }
         for (key, value) in self.iter() {
             match (key.try_clone(), value.try_clone()) {
@@ -1211,9 +1173,9 @@ mod tests {
                     assert_eq!(map[&source[i].0], source[i].1);
                 }
                 // Entries at or after the failing index were never inserted.
-                for i in fail_idx..source.len() {
+                for source in source.iter().skip(fail_idx) {
                     assert!(
-                        !map.contains_key(source[i].0.as_str()),
+                        !map.contains_key(&source.0),
                         "entry at failing index or beyond should not be present"
                     );
                 }

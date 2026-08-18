@@ -278,14 +278,6 @@ pub trait TryHashSet<T, S = RandomState>: Sized {
     /// allocation for the rebuilt table fails, or [`TryHashSetError::Clone`] if
     /// duplicating the hasher factory fails. Equivalent to
     /// [`HashSet::shrink_to_fit`] but fallible.
-    ///
-    /// **Deprecated:** This method name conflicts with the unstable inherent
-    /// [`HashSet::try_shrink_to_fit`](lang_std::collections::hash_set::HashSet::try_shrink_to_fit).
-    /// Use [`Self::fallible_shrink_to_fit`] instead.
-    #[deprecated(
-        since = "0.1.0",
-        note = "conflicts with unstable HashSet::try_shrink_to_fit; use fallible_shrink_to_fit"
-    )]
     fn try_shrink_to_fit(&mut self) -> Result<(), TryHashSetError>
     where
         S: TryClone;
@@ -299,14 +291,6 @@ pub trait TryHashSet<T, S = RandomState>: Sized {
     /// duplicated. Returns [`TryHashSetError::Reserve`] if the allocation fails,
     /// or [`TryHashSetError::Clone`] if duplicating the hasher factory fails.
     /// Equivalent to [`HashSet::shrink_to`] but fallible.
-    ///
-    /// **Deprecated:** This method name conflicts with the unstable inherent
-    /// [`HashSet::try_shrink_to`](lang_std::collections::hash_set::HashSet::try_shrink_to).
-    /// Use [`Self::fallible_shrink_to`] instead.
-    #[deprecated(
-        since = "0.1.0",
-        note = "conflicts with unstable HashSet::try_shrink_to; use fallible_shrink_to"
-    )]
     fn try_shrink_to(&mut self, min_capacity: usize) -> Result<(), TryHashSetError>
     where
         S: TryClone;
@@ -319,10 +303,6 @@ pub trait TryHashSet<T, S = RandomState>: Sized {
     /// allocation for the rebuilt table fails, or [`TryHashSetError::Clone`] if
     /// duplicating the hasher factory fails. Equivalent to
     /// [`HashSet::shrink_to_fit`] but fallible.
-    ///
-    /// This method replaces the deprecated [`Self::try_shrink_to_fit`] which
-    /// shares its name with the unstable inherent [`HashSet::try_shrink_to_fit`](lang_std::collections::hash_set::HashSet::try_shrink_to_fit).
-    #[allow(deprecated)]
     fn fallible_shrink_to_fit(&mut self) -> Result<(), TryHashSetError>
     where
         S: TryClone,
@@ -339,10 +319,6 @@ pub trait TryHashSet<T, S = RandomState>: Sized {
     /// duplicated. Returns [`TryHashSetError::Reserve`] if the allocation fails,
     /// or [`TryHashSetError::Clone`] if duplicating the hasher factory fails.
     /// Equivalent to [`HashSet::shrink_to`] but fallible.
-    ///
-    /// This method replaces the deprecated [`Self::try_shrink_to`] which shares
-    /// its name with the unstable inherent [`HashSet::try_shrink_to`](lang_std::collections::hash_set::HashSet::try_shrink_to).
-    #[allow(deprecated)]
     fn fallible_shrink_to(&mut self, min_capacity: usize) -> Result<(), TryHashSetError>
     where
         S: TryClone,
@@ -387,7 +363,6 @@ pub trait TryHashSet<T, S = RandomState>: Sized {
 
 // ── Implementation ────────────────────────────────────────────────────────────
 
-#[allow(deprecated)]
 impl<T: Eq + Hash, S: BuildHasher> TryHashSet<T, S> for HashSet<T, S> {
     // ── Construction ────────────────────────────────────────────────────────
 
@@ -428,7 +403,7 @@ impl<T: Eq + Hash, S: BuildHasher> TryHashSet<T, S> for HashSet<T, S> {
         T: Eq + Hash,
     {
         self.try_reserve(1)
-            .map_err(|e| TryHashSetError::Reserve(e.into()))?;
+            .map_err(TryHashSetError::Reserve)?;
         Ok(self.insert(value))
     }
 
@@ -438,7 +413,7 @@ impl<T: Eq + Hash, S: BuildHasher> TryHashSet<T, S> for HashSet<T, S> {
     {
         match self.try_reserve(1) {
             Ok(()) => Ok(self.insert(value)),
-            Err(e) => Err((value, TryHashSetError::Reserve(e.into()))),
+            Err(e) => Err((value, TryHashSetError::Reserve(e))),
         }
     }
 
@@ -459,7 +434,7 @@ impl<T: Eq + Hash, S: BuildHasher> TryHashSet<T, S> for HashSet<T, S> {
             if self.len() == self.capacity()
                 && let Err(e) = self.try_reserve(1)
             {
-                return Err((e.into(), Resumable::new(value, iter)));
+                return Err((e, Resumable::new(value, iter)));
             }
             self.insert(value);
         }
@@ -468,13 +443,13 @@ impl<T: Eq + Hash, S: BuildHasher> TryHashSet<T, S> for HashSet<T, S> {
         if lower > 0
             && let Err(e) = self.try_reserve(lower)
         {
-            return Err((e.into(), Resumable::from_remainder(iter)));
+            return Err((e, Resumable::from_remainder(iter)));
         }
         while let Some(value) = iter.next() {
             if self.len() == self.capacity()
                 && let Err(e) = self.try_reserve(1)
             {
-                return Err((e.into(), Resumable::new(value, iter)));
+                return Err((e, Resumable::new(value, iter)));
             }
             self.insert(value);
         }
@@ -490,7 +465,7 @@ impl<T: Eq + Hash, S: BuildHasher> TryHashSet<T, S> for HashSet<T, S> {
         }
         let len_before = self.len();
         self.try_reserve(other.len())
-            .map_err(|e| TryHashSetError::Reserve(e.into()))?;
+            .map_err(TryHashSetError::Reserve)?;
         for elem in other {
             match elem.try_clone() {
                 Ok(cloned) => {
@@ -529,7 +504,7 @@ impl<T: Eq + Hash, S: BuildHasher> TryHashSet<T, S> for HashSet<T, S> {
         let mut new_set = HashSet::with_capacity_and_hasher(0, hasher);
         new_set
             .try_reserve(target)
-            .map_err(|e| TryHashSetError::Reserve(e.into()))?;
+            .map_err(TryHashSetError::Reserve)?;
         for v in self.drain() {
             new_set.insert(v);
         }
@@ -594,7 +569,7 @@ where
         let mut out = HashSet::with_hasher(hasher);
         if !self.is_empty() {
             out.try_reserve(self.len())
-                .map_err(|e| TryCloneError::Reserve(e.into()))?;
+                .map_err(TryCloneError::Reserve)?;
         }
         for elem in self.iter() {
             match elem.try_clone() {

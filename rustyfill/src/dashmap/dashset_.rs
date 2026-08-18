@@ -231,25 +231,15 @@ pub trait TryDashSet<T, S = RandomState>: Sized {
 
     /// Fallibly shrink the capacity of this DashSet to match its length.
     ///
-    /// **Deprecated:** This method name conflicts with the unstable inherent
-    /// [`DashSet::try_shrink_to_fit`](dashmap::DashSet::try_shrink_to_fit).
-    /// Use [`Self::fallible_shrink_to_fit`] instead.
-    #[deprecated(
-        since = "0.1.0",
-        note = "conflicts with unstable DashSet::try_shrink_to_fit; use fallible_shrink_to_fit"
-    )]
-    fn try_shrink_to_fit(&self) -> Result<(), TryDashSetError>;
-
-    /// Fallibly shrink the capacity of this DashSet to match its length.
-    ///
     /// Rebuilds the internal table so that it holds approximately `len` elements.
     /// Returns [`TryDashSetError::Reserve`] if the allocation for the rebuilt
     /// table fails. Equivalent to [`DashSet::shrink_to_fit`](dashmap::DashSet::shrink_to_fit)
     /// but fallible.
+    fn try_shrink_to_fit(&self) -> Result<(), TryDashSetError>;
+
+    /// Fallibly shrink the capacity of this DashSet to match its length.
     ///
-    /// This method replaces the deprecated [`Self::try_shrink_to_fit`] which
-    /// shares its name with the unstable inherent [`DashSet::try_shrink_to_fit`](dashmap::DashSet::try_shrink_to_fit).
-    #[allow(deprecated)]
+    /// Alias for [`Self::try_shrink_to_fit`]
     fn fallible_shrink_to_fit(&self) -> Result<(), TryDashSetError> {
         Self::try_shrink_to_fit(self)
     }
@@ -309,7 +299,6 @@ fn convert_mut<T, S>(set: &mut DashSet<T, S>) -> &mut DashMap<T, (), S> {
     unsafe { mem::transmute(set) }
 }
 
-#[allow(deprecated)]
 impl<T: Eq + Hash, S: BuildHasher + TryClone> TryDashSet<T, S> for DashSet<T, S> {
     // ── Construction ────────────────────────────────────────────────────────
 
@@ -327,11 +316,9 @@ impl<T: Eq + Hash, S: BuildHasher + TryClone> TryDashSet<T, S> for DashSet<T, S>
     {
         let mut set = Self::try_new()?;
         if capacity > 0 {
-            convert_mut(&mut set)
-                .try_reserve(capacity)
-                .map_err(|_| {
-                    TryDashSetError::Reserve(TryReserveErrorExt::new_alloc(Layout::new::<u8>()))
-                })?;
+            convert_mut(&mut set).try_reserve(capacity).map_err(|_| {
+                TryDashSetError::Reserve(TryReserveErrorExt::new_alloc(Layout::new::<u8>()))
+            })?;
         }
         Ok(set)
     }
@@ -342,11 +329,9 @@ impl<T: Eq + Hash, S: BuildHasher + TryClone> TryDashSet<T, S> for DashSet<T, S>
     ) -> Result<DashSet<T, S>, TryDashSetError> {
         let mut set = DashSet::with_hasher(hasher);
         if capacity > 0 {
-            convert_mut(&mut set)
-                .try_reserve(capacity)
-                .map_err(|_| {
-                    TryDashSetError::Reserve(TryReserveErrorExt::new_alloc(Layout::new::<u8>()))
-                })?;
+            convert_mut(&mut set).try_reserve(capacity).map_err(|_| {
+                TryDashSetError::Reserve(TryReserveErrorExt::new_alloc(Layout::new::<u8>()))
+            })?;
         }
         Ok(set)
     }

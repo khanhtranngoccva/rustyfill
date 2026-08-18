@@ -16,7 +16,7 @@ use std::path::Path;
 
 use proc_macro2::{Span, TokenStream, TokenTree};
 use quote::ToTokens;
-use syn::{punctuated::Punctuated, Ident, Generics, ItemStruct, Type};
+use syn::{Generics, Ident, ItemStruct, Type, punctuated::Punctuated};
 
 use crate::formatter::format_source;
 use crate::parser::{ItemKind, ItemVisibility, ParsedItem};
@@ -77,7 +77,10 @@ impl TypeInfo {
 
     /// The leaf identifier of the type.
     pub fn leaf(&self) -> &str {
-        self.canonical_path.rsplit("::").next().unwrap_or(&self.canonical_path)
+        self.canonical_path
+            .rsplit("::")
+            .next()
+            .unwrap_or(&self.canonical_path)
     }
 }
 
@@ -134,7 +137,10 @@ impl TypeRegistry {
         def_file: &str,
     ) {
         let leaf = canonical_path.rsplit("::").next().unwrap_or(canonical_path);
-        self.by_leaf.entry(leaf.to_string()).or_default().push(canonical_path.to_string());
+        self.by_leaf
+            .entry(leaf.to_string())
+            .or_default()
+            .push(canonical_path.to_string());
         let info = self
             .by_path
             .entry(canonical_path.to_string())
@@ -258,11 +264,10 @@ impl TypeRegistry {
         let chosen = top
             .iter()
             .find(|p| self.declared.contains(**p))
-            .or_else(|| top.iter().find(|p| {
-                self.by_path
-                    .get(p.as_str())
-                    .is_some_and(|t| t.is_exported)
-            }))
+            .or_else(|| {
+                top.iter()
+                    .find(|p| self.by_path.get(p.as_str()).is_some_and(|t| t.is_exported))
+            })
             .copied()
             .unwrap_or(top[0]);
 
@@ -367,14 +372,10 @@ pub fn check_declared_struct_fields(registry: &TypeRegistry) -> Vec<String> {
 }
 
 /// Check that a declared type alias's RHS only references usable types.
-fn check_alias_rhs(
-    ty: &syn::Type,
-    registry: &TypeRegistry,
-    owner: &str,
-    errors: &mut Vec<String>,
-) {
+fn check_alias_rhs(ty: &syn::Type, registry: &TypeRegistry, owner: &str, errors: &mut Vec<String>) {
     for ty_name in type_leaves(ty) {
-        if let FieldRefResolution::UndeclaredPrivate(resolved) = registry.resolve_field_ref(&ty_name)
+        if let FieldRefResolution::UndeclaredPrivate(resolved) =
+            registry.resolve_field_ref(&ty_name)
         {
             errors.push(format!(
                 "[fields] type alias `{owner}` expands to `{ty_name}`, which resolves \
@@ -484,7 +485,11 @@ const DROP_MAYBE_NO: &str = "maybe-no";
 /// - `DROP_MAYBE_NO` (`"maybe-no"`) otherwise — it references at least one
 ///   polyfilled type (whose mirror has no drop glue) or mentions a generic
 ///   parameter (always wins, since the concrete instantiation is unknown).
-fn classify_field_drop(ty: &syn::Type, registry: &TypeRegistry, guard: &LocalNameGuard<'_>) -> &'static str {
+fn classify_field_drop(
+    ty: &syn::Type,
+    registry: &TypeRegistry,
+    guard: &LocalNameGuard<'_>,
+) -> &'static str {
     let mut has_polyfill = false;
     let mut has_generic = false;
     visit_drop_classification(ty, registry, guard, &mut has_polyfill, &mut has_generic);
@@ -524,23 +529,41 @@ fn visit_drop_classification(
                 if let syn::PathArguments::AngleBracketed(args) = &seg.arguments {
                     for arg in &args.args {
                         if let syn::GenericArgument::Type(inner) = arg {
-                            visit_drop_classification(inner, registry, guard, has_polyfill, has_generic);
+                            visit_drop_classification(
+                                inner,
+                                registry,
+                                guard,
+                                has_polyfill,
+                                has_generic,
+                            );
                         }
                     }
                 }
             }
         }
-        Type::Reference(tr) => visit_drop_classification(&tr.elem, registry, guard, has_polyfill, has_generic),
-        Type::Ptr(tp) => visit_drop_classification(&tp.elem, registry, guard, has_polyfill, has_generic),
+        Type::Reference(tr) => {
+            visit_drop_classification(&tr.elem, registry, guard, has_polyfill, has_generic)
+        }
+        Type::Ptr(tp) => {
+            visit_drop_classification(&tp.elem, registry, guard, has_polyfill, has_generic)
+        }
         Type::Tuple(tt) => {
             for elem in &tt.elems {
                 visit_drop_classification(elem, registry, guard, has_polyfill, has_generic);
             }
         }
-        Type::Slice(ts) => visit_drop_classification(&ts.elem, registry, guard, has_polyfill, has_generic),
-        Type::Array(ta) => visit_drop_classification(&ta.elem, registry, guard, has_polyfill, has_generic),
-        Type::Paren(tp) => visit_drop_classification(&tp.elem, registry, guard, has_polyfill, has_generic),
-        Type::Group(tg) => visit_drop_classification(&tg.elem, registry, guard, has_polyfill, has_generic),
+        Type::Slice(ts) => {
+            visit_drop_classification(&ts.elem, registry, guard, has_polyfill, has_generic)
+        }
+        Type::Array(ta) => {
+            visit_drop_classification(&ta.elem, registry, guard, has_polyfill, has_generic)
+        }
+        Type::Paren(tp) => {
+            visit_drop_classification(&tp.elem, registry, guard, has_polyfill, has_generic)
+        }
+        Type::Group(tg) => {
+            visit_drop_classification(&tg.elem, registry, guard, has_polyfill, has_generic)
+        }
         _ => {}
     }
 }
@@ -574,7 +597,11 @@ fn has_drop_annotation(attrs: &[syn::Attribute]) -> bool {
 /// Annotate named fields of a struct/enum/union node with its drop-safety
 /// classification before serialization. Tuple (unnamed) fields are skipped
 /// since doc comments on tuple positions are less discoverable.
-fn annotate_fields_drop(fields: &mut syn::Fields, registry: &TypeRegistry, guard: &LocalNameGuard<'_>) {
+fn annotate_fields_drop(
+    fields: &mut syn::Fields,
+    registry: &TypeRegistry,
+    guard: &LocalNameGuard<'_>,
+) {
     if let syn::Fields::Named(named) = fields {
         for f in named.named.iter_mut() {
             annotate_one_field(f, registry, guard);
@@ -593,13 +620,23 @@ fn annotate_one_field(f: &mut syn::Field, registry: &TypeRegistry, guard: &Local
 }
 
 /// Rewrite the tokens of a single struct/enum/union item so that every
-fn rewrite_fields_named(fields: &mut syn::FieldsNamed, registry: &TypeRegistry, module_ctx: &str, guard: &LocalNameGuard<'_>) {
+fn rewrite_fields_named(
+    fields: &mut syn::FieldsNamed,
+    registry: &TypeRegistry,
+    module_ctx: &str,
+    guard: &LocalNameGuard<'_>,
+) {
     for f in fields.named.iter_mut() {
         f.ty = rewrite_type(f.ty.clone(), registry, module_ctx, guard);
     }
 }
 
-fn rewrite_fields(fields: &mut syn::Fields, registry: &TypeRegistry, module_ctx: &str, guard: &LocalNameGuard<'_>) {
+fn rewrite_fields(
+    fields: &mut syn::Fields,
+    registry: &TypeRegistry,
+    module_ctx: &str,
+    guard: &LocalNameGuard<'_>,
+) {
     match fields {
         syn::Fields::Named(named) => rewrite_fields_named(named, registry, module_ctx, guard),
         syn::Fields::Unnamed(unnamed) => {
@@ -611,11 +648,20 @@ fn rewrite_fields(fields: &mut syn::Fields, registry: &TypeRegistry, module_ctx:
     }
 }
 
-fn rewrite_struct_node(mut node: ItemStruct, registry: &TypeRegistry, module_ctx: &str, base_guard: &LocalNameGuard<'_>) -> TokenStream {
+fn rewrite_struct_node(
+    mut node: ItemStruct,
+    registry: &TypeRegistry,
+    module_ctx: &str,
+    base_guard: &LocalNameGuard<'_>,
+) -> TokenStream {
     // Extend the guard with this struct's own generic type parameter names so
     // that field types referencing them (e.g., `ManuallyDrop<A>` where A is a
     // generic param) are classified as `maybe-no` rather than `yes`.
-    let gen_names: Vec<String> = node.generics.type_params().map(|p| p.ident.to_string()).collect();
+    let gen_names: Vec<String> = node
+        .generics
+        .type_params()
+        .map(|p| p.ident.to_string())
+        .collect();
     let guard = LocalNameGuard::new(base_guard.file_local).with_generics(&gen_names);
     node.generics = rewrite_generics(node.generics, registry, module_ctx, &guard);
     if let syn::Fields::Named(named) = &mut node.fields {
@@ -632,12 +678,21 @@ fn rewrite_struct_node(mut node: ItemStruct, registry: &TypeRegistry, module_ctx
     ts
 }
 
-fn rewrite_enum_node(mut node: syn::ItemEnum, registry: &TypeRegistry, module_ctx: &str, base_guard: &LocalNameGuard<'_>) -> TokenStream {
+fn rewrite_enum_node(
+    mut node: syn::ItemEnum,
+    registry: &TypeRegistry,
+    module_ctx: &str,
+    base_guard: &LocalNameGuard<'_>,
+) -> TokenStream {
     // Extend the guard with this enum's own generic type parameter names so
     // that variant fields referencing them (e.g., ForceResult<Leaf, Internal>'s
     // `Leaf(Leaf)`) are left bare instead of being routed to a same-named type
     // in another module.
-    let gen_names: Vec<String> = node.generics.type_params().map(|p| p.ident.to_string()).collect();
+    let gen_names: Vec<String> = node
+        .generics
+        .type_params()
+        .map(|p| p.ident.to_string())
+        .collect();
     let guard = LocalNameGuard::new(base_guard.file_local).with_generics(&gen_names);
     node.generics = rewrite_generics(node.generics, registry, module_ctx, &guard);
     for v in &mut node.variants {
@@ -661,7 +716,10 @@ struct LocalNameGuard<'a> {
 
 impl<'a> LocalNameGuard<'a> {
     fn new(file_local: Option<&'a [&'a str]>) -> Self {
-        Self { file_local, generics: Vec::new() }
+        Self {
+            file_local,
+            generics: Vec::new(),
+        }
     }
     fn with_generics(mut self, gen_names: &[String]) -> Self {
         for g in gen_names {
@@ -677,8 +735,17 @@ impl<'a> LocalNameGuard<'a> {
     }
 }
 
-fn rewrite_union_node(mut node: syn::ItemUnion, registry: &TypeRegistry, module_ctx: &str, base_guard: &LocalNameGuard<'_>) -> TokenStream {
-    let gen_names: Vec<String> = node.generics.type_params().map(|p| p.ident.to_string()).collect();
+fn rewrite_union_node(
+    mut node: syn::ItemUnion,
+    registry: &TypeRegistry,
+    module_ctx: &str,
+    base_guard: &LocalNameGuard<'_>,
+) -> TokenStream {
+    let gen_names: Vec<String> = node
+        .generics
+        .type_params()
+        .map(|p| p.ident.to_string())
+        .collect();
     let guard = LocalNameGuard::new(base_guard.file_local).with_generics(&gen_names);
     node.generics = rewrite_generics(node.generics, registry, module_ctx, &guard);
     rewrite_fields_named(&mut node.fields, registry, module_ctx, &guard);
@@ -690,10 +757,17 @@ fn rewrite_union_node(mut node: syn::ItemUnion, registry: &TypeRegistry, module_
     ts
 }
 
-fn rewrite_generics(generics: Generics, registry: &TypeRegistry, module_ctx: &str, guard: &LocalNameGuard<'_>) -> Generics {
-    let mut out = Generics::default();
-    out.lt_token = generics.lt_token;
-    out.gt_token = generics.gt_token;
+fn rewrite_generics(
+    generics: Generics,
+    registry: &TypeRegistry,
+    module_ctx: &str,
+    guard: &LocalNameGuard<'_>,
+) -> Generics {
+    let mut out = Generics {
+        lt_token: generics.lt_token,
+        gt_token: generics.gt_token,
+        ..Default::default()
+    };
     for p in generics.params {
         let rewritten = match p {
             syn::GenericParam::Lifetime(l) => syn::GenericParam::Lifetime(l),
@@ -753,11 +827,16 @@ fn rewrite_generic_bound(
 /// bindings (absolute `crate::` paths into the synthetic tree), public but
 /// undeclared types are routed to the original builtin crate, everything
 /// else passes through unchanged.
-fn rewrite_type(ty: Type, registry: &TypeRegistry, module_ctx: &str, guard: &LocalNameGuard<'_>) -> Type {
+fn rewrite_type(
+    ty: Type,
+    registry: &TypeRegistry,
+    module_ctx: &str,
+    guard: &LocalNameGuard<'_>,
+) -> Type {
     match ty {
         Type::Path(mut tp) => {
             if let Some(q) = &mut tp.qself {
-                q.ty = Box::new(rewrite_type((*q.ty).clone(), registry, module_ctx, guard));
+                *q.ty = rewrite_type((*q.ty).clone(), registry, module_ctx, guard);
             }
             tp.path = rewrite_path(tp.path, registry, module_ctx, guard);
             Type::Path(tp)
@@ -802,7 +881,12 @@ fn rewrite_type(ty: Type, registry: &TypeRegistry, module_ctx: &str, guard: &Loc
 /// or known type. Qualified paths (`<T>::Assoc`) only have their inner type
 /// rewritten. `module_ctx` is the current file's module path (e.g.,
 /// `"collections/btree/map/entry"`) used to disambiguate same-named types.
-fn rewrite_path(path: syn::Path, registry: &TypeRegistry, module_ctx: &str, guard: &LocalNameGuard<'_>) -> syn::Path {
+fn rewrite_path(
+    path: syn::Path,
+    registry: &TypeRegistry,
+    module_ctx: &str,
+    guard: &LocalNameGuard<'_>,
+) -> syn::Path {
     let leading_colon = path.leading_colon;
     let segs: Vec<syn::PathSegment> = path.segments.into_iter().collect();
     if segs.is_empty() {
@@ -843,7 +927,10 @@ fn rewrite_path(path: syn::Path, registry: &TypeRegistry, module_ctx: &str, guar
             // convenience for bare names inside nested files, and going through
             // it adds indirection (and breaks when the preamble is omitted).
             let lib = canonical.split("::").next().unwrap_or("");
-            let rest = canonical.strip_prefix(lib).unwrap_or("").trim_start_matches("::");
+            let rest = canonical
+                .strip_prefix(lib)
+                .unwrap_or("")
+                .trim_start_matches("::");
             format!("::__rustyfill_builtin_{lib}::{rest}")
         }
         Some(FieldRefResolution::UndeclaredPrivate(_))
@@ -936,12 +1023,8 @@ const WRAPPER_MOD: &str = "std";
 /// during emission rather than left dangling. This list is intentionally
 /// small and explicit — it is not a general "strip any unknown trait" rule,
 /// which would silently drop legitimate user-facing bounds.
-const INTERNAL_TRAIT_STRIPS: &[&str] = &[
-    "PointeeSized",
-    "StructuralPartialEq",
-    "MetaSized",
-    "Unsize",
-];
+const INTERNAL_TRAIT_STRIPS: &[&str] =
+    &["PointeeSized", "StructuralPartialEq", "MetaSized", "Unsize"];
 
 /// Content of the preamble module. Lives in its own namespace so that
 /// `pub use core::marker::*` doesn't clash with a local `mod marker`.
@@ -1078,8 +1161,7 @@ fn is_emittable_attr(attr: &syn::Attribute) -> bool {
                 .map(|s| s.trim())
                 .filter(|s| !s.is_empty())
                 .collect();
-            let all_safe = !traits.is_empty()
-                && traits.iter().all(|t| SAFE_DERIVES.contains(t));
+            let all_safe = !traits.is_empty() && traits.iter().all(|t| SAFE_DERIVES.contains(t));
             return all_safe;
         }
         return false;
@@ -1291,7 +1373,12 @@ pub fn emit_parsed_items(
     // them are NOT routed to cross-module mirrors.
     let local_names: Vec<&str> = items
         .iter()
-        .filter(|i| matches!(i.kind, ItemKind::Struct | ItemKind::Enum | ItemKind::Union | ItemKind::TypeAlias))
+        .filter(|i| {
+            matches!(
+                i.kind,
+                ItemKind::Struct | ItemKind::Enum | ItemKind::Union | ItemKind::TypeAlias
+            )
+        })
         .map(|i| i.name.as_str())
         .collect();
     let guard = LocalNameGuard::new(Some(&local_names));
@@ -1309,7 +1396,9 @@ pub fn emit_parsed_items(
         // needed by the polyfill. Any reference to such an undeclared type
         // routes back to the original builtin crate instead.
         if !is_const
-            && !config.type_registry.is_declared_in_module(config.lib_name, module_path, &item.name)
+            && !config
+                .type_registry
+                .is_declared_in_module(config.lib_name, module_path, &item.name)
         {
             continue;
         }
@@ -1382,7 +1471,15 @@ fn emit_item(
             let value = classify_field_drop(&rhs_ty, type_registry, guard);
             drop_doc_comment(value).to_tokens(&mut ts);
         }
-        emit_declared_type_alias(&item.name, rhs, &item.full_tokens, type_registry, module_ctx, guard, &mut ts);
+        emit_declared_type_alias(
+            &item.name,
+            rhs,
+            &item.full_tokens,
+            type_registry,
+            module_ctx,
+            guard,
+            &mut ts,
+        );
         let widened = widen_visibility(ts);
         let rewritten = rewrite_crate_paths(widened, preamble_use_path, path_replacements);
         write!(out, "{}", rewritten).ok();
@@ -1467,7 +1564,11 @@ fn emit_declared_type_alias(
             };
             let routed = rewrite_type(ty, registry, module_ctx, guard);
             let mut ts = TokenStream::new();
-            ts.extend(format!("type {} = ", name).parse::<TokenStream>().unwrap_or_default());
+            ts.extend(
+                format!("type {} = ", name)
+                    .parse::<TokenStream>()
+                    .unwrap_or_default(),
+            );
             routed.to_tokens(&mut ts);
             ts.extend(";".parse::<TokenStream>().unwrap_or_default());
             out.extend(ts);
@@ -1489,7 +1590,7 @@ fn emit_declared_type_alias(
     let routed = rewrite_type(ty, registry, module_ctx, guard);
 
     let mut cloned = original_node;
-    cloned.ty = Box::new(routed);
+    *cloned.ty = routed;
     let mut ts = TokenStream::new();
     cloned.to_tokens(&mut ts);
     out.extend(ts);
@@ -1583,14 +1684,10 @@ fn rewrite_item_references_rerouted(
                     for (i, name) in all.iter().enumerate() {
                         if i > 0 {
                             new_tokens.extend(
-                                ",".to_string()
-                                    .parse::<proc_macro2::TokenStream>()
-                                    .unwrap(),
+                                ",".to_string().parse::<proc_macro2::TokenStream>().unwrap(),
                             );
                         }
-                        new_tokens.extend(
-                            name.parse::<proc_macro2::TokenStream>().unwrap(),
-                        );
+                        new_tokens.extend(name.parse::<proc_macro2::TokenStream>().unwrap());
                     }
                     list.tokens = new_tokens;
                 }
@@ -1650,7 +1747,7 @@ fn rewrite_item_references_rerouted(
         ItemKind::TypeAlias => match syn::parse2::<syn::ItemType>(tokens.clone()) {
             Ok(mut node) => {
                 node.attrs.retain(is_emittable_attr);
-                node.ty = Box::new(rewrite_type(*node.ty, registry, module_ctx, guard));
+                *node.ty = rewrite_type(*node.ty, registry, module_ctx, guard);
                 let mut ts = TokenStream::new();
                 node.to_tokens(&mut ts);
                 ts
@@ -1686,12 +1783,16 @@ fn rewrite_crate_paths_legacy(
     let item_kw = trees.iter().find_map(|tt| match tt {
         TokenTree::Ident(id) => {
             let name = id.to_string();
-            matches!(name.as_str(), "struct" | "enum" | "union" | "const" | "type").then_some(name)
+            matches!(
+                name.as_str(),
+                "struct" | "enum" | "union" | "const" | "type"
+            )
+            .then_some(name)
         }
         _ => None,
     });
-    let annotate_fields = drop_annotations_enabled()
-        && matches!(item_kw.as_deref(), Some("struct") | Some("union"));
+    let annotate_fields =
+        drop_annotations_enabled() && matches!(item_kw.as_deref(), Some("struct") | Some("union"));
 
     let mut result = Vec::with_capacity(trees.len());
     // Track whether we've passed the item-definition keyword (struct/enum/union/
@@ -1728,39 +1829,40 @@ fn rewrite_crate_paths_legacy(
                 result.push(tt.clone());
                 continue;
             }
-            if past_def_kw && !name.starts_with('_') && !is_keywordish(&name) && name != item_name
+            if past_def_kw
+                && !name.starts_with('_')
+                && !is_keywordish(&name)
+                && name != item_name
+                && let FieldRefResolution::Mirrored(canonical) = registry.resolve_field_ref(&name)
             {
-                if let FieldRefResolution::Mirrored(canonical) = registry.resolve_field_ref(&name)
-                {
-                    // Mirrors always live under the manifest's single wrapper
-                    // module (named by the registry), so drop the leading
-                    // library segment.
-                    let rest = canonical
-                        .split_once("::")
-                        .map(|(_, r)| r)
-                        .unwrap_or(canonical.as_str());
-                    let abs = format!("crate::{}::{rest}", registry.wrapper_mod());
-                    if let Ok(subst) = abs.parse::<TokenStream>() {
-                        if annotate_fields && in_body && body_depth == 1 {
-                            field_buf.extend(subst.into_iter());
-                        } else {
-                            result.extend(subst.into_iter());
-                        }
-                        continue;
+                // Mirrors always live under the manifest's single wrapper
+                // module (named by the registry), so drop the leading
+                // library segment.
+                let rest = canonical
+                    .split_once("::")
+                    .map(|(_, r)| r)
+                    .unwrap_or(canonical.as_str());
+                let abs = format!("crate::{}::{rest}", registry.wrapper_mod());
+                if let Ok(subst) = abs.parse::<TokenStream>() {
+                    if annotate_fields && in_body && body_depth == 1 {
+                        field_buf.extend(subst);
+                    } else {
+                        result.extend(subst);
                     }
+                    continue;
                 }
             }
         }
 
         // Body tracking for field annotation.
-        if let TokenTree::Group(g) = tt {
-            if g.delimiter() == proc_macro2::Delimiter::Brace {
-                if in_body {
-                    body_depth += 1;
-                } else if annotate_fields && past_def_kw {
-                    in_body = true;
-                    body_depth = 1;
-                }
+        if let TokenTree::Group(g) = tt
+            && g.delimiter() == proc_macro2::Delimiter::Brace
+        {
+            if in_body {
+                body_depth += 1;
+            } else if annotate_fields && past_def_kw {
+                in_body = true;
+                body_depth = 1;
             }
         }
 
@@ -1781,13 +1883,15 @@ fn rewrite_crate_paths_legacy(
         }
 
         result.push(tt.clone());
-        if let TokenTree::Group(g) = tt {
-            if g.delimiter() == proc_macro2::Delimiter::Brace && in_body && body_depth > 0 {
-                body_depth -= 1;
-                if body_depth == 0 {
-                    flush_field!();
-                    in_body = false;
-                }
+        if let TokenTree::Group(g) = tt
+            && g.delimiter() == proc_macro2::Delimiter::Brace
+            && in_body
+            && body_depth > 0
+        {
+            body_depth -= 1;
+            if body_depth == 0 {
+                flush_field!();
+                in_body = false;
             }
         }
     }
@@ -1800,12 +1904,35 @@ fn rewrite_crate_paths_legacy(
 fn is_keywordish(name: &str) -> bool {
     matches!(
         name,
-        "struct" | "enum" | "union" | "type" | "const" | "fn" | "let" | "mut" | "ref" | "self"
-            | "Self" | "where" | "for" | "impl" | "trait" | "async" | "await" | "dyn" | "unsafe"
-            | "extern" | "use" | "mod" | "crate" | "super" | "true" | "false" | "pub"
+        "struct"
+            | "enum"
+            | "union"
+            | "type"
+            | "const"
+            | "fn"
+            | "let"
+            | "mut"
+            | "ref"
+            | "self"
+            | "Self"
+            | "where"
+            | "for"
+            | "impl"
+            | "trait"
+            | "async"
+            | "await"
+            | "dyn"
+            | "unsafe"
+            | "extern"
+            | "use"
+            | "mod"
+            | "crate"
+            | "super"
+            | "true"
+            | "false"
+            | "pub"
     )
 }
-
 
 /// Widen all visibility modifiers to plain `pub` so that generated bindings
 /// are fully accessible from any crate. This handles three cases:
@@ -2680,4 +2807,3 @@ fn sanitize(name: &str) -> String {
         s
     }
 }
-

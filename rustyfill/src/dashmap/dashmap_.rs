@@ -513,25 +513,15 @@ pub trait TryDashMap<K, V, S = RandomState>: Sized {
 
     /// Fallibly shrink the capacity of this DashMap to match its length.
     ///
-    /// **Deprecated:** This method name conflicts with the unstable inherent
-    /// [`DashMap::try_shrink_to_fit`](dashmap::DashMap::try_shrink_to_fit).
-    /// Use [`Self::fallible_shrink_to_fit`] instead.
-    #[deprecated(
-        since = "0.1.0",
-        note = "conflicts with unstable DashMap::try_shrink_to_fit; use fallible_shrink_to_fit"
-    )]
-    fn try_shrink_to_fit(&self) -> Result<(), TryDashMapError>;
-
-    /// Fallibly shrink the capacity of this DashMap to match its length.
-    ///
     /// Rebuilds the internal table so that it holds approximately `len` elements.
     /// Returns [`TryDashMapError::Reserve`] if the allocation for the rebuilt
     /// table fails. Equivalent to [`DashMap::shrink_to_fit`](dashmap::DashMap::shrink_to_fit)
     /// but fallible.
+    fn try_shrink_to_fit(&self) -> Result<(), TryDashMapError>;
+
+    /// Fallibly shrink the capacity of this DashMap to match its length.
     ///
-    /// This method replaces the deprecated [`Self::try_shrink_to_fit`] which
-    /// shares its name with the unstable inherent [`DashMap::try_shrink_to_fit`](dashmap::DashMap::try_shrink_to_fit).
-    #[allow(deprecated)]
+    /// Alias for [`Self::try_shrink_to_fit`]
     fn fallible_shrink_to_fit(&self) -> Result<(), TryDashMapError> {
         Self::try_shrink_to_fit(self)
     }
@@ -800,7 +790,7 @@ impl<K: Eq + Hash, V, S: BuildHasher + TryClone> TryDashMap<K, V, S> for DashMap
                 return Err((
                     key,
                     TryDashMapError::Reserve(TryReserveErrorExt::new_alloc(Layout::new::<u8>())),
-                ))
+                ));
             }
         }
 
@@ -837,9 +827,7 @@ impl<K: Eq + Hash, V, S: BuildHasher + TryClone> TryDashMap<K, V, S> for DashMap
         shard
             .try_reserve(1, |(k, _v): &ShardEntry<K, V>| hf.hash_one(k))
             .map_err(|_| {
-                TryDashMapNonblockError::Reserve(TryReserveErrorExt::new_alloc(
-                    Layout::new::<u8>(),
-                ))
+                TryDashMapNonblockError::Reserve(TryReserveErrorExt::new_alloc(Layout::new::<u8>()))
             })?;
 
         match shard.find_or_find_insert_slot(
@@ -876,9 +864,10 @@ impl<K: Eq + Hash, V, S: BuildHasher + TryClone> TryDashMap<K, V, S> for DashMap
             Err(_) => {
                 return Err((
                     key,
-                    TryDashMapNonblockError::Reserve(TryReserveErrorExt::new_alloc(
-                        Layout::new::<u8>(),
-                    )),
+                    TryDashMapNonblockError::Reserve(TryReserveErrorExt::new_alloc(Layout::new::<
+                        u8,
+                    >(
+                    ))),
                 ));
             }
         }

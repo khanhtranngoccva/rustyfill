@@ -15,8 +15,8 @@
 //! [`TryDefault`](crate::try_default::TryDefault) for `String`.
 
 use crate::alloc::AllocError;
-use crate::alloc::{TryReserveError, TryReserveErrorExt};
 use crate::alloc::vec::{TryVec, TryVecError};
+use crate::alloc::{TryReserveError, TryReserveErrorExt};
 use crate::try_clone::{TryClone, TryCloneError};
 use crate::try_default::{TryDefault, TryDefaultError};
 use crate::try_fmt::{TryDebug, helpers::FormatterExt};
@@ -155,14 +155,6 @@ pub trait TryString: Sized {
     /// May reallocate if the current allocation is larger than needed.
     /// Returns [`TryStringError::Alloc`] if the re-allocation fails.
     /// Equivalent to `String::shrink_to_fit()` but fallible.
-    ///
-    /// **Deprecated:** This method name conflicts with the unstable inherent
-    /// [`String::try_shrink_to_fit`](lang_alloc::string::String::try_shrink_to_fit).
-    /// Use [`Self::fallible_shrink_to_fit`] instead.
-    #[deprecated(
-        since = "0.1.0",
-        note = "conflicts with unstable String::try_shrink_to_fit; use fallible_shrink_to_fit"
-    )]
     fn try_shrink_to_fit(&mut self) -> Result<(), TryStringError>;
 
     /// Fallibly shrink the capacity of this `String` to at least `min_capacity`.
@@ -171,14 +163,6 @@ pub trait TryString: Sized {
     /// does nothing and returns `Ok(())`. Otherwise reallocates down.
     /// Returns [`TryStringError::Alloc`] if the re-allocation fails.
     /// Equivalent to `String::shrink_to(min_capacity)` but fallible.
-    ///
-    /// **Deprecated:** This method name conflicts with the unstable inherent
-    /// [`String::try_shrink_to`](lang_alloc::string::String::try_shrink_to).
-    /// Use [`Self::fallible_shrink_to`] instead.
-    #[deprecated(
-        since = "0.1.0",
-        note = "conflicts with unstable String::try_shrink_to; use fallible_shrink_to"
-    )]
     fn try_shrink_to(&mut self, min_capacity: usize) -> Result<(), TryStringError>;
 
     // ── Aliases with `fallible_` prefix ────────────────────────────────────
@@ -223,12 +207,7 @@ pub trait TryString: Sized {
 
     /// Fallibly shrink the capacity of this `String` to match its length.
     ///
-    /// May reallocate if the current allocation is larger than needed.
-    /// Returns [`TryStringError::Alloc`] if the re-allocation fails.
-    /// Equivalent to `String::shrink_to_fit()` but fallible.
-    ///
-    /// This method replaces the deprecated [`Self::try_shrink_to_fit`] which
-    /// shares its name with the unstable inherent [`String::try_shrink_to_fit`](lang_alloc::string::String::try_shrink_to_fit).
+    /// Alias for [`Self::try_shrink_to_fit`].
     #[allow(deprecated)]
     fn fallible_shrink_to_fit(&mut self) -> Result<(), TryStringError> {
         Self::try_shrink_to_fit(self)
@@ -236,21 +215,12 @@ pub trait TryString: Sized {
 
     /// Fallibly shrink the capacity of this `String` to at least `min_capacity`.
     ///
-    /// If the current capacity is already less than or equal to `min_capacity`,
-    /// does nothing and returns `Ok(())`. Otherwise reallocates down.
-    /// Returns [`TryStringError::Alloc`] if the re-allocation fails.
-    /// Equivalent to `String::shrink_to(min_capacity)` but fallible.
-    ///
-    /// This method replaces the deprecated [`Self::try_shrink_to`] which shares
-    /// its name with the unstable inherent [`String::try_shrink_to`](lang_alloc::string::String::try_shrink_to).
-    #[allow(deprecated)]
+    /// Alias for [`Self::try_shrink_to`].
     fn fallible_shrink_to(&mut self, min_capacity: usize) -> Result<(), TryStringError> {
         Self::try_shrink_to(self, min_capacity)
     }
 }
 
-#[allow(deprecated)]
-#[allow(deprecated)]
 impl TryString for String {
     fn try_with_capacity(capacity: usize) -> Result<String, TryReserveError> {
         let mut s = String::new();
@@ -333,6 +303,7 @@ impl TryString for String {
         self.try_shrink_to(self.len())
     }
 
+    #[allow(deprecated)]
     fn try_shrink_to(&mut self, min_capacity: usize) -> Result<(), TryStringError> {
         // Convert to Vec<u8> (identical layout to String), shrink via TryVec,
         // then convert back. Only the spare capacity portion is reallocated —
@@ -358,7 +329,7 @@ impl TryClone for String {
         let mut out = String::new();
         if !self.is_empty() {
             out.try_reserve(self.len())
-                .map_err(|e| TryCloneError::Reserve(e.into()))?;
+                .map_err(TryCloneError::Reserve)?;
         }
         out.push_str(self);
         Ok(out)
@@ -655,7 +626,7 @@ mod tests {
         // Allocator rounds up small capacities, so there is spare capacity
         // even though len == requested size. Shrink should reduce it.
         let cap_before = s.capacity();
-        s.try_shrink_to_fit().unwrap();
+        s.fallible_shrink_to_fit().unwrap();
         assert!(s.capacity() >= s.len());
         assert!(s.capacity() < cap_before || s.capacity() == s.len());
         assert_eq!(s, "abc");

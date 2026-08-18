@@ -114,7 +114,7 @@ impl TryStr for str {
         let mut out = String::new();
         if !self.is_empty() {
             out.try_reserve(self.len())
-                .map_err(|e| TryStrError::Reserve(e.into()))?;
+                .map_err(TryStrError::Reserve)?;
         }
         out.push_str(self);
         Ok(out)
@@ -128,7 +128,7 @@ impl TryStr for str {
         let total_len = len.checked_mul(n).ok_or(TryStrError::Overflow)?;
         let mut out = String::new();
         out.try_reserve(total_len)
-            .map_err(|e| TryStrError::Reserve(e.into()))?;
+            .map_err(TryStrError::Reserve)?;
         for _ in 0..n {
             out.push_str(self);
         }

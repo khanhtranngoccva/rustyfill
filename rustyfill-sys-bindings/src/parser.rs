@@ -962,9 +962,7 @@ fn skip_macro_body(lines: &[&str], start: usize) -> usize {
             match ch {
                 '{' => depth += 1,
                 '}' => {
-                    if depth > 0 {
-                        depth -= 1;
-                    }
+                    depth = depth.saturating_sub(1);
                 }
                 _ => {}
             }
@@ -985,10 +983,10 @@ fn strip_visibility_prefix(trimmed: &str) -> &str {
         if rest.starts_with('(') {
             // Find matching closing paren
             if let Some(close) = rest.find(')') {
-                return &rest[close + 1..].trim_start();
+                return rest[close + 1..].trim_start();
             }
-        } else if rest.starts_with(' ') {
-            return &rest[1..];
+        } else if let Some(rest) = rest.strip_prefix(' ') {
+            return rest;
         }
     }
     trimmed
@@ -1337,9 +1335,8 @@ fn text_parse_use_statement(text: &str) -> Vec<UseStatement> {
         if !base_path.is_empty() {
             let segments = parse_path_segments_text(base_path);
             if !segments.is_empty() {
-                let has_self = path_str[brace_pos + 1..path_str
-                    .find('}')
-                    .unwrap_or(path_str.len())]
+                let has_self = path_str
+                    [brace_pos + 1..path_str.find('}').unwrap_or(path_str.len())]
                     .split(',')
                     .any(|m| m.trim() == "self");
                 let mut stmts = vec![UseStatement {
@@ -1779,7 +1776,7 @@ mod child;
         );
 
         let output = emit_parsed_items(
-            &[item.clone()],
+            std::slice::from_ref(&item),
             &EmitConfig {
                 lib_name: "alloc",
                 file_module_depth: 0,
@@ -1809,7 +1806,7 @@ mod child;
         registry_declared.insert_declared("alloc::TestStruct", "");
         registry_declared.insert_declared("core::marker::PhantomData", "core/marker.rs");
         let declared_out = emit_parsed_items(
-            &[item.clone()],
+            std::slice::from_ref(&item),
             &EmitConfig {
                 lib_name: "alloc",
                 file_module_depth: 0,
@@ -1825,10 +1822,7 @@ mod child;
             &[],
             "",
         );
-        let declared_norm: String = declared_out
-            .split_whitespace()
-            .collect::<Vec<_>>()
-            .join("");
+        let declared_norm: String = declared_out.split_whitespace().collect::<Vec<_>>().join("");
         assert!(
             declared_norm.contains("crate::std::marker::PhantomData"),
             "Declared type should be rewritten to its mirror:\n{}",
@@ -1838,10 +1832,7 @@ mod child;
         // Public undeclared types route straight at the builtin crate, never
         // through the synthetic tree or the preamble (token spacing may vary,
         // so normalize whitespace before asserting).
-        let normalized: String = output
-            .split_whitespace()
-            .collect::<Vec<_>>()
-            .join("");
+        let normalized: String = output.split_whitespace().collect::<Vec<_>>().join("");
         assert!(
             normalized.contains("__rustyfill_builtin_core::marker::PhantomData")
                 && normalized.contains("__rustyfill_builtin_core::marker::PhantomPinned")

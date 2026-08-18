@@ -17,14 +17,12 @@ where
 
     fn try_extend_from_slice(&mut self, other: &'s [T]) -> Result<(), (&'s [T], TryDashSetError)> {
         let this: &Self = self;
-        let mut i = 0usize;
-        for elem in other.iter() {
+        for (i, elem) in other.iter().enumerate() {
             if let Err((_, err)) =
                 <Self as TryDashSet<T, S>>::try_insert_give_back(this, elem.clone())
             {
                 return Err((&other[i..], err));
             }
-            i += 1;
         }
         Ok(())
     }

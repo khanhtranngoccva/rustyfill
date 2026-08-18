@@ -341,7 +341,7 @@ impl TryPathBuf for PathBuf {
         let needed = p.as_os_str().len();
         if needed > 0 {
             os.try_reserve(needed)
-                .map_err(|e| TryPathBufError::Reserve(e.into()))?;
+                .map_err(TryPathBufError::Reserve)?;
         }
         os.push(p.as_os_str());
         Ok(out)
@@ -370,7 +370,7 @@ impl TryPathBuf for PathBuf {
         // Reserve room for the dot and extension.
         if !ext.is_empty() {
             self.try_reserve(ext.len() + 1)
-                .map_err(|e| TryPathBufError::Reserve(e.into()))?;
+                .map_err(TryPathBufError::Reserve)?;
         }
         self.set_extension(ext);
         Ok(())
@@ -421,7 +421,7 @@ impl TryPathBuf for PathBuf {
         if needed > 0 {
             self.as_mut_os_string()
                 .try_reserve(needed)
-                .map_err(|e| TryPathBufError::Reserve(e.into()))?;
+                .map_err(TryPathBufError::Reserve)?;
         }
 
         // OsString::truncate is unstable, so we swap out the bytes, truncate
@@ -450,7 +450,7 @@ impl TryClone for PathBuf {
         let len = src.len();
         if len > 0 {
             os.try_reserve(len)
-                .map_err(|e| TryCloneError::Reserve(e.into()))?;
+                .map_err(TryCloneError::Reserve)?;
         }
         os.push(src);
         Ok(out)

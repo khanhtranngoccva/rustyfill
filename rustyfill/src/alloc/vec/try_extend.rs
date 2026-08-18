@@ -1,6 +1,5 @@
 //! [`TryExtend`] / [`TryExtendFromSlice`] implementations for `Vec<T>`.
 
-use crate::alloc::TryReserveError;
 use crate::alloc::vec::TryVecError;
 use crate::recovery::Resumable;
 use crate::try_clone::TryClone;
@@ -14,7 +13,7 @@ impl<'s, T: TryClone> TryExtendFromSlice<'s, T> for lang_alloc::vec::Vec<T> {
             return Ok(());
         }
         self.try_reserve(other.len())
-            .map_err(|e| (other, TryVecError::Reserve(TryReserveError::from(e))))?;
+            .map_err(|e| (other, TryVecError::Reserve(e)))?;
         for (i, item) in other.iter().enumerate() {
             match item.try_clone() {
                 Ok(cloned) => {
@@ -45,7 +44,7 @@ impl<T> TryExtend<T> for lang_alloc::vec::Vec<T> {
                 && let Err(e) = self.try_reserve(1)
             {
                 return Err((
-                    TryVecError::from(TryReserveError::from(e)),
+                    TryVecError::from(e),
                     Resumable::new(h, iter),
                 ));
             }
@@ -57,7 +56,7 @@ impl<T> TryExtend<T> for lang_alloc::vec::Vec<T> {
             && let Err(e) = self.try_reserve(lower)
         {
             return Err((
-                TryVecError::from(TryReserveError::from(e)),
+                TryVecError::from(e),
                 Resumable::from_remainder(iter),
             ));
         }
@@ -66,7 +65,7 @@ impl<T> TryExtend<T> for lang_alloc::vec::Vec<T> {
                 && let Err(e) = self.try_reserve(1)
             {
                 return Err((
-                    TryVecError::from(TryReserveError::from(e)),
+                    TryVecError::from(e),
                     Resumable::new(item, iter),
                 ));
             }

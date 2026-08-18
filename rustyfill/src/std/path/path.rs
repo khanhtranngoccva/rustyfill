@@ -164,7 +164,7 @@ impl TryPath for Path {
         let len = src.len();
         if len > 0 {
             os.try_reserve(len)
-                .map_err(|e| TryPathError::Reserve(e.into()))?;
+                .map_err(TryPathError::Reserve)?;
         }
         os.push(src);
         Ok(out)
