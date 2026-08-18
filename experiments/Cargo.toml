@@ -1,0 +1,9 @@
+[package]
+name = "experiments"
+version.workspace = true
+edition = "2024"
+publish = false
+
+[[bin]]
+name = "arithmetic-benchmarks"
+path = "src/bin/arithmetic_benchmarks.rs"

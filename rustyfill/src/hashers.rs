@@ -606,8 +606,8 @@ mod tests {
 
         fn write(&mut self, bytes: &[u8]) {
             for &b in bytes {
-                self.hash ^= b as u64 ^ self.seeds[self.index % 4];
-                self.index += 1;
+                self.hash ^= b as u64 ^ self.seeds[self.index.rem_euclid(4)];
+                self.index = self.index.wrapping_add(1);
             }
         }
     }

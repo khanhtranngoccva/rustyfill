@@ -1411,9 +1411,7 @@ pub fn emit_parsed_items(
         if config.ignored_structs.contains(&fq_path) {
             continue;
         }
-        emit_item(
-            &mut out,
-            item,
+        let ctx = EmitContext::new(
             preamble_use_path,
             config.path_replacements,
             config.type_registry,
@@ -1421,21 +1419,45 @@ pub fn emit_parsed_items(
             &guard,
             config.extra_derives,
         );
+        emit_item(&mut out, item, &ctx);
     }
 
     out
 }
 
-fn emit_item(
-    out: &mut String,
-    item: &ParsedItem,
-    preamble_use_path: &str,
-    path_replacements: &[(String, Option<&str>)],
-    type_registry: &TypeRegistry,
-    module_ctx: &str,
-    guard: &LocalNameGuard<'_>,
-    extra_derives: &std::collections::HashMap<String, Vec<String>>,
-) {
+/// Shared emission context passed to [`emit_item`] for each item in a file.
+/// Bundles the per-file settings that would otherwise be threaded through as
+/// a long argument list.
+struct EmitContext<'a> {
+    preamble_use_path: &'a str,
+    path_replacements: &'a [(String, Option<&'a str>)],
+    type_registry: &'a TypeRegistry,
+    module_ctx: &'a str,
+    guard: &'a LocalNameGuard<'a>,
+    extra_derives: &'a std::collections::HashMap<String, Vec<String>>,
+}
+
+impl<'a> EmitContext<'a> {
+    fn new(
+        preamble_use_path: &'a str,
+        path_replacements: &'a [(String, Option<&'a str>)],
+        type_registry: &'a TypeRegistry,
+        module_ctx: &'a str,
+        guard: &'a LocalNameGuard<'a>,
+        extra_derives: &'a std::collections::HashMap<String, Vec<String>>,
+    ) -> Self {
+        Self {
+            preamble_use_path,
+            path_replacements,
+            type_registry,
+            module_ctx,
+            guard,
+            extra_derives,
+        }
+    }
+}
+
+fn emit_item(out: &mut String, item: &ParsedItem, ctx: &EmitContext<'_>) {
     // The full_tokens already include all attributes + the item definition.
     // Pipeline:
     // 1. Strip blocked attributes (doc/stable/rustc_*) and remove ignored
@@ -1452,7 +1474,7 @@ fn emit_item(
     // `crate::alloc::collections::btree::node::NodeRef<...>`), so references
     // from other modules converge on our tree instead of dangling.
     if item.kind == ItemKind::TypeAlias
-        && let Some(info) = find_declared_alias_info(item, type_registry)
+        && let Some(info) = find_declared_alias_info(item, ctx.type_registry)
         && let Some(rhs) = &info.alias_rhs
     {
         let mut ts = TokenStream::new();
@@ -1468,20 +1490,24 @@ fn emit_item(
         if drop_annotations_enabled()
             && let Ok(rhs_ty) = syn::parse2::<syn::Type>(rhs.clone())
         {
-            let value = classify_field_drop(&rhs_ty, type_registry, guard);
+            let value = classify_field_drop(&rhs_ty, ctx.type_registry, ctx.guard);
             drop_doc_comment(value).to_tokens(&mut ts);
         }
         emit_declared_type_alias(
             &item.name,
             rhs,
             &item.full_tokens,
-            type_registry,
-            module_ctx,
-            guard,
+            ctx.type_registry,
+            ctx.module_ctx,
+            ctx.guard,
             &mut ts,
         );
         let widened = widen_visibility(ts);
-        let rewritten = rewrite_crate_paths(widened, preamble_use_path, path_replacements);
+        let rewritten = rewrite_crate_paths(
+            widened,
+            ctx.preamble_use_path,
+            ctx.path_replacements,
+        );
         write!(out, "{}", rewritten).ok();
         out.push('\n');
         return;
@@ -1491,7 +1517,8 @@ fn emit_item(
     // paths (e.g., `Allocator`) plus a small set of std-internal marker traits
     // that are private to core and cannot be referenced by name from a
     // downstream crate (see [`INTERNAL_TRAIT_STRIPS`]).
-    let mut strip_names: Vec<&str> = path_replacements
+    let mut strip_names: Vec<&str> = ctx
+        .path_replacements
         .iter()
         .filter(|(_, v)| v.is_none())
         .map(|(k, _)| k.as_str())
@@ -1509,13 +1536,17 @@ fn emit_item(
     let rerouted = rewrite_item_references_rerouted(
         &const_stripped,
         item,
-        type_registry,
-        module_ctx,
-        guard,
-        extra_derives,
+        ctx.type_registry,
+        ctx.module_ctx,
+        ctx.guard,
+        ctx.extra_derives,
     );
     let widened = widen_visibility(rerouted);
-    let rewritten = rewrite_crate_paths(widened, preamble_use_path, path_replacements);
+    let rewritten = rewrite_crate_paths(
+        widened,
+        ctx.preamble_use_path,
+        ctx.path_replacements,
+    );
     write!(out, "{}", rewritten).ok();
     out.push('\n');
 }

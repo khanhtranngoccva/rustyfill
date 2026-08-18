@@ -93,7 +93,7 @@ pub struct Iter<'a, K, V, S = RandomState> {
     auto_unstall: bool,
 }
 
-impl<'a, K, V, S> Iter<'a, K, V, S> {
+impl<'a, K: Eq + Hash, V, S: BuildHasher> Iter<'a, K, V, S> {
     pub(crate) fn new(map: &'a ConcurrentHashMap<K, V, S>) -> Self {
         Self {
             map,
@@ -102,12 +102,21 @@ impl<'a, K, V, S> Iter<'a, K, V, S> {
             auto_unstall: false,
         }
     }
+
+    /// Advance to the next shard. Safe: `shard_idx` is always kept below the shard count.
+    fn advance_shard(&mut self) {
+        debug_assert!(self.shard_idx < self.map.shard_count());
+        let idx = self
+            .shard_idx
+            .checked_add(1)
+            .expect("shard_idx below shard count");
+        self.shard_idx = idx;
+    }
 }
 
 impl<'a, K, V, S: BuildHasher> Iterator for Iter<'a, K, V, S>
 where
-    K: Eq + Hash + 'static,
-    V: 'static,
+    K: Eq + Hash,
 {
     type Item = Result<RefMulti<'a, K, V>, IterError>;
 
@@ -122,7 +131,7 @@ where
                 let guard = shard.read_table();
                 if guard.is_empty() {
                     drop(guard);
-                    self.shard_idx += 1;
+                    self.advance_shard();
                     continue;
                 }
                 let arc_guard =
@@ -133,7 +142,7 @@ where
                         Err(e) => {
                             if self.auto_unstall {
                                 // Skip this shard — it couldn't be locked, move on.
-                                self.shard_idx += 1;
+                                self.advance_shard();
                                 continue;
                             }
                             // Stall: do not advance shard_idx so that retrying next()
@@ -165,7 +174,7 @@ where
                         None => {
                             // Shard exhausted.
                             self.current = None;
-                            self.shard_idx += 1;
+                            self.advance_shard();
                             continue;
                         }
                     },
@@ -194,8 +203,7 @@ where
 
 impl<'a, K, V, S: BuildHasher> Stallable for Iter<'a, K, V, S>
 where
-    K: Eq + Hash + 'static,
-    V: 'static,
+    K: Eq + Hash,
 {
     fn unstall(&mut self) -> bool {
         if let Some(ref mut li) = self.current {
@@ -206,7 +214,7 @@ where
             // we're actually stalled here (we might just be between shards), but
             // advancing is harmless in that case.
             if self.shard_idx < self.map.shard_count() {
-                self.shard_idx += 1;
+                self.advance_shard();
                 true
             } else {
                 false
@@ -236,7 +244,7 @@ pub struct IterMut<'a, K, V, S = RandomState> {
     auto_unstall: bool,
 }
 
-impl<'a, K, V, S> IterMut<'a, K, V, S> {
+impl<'a, K: Eq + Hash, V, S: BuildHasher> IterMut<'a, K, V, S> {
     pub(crate) fn new(map: &'a ConcurrentHashMap<K, V, S>) -> Self {
         Self {
             map,
@@ -245,12 +253,21 @@ impl<'a, K, V, S> IterMut<'a, K, V, S> {
             auto_unstall: false,
         }
     }
+
+    /// Advance to the next shard. Safe: `shard_idx` is always kept below the shard count.
+    fn advance_shard(&mut self) {
+        debug_assert!(self.shard_idx < self.map.shard_count());
+        let idx = self
+            .shard_idx
+            .checked_add(1)
+            .expect("shard_idx below shard count");
+        self.shard_idx = idx;
+    }
 }
 
 impl<'a, K, V, S: BuildHasher> Iterator for IterMut<'a, K, V, S>
 where
-    K: Eq + Hash + 'static,
-    V: 'static,
+    K: Eq + Hash,
 {
     type Item = Result<RefMutMulti<'a, K, V>, IterError>;
 
@@ -265,7 +282,7 @@ where
                 let guard = shard.write_table();
                 if guard.is_empty() {
                     drop(guard);
-                    self.shard_idx += 1;
+                    self.advance_shard();
                     continue;
                 }
                 let arc_guard =
@@ -276,7 +293,7 @@ where
                         Err(e) => {
                             if self.auto_unstall {
                                 // Skip this shard — it couldn't be locked, move on.
-                                self.shard_idx += 1;
+                                self.advance_shard();
                                 continue;
                             }
                             // Stall: do not advance shard_idx so that retrying next()
@@ -308,7 +325,7 @@ where
                         None => {
                             // Shard exhausted.
                             self.current = None;
-                            self.shard_idx += 1;
+                            self.advance_shard();
                             continue;
                         }
                     },
@@ -337,15 +354,14 @@ where
 
 impl<'a, K, V, S: BuildHasher> Stallable for IterMut<'a, K, V, S>
 where
-    K: Eq + Hash + 'static,
-    V: 'static,
+    K: Eq + Hash,
 {
     fn unstall(&mut self) -> bool {
         if let Some(ref mut li) = self.current {
             li.pending_bucket.take().is_some()
         } else {
             if self.shard_idx < self.map.shard_count() {
-                self.shard_idx += 1;
+                self.advance_shard();
                 true
             } else {
                 false

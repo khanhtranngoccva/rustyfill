@@ -628,6 +628,10 @@ mod tests {
     use lang_std::collections::hash_map::RandomState;
     use lang_std::iter;
 
+    /// Error shape returned by [`TryExtendFromSlice::try_extend_from_slice`]:
+    /// the unconsumed tail of the source slice paired with the failure reason.
+    type ExtendErr<'a, K, V> = Result<(), (&'a [(K, V)], TryHashMapError)>;
+
     // ── Construction ─────────────────────────────────────────────────────────
 
     #[test]
@@ -1024,7 +1028,7 @@ mod tests {
         // Verify the success path and the (remaining_subslice, error) tuple shape.
         let mut map: HashMap<String, Vec<u8>> = HashMap::new();
         let slice: &[(String, Vec<u8>)] = &[("x".to_string(), vec![1])];
-        let result: Result<(), (&[(String, Vec<u8>)], TryHashMapError)> =
+        let result: ExtendErr<'_, String, Vec<u8>> =
             <_ as TryExtendFromSlice<'_, (String, Vec<u8>)>>::try_extend_from_slice(
                 &mut map, slice,
             );
@@ -1154,7 +1158,7 @@ mod tests {
         let mut map: HashMap<String, String> = HashMap::new();
 
         use crate::try_extend::TryExtendFromSlice;
-        let r: Result<(), (&[(String, String)], TryHashMapError)> = with_policy(
+        let r: ExtendErr<'_, String, String> = with_policy(
             FailPolicy::fail_nth_alloc(2),
             || {
                 <HashMap<String, String> as TryExtendFromSlice<'_, (String, String)>>::try_extend_from_slice(&mut map, &source)
@@ -1218,7 +1222,7 @@ mod tests {
         use crate::try_extend::TryExtendFromSlice;
         // Fail a clone well past indices 0..2 so both "dup" entries are
         // guaranteed to be committed before the failure fires.
-        let r: Result<(), (&[(String, String)], TryHashMapError)> = with_policy(
+        let r: ExtendErr<'_, String, String> = with_policy(
             FailPolicy::fail_nth_alloc(8),
             || {
                 <HashMap<String, String> as TryExtendFromSlice<'_, (String, String)>>::try_extend_from_slice(&mut map, &source)

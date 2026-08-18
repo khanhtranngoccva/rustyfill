@@ -334,11 +334,8 @@ impl<T: ?Sized> TryClone for Arc<T> {
         let ok = inner
             .strong
             .try_update(Ordering::Relaxed, Ordering::Relaxed, |cur| {
-                if cur >= MAX_REFCOUNT {
-                    None
-                } else {
-                    Some(cur + 1)
-                }
+                // Safe: `cur < MAX_REFCOUNT <= isize::MAX`, so `+1` cannot overflow.
+                cur.checked_add(1).filter(|&next| next < MAX_REFCOUNT)
             });
 
         match ok {
@@ -361,11 +358,8 @@ impl<T: ?Sized> TryClone for Weak<T> {
         let ok = inner
             .weak
             .try_update(Ordering::Relaxed, Ordering::Relaxed, |cur| {
-                if cur >= MAX_REFCOUNT {
-                    None
-                } else {
-                    Some(cur + 1)
-                }
+                // Safe: `cur < MAX_REFCOUNT <= isize::MAX`, so `+1` cannot overflow.
+                cur.checked_add(1).filter(|&next| next < MAX_REFCOUNT)
             });
 
         match ok {
@@ -437,7 +431,8 @@ impl<T: ?Sized> TryWeak<T> for Weak<T> {
                     // Would overflow on next increment.
                     return None;
                 }
-                Some(cur + 1)
+                // Safe: `cur < MAX_REFCOUNT <= isize::MAX`, so `+1` cannot overflow.
+                Some(cur.checked_add(1).expect("strong refcount below MAX_REFCOUNT"))
             });
 
         match ok {

@@ -207,7 +207,9 @@ impl<T: TryClone> TryClone for Box<[T]> {
                     unsafe {
                         ptr::write(slot.as_mut_ptr(), cloned);
                     }
-                    guard.count += 1;
+                    // At most `slots.len()` iterations, so this cannot overflow.
+                    let count = guard.count.checked_add(1).expect("initialized slot count below slice length");
+                    guard.count = count;
                 }
                 Err(e) => {
                     // Guard drops initialized elements; Box drops the allocation.

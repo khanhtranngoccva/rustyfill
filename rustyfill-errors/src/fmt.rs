@@ -74,9 +74,11 @@ where
                         // Check if a LostFrames marker immediately follows at
                         // depth 0 — that requires a branch connector on the
                         // location line.
-                        let lost_frames_follow = i + 1 < total
+                        // Safe: `i` is a valid frame index below `total`.
+                        let next_i = i.checked_add(1).expect("frame index below total");
+                        let lost_frames_follow = next_i < total
                             && matches!(
-                                (&frames[i + 1].0, &frames[i + 1].1),
+                                (&frames[next_i].0, &frames[next_i].1),
                                 (Ok(FrameRef::LostFrames(_)), d) if *d == 0
                             );
                         let effective_has_children = has_own_children || lost_frames_follow;
@@ -134,7 +136,8 @@ where
                     try_writeln!(f)?;
 
                     // --- Sub-items at depth d+1 ---
-                    let sub_depth = *depth + 1;
+                    // Safe: stack-trace depth is bounded well below usize::MAX.
+                    let sub_depth = depth.checked_add(1).expect("trace depth fits in usize");
 
                     // Determine whether location is the last sub-item: it is
                     // last when there are no attachments and no children / lost
@@ -158,10 +161,11 @@ where
                     if has_atts {
                         let (_, opaque_count) = count_attachments(atts);
                         let printable_count = atts.iter().filter(|a| a.is_printable()).count();
+                        // Safe: small line-count sum, bounded by attachment count.
                         let remaining_after_loc: usize = printable_count
                             .saturating_add(if opaque_count > 0 { 1 } else { 0 })
-                            + if has_lost { 1 } else { 0 };
-                        let total_from_loc = 1 + remaining_after_loc; // 1 for location itself
+                            .saturating_add(if has_lost { 1 } else { 0 });
+                        let total_from_loc = remaining_after_loc.saturating_add(1); // 1 for location itself
                         render_attachments(
                             f,
                             &continuing_below,
@@ -221,7 +225,8 @@ where
                 }
             }
 
-            i += 1;
+            // Safe: `i` indexes into the frames slice, so it stays below its length.
+            i = i.checked_add(1).expect("loop index below frame count");
         }
 
         Ok(())
@@ -273,9 +278,10 @@ where
     if has_atts {
         let (_, opaque_count) = count_attachments(atts);
         let printable_count = atts.iter().filter(|a| a.is_printable()).count();
-        // Total lines from location onward: 1 (loc) + attachments + possibly children
+        // Total lines from location onward: 1 (loc) + attachments + possibly children.
+        // Safe: small line-count sum, bounded by attachment count.
         let att_lines = printable_count.saturating_add(if opaque_count > 0 { 1 } else { 0 });
-        let total_from_loc = 1 + att_lines;
+        let total_from_loc = att_lines.saturating_add(1);
         render_attachments(f, _continuing, 0, atts, total_from_loc, 1)?;
     }
 

@@ -938,7 +938,8 @@ fn try_insert_into_existing<'a, K, V>(
         unsafe {
             leaf_slice_insert(leaf_edge.node.node.as_ptr(), insert_idx, key, value);
         }
-        inner_map.length += 1;
+        // Safe: `length` tracks total elements and is bounded by heap capacity.
+        inner_map.length = inner_map.length.checked_add(1).expect("element count fits in usize");
         return Ok((leaf_edge.node.forget_type(), insert_idx));
     }
 
@@ -975,7 +976,10 @@ fn try_insert_with_split<'a, K, V>(
     // Number of internal nodes the commit will consume: one per internal node
     // that splits, plus one more if the root grows into a fresh level.
     let num_internal_splits = plan.internals.iter().filter(|i| i.will_split).count();
-    let num_reserved = num_internal_splits + if plan.new_root { 1 } else { 0 };
+    // Safe: split count is bounded by tree height; adding one can't overflow.
+    let num_reserved = num_internal_splits
+        .checked_add(if plan.new_root { 1 } else { 0 })
+        .expect("reserved-node count fits in usize");
 
     // ── Phase 2: reserve all needed nodes in one batch ───────────────────────
     // The freshly allocated right-half leaf. Owned by PendingLeaf: if anything
@@ -1118,7 +1122,8 @@ impl<'a, K, V> CommitPlan<'a, K, V> {
             loop {
                 match ascend(cur) {
                     AscendResult::Parent(parent_handle) => {
-                        count += 1;
+                        // Safe: `count` is bounded by tree height (<< usize::MAX).
+                        count = count.checked_add(1).expect("height fits in usize");
                         let parent_ptr: NonNull<sys::InternalNode<K, V>> =
                             parent_handle.node.node.cast();
                         let parent_len = unsafe { parent_ptr.as_ref() }.data.len as usize;
@@ -1284,7 +1289,10 @@ fn commit_split<'a, K, V>(
 
         if !ci.will_split {
             // Parent has room: absorb the promotion and stop climbing.
-            let new_len = (unsafe { parent_ptr.as_ref() }.data.len as usize) + 1;
+            // Safe: `len` is below CAPACITY here, so +1 can't overflow.
+            let new_len = (unsafe { parent_ptr.as_ref() }.data.len as usize)
+                .checked_add(1)
+                .expect("node len below capacity");
             unsafe {
                 internal_insert_fit(
                     parent_ptr.as_ptr(),
@@ -1295,9 +1303,15 @@ fn commit_split<'a, K, V>(
                 );
                 // The shift moved existing children one slot right; repair their
                 // parent links (mirrors std's correct_childrens_parent_links).
-                correct_parent_links::<K, V>(parent_ptr.cast(), edge_idx + 1, new_len);
+                // Safe: `edge_idx` is a valid edge index below node capacity.
+                correct_parent_links::<K, V>(
+                    parent_ptr.cast(),
+                    edge_idx.checked_add(1).expect("edge idx below capacity"),
+                    new_len,
+                );
             }
-            inner_map.length += 1;
+            // Safe: `length` tracks total elements and is bounded by heap capacity.
+            inner_map.length = inner_map.length.checked_add(1).expect("element count fits in usize");
             return finish_commit(insert_node_ptr, plan.insert_idx);
         }
 
@@ -1332,7 +1346,10 @@ fn commit_split<'a, K, V>(
         unsafe {
             match ins_side {
                 InsertionSide::Left(ii) => {
-                    let new_len = (parent_ptr.as_ref().data.len as usize) + 1;
+                    // Safe: node len below CAPACITY, so +1 can't overflow.
+                    let new_len = (parent_ptr.as_ref().data.len as usize)
+                        .checked_add(1)
+                        .expect("node len below capacity");
                     internal_insert_fit(
                         parent_ptr.as_ptr(),
                         ii,
@@ -1340,25 +1357,40 @@ fn commit_split<'a, K, V>(
                         current_kv.1,
                         current_right.node,
                     );
-                    correct_parent_links::<K, V>(parent_ptr.cast(), ii + 1, new_len);
+                    // Safe: `ii` is a valid edge index below node capacity.
+                    correct_parent_links::<K, V>(
+                        parent_ptr.cast(),
+                        ii.checked_add(1).expect("edge idx below capacity"),
+                        new_len,
+                    );
                 }
                 InsertionSide::Right(ii) => {
-                    let new_len = ((*ri_ptr).data.len as usize) + 1;
+                    // Safe: node len below CAPACITY, so +1 can't overflow.
+                    let new_len = ((*ri_ptr).data.len as usize)
+                        .checked_add(1)
+                        .expect("node len below capacity");
                     internal_insert_fit(ri_ptr, ii, current_kv.0, current_kv.1, current_right.node);
-                    correct_parent_links::<K, V>(ri_raw.cast(), ii + 1, new_len);
+                    // Safe: `ii` is a valid edge index below node capacity.
+                    correct_parent_links::<K, V>(
+                        ri_raw.cast(),
+                        ii.checked_add(1).expect("edge idx below capacity"),
+                        new_len,
+                    );
                 }
             }
         }
 
         // Advance the promotion one level up.
         current_left = sys::NodeRef::<sys::Mut<'a>, K, V, sys::LeafOrInternal> {
-            height: current_left.height + 1,
+            // Safe: tree height is bounded well below usize::MAX.
+            height: current_left.height.checked_add(1).expect("tree height fits in usize"),
             node: parent_ptr.cast(),
             _marker: PhantomData,
         };
         // SAFETY: `ri_raw` is a freshly reserved internal node owned by this commit.
         current_right = sys::NodeRef {
-            height: current_right.height + 1,
+            // Safe: tree height is bounded well below usize::MAX.
+            height: current_right.height.checked_add(1).expect("tree height fits in usize"),
             node: ri_raw,
             _marker: PhantomData,
         };
@@ -1374,7 +1406,8 @@ fn commit_split<'a, K, V>(
         .next()
         .expect("a root node was reserved when new_root is set");
     let nr_ptr: *mut sys::InternalNode<K, V> = nr_raw.as_ptr() as *mut _;
-    let new_height = current_left.height + 1;
+    // Safe: tree height is bounded well below usize::MAX.
+    let new_height = current_left.height.checked_add(1).expect("tree height fits in usize");
 
     let old_root_owned: sys::NodeRef<sys::Owned, K, V, sys::LeafOrInternal> =
         unsafe { ptr::read(inner_map.root.as_ref().expect("root exists")) };
@@ -1386,11 +1419,12 @@ fn commit_split<'a, K, V>(
         (*nr_ptr).edges[0].write(old_root_owned.node);
         set_parent_link(old_root_owned.node.as_ptr(), nr_raw.cast(), 0);
 
+        // Safe: the fresh root starts empty (`len == 0`), so `len + 1 <= 1`.
         let len = (*nr_ptr).data.len as usize;
         (*nr_ptr).data.keys[len].write(current_kv.0);
         (*nr_ptr).data.vals[len].write(current_kv.1);
-        (*nr_ptr).edges[len + 1].write(current_right.node);
-        (*nr_ptr).data.len = (len + 1) as u16;
+        (*nr_ptr).edges[len.checked_add(1).expect("fresh root has room")].write(current_right.node);
+        (*nr_ptr).data.len = (len.checked_add(1).expect("fresh root has room")) as u16;
 
         set_parent_link(current_right.node.as_ptr(), nr_raw.cast(), 1);
     }
@@ -1400,7 +1434,8 @@ fn commit_split<'a, K, V>(
         node: nr_raw,
         _marker: PhantomData,
     });
-    inner_map.length += 1;
+    // Safe: `length` tracks total elements and is bounded by heap capacity.
+    inner_map.length = inner_map.length.checked_add(1).expect("element count fits in usize");
 
     finish_commit(insert_node_ptr, plan.insert_idx)
 }

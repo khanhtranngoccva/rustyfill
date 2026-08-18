@@ -54,10 +54,12 @@ pub(crate) fn splitpoint(edge_idx: usize) -> (usize, InsertionSide) {
         0..sys::EDGE_IDX_LEFT_OF_CENTER => (sys::KV_IDX_CENTER - 1, InsertionSide::Left(edge_idx)),
         sys::EDGE_IDX_LEFT_OF_CENTER => (sys::KV_IDX_CENTER, InsertionSide::Left(edge_idx)),
         sys::EDGE_IDX_RIGHT_OF_CENTER => (sys::KV_IDX_CENTER, InsertionSide::Right(0)),
-        _ => (
-            sys::KV_IDX_CENTER + 1,
-            InsertionSide::Right(edge_idx - (sys::KV_IDX_CENTER + 1 + 1)),
-        ),
+        _ => {
+            // edge_idx >= EDGE_IDX_RIGHT_OF_CENTER + 1 = KV_IDX_CENTER + 2
+            let centre = sys::KV_IDX_CENTER + 1;
+            let right_idx = edge_idx.saturating_sub(sys::KV_IDX_CENTER + 2);
+            (centre, InsertionSide::Right(right_idx))
+        }
     }
 }
 
@@ -136,14 +138,19 @@ pub(crate) unsafe fn leaf_slice_insert<K, V>(
             // write retags against the other (a separate as_ptr()/as_mut_ptr()
             // pair would create a SharedReadOnly then a Unique tag whose overlap
             // invalidates the former → UB on the copy's read of src).
+            // Safe: `idx < len <= CAPACITY`, so `idx + 1` cannot overflow.
+            let next_idx = idx.checked_add(1).expect("insert index below leaf length");
+            let shift = len.saturating_sub(idx);
             let keys_base = (*leaf).keys.as_mut_ptr();
-            ptr::copy(keys_base.add(idx), keys_base.add(idx + 1), len - idx);
+            ptr::copy(keys_base.add(idx), keys_base.add(next_idx), shift);
             let vals_base = (*leaf).vals.as_mut_ptr();
-            ptr::copy(vals_base.add(idx), vals_base.add(idx + 1), len - idx);
+            ptr::copy(vals_base.add(idx), vals_base.add(next_idx), shift);
         }
         (*leaf).keys[idx].write(key);
         (*leaf).vals[idx].write(val);
-        (*leaf).len = (len + 1) as u16;
+        // Safe: caller ensures the resulting length stays within `CAPACITY`.
+        let new_len = len.checked_add(1).expect("leaf length below CAPACITY");
+        (*leaf).len = new_len as u16;
     }
 }
 
@@ -162,17 +169,21 @@ pub(crate) unsafe fn copy_right_half_leaf<K, V>(
 ) {
     unsafe {
         let old_len = (*source).len as usize;
-        let new_right_len = old_len - sp_idx - 1;
+        // Safe: the source is a full node (`old_len == CAPACITY`) and
+        // `sp_idx <= KV_IDX_CENTER < CAPACITY`, so no underflow.
+        let new_right_len = old_len.saturating_sub(sp_idx).saturating_sub(1);
 
         (*right).len = new_right_len as u16;
         if new_right_len > 0 {
+            // Safe: `sp_idx <= KV_IDX_CENTER < CAPACITY`, so `+1` cannot overflow.
+            let src_off = sp_idx.checked_add(1).expect("split index below CAPACITY");
             ptr::copy_nonoverlapping(
-                (*source).keys.as_ptr().add(sp_idx + 1),
+                (*source).keys.as_ptr().add(src_off),
                 (*right).keys.as_mut_ptr(),
                 new_right_len,
             );
             ptr::copy_nonoverlapping(
-                (*source).vals.as_ptr().add(sp_idx + 1),
+                (*source).vals.as_ptr().add(src_off),
                 (*right).vals.as_mut_ptr(),
                 new_right_len,
             );
@@ -213,23 +224,39 @@ pub(crate) unsafe fn internal_insert_fit<K, V>(
         // create fresh borrow tags that stack against any caller-held reference
         // to this node (stacked-borrows UB, caught by Miri).
         let len = (*internal).data.len as usize;
-        let shift = len - edge_idx;
+        // Safe: `edge_idx <= len` for a valid insertion edge index.
+        let shift = len.saturating_sub(edge_idx);
         if shift > 0 {
+            // Safe: `edge_idx <= len < CAPACITY`, so the offsets cannot overflow.
+            let next_edge = edge_idx
+                .checked_add(1)
+                .expect("edge index below node length");
+            let next_next_edge = next_edge
+                .checked_add(1)
+                .expect("edge index below node length");
             let keys_base = (*internal).data.keys.as_mut_ptr();
-            ptr::copy(keys_base.add(edge_idx), keys_base.add(edge_idx + 1), shift);
+            ptr::copy(keys_base.add(edge_idx), keys_base.add(next_edge), shift);
             let vals_base = (*internal).data.vals.as_mut_ptr();
-            ptr::copy(vals_base.add(edge_idx), vals_base.add(edge_idx + 1), shift);
+            ptr::copy(vals_base.add(edge_idx), vals_base.add(next_edge), shift);
             let edges_base = (*internal).edges.as_mut_ptr();
             ptr::copy(
-                edges_base.add(edge_idx + 1),
-                edges_base.add(edge_idx + 2),
+                edges_base.add(next_edge),
+                edges_base.add(next_next_edge),
                 shift,
             );
         }
         (*internal).data.keys[edge_idx].write(key);
         (*internal).data.vals[edge_idx].write(val);
-        (*internal).edges[edge_idx + 1].write(child);
-        (*internal).data.len = (len + 1) as u16;
+        // Safe: the node is not full, so `edge_idx + 1 <= len + 1 <= CAPACITY`.
+        let next_edge = edge_idx
+            .checked_add(1)
+            .expect("edge index below node length");
+        (*internal).edges[next_edge].write(child);
+        // Safe: caller ensures the node is not full, so `+1` stays within CAPACITY.
+        let new_len = len
+            .checked_add(1)
+            .expect("internal node length below CAPACITY");
+        (*internal).data.len = new_len as u16;
     }
 }
 
@@ -252,16 +279,20 @@ pub(crate) unsafe fn copy_right_half_internal<K, V>(
 ) {
     unsafe {
         let old_len = (*source).data.len as usize;
-        let new_right_len = old_len - sp_idx - 1;
+        // Safe: the source is a full node (`old_len == CAPACITY`) and
+        // `sp_idx <= KV_IDX_CENTER < CAPACITY`, so no underflow.
+        let new_right_len = old_len.saturating_sub(sp_idx).saturating_sub(1);
 
         (*right).data.len = new_right_len as u16;
         if new_right_len > 0 {
             // Distinct allocations → non-overlapping. Raw pointers avoid any
             // borrow retag on source that stacked borrows would invalidate.
-            let src_keys = (*source).data.keys.as_ptr().add(sp_idx + 1);
+            // Safe: `sp_idx <= KV_IDX_CENTER < CAPACITY`, so `+1` cannot overflow.
+            let src_off = sp_idx.checked_add(1).expect("split index below CAPACITY");
+            let src_keys = (*source).data.keys.as_ptr().add(src_off);
             let dst_keys = (*right).data.keys.as_mut_ptr();
             ptr::copy_nonoverlapping(src_keys, dst_keys, new_right_len);
-            let src_vals = (*source).data.vals.as_ptr().add(sp_idx + 1);
+            let src_vals = (*source).data.vals.as_ptr().add(src_off);
             let dst_vals = (*right).data.vals.as_mut_ptr();
             ptr::copy_nonoverlapping(src_vals, dst_vals, new_right_len);
         }
@@ -270,10 +301,16 @@ pub(crate) unsafe fn copy_right_half_internal<K, V>(
         // even when `new_right_len == 0`. Without this the freshly allocated
         // node would be wired into the tree with an uninitialised edge slot,
         // leaving a dangling/unset child pointer that panics on drop.
+        // Safe: `sp_idx <= KV_IDX_CENTER < CAPACITY` and `new_right_len <= CAPACITY`,
+        // so neither offset nor count can overflow.
+        let src_edge_off = sp_idx.checked_add(1).expect("split index below CAPACITY");
+        let edge_count = new_right_len
+            .checked_add(1)
+            .expect("edge count below CAPACITY");
         ptr::copy_nonoverlapping(
-            (*source).edges.as_ptr().add(sp_idx + 1),
+            (*source).edges.as_ptr().add(src_edge_off),
             (*right).edges.as_mut_ptr(),
-            new_right_len + 1,
+            edge_count,
         );
         (*source).data.len = sp_idx as u16;
     }
@@ -335,8 +372,16 @@ pub(crate) fn ascend<'a, K, V>(
         match (*leaf).parent {
             Some(parent_ptr) => {
                 let parent_idx = usize::from((*leaf).parent_idx.assume_init());
+                // Safe: a b-tree with a parent has height at most `usize::MAX - 1`
+                // (realistic trees are far shallower; overflow here would imply a
+                // corrupt or impossibly deep tree, one would need to have far more than
+                // 2^64 bytes of memory to reach this point).
+                let height = node
+                    .height
+                    .checked_add(1)
+                    .expect("tree height should be below usize::MAX");
                 let parent_node_ref = sys::NodeRef::<sys::Mut<'a>, K, V, sys::Internal> {
-                    height: node.height + 1,
+                    height,
                     node: parent_ptr.cast(),
                     _marker: PhantomData,
                 };

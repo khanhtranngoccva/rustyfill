@@ -164,7 +164,11 @@ pub(super) fn render_attachments(
     let (_, opaque_count) = count_attachments(attachments);
 
     for (line_idx_off, att) in attachments.iter().filter(|a| a.is_printable()).enumerate() {
-        let line_idx = first_line_idx + line_idx_off;
+        // Safe: `first_line_idx` plus the attachment offset stays within the
+        // total rendered line budget for this frame group.
+        let line_idx = first_line_idx
+            .checked_add(line_idx_off)
+            .expect("attachment line index within budget");
         write_indent(f, continuing, sub_depth)?;
         let is_last_line = line_idx == total_lines.saturating_sub(1);
         let connector = if is_last_line && opaque_count == 0 {

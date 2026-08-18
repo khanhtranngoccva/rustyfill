@@ -193,11 +193,17 @@ impl<C> Report<C> {
         match Box::<PrintableAttachment<A>>::fallible_new_give_back(pa) {
             Ok(b) => {
                 if TryVec::try_push_give_back(&mut self.head.attachments, b).is_err() {
-                    self.head.lost_attachments += 1;
+                    // Saturates at usize::MAX; a lost-item counter degrading
+                    // gracefully is preferable to panicking on overflow.
+                    self.head.lost_attachments =
+                        self.head.lost_attachments.saturating_add(1);
                 }
             }
             Err(_) => {
-                self.head.lost_attachments += 1;
+                // Saturates at usize::MAX; a lost-item counter degrading
+                // gracefully is preferable to panicking on overflow.
+                self.head.lost_attachments =
+                    self.head.lost_attachments.saturating_add(1);
             }
         }
         self
@@ -221,11 +227,17 @@ impl<C> Report<C> {
         match Box::<OpaqueAttachment<A>>::fallible_new_give_back(oa) {
             Ok(b) => {
                 if TryVec::try_push_give_back(&mut self.head.attachments, b).is_err() {
-                    self.head.lost_attachments += 1;
+                    // Saturates at usize::MAX; a lost-item counter degrading
+                    // gracefully is preferable to panicking on overflow.
+                    self.head.lost_attachments =
+                        self.head.lost_attachments.saturating_add(1);
                 }
             }
             Err(_) => {
-                self.head.lost_attachments += 1;
+                // Saturates at usize::MAX; a lost-item counter degrading
+                // gracefully is preferable to panicking on overflow.
+                self.head.lost_attachments =
+                    self.head.lost_attachments.saturating_add(1);
             }
         }
         self
@@ -315,21 +327,27 @@ impl<C> Report<C> {
         if let Some(cap) = self.capacity {
             while self.peer_count() >= cap {
                 self.peers.pop_back();
-                self.lost_peers += 1;
+                // Saturates at usize::MAX; a lost-item counter degrading
+                // gracefully is preferable to panicking on overflow.
+                self.lost_peers = self.lost_peers.saturating_add(1);
             }
         }
 
         // Guard against usize::MAX overflow: evict oldest to make room. When pop_back is done, try_push_front_give_back always succeeds.
         if self.peers.len() == usize::MAX {
             self.peers.pop_back();
-            self.lost_peers += 1;
+            // Saturates at usize::MAX; a lost-item counter degrading
+            // gracefully is preferable to panicking on overflow.
+            self.lost_peers = self.lost_peers.saturating_add(1);
         }
 
         let sf = frame.into();
 
         if let Err((sf, _)) = TryVecDeque::try_push_front_give_back(&mut self.peers, sf) {
             self.peers.pop_back();
-            self.lost_peers += 1;
+            // Saturates at usize::MAX; a lost-item counter degrading
+            // gracefully is preferable to panicking on overflow.
+            self.lost_peers = self.lost_peers.saturating_add(1);
             self.peers
                 .try_push_front_give_back(sf)
                 .map_err(|(_, e)| e)
@@ -506,7 +524,10 @@ where
                         {
                             // Evict oldest child to make room, then retry push.
                             new_head_sf.children.pop_back();
-                            new_head_sf.lost_children += 1;
+                            // Saturates at usize::MAX; a lost-item counter
+                            // degrading gracefully beats panicking on overflow.
+                            new_head_sf.lost_children =
+                                new_head_sf.lost_children.saturating_add(1);
                             new_head_sf
                                 .children
                                 .try_push_front_give_back(dropped_df)
@@ -519,12 +540,18 @@ where
                         // Conversion failed — try evicting an old child to free
                         // memory, then retry with the recovered static frame.
                         if new_head_sf.children.pop_back().is_some() {
-                            new_head_sf.lost_children += 1;
+                            // Saturates at usize::MAX; a lost-item counter
+                            // degrading gracefully beats panicking on overflow.
+                            new_head_sf.lost_children =
+                                new_head_sf.lost_children.saturating_add(1);
                             current_sf = recovered_sf;
                             continue;
                         }
                         // Nothing left to evict; give up on this frame.
-                        new_head_sf.lost_children += 1;
+                        // Saturates at usize::MAX; a lost-item counter
+                        // degrading gracefully beats panicking on overflow.
+                        new_head_sf.lost_children =
+                            new_head_sf.lost_children.saturating_add(1);
                         return;
                     }
                 }

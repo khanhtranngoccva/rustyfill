@@ -176,7 +176,8 @@ impl<K: Key, V> SecondaryMap<K, V> {
         if capacity >= MAX_SLOTS_LEN.saturating_sub(1) {
             return Err(SecondaryMapError::Overflow);
         }
-        let mut slots = Vec::<Slot<V>>::fallible_with_capacity(capacity + 1)
+        // Safe: `capacity < MAX_SLOTS_LEN - 1 <= usize::MAX`, so `+1` cannot overflow.
+        let mut slots = Vec::<Slot<V>>::fallible_with_capacity(capacity.checked_add(1).expect("capacity below MAX_SLOTS_LEN"))
             .map_err(SecondaryMapError::from)?;
         slots
             .try_push(Slot::new_vacant())
@@ -211,7 +212,8 @@ impl<K: Key, V> SecondaryMap<K, V> {
         if new_capacity >= MAX_SLOTS_LEN.saturating_sub(1) {
             return Err(SecondaryMapError::Overflow);
         }
-        let target = new_capacity + 1; // sentinel
+        // Safe: `new_capacity < MAX_SLOTS_LEN - 1 <= usize::MAX`, so `+1` cannot overflow.
+        let target = new_capacity.checked_add(1).expect("capacity below MAX_SLOTS_LEN"); // sentinel
         if target > self.slots.capacity() {
             let needed = target.saturating_sub(self.slots.len());
             self.slots
@@ -283,7 +285,9 @@ impl<K: Key, V> SecondaryMap<K, V> {
         if let Some(slot) = self.slots.get_mut(kd.idx() as usize)
             && slot.version() == kd.version_raw()
         {
-            self.num_elems -= 1;
+            // Safe: the key exists, so at least one element is present.
+            let num_elems = self.num_elems.checked_sub(1).expect("at least one element present");
+            self.num_elems = num_elems;
             return replace(slot, Slot::new_vacant()).into_option();
         }
         None
@@ -298,7 +302,9 @@ impl<K: Key, V> SecondaryMap<K, V> {
             if let Occupied { value, version } = slot {
                 let key = KeyData::new(i as u32, version.get()).into();
                 if !f(key, value) {
-                    self.num_elems -= 1;
+                    // Safe: the slot is occupied, so at least one element is present.
+                    let num_elems = self.num_elems.checked_sub(1).expect("at least one element present");
+                    self.num_elems = num_elems;
                     *slot = Slot::new_vacant();
                 }
             }
@@ -377,7 +383,8 @@ impl<K: Key, V> SecondaryMap<K, V> {
         }
 
         // Ensure slot exists, growing fallibly in a single allocation.
-        let target_len = idx + 1;
+        // Safe: `idx < MAX_SLOTS_LEN - 1 <= usize::MAX`, so `+1` cannot overflow.
+        let target_len = idx.checked_add(1).expect("slot index below MAX_SLOTS_LEN");
         if self.slots.len() < target_len {
             self.slots
                 .try_resize_with(target_len, Slot::new_vacant)
@@ -676,7 +683,9 @@ impl<'a, K: Key, V> OccupiedEntry<'a, K, V> {
 
     pub fn remove(self) -> V {
         let slot = unsafe { self.map.slots.get_unchecked_mut(self.kd.idx() as usize) };
-        self.map.num_elems -= 1;
+        // Safe: removing an occupied entry implies at least one element is present.
+        let num_elems = self.map.num_elems.checked_sub(1).expect("at least one element present");
+        self.map.num_elems = num_elems;
         unsafe {
             match replace(slot, Slot::new_vacant()) {
                 Occupied { value, .. } => value,
@@ -695,7 +704,12 @@ impl<'a, K: Key, V> VacantEntry<'a, K, V> {
         let slot = unsafe { self.map.slots.get_unchecked_mut(self.kd.idx() as usize) };
         match replace(slot, Slot::new_occupied(self.kd.version_raw(), value)) {
             Occupied { .. } => {}
-            Vacant => self.map.num_elems += 1,
+            Vacant => {
+                // Safe: the entry index is bounded by `MAX_SLOTS_LEN`, so the count
+                // cannot exceed `usize::MAX`.
+                let num_elems = self.map.num_elems.checked_add(1).expect("element count below MAX_SLOTS_LEN");
+                self.map.num_elems = num_elems;
+            }
         }
         unsafe { slot.get_unchecked_mut() }
     }
@@ -777,9 +791,13 @@ impl<'a, K: Key, V> Iterator for Drain<'a, K, V> {
     fn next(&mut self) -> Option<(K, V)> {
         while let Some(slot) = self.sm.slots.get_mut(self.cur) {
             let idx = self.cur;
-            self.cur += 1;
+            // Safe: `cur` is a valid slot index, so it is below the slots length.
+            let next_cur = self.cur.checked_add(1).expect("cursor below slot length");
+            self.cur = next_cur;
             if let Occupied { value, version } = replace(slot, Slot::new_vacant()) {
-                self.sm.num_elems -= 1;
+                // Safe: the slot is occupied, so at least one element is present.
+                let num_elems = self.sm.num_elems.checked_sub(1).expect("at least one element present");
+                self.sm.num_elems = num_elems;
                 let key = KeyData::new(idx as u32, version.get()).into();
                 return Some((key, value));
             }
@@ -804,7 +822,9 @@ impl<K: Key, V> Iterator for IntoIter<K, V> {
     fn next(&mut self) -> Option<(K, V)> {
         for (idx, mut slot) in self.slots.by_ref() {
             if let Occupied { value, version } = replace(&mut slot, Slot::new_vacant()) {
-                self.num_left -= 1;
+                // Safe: `num_left` counts remaining elements and is decremented only on yield.
+                let num_left = self.num_left.checked_sub(1).expect("remaining count positive");
+                self.num_left = num_left;
                 let key = KeyData::new(idx as u32, version.get()).into();
                 return Some((key, value));
             }
@@ -823,7 +843,9 @@ impl<'a, K: Key, V> Iterator for Iter<'a, K, V> {
     fn next(&mut self) -> Option<(K, &'a V)> {
         for (idx, slot) in self.slots.by_ref() {
             if let Occupied { value, version } = slot {
-                self.num_left -= 1;
+                // Safe: `num_left` counts remaining elements and is decremented only on yield.
+                let num_left = self.num_left.checked_sub(1).expect("remaining count positive");
+                self.num_left = num_left;
                 let key = KeyData::new(idx as u32, version.get()).into();
                 return Some((key, value));
             }
@@ -843,7 +865,9 @@ impl<'a, K: Key, V> Iterator for IterMut<'a, K, V> {
         for (idx, slot) in self.slots.by_ref() {
             if let Occupied { value, version } = slot {
                 let key = KeyData::new(idx as u32, version.get()).into();
-                self.num_left -= 1;
+                // Safe: `num_left` counts remaining elements and is decremented only on yield.
+                let num_left = self.num_left.checked_sub(1).expect("remaining count positive");
+                self.num_left = num_left;
                 return Some((key, value));
             }
         }

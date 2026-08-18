@@ -257,7 +257,8 @@ impl<K: Key, V> SlotMap<K, V> {
         if capacity >= MAX_SLOTS_LEN.saturating_sub(1) {
             return Err(SlotMapError::Full);
         }
-        let mut slots = Vec::fallible_with_capacity(capacity + 1).map_err(SlotMapError::from)?;
+        // Safe: `capacity < MAX_SLOTS_LEN - 1 <= usize::MAX`, so `+1` cannot overflow.
+        let mut slots = Vec::fallible_with_capacity(capacity.checked_add(1).expect("capacity below MAX_SLOTS_LEN")).map_err(SlotMapError::from)?;
         slots
             .try_push(Slot {
                 u: SlotUnion { next_free: 0 },
@@ -303,8 +304,9 @@ impl<K: Key, V> SlotMap<K, V> {
         if total >= MAX_SLOTS_LEN.saturating_sub(1) {
             return Err(SlotMapError::Full);
         }
-        // One slot is reserved for the sentinel.
-        let needed = total.saturating_sub(self.slots.len() - 1);
+        // One slot is reserved for the sentinel; the slots vec always holds it,
+        // so `slots.len() >= 1` and the subtraction cannot underflow.
+        let needed = total.saturating_sub(self.slots.len().saturating_sub(1));
         self.slots.try_reserve(needed).map_err(SlotMapError::from)?;
         Ok(())
     }
@@ -346,7 +348,9 @@ impl<K: Key, V> SlotMap<K, V> {
                 slot.u.value = ManuallyDrop::new(value);
                 slot.version = occupied_version;
             }
-            self.num_elems += 1;
+            // Safe: `num_elems < MAX_SLOTS_LEN - 1 <= u32::MAX`, so `+1` cannot overflow.
+            let num_elems = self.num_elems.checked_add(1).expect("element count below MAX_SLOTS_LEN");
+            self.num_elems = num_elems;
             return Ok(kd.into());
         }
 
@@ -368,8 +372,12 @@ impl<K: Key, V> SlotMap<K, V> {
             },
             version,
         });
-        self.free_head = kd.idx() + 1;
-        self.num_elems += 1;
+        // Safe: `idx < MAX_SLOTS_LEN <= u32::MAX`, so `+1` cannot overflow.
+        let free_head = kd.idx().checked_add(1).expect("slot index below MAX_SLOTS_LEN");
+        self.free_head = free_head;
+        // Safe: `num_elems < MAX_SLOTS_LEN - 1 <= u32::MAX`, so `+1` cannot overflow.
+        let num_elems = self.num_elems.checked_add(1).expect("element count below MAX_SLOTS_LEN");
+        self.num_elems = num_elems;
         Ok(kd.into())
     }
 
@@ -425,7 +433,9 @@ impl<K: Key, V> SlotMap<K, V> {
                 let value = ManuallyDrop::take(&mut slot.u.value);
                 slot.u.next_free = DANGLING_SENTINEL;
                 slot.version = slot.version.wrapping_add(1);
-                self.num_elems -= 1;
+                // Safe: the key exists, so at least one element is present.
+                let num_elems = self.num_elems.checked_sub(1).expect("at least one element present");
+                self.num_elems = num_elems;
                 Some(value)
             }
         } else {
@@ -450,7 +460,10 @@ impl<K: Key, V> SlotMap<K, V> {
 
         slot.u.value = ManuallyDrop::new(value);
         slot.version = slot.version.wrapping_sub(1);
-        self.num_elems += 1;
+        // Safe: the key was detached, so its slot is within `MAX_SLOTS_LEN` and
+        // reattaching cannot push `num_elems` past `u32::MAX`.
+        let num_elems = self.num_elems.checked_add(1).expect("element count below MAX_SLOTS_LEN");
+        self.num_elems = num_elems;
     }
 
     // Helper: remove from an occupied slot. Caller must verify occupancy.
@@ -461,7 +474,9 @@ impl<K: Key, V> SlotMap<K, V> {
             let value = ManuallyDrop::take(&mut slot.u.value);
             slot.u.next_free = self.free_head;
             self.free_head = idx as u32;
-            self.num_elems -= 1;
+            // Safe: the caller verified the slot is occupied, so at least one element exists.
+            let num_elems = self.num_elems.checked_sub(1).expect("at least one element present");
+            self.num_elems = num_elems;
             slot.version = slot.version.wrapping_add(1);
             value
         }
@@ -549,7 +564,7 @@ impl<K: Key, V> SlotMap<K, V> {
     pub fn get_disjoint_mut<const N: usize>(&mut self, keys: [K; N]) -> Option<[&mut V; N]> {
         let mut ptrs: [MaybeUninit<*mut V>; N] = [(); N].map(|_| MaybeUninit::uninit());
         let slots_ptr = self.slots.as_mut_ptr();
-        let mut i = 0;
+        let mut i = 0usize;
         while i < N {
             let kd = keys[i].data();
             if !self.contains_key(kd.into()) {
@@ -560,7 +575,9 @@ impl<K: Key, V> SlotMap<K, V> {
                 slot.version ^= 1;
                 ptrs[i] = MaybeUninit::new(&mut *slot.u.value);
             }
-            i += 1;
+            // Safe: `i < N <= usize::MAX`, so `+1` cannot overflow.
+            let next_i = i.checked_add(1).expect("loop index below N");
+            i = next_i;
         }
         for k in &keys[..i] {
             let idx = k.data().idx() as usize;
@@ -807,7 +824,9 @@ impl<'a, K: Key, V> Iterator for Drain<'a, K, V> {
         let len = self.sm.slots.len();
         while self.cur < len {
             let idx = self.cur;
-            self.cur += 1;
+            // Safe: `cur < len <= usize::MAX`, so `+1` cannot overflow.
+            let next_cur = self.cur.checked_add(1).expect("cursor below slot length");
+            self.cur = next_cur;
             unsafe {
                 let slot = self.sm.slots.get_unchecked(idx);
                 if slot.occupied() {
@@ -839,7 +858,9 @@ impl<K: Key, V> Iterator for IntoIter<K, V> {
                 let kd = KeyData::new(idx as u32, slot.version);
                 slot.version = 0; // prevent double-drop
                 let value = unsafe { ManuallyDrop::take(&mut slot.u.value) };
-                self.num_left -= 1;
+                // Safe: `num_left` counts remaining elements and is decremented only on yield.
+                let num_left = self.num_left.checked_sub(1).expect("remaining count positive");
+                self.num_left = num_left;
                 return Some((kd.into(), value));
             }
         }
@@ -858,7 +879,9 @@ impl<'a, K: Key, V> Iterator for Iter<'a, K, V> {
         for (idx, slot) in self.slots.by_ref() {
             if let Occupied(value) = slot.get() {
                 let kd = KeyData::new(idx as u32, slot.version);
-                self.num_left -= 1;
+                // Safe: `num_left` counts remaining elements and is decremented only on yield.
+                let num_left = self.num_left.checked_sub(1).expect("remaining count positive");
+                self.num_left = num_left;
                 return Some((kd.into(), value));
             }
         }
@@ -878,7 +901,9 @@ impl<'a, K: Key, V> Iterator for IterMut<'a, K, V> {
             let version = slot.version;
             if let OccupiedMut(value) = slot.get_mut() {
                 let kd = KeyData::new(idx as u32, version);
-                self.num_left -= 1;
+                // Safe: `num_left` counts remaining elements and is decremented only on yield.
+                let num_left = self.num_left.checked_sub(1).expect("remaining count positive");
+                self.num_left = num_left;
                 return Some((kd.into(), value));
             }
         }

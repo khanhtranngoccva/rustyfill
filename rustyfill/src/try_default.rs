@@ -190,7 +190,9 @@ impl<T: TryDefault, const N: usize> TryDefault for [T; N] {
                     unsafe {
                         ptr::write(slot.as_mut_ptr(), val);
                     }
-                    guard.count += 1;
+                    // At most `N` iterations, so this cannot overflow.
+                    let count = guard.count.checked_add(1).expect("initialized slot count below array length");
+                    guard.count = count;
                 }
                 Err(e) => {
                     // Guard's Drop cleans up whatever was written so far.

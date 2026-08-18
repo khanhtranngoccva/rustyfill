@@ -183,26 +183,25 @@ fn prefix_len(prefix: &Prefix<'_>) -> usize {
         s.as_encoded_bytes().len()
     }
 
+    // This cannot overflow - since the prefix length is smaller than string length.
     match *prefix {
-        Verbatim(x) => 4 + os_str_len(x),
+        Verbatim(x) => 4usize.saturating_add(os_str_len(x)),
         VerbatimUNC(x, y) => {
-            8 + os_str_len(x)
-                + if os_str_len(y) > 0 {
-                    1 + os_str_len(y)
-                } else {
-                    0
-                }
+            let mut len = 8usize.saturating_add(os_str_len(x));
+            if os_str_len(y) > 0 {
+                len = len.saturating_add(1).saturating_add(os_str_len(y));
+            }
+            len
         }
         VerbatimDisk(_) => 6,
         UNC(x, y) => {
-            2 + os_str_len(x)
-                + if os_str_len(y) > 0 {
-                    1 + os_str_len(y)
-                } else {
-                    0
-                }
+            let mut len = 2usize.saturating_add(os_str_len(x));
+            if os_str_len(y) > 0 {
+                len = len.saturating_add(1).saturating_add(os_str_len(y));
+            }
+            len
         }
-        DeviceNS(x) => 4 + os_str_len(x),
+        DeviceNS(x) => 4usize.saturating_add(os_str_len(x)),
         Disk(_) => 2,
     }
 }
@@ -340,8 +339,7 @@ impl TryPathBuf for PathBuf {
         let os = out.as_mut_os_string();
         let needed = p.as_os_str().len();
         if needed > 0 {
-            os.try_reserve(needed)
-                .map_err(TryPathBufError::Reserve)?;
+            os.try_reserve(needed).map_err(TryPathBufError::Reserve)?;
         }
         os.push(p.as_os_str());
         Ok(out)
@@ -369,8 +367,8 @@ impl TryPathBuf for PathBuf {
         }
         // Reserve room for the dot and extension.
         if !ext.is_empty() {
-            self.try_reserve(ext.len() + 1)
-                .map_err(TryPathBufError::Reserve)?;
+            let needed = ext.len().checked_add(1).ok_or(TryPathBufError::Overflow)?;
+            self.try_reserve(needed).map_err(TryPathBufError::Reserve)?;
         }
         self.set_extension(ext);
         Ok(())
@@ -410,14 +408,21 @@ impl TryPathBuf for PathBuf {
         // Safety: file_name was obtained from self.file_name(), which returns
         // a subslice of self's inner data. Taking the pointer of the empty
         // tail slice gives us the address just past the end of the file name.
-        let fname_end_offset = fname[fname.len()..].as_ptr() as usize - all.as_ptr() as usize;
+        // Safe: `fname` is a subslice of `all`, so its end pointer lies at or
+        // after `all`'s start; the subtraction cannot underflow.
+        let fname_end_offset = (fname[fname.len()..].as_ptr() as usize)
+            .wrapping_sub(all.as_ptr() as usize);
 
         // Reserve enough capacity for the net change: we will remove
         // `(len - fname_end_offset)` bytes (the old extension + separator)
         // and add `ext.len() + 1` bytes ("." + new extension).
         let len = all.len();
-        let bytes_to_truncate = len - fname_end_offset;
-        let needed = (ext.len() + 1).saturating_sub(bytes_to_truncate);
+        let bytes_to_truncate = len.saturating_sub(fname_end_offset);
+        let needed = ext
+            .len()
+            .checked_add(1)
+            .ok_or(TryPathBufError::Overflow)?
+            .saturating_sub(bytes_to_truncate);
         if needed > 0 {
             self.as_mut_os_string()
                 .try_reserve(needed)
@@ -449,8 +454,7 @@ impl TryClone for PathBuf {
         let src = self.as_os_str();
         let len = src.len();
         if len > 0 {
-            os.try_reserve(len)
-                .map_err(TryCloneError::Reserve)?;
+            os.try_reserve(len).map_err(TryCloneError::Reserve)?;
         }
         os.push(src);
         Ok(out)

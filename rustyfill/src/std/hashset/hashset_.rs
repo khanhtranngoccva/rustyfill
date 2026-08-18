@@ -473,7 +473,7 @@ impl<T: Eq + Hash, S: BuildHasher> TryHashSet<T, S> for HashSet<T, S> {
                 }
                 Err(e) => {
                     // Drain the elements we already inserted.
-                    for _ in 0..self.len() - len_before {
+                    for _ in 0..self.len().saturating_sub(len_before) {
                         self.drain().next();
                     }
                     return Err(TryHashSetError::Clone(e));

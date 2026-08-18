@@ -24,6 +24,11 @@
 // On nightly, expose the real `TryReserveErrorKind` and its `.kind()` accessor.
 #![cfg_attr(nightly_compiler = "true", feature(try_reserve_kind))]
 #![no_std]
+// Arithmetic in library code must never silently overflow; use checked/wrapping
+// variants explicitly where wrap-around or saturation is intended. Scoped to
+// non-test builds so that fuzz/test helpers (which intentionally do fast math)
+// aren't held to the same standard as shipped code.
+#![cfg_attr(not(test), deny(clippy::arithmetic_side_effects))]
 
 // Register `std` and `alloc` under alias names so they're accessible via absolute
 // paths (`::lang_std`, `::lang_alloc`) without clashing with our own `pub mod std`

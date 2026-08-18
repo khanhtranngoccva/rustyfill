@@ -549,7 +549,7 @@ impl<T> TryVecDeque<T> for VecDeque<T> {
             ));
         }
 
-        let count = end - start;
+        let count = end.saturating_sub(start);
         self.try_reserve(count).map_err(TryVecDequeError::Reserve)?;
         let guard = TruncateGuard::new(self);
         for i in start..end {
@@ -575,7 +575,7 @@ impl<T> TryVecDeque<T> for VecDeque<T> {
             self.truncate(new_len);
             return Ok(());
         }
-        let extra = new_len - current;
+        let extra = new_len.saturating_sub(current);
         self.try_reserve(extra).map_err(TryVecDequeError::Reserve)?;
         let guard = TruncateGuard::new(self);
         for _ in 0..extra {
@@ -599,7 +599,7 @@ impl<T> TryVecDeque<T> for VecDeque<T> {
             self.truncate(new_len);
             return Ok(());
         }
-        let extra = new_len - current;
+        let extra = new_len.saturating_sub(current);
         self.try_reserve(extra)?;
         let guard = TruncateGuard::new(self);
         for _ in 0..extra {

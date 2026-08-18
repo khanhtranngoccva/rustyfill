@@ -543,7 +543,7 @@ impl<T> TryVec<T> for Vec<T> {
             ));
         }
 
-        let count = end - start;
+        let count = end.saturating_sub(start);
         // Reserve first — lazy, no element copies until allocation succeeds.
         self.try_reserve(count)
             .map_err(TryVecError::Reserve)?;
@@ -570,7 +570,7 @@ impl<T> TryVec<T> for Vec<T> {
             self.truncate(new_len);
             return Ok(());
         }
-        let extra = new_len - current;
+        let extra = new_len.saturating_sub(current);
         // Reserve first — lazy.
         self.try_reserve(extra)
             .map_err(TryVecError::Reserve)?;
@@ -596,7 +596,7 @@ impl<T> TryVec<T> for Vec<T> {
             self.truncate(new_len);
             return Ok(());
         }
-        let extra = new_len - current;
+        let extra = new_len.saturating_sub(current);
         // Reserve first — lazy, closure not called until allocation succeeds.
         self.try_reserve(extra)?;
         let guard = TruncateGuard::new(self);

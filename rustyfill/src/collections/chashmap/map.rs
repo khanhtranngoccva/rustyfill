@@ -309,12 +309,16 @@ impl<K: Eq + Hash, V, S: BuildHasher> ConcurrentHashMap<K, V, S> {
         hasher: S,
         shard_count: usize,
     ) -> Result<Self, ConcurrentHashMapError> {
-        if shard_count < 2 || (shard_count & (shard_count - 1)) != 0 {
+        if shard_count < 2 || !shard_count.is_power_of_two() {
             return Err(ConcurrentHashMapError::Other(
                 "shard count must be a power of two and >= 2",
             ));
         }
-        let shift = usize::BITS - shard_count.trailing_zeros();
+        // `shard_count` is a power of two in [2, usize::MAX], so its trailing
+        // zero count lies in [1, BITS] and the subtraction cannot underflow.
+        let shift = usize::BITS
+            .checked_sub(shard_count.trailing_zeros())
+            .expect("trailing zeros <= BITS for nonzero power of two");
         let layout = lang_alloc::alloc::Layout::array::<Shard<K, V>>(shard_count)
             .map_err(|_| ConcurrentHashMapError::Overflow)?;
         let ptr = unsafe { lang_alloc::alloc::alloc(layout) };
@@ -333,7 +337,12 @@ impl<K: Eq + Hash, V, S: BuildHasher> ConcurrentHashMap<K, V, S> {
             unsafe {
                 ptr::write(slot.as_mut_ptr(), Shard::<K, V>::new());
             }
-            guard.count += 1;
+            // At most `shard_count` iterations, so this cannot overflow.
+            let count = guard
+                .count
+                .checked_add(1)
+                .expect("initialized shard count below shard array length");
+            guard.count = count;
         }
 
         guard.forget();
@@ -382,10 +391,13 @@ impl<K: Eq + Hash, V, S: BuildHasher> ConcurrentHashMap<K, V, S> {
         V: 'static,
     {
         assert!(
-            shards.len() >= 2 && (shards.len() & (shards.len() - 1)) == 0,
+            shards.len() >= 2 && shards.len().is_power_of_two(),
             "static shard count must be a power of two and >= 2"
         );
-        let shift = usize::BITS - shards.len().trailing_zeros();
+        // Safe: asserted above to be a power of two >= 2, so trailing zeros <= BITS.
+        let shift = usize::BITS
+            .checked_sub(shards.len().trailing_zeros())
+            .expect("power-of-two len has trailing zeros <= BITS");
         let ptr = shards.as_mut_ptr();
         let len = shards.len();
         Self {
@@ -403,7 +415,9 @@ impl<K: Eq + Hash, V, S: BuildHasher> ConcurrentHashMap<K, V, S> {
         for i in 0..self.shard_count() {
             let shard = self.shards.get_shard(i);
             let table = shard.read_table();
-            count += table.len();
+            count = count
+                .checked_add(table.len())
+                .expect("overflowing on length add is impossible");
         }
         count
     }
@@ -425,11 +439,13 @@ impl<K: Eq + Hash, V, S: BuildHasher> ConcurrentHashMap<K, V, S> {
 
     /// Returns the total capacity across all shards.
     pub fn capacity(&self) -> usize {
-        let mut cap = 0;
+        let mut cap: usize = 0;
         for i in 0..self.shard_count() {
             let shard = self.shards.get_shard(i);
             let table = shard.read_table();
-            cap += table.capacity();
+            cap = cap
+                .checked_add(table.capacity())
+                .expect("overflowing on cap add is impossible");
         }
         cap
     }
@@ -628,7 +644,9 @@ impl<K: Eq + Hash, V, S: BuildHasher> ConcurrentHashMap<K, V, S> {
             table
                 .try_reserve(per_shard, |(k, _v): &(K, V)| self.hasher.hash_one(k))
                 .map_err(|_| {
-                    ConcurrentHashMapError::Reserve(TryReserveErrorExt::new_alloc(Layout::new::<u8>()))
+                    ConcurrentHashMapError::Reserve(TryReserveErrorExt::new_alloc(
+                        Layout::new::<u8>(),
+                    ))
                 })?;
         }
         Ok(())

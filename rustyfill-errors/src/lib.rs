@@ -24,6 +24,9 @@
 
 #![no_std]
 #![warn(missing_docs)]
+// Arithmetic in library code must never silently overflow; use checked/wrapping
+// variants explicitly where wrap-around or saturation is intended.
+#![deny(clippy::arithmetic_side_effects)]
 
 extern crate alloc;
 #[cfg(feature = "std")]

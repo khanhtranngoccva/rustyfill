@@ -1,5 +1,5 @@
 [workspace]
-members = ["rustyfill", "rustyfill-macros", "rustyfill-errors", "rustyfill-test-allocator", "display-allocation-tests", "antipatterns", "xtask", "rustyfill-sys", "rustyfill-sys-bindings"]
+members = ["rustyfill", "rustyfill-macros", "rustyfill-errors", "rustyfill-test-allocator", "display-allocation-tests", "antipatterns", "xtask", "rustyfill-sys", "rustyfill-sys-bindings", "experiments"]
 resolver = "2"
 
 [workspace.package]

@@ -330,7 +330,7 @@ fn weak_is_dangling<T: ?Sized>(weak: &Weak<T>) -> bool {
 impl<T: ?Sized> TryClone for Rc<T> {
     fn try_clone(&self) -> Result<Self, TryCloneError> {
         let inner = rc_inner(self);
-        let mut strong = inner.strong.get();
+        let strong = inner.strong.get();
 
         // Single-threaded: plain mutable access to the counter is fine as long
         // as no other thread touches it (guaranteed by Rc's !Sync bound).
@@ -338,9 +338,11 @@ impl<T: ?Sized> TryClone for Rc<T> {
             return Err(TryCloneError::Other("Rc strong refcount exceeded"));
         }
 
-        // SAFETY: We've confirmed strong < MAX_REFCOUNT above. Incrementing
-        // is safe and won't overflow. In single-threaded context, no race.
-        strong += 1;
+        // We've confirmed strong < MAX_REFCOUNT <= isize::MAX above, so +1 cannot
+        // overflow. In single-threaded context, no race.
+        let strong = strong
+            .checked_add(1)
+            .expect("strong refcount below MAX_REFCOUNT");
         inner.strong.set(strong);
 
         Ok(unsafe { ptr::read(self) })
@@ -356,15 +358,17 @@ impl<T: ?Sized> TryClone for Weak<T> {
         }
 
         let inner = weak_inner(self);
-        let mut weak = inner.weak.get();
+        let weak = inner.weak.get();
 
         if weak >= MAX_REFCOUNT {
             return Err(TryCloneError::Other("Rc weak refcount exceeded"));
         }
 
-        // SAFETY: We've confirmed weak < MAX_REFCOUNT above. Incrementing
-        // is safe and won't overflow. In single-threaded context, no race.
-        weak += 1;
+        // We've confirmed weak < MAX_REFCOUNT <= isize::MAX above, so +1 cannot
+        // overflow. In single-threaded context, no race.
+        let weak = weak
+            .checked_add(1)
+            .expect("weak refcount below MAX_REFCOUNT");
         inner.weak.set(weak);
 
         Ok(unsafe { ptr::read(self) })
@@ -419,7 +423,7 @@ impl<T: ?Sized> TryWeak<T> for Weak<T> {
         let inner = weak_inner(self);
 
         // Single-threaded: direct access to counters.
-        let mut strong = inner.strong.get();
+        let strong = inner.strong.get();
         if strong == 0 {
             // Data has been dropped; don't increment.
             return None;
@@ -428,9 +432,11 @@ impl<T: ?Sized> TryWeak<T> for Weak<T> {
             return Some(Err(TryUpgradeError));
         }
 
-        // Increment strong count.
-        // SAFETY: We've confirmed strong < MAX_REFCOUNT above.
-        strong += 1;
+        // Increment strong count. We've confirmed strong < MAX_REFCOUNT <= isize::MAX
+        // above, so +1 cannot overflow.
+        let strong = strong
+            .checked_add(1)
+            .expect("strong refcount below MAX_REFCOUNT");
         inner.strong.set(strong);
 
         // Strong count was successfully incremented from a non-zero
