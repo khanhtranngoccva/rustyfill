@@ -5,3 +5,4 @@
 //! `rustyfill` proper. Nothing here is stable API.
 
 pub mod arithmetic_benchmarks;
+pub mod display_allocation_tests;

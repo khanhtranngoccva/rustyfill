@@ -58,13 +58,13 @@ fn format_on_stack(args: std::fmt::Arguments<'_>) {
 
 // ── Test case definition ──────────────────────────────────────────────────────
 
-struct TestCase {
+pub struct TestCase {
     /// Stable string identifier used to select this test on the command line.
-    id: &'static str,
+    pub id: &'static str,
     /// Human-readable label shown in the summary table.
-    name: &'static str,
+    pub name: &'static str,
     /// The code to execute.
-    run: fn(),
+    pub run: fn(),
 }
 
 // ── Individual test bodies ────────────────────────────────────────────────────
@@ -332,7 +332,7 @@ fn test_vec_push() {
 
 // ── Registry ──────────────────────────────────────────────────────────────────
 
-fn all_tests() -> &'static [TestCase] {
+pub fn all_tests() -> &'static [TestCase] {
     &[
         TestCase {
             id: "static-string",
@@ -505,7 +505,7 @@ fn all_tests() -> &'static [TestCase] {
 // ── Child mode ────────────────────────────────────────────────────────────────
 
 /// When invoked with a string argument, run only that test (by ID) and exit.
-fn run_single_test(id: &str) {
+pub fn run_single_test(id: &str) {
     let tests = all_tests();
     let test = tests.iter().find(|t| t.id == id).unwrap_or_else(|| {
         eprintln!("unknown test id \"{id}\"");
@@ -523,7 +523,7 @@ fn run_single_test(id: &str) {
 // ── Runner mode ───────────────────────────────────────────────────────────────
 
 #[derive(Clone, PartialEq, Eq)]
-enum TestResult {
+pub enum TestResult {
     /// Process exited cleanly — no allocations detected.
     Safe,
     /// Process aborted — an allocation was attempted.
@@ -532,7 +532,7 @@ enum TestResult {
     Error(String),
 }
 
-fn run_in_child(test_id: &str) -> TestResult {
+pub fn run_in_child(test_id: &str) -> TestResult {
     let me = std::env::current_exe().unwrap_or_else(|_| {
         eprintln!("cannot determine executable path");
         std::process::exit(2);
@@ -549,76 +549,5 @@ fn run_in_child(test_id: &str) -> TestResult {
         Ok(o) if o.status.success() => TestResult::Safe,
         Ok(_) => TestResult::ImplicitlyAllocates,
         Err(e) => TestResult::Error(e.to_string()),
-    }
-}
-
-fn main() {
-    let args: Vec<String> = std::env::args().collect();
-
-    // Child mode: a single string argument selects one test by ID.
-    if args.len() == 2 {
-        run_single_test(&args[1]);
-        std::process::exit(0);
-    }
-
-    // Runner mode: iterate all tests, spawning a child for each.
-    let tests = all_tests();
-    let mut results: Vec<(&str, &str, TestResult)> = Vec::new();
-
-    for test in tests.iter() {
-        print!("[{:<25}] testing {:<45} ... ", test.id, test.name);
-        std::io::Write::flush(&mut std::io::stdout()).ok();
-        let result = run_in_child(test.id);
-        results.push((test.id, test.name, result.clone()));
-        match &result {
-            TestResult::Safe => println!("\u{2714} SAFE"),
-            TestResult::ImplicitlyAllocates => println!("\u{2716} IMPLICITLY ALLOCATES"),
-            TestResult::Error(e) => println!("\u{26A0} ERROR: {}", e),
-        }
-    }
-
-    // Summary table
-    println!("\n{}", "=".repeat(80));
-    println!("SUMMARY");
-    println!("{}", "=".repeat(80));
-
-    let safe: usize = results
-        .iter()
-        .filter(|(_, _, r)| *r == TestResult::Safe)
-        .count();
-    let allocates: usize = results
-        .iter()
-        .filter(|(_, _, r)| *r == TestResult::ImplicitlyAllocates)
-        .count();
-    let errors: usize = results
-        .iter()
-        .filter(|(_, _, r)| matches!(r, TestResult::Error(_)))
-        .count();
-
-    for (id, name, result) in &results {
-        let icon = match result {
-            TestResult::Safe => "\u{2714}",
-            TestResult::ImplicitlyAllocates => "\u{2716}",
-            TestResult::Error(_) => "\u{26A0}",
-        };
-        let label = match result {
-            TestResult::Safe => "SAFE",
-            TestResult::ImplicitlyAllocates => "IMPLICITLY ALLOCATES",
-            TestResult::Error(e) => &format!("ERROR ({})", e),
-        };
-        println!("[{:<25}] {} {:<45} {}", id, icon, name, label);
-    }
-
-    println!("{}", "-".repeat(80));
-    println!(
-        "safe: {} | allocates: {} | errors: {}",
-        safe, allocates, errors
-    );
-    println!("{}", "=".repeat(80));
-    println!();
-    println!("Run a single test with: cargo run -p display-allocation-tests -- <id>");
-
-    if errors > 0 {
-        std::process::exit(1);
     }
 }

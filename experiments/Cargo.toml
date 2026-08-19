@@ -7,3 +7,10 @@ publish = false
 [[bin]]
 name = "arithmetic-benchmarks"
 path = "src/bin/arithmetic_benchmarks.rs"
+
+[[bin]]
+name = "display-allocation-tests"
+path = "src/bin/display_allocation_tests.rs"
+
+[dependencies]
+rustyfill-test-allocator = { workspace = true }
