@@ -1598,8 +1598,9 @@ const INTERNAL_TRAIT_STRIPS: &[&str] =
 /// re-exports and module shims. These are invariant across targets — they make
 /// ambient core names (`Layout`, `PhantomData`, …) and common module-qualified
 /// references resolve to the original builtin types through the per-file glob
-/// import. The spec-declared [`KnownExternalType`]s (e.g. the `Atomic<T>`
-/// polyfill) are appended separately by [`preamble_content_with_known_types`].
+/// import. Spec-declared [`KnownExternalType`]s (e.g. the `Atomic<T>` polyfill)
+/// are no longer floated here; they emit their own binding files at their
+/// canonical location via [`emit_known_type_stub`].
 const PREAMBLE_CORE_CONTENT: &str = r#"// Auto-generated prelude by rustyfill-sys.
   // Provides well-known types as bare names for generated bindings.
   // This module is isolated from local module namespaces (e.g. btree::marker).
@@ -1679,24 +1680,12 @@ const PREAMBLE_CORE_CONTENT: &str = r#"// Auto-generated prelude by rustyfill-sy
 /// the spec-declared known external types. Each known type's definition is
 /// emitted verbatim, so the set of polyfilled shapes is driven entirely by the
 /// loader spec rather than hardcoded here.
-pub fn preamble_content_with_known_types(known_types: &[crate::loader_spec::KnownExternalType]) -> String {
-    let mut out = String::from(PREAMBLE_CORE_CONTENT);
-    if !known_types.is_empty() {
-        out.push_str("  // Spec-declared known external types: referenced by generated\n");
-        out.push_str("  // bindings but not mirrored from std source. Definitions are emitted\n");
-        out.push_str("  // verbatim from the loader spec.\n");
-        for kt in known_types {
-            out.push_str(&format!("  {}\n", kt.definition));
-        }
-    }
-    out
-}
-
-/// Backwards-compatible preamble content with no spec-declared known types.
-/// Retained for callers/tests that don't carry a spec; production emission uses
-/// [`preamble_content_with_known_types`].
+/// The full preamble module content. Known external types are no longer floated
+/// here as bare names — they are recognized at their canonical location (see
+/// [`emit_known_type_stub`]) and emit their own binding files. So the preamble
+/// is now purely the static core re-exports and shims.
 pub fn preamble_content() -> String {
-    preamble_content_with_known_types(&[])
+    PREAMBLE_CORE_CONTENT.to_string()
 }
 
 // ── Attribute filtering (AST + token-stream level) ──────────────────────────
@@ -3063,20 +3052,71 @@ fn append_manual_impls(_content: &mut String, _relative_file_path: &str) {
 }
 
 /// Emit the preamble module file for a given target library.
-/// Writes to `$OUT_DIR/__rustyfill_prelude_<lib>.rs`. The spec-declared known
-/// external types (e.g. the `Atomic<T>` polyfill) are emitted into the shared
-/// preamble so bare references from any mirrored file resolve.
-pub fn emit_preamble_module(
-    out_dir: &Path,
-    _lib_name: &str,
-    known_types: &[crate::loader_spec::KnownExternalType],
-) -> String {
-    let filename = format!("{}_{}.rs", PREAMBLE_MOD, _lib_name);
+/// Writes to `$OUT_DIR/__rustyfill_prelude_<lib>.rs`. The preamble carries only
+/// the static core re-exports and shims; known external types emit their own
+/// binding files at their canonical location (see [`emit_known_type_stub`]).
+pub fn emit_preamble_module(out_dir: &Path, lib_name: &str) -> String {
+    let filename = format!("{}_{}.rs", PREAMBLE_MOD, lib_name);
     let path = out_dir.join(&filename);
-    let content = format_source(&preamble_content_with_known_types(known_types));
+    let content = format_source(&preamble_content());
     std::fs::write(&path, &content)
         .unwrap_or_else(|e| panic!("Failed to write preamble {}: {}", path.display(), e));
     filename
+}
+
+/// Emit a standalone binding file for a spec-declared known external type at its
+/// canonical module location.
+///
+/// The file is written to `<out_dir>/<module_path>.rs` where `module_path` is
+/// the known type's path with the leaf stripped (e.g. `sync::atomic::Atomic` →
+/// `sync/atomic.rs`). It carries the correct `super::` hop count back to the
+/// preamble plus the verbatim stub definition from the spec. This makes the
+/// type resolvable at its original location — references route here through the
+/// registry rather than to a bare prelude name.
+///
+/// Returns the relative file path (e.g. `"sync/atomic.rs"`) so the caller can
+/// register it in the manifest, or `None` if the module path was empty.
+pub fn emit_known_type_stub(
+    out_dir: &Path,
+    kt: &crate::loader_spec::KnownExternalType,
+) -> Option<String> {
+    // Module path = everything before the leaf, converted to slash form. A
+    // known type must live in at least one module (e.g. `sync::atomic`), so a
+    // bare single-segment path has no enclosing module and is rejected.
+    let segments: Vec<&str> = kt.path.split("::").collect();
+    if segments.len() < 2 {
+        return None;
+    }
+    let module_slash: String = segments[..segments.len() - 1].join("/");
+    let rel_path = format!("{module_slash}.rs");
+    let depth = crate::pipeline::compute_module_depth(&rel_path);
+
+    // Compute the super-hops back to the preamble, mirroring emit_binding_file.
+    let supers: Vec<&str> = std::iter::repeat_n("super", depth).collect();
+    let preamble_use_path = if supers.is_empty() {
+        String::new()
+    } else {
+        format!("{}::{PREAMBLE_MOD}", supers.join("::"))
+    };
+
+    let mut content = String::from("// Auto-generated by rustyfill-sys.\n");
+    if !preamble_use_path.is_empty() {
+        content.push_str(&format!(
+            "#[allow(unused_imports)]\npub use {preamble_use_path}::*;\n"
+        ));
+    }
+    content.push('\n');
+    content.push_str(&kt.definition);
+    content.push('\n');
+
+    let path = out_dir.join(&rel_path);
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).ok();
+    }
+    let content = format_source(&content);
+    std::fs::write(&path, &content)
+        .unwrap_or_else(|e| panic!("Failed to write known-type stub {}: {}", path.display(), e));
+    Some(rel_path)
 }
 
 // ── Alias file emission ────────────────────────────────────────────────────
@@ -3403,6 +3443,71 @@ fn sanitize(name: &str) -> String {
         format!("_{}", s)
     } else {
         s
+    }
+}
+
+#[cfg(test)]
+mod known_type_stub_tests {
+    use super::*;
+    use crate::loader_spec::KnownExternalType;
+
+    static TMP_COUNTER: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+    fn tmp_dir() -> tempfile_like::Dir {
+        let n = TMP_COUNTER.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        let dir = std::env::temp_dir().join(format!(
+            "rustyfill_ktstub_test_{}_{}",
+            std::process::id(),
+            n
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        tempfile_like::Dir(dir)
+    }
+    /// Tiny RAII temp-dir guard (avoids a dev-dependency on `tempfile`).
+    mod tempfile_like {
+        pub struct Dir(pub std::path::PathBuf);
+        impl Drop for Dir {
+            fn drop(&mut self) {
+                let _ = std::fs::remove_dir_all(&self.0);
+            }
+        }
+    }
+
+    /// A known type at `sync::atomic::Atomic` emits a stub file at `sync/atomic.rs`
+    /// with the correct two-level preamble hop and the verbatim definition.
+    #[test]
+    fn emits_stub_at_canonical_module_with_correct_depth() {
+        let tmp = tmp_dir();
+        let kt = KnownExternalType {
+            name: "Atomic".to_string(),
+            path: "sync::atomic::Atomic".to_string(),
+            definition: "#[repr(transparent)] pub struct Atomic<T>(X<T>);".to_string(),
+        };
+        let rel = emit_known_type_stub(&tmp.0, &kt).expect("should emit");
+        assert_eq!(rel, "sync/atomic.rs");
+
+        let content = std::fs::read_to_string(tmp.0.join("sync/atomic.rs")).unwrap();
+        // Depth 2 (sync / atomic) → two `super::` hops back to the preamble.
+        assert!(
+            content.contains("pub use super::super::__rustyfill_prelude::*;"),
+            "wrong preamble depth:\n{content}"
+        );
+        assert!(
+            content.contains("pub struct Atomic<T>(X<T>);"),
+            "stub body missing:\n{content}"
+        );
+    }
+
+    /// A single-segment path has no enclosing module and is rejected.
+    #[test]
+    fn rejects_bare_single_segment_path() {
+        let tmp = tmp_dir();
+        let kt = KnownExternalType {
+            name: "Foo".to_string(),
+            path: "Foo".to_string(),
+            definition: "pub struct Foo;".to_string(),
+        };
+        assert!(emit_known_type_stub(&tmp.0, &kt).is_none());
     }
 }
 

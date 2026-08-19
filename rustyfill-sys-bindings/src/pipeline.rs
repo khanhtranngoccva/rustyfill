@@ -19,7 +19,7 @@ use std::path::{Path, PathBuf};
 use crate::emitter::{
     EmitConfig, QualifierResolver, TypeRegistry, check_declared_struct_fields,
     collect_qualified_refs, emit_binding_file, emit_glob_reexport_aliases,
-    emit_hierarchical_manifest, emit_preamble_module,
+    emit_hierarchical_manifest, emit_known_type_stub, emit_preamble_module,
 };
 use crate::loader_spec::LoaderSpec;
 use crate::parser::{
@@ -100,13 +100,11 @@ pub fn generate(input: &PipelineInput<'_>) -> GenerateOutcome {
     let mut reexport_located: Vec<(String, String)> = Vec::new();
 
     // ── Phase 0: Emit preamble modules per target library ───────────────────
-    // The preamble is shared across every mirrored file regardless of which
-    // library declared a given known external type, so aggregate them once
-    // (deduped by name) and pass the union to each preamble module.
-    let known_external_types = collect_known_external_types(spec);
+    // The preamble carries only static core re-exports and shims; it is identical
+    // in shape for every library, emitted once per target.
     for target in &spec.targets {
         if preamble_emitted.insert(target.lib_name.clone()) {
-            emit_preamble_module(out_dir, &target.lib_name, &known_external_types);
+            emit_preamble_module(out_dir, &target.lib_name);
         }
     }
 
@@ -435,6 +433,21 @@ pub fn generate(input: &PipelineInput<'_>) -> GenerateOutcome {
             }
         }
 
+        // Register spec-declared known external types at their canonical path so
+        // references route to them like any other mirrored type. Their definition
+        // is emitted as a standalone stub file (Phase 2), not parsed from source,
+        // so the def_file points at the generated stub's relative path.
+        for kt in &target.known_external_types {
+            let canonical = format!("{}::{}", target.lib_name, kt.path);
+            let segments: Vec<&str> = kt.path.split("::").collect();
+            let stub_rel = if segments.len() >= 2 {
+                format!("{}.rs", segments[..segments.len() - 1].join("/"))
+            } else {
+                continue;
+            };
+            registry.insert_declared(&canonical, &stub_rel);
+        }
+
         // Register re-export-shim declarations.
         for (decl, def_file) in &reexport_located {
             if !def_file.ends_with(".rs") {
@@ -569,6 +582,22 @@ pub fn generate(input: &PipelineInput<'_>) -> GenerateOutcome {
         }
     }
 
+    // ── Phase 2b: Emit known-external-type stubs at their canonical location ─
+    // Each spec-declared known type gets a standalone binding file at its module
+    // path, carrying the hand-written stub body. These are registered in the
+    // manifest so they're part of the generated tree, and validated like any
+    // other emitted file.
+    for target in &spec.targets {
+        for kt in &target.known_external_types {
+            if let Some(rel_path) = emit_known_type_stub(out_dir, kt) {
+                validator.check_emit(&out_dir.join(&rel_path));
+                emitted_paths.push(out_dir.join(&rel_path));
+                emitted_canonicals.insert(rel_path.clone());
+                all_files.push((rel_path, target.lib_name.clone()));
+            }
+        }
+    }
+
     // ── Phase 3: Discover and emit re-export aliases ────────────────────────
     let mut discovered_aliases = HashSet::new();
     for target in &spec.targets {
@@ -626,24 +655,6 @@ pub fn generate(input: &PipelineInput<'_>) -> GenerateOutcome {
 }
 
 // ── Spec-derived input builders ─────────────────────────────────────────────
-
-/// Aggregate the spec-declared known external types across all targets into a
-/// single deduplicated, stably-ordered list for the shared preamble. Deduping
-/// by name guards against the same type being declared on more than one target
-/// (the preamble is emitted once and glob-imported by files from every library).
-fn collect_known_external_types(spec: &LoaderSpec) -> Vec<crate::loader_spec::KnownExternalType> {
-    let mut seen: HashSet<String> = HashSet::new();
-    let mut out: Vec<crate::loader_spec::KnownExternalType> = Vec::new();
-    for target in &spec.targets {
-        for kt in &target.known_external_types {
-            if seen.insert(kt.name.clone()) {
-                out.push(kt.clone());
-            }
-        }
-    }
-    out.sort_by(|a, b| a.name.cmp(&b.name));
-    out
-}
 
 /// Build the stable-ordered `(leaf, optional_replacement)` list consumed by
 /// the emitter, from every target's `path_replacements`. Owned `String`s are

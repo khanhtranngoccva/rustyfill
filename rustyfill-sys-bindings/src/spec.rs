@@ -57,20 +57,6 @@ fn std_target() -> BindingTarget {
     target.declare_struct("sys::sync::mutex::futex::State");
     target.declare_struct("sys::sync::once_box::OnceBox");
 
-    // ── Known external types (emitted into the shared preamble) ──────────────
-    // The futex Mutex and OnceBox reference a bare `Atomic<T>` (via
-    // `use crate::sync::atomic::{... Atomic ...}`). The real type is
-    // `#[unstable(feature = "generic_atomic")]` and holds `UnsafeCell<T::Storage>`
-    // behind an `AtomicPrimitive` bound, which won't compile in our no_std
-    // downstream tree. So we polyfill just the *shape* — a transparent
-    // `UnsafeCell<T>` wrapper — as a spec-declared known type instead of
-    // mirroring the generic machinery. Only the type shape matters for the
-    // bindings; atomic operations are provided by the main crate.
-    target.add_known_type(
-        "Atomic",
-        "#[repr(transparent)] pub struct Atomic<T>(::__rustyfill_builtin_core::cell::UnsafeCell<T>);",
-    );
-
     target
 }
 
@@ -81,6 +67,23 @@ fn core_target() -> BindingTarget {
     // layout. The generated Box<T,A>(Unique<T>, A) becomes Box<T,A>(NonNull<T>, A),
     // avoiding the need to mirror core::ptr::Unique and its PointeeSized bound.
     target.replace_path("core::ptr::Unique", "NonNull");
+
+    // ── Known external types (recognized at their canonical location) ───────
+    // The futex Mutex and OnceBox reference `Atomic<T>` via
+    // `use crate::sync::atomic::{... Atomic ...}`. In std that resolves through
+    // `pub use core::sync::atomic`, so the canonical home is
+    // `core::sync::atomic::Atomic`. The real definition is
+    // `#[unstable(feature = "generic_atomic")]` and holds `UnsafeCell<T::Storage>`
+    // behind an `AtomicPrimitive` bound, which won't compile in our no_std
+    // downstream tree. Rather than float it as a bare prelude name, we recognize
+    // it at its original location: register it under `core::sync::atomic::Atomic`
+    // so references route there, and emit a stub body (a transparent
+    // `UnsafeCell<T>` wrapper) in place of the parsed source. Only the type
+    // shape matters for the bindings; atomic ops come from the main crate.
+    target.add_known_type(
+        "sync::atomic::Atomic",
+        "#[repr(transparent)] pub struct Atomic<T>(::__rustyfill_builtin_core::cell::UnsafeCell<T>);",
+    );
 
     target
 }

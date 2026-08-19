@@ -31,21 +31,32 @@ pub struct PathReplacement {
     pub replacement: Option<String>,
 }
 
-/// A type that generated bindings reference but that is *not* mirrored from
-/// std source. Rather than hardcoding its shape in the prelude, the spec
-/// declares it here along with the exact definition to emit into the preamble.
+/// A type that generated bindings reference at a canonical location in the
+/// standard-library tree, but whose real definition cannot be mirrored
+/// verbatim (it would not compile downstream — unstable feature gates,
+/// private marker bounds, etc.).
 ///
-/// This covers platform-specific or otherwise-unmirrored types whose shape the
-/// polyfill depends on (e.g. `Atomic<T>` as `UnsafeCell<T>`, `FileDesc(i32)`).
-/// The emitted definition must be self-contained — it may only refer to names
-/// already available through the prelude's core re-exports or the language
-/// prelude.
+/// Instead of floating as a bare name in the shared preamble, such a type is
+/// *recognized at its original location*: it is registered in the type
+/// registry under its canonical path so every reference routes to that exact
+/// path (like any other mirrored type), and a standalone binding file is
+/// emitted at that module containing a hand-written **stub body** rather than
+/// the parsed source. The stub preserves just enough shape for the polyfill to
+/// type-check (e.g. `Atomic<T>` as a transparent `UnsafeCell<T>` wrapper) while
+/// dropping the machinery that won't compile (`AtomicPrimitive`, `T::Storage`).
+///
+/// The stub body must be self-contained — it may only refer to names already
+/// available through the prelude's core re-exports or the language prelude.
 #[derive(Clone, Debug)]
 pub struct KnownExternalType {
-    /// Human-readable name of the type (used for diagnostics / ordering).
+    /// Leaf identifier of the type (used for diagnostics / ordering).
     pub name: String,
-    /// The full item definition to emit verbatim into the preamble module,
-    /// e.g. `"#[repr(transparent)] pub struct Atomic<T>(...)"`.
+    /// Canonical path of the type relative to its library root, e.g.
+    /// `"sync::atomic::Atomic"`. The pipeline registers the type at
+    /// `<lib>::<path>` and emits its stub at the corresponding module.
+    pub path: String,
+    /// The full item definition to emit verbatim in place of the parsed source,
+    /// e.g. `"#[repr(transparent)] pub struct Atomic<T>(...)".`
     pub definition: String,
 }
 
@@ -93,10 +104,13 @@ pub struct BindingTarget {
     /// to the mirrored enum even though the std source only derives
     /// `PartialEq, Eq, Debug`.
     pub extra_derives: std::collections::HashMap<String, Vec<String>>,
-    /// Types that generated bindings reference but that are not mirrored from
-    /// std source. Each is emitted verbatim into the shared preamble so bare
-    /// references resolve. This replaces what was previously hardcoded in the
-    /// prelude (e.g. the `Atomic<T>` polyfill). See [`KnownExternalType`].
+    /// Types recognized at their canonical location with a hand-written stub
+    /// body, because the real definition won't compile downstream. Each is
+    /// registered under its canonical path so references route there, and a
+    /// standalone binding file carrying the stub is emitted at that module.
+    /// This replaces what was previously hardcoded as bare names in the
+    /// prelude (e.g. the `Atomic<T>` polyfill now lives at
+    /// `core::sync::atomic::Atomic`). See [`KnownExternalType`].
     pub known_external_types: Vec<KnownExternalType>,
 }
 
@@ -130,14 +144,19 @@ impl BindingTarget {
         }
     }
 
-    /// Declare a type that bindings reference but that is not mirrored from
-    /// std source. Its definition is emitted verbatim into the shared preamble
-    /// so bare references resolve. For example, `Atomic<T>` (unstable in core,
-    /// holds `UnsafeCell<T::Storage>`) is polyfilled as a plain `UnsafeCell<T>`
-    /// wrapper here rather than mirroring the real generic machinery.
-    pub fn add_known_type(&mut self, name: &str, definition: &str) {
+    /// Recognize a type at its canonical location with a hand-written stub
+    /// body. The type is registered in the registry under `<lib>::<path>` so
+    /// references route to that exact path, and a standalone binding file is
+    /// emitted at that module carrying `definition` instead of the parsed
+    /// source. For example, `core::sync::atomic::Atomic` (unstable, holds
+    /// `UnsafeCell<T::Storage>` behind an `AtomicPrimitive` bound) is stubbed
+    /// as a transparent `UnsafeCell<T>` wrapper rather than mirroring the real
+    /// generic machinery.
+    pub fn add_known_type(&mut self, path: &str, definition: &str) {
+        let name = path.rsplit("::").next().unwrap_or(path).to_string();
         self.known_external_types.push(KnownExternalType {
-            name: name.to_string(),
+            name,
+            path: path.to_string(),
             definition: definition.to_string(),
         });
     }
