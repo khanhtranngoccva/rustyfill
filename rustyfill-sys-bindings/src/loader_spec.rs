@@ -31,6 +31,24 @@ pub struct PathReplacement {
     pub replacement: Option<String>,
 }
 
+/// A type that generated bindings reference but that is *not* mirrored from
+/// std source. Rather than hardcoding its shape in the prelude, the spec
+/// declares it here along with the exact definition to emit into the preamble.
+///
+/// This covers platform-specific or otherwise-unmirrored types whose shape the
+/// polyfill depends on (e.g. `Atomic<T>` as `UnsafeCell<T>`, `FileDesc(i32)`).
+/// The emitted definition must be self-contained — it may only refer to names
+/// already available through the prelude's core re-exports or the language
+/// prelude.
+#[derive(Clone, Debug)]
+pub struct KnownExternalType {
+    /// Human-readable name of the type (used for diagnostics / ordering).
+    pub name: String,
+    /// The full item definition to emit verbatim into the preamble module,
+    /// e.g. `"#[repr(transparent)] pub struct Atomic<T>(...)"`.
+    pub definition: String,
+}
+
 /// Top-level spec returned by [`crate::spec::get_loader_spec`].
 #[derive(Clone)]
 pub struct LoaderSpec {
@@ -75,6 +93,11 @@ pub struct BindingTarget {
     /// to the mirrored enum even though the std source only derives
     /// `PartialEq, Eq, Debug`.
     pub extra_derives: std::collections::HashMap<String, Vec<String>>,
+    /// Types that generated bindings reference but that are not mirrored from
+    /// std source. Each is emitted verbatim into the shared preamble so bare
+    /// references resolve. This replaces what was previously hardcoded in the
+    /// prelude (e.g. the `Atomic<T>` polyfill). See [`KnownExternalType`].
+    pub known_external_types: Vec<KnownExternalType>,
 }
 
 impl LoaderSpec {
@@ -103,7 +126,20 @@ impl BindingTarget {
             path_replacements: Vec::new(),
             ignored_structs: Vec::new(),
             extra_derives: std::collections::HashMap::new(),
+            known_external_types: Vec::new(),
         }
+    }
+
+    /// Declare a type that bindings reference but that is not mirrored from
+    /// std source. Its definition is emitted verbatim into the shared preamble
+    /// so bare references resolve. For example, `Atomic<T>` (unstable in core,
+    /// holds `UnsafeCell<T::Storage>`) is polyfilled as a plain `UnsafeCell<T>`
+    /// wrapper here rather than mirroring the real generic machinery.
+    pub fn add_known_type(&mut self, name: &str, definition: &str) {
+        self.known_external_types.push(KnownExternalType {
+            name: name.to_string(),
+            definition: definition.to_string(),
+        });
     }
 
     /// Register an additional derive trait to inject into a declared type's

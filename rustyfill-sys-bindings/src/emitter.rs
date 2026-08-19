@@ -19,8 +19,11 @@ use quote::ToTokens;
 use syn::{Generics, Ident, ItemStruct, Type, punctuated::Punctuated};
 
 use crate::formatter::format_source;
-use crate::parser::{ItemKind, ItemVisibility, ParsedItem};
-use crate::resolver::ModuleResolver;
+use crate::parser::{
+    CfgContext, ItemKind, ItemVisibility, ParsedItem, ParsedSource, cfg_select_reexport_targets,
+    parse_source_with_cfg,
+};
+use crate::resolver::{ModuleResolver, PathSegment, UseKind, Visibility};
 
 // ── Type registry and field-type publicity checking ────────────────────────
 
@@ -95,11 +98,27 @@ pub struct TypeRegistry {
     by_leaf: HashMap<String, Vec<String>>,
     /// Types explicitly declared in the spec, with their canonical paths.
     declared: HashSet<String>,
+    /// Alternate canonical paths that should be treated as declared even though
+    /// they were not named in the spec. Used when a declared type is reachable
+    /// only through a `cfg_select!` re-export shim: the spec names the logical
+    /// path (e.g. `std::sys::sync::mutex::Mutex`) but the definition physically
+    /// lives in a cfg-selected submodule (e.g. `...::mutex::futex::Mutex`). The
+    /// emitter must accept the defining module's path so the struct isn't
+    /// filtered out before it can be mirrored.
+    declared_aliases: HashSet<String>,
     /// Name of the manifest wrapper module that all mirrored bindings live
     /// under (e.g., `std`). Mirror references are emitted as
     /// `crate::{wrapper_mod}::<path-without-lib-prefix>`. Defaults to
     /// [`WRAPPER_MOD`].
     wrapper_mod: String,
+    /// Routes for preserved module qualifiers that resolve (via import /
+    /// re-export chains) to a mirrored module that is NOT a sibling of the
+    /// referring file. Keyed by `(referring_module_ctx, leading_qualifier)`;
+    /// value is the slash-separated defining module path. Consulted by
+    /// [`rewrite_path`] before falling back to module-relative resolution, so
+    /// e.g. `futures::SmallFutex` in `sys/sync/mutex/futures` routes to
+    /// `crate::{wrapper}::sys/pal/unix/futures::SmallFutex`.
+    qualifier_routes: HashMap<(String, String), String>,
 }
 
 impl Default for TypeRegistry {
@@ -108,7 +127,9 @@ impl Default for TypeRegistry {
             by_path: HashMap::new(),
             by_leaf: HashMap::new(),
             declared: HashSet::new(),
+            declared_aliases: HashSet::new(),
             wrapper_mod: WRAPPER_MOD.to_string(),
+            qualifier_routes: HashMap::new(),
         }
     }
 }
@@ -126,6 +147,28 @@ impl TypeRegistry {
     /// The manifest wrapper module name for mirror-path emission.
     pub fn wrapper_mod(&self) -> &str {
         &self.wrapper_mod
+    }
+
+    /// Record that the qualifier `lead`, when written in `module_ctx`, resolves
+    /// to the mirrored module `def_module` (slash-separated). Used by
+    /// [`rewrite_path`] to rewrite preserved qualifiers to absolute mirror
+    /// paths.
+    pub fn set_qualifier_route(&mut self, module_ctx: &str, lead: &str, def_module: &str) {
+        // Normalize the referring-module key to `::`-separated form so it
+        // matches the emitter's `module_path` (which is built from the file
+        // path with `::`). The build script passes slash-separated paths.
+        let key_mod = module_ctx.replace('/', "::");
+        self.qualifier_routes
+            .insert((key_mod, lead.to_string()), def_module.to_string());
+    }
+
+    /// Look up the mirrored defining module for a qualifier `lead` written in
+    /// `module_ctx` (`::`-separated, as the emitter computes it), if one was
+    /// recorded.
+    pub fn qualifier_route(&self, module_ctx: &str, lead: &str) -> Option<&str> {
+        self.qualifier_routes
+            .get(&(module_ctx.to_string(), lead.to_string()))
+            .map(String::as_str)
     }
 
     /// Register a type discovered in a source file.
@@ -189,6 +232,18 @@ impl TypeRegistry {
         self.declared.insert(canonical_path.to_string());
     }
 
+    /// Register an alternate canonical path that should be treated as declared
+    /// for emission purposes (see [`Self::declared_aliases`]). The path is also
+    /// registered in the symbol tables so field-reference resolution can find it.
+    pub fn insert_declared_alias(&mut self, canonical_path: &str, def_file: &str) {
+        self.register(canonical_path, ItemVisibility::Public, true, def_file);
+        if let Some(info) = self.by_path.get_mut(canonical_path) {
+            info.declared = true;
+            info.def_file = def_file.to_string();
+        }
+        self.declared_aliases.insert(canonical_path.to_string());
+    }
+
     /// Look up a type by canonical path.
     pub fn get(&self, canonical_path: &str) -> Option<&TypeInfo> {
         self.by_path.get(canonical_path)
@@ -219,6 +274,60 @@ impl TypeRegistry {
     pub fn resolve_field_ref_in(&self, leaf: &str, module_context: &str) -> FieldRefResolution {
         let guard = LocalNameGuard::new(None);
         self.resolve_with_guard(leaf, module_context, &guard)
+    }
+
+    /// Resolve a module-relative path (e.g. `futex::SmallFutex`) written in a
+    /// file whose module is `module_context`. The leading segment is treated as
+    /// a sibling submodule of the current module, so the full candidate path is
+    /// built as `<module_context>::<seg0>::…::<last>` and matched against known
+    /// canonical paths. Returns the resolution for the leaf when a match is
+    /// found; `None` otherwise (caller leaves the path untouched).
+    pub fn resolve_module_relative(
+        &self,
+        segments: &[String],
+        module_context: &str,
+    ) -> Option<FieldRefResolution> {
+        if segments.is_empty() || module_context.is_empty() {
+            return None;
+        }
+        let mut full = String::from(module_context);
+        for s in &segments[..segments.len() - 1] {
+            full.push_str("::");
+            full.push_str(s);
+        }
+        let leaf = segments.last().unwrap();
+        // Ensure the leaf isn't shadowed by a local name before matching.
+        let guard = LocalNameGuard::new(None);
+        if guard.contains(leaf) {
+            return None;
+        }
+        // Try exact match first, then fall back to suffix scoring among the
+        // leaf's candidates (handles library-prefix differences).
+        let candidates = self.candidates_for_leaf(leaf);
+        let chosen: &String = candidates.iter().find(|p| p.as_str() == full).or_else(|| {
+            let scored: Vec<(usize, &String)> = candidates
+                .iter()
+                .map(|p| (suffix_overlap(p, &full), p))
+                .collect();
+            let max = scored.iter().map(|(s, _)| *s).max()?;
+            if max == 0 {
+                return None;
+            }
+            scored
+                .iter()
+                .filter(|(s, _)| *s == max)
+                .map(|(_, p)| *p)
+                .find(|p| {
+                    self.declared.contains(*p)
+                        || self.by_path.get(*p).is_some_and(|t| t.is_exported)
+                })
+        })?;
+        Some(match self.by_path.get(chosen) {
+            Some(info) if info.is_declared() => FieldRefResolution::Mirrored(chosen.clone()),
+            Some(info) if info.is_usable() => FieldRefResolution::Original(chosen.clone()),
+            Some(_) => FieldRefResolution::UndeclaredPrivate(chosen.clone()),
+            None => FieldRefResolution::Unknown(leaf.to_string()),
+        })
     }
 
     /// Resolve a type reference with a [`LocalNameGuard`] that marks certain
@@ -297,7 +406,7 @@ impl TypeRegistry {
         }
         canonical.push_str("::");
         canonical.push_str(leaf);
-        self.declared.contains(&canonical)
+        self.declared.contains(&canonical) || self.declared_aliases.contains(&canonical)
     }
 }
 
@@ -383,6 +492,300 @@ fn check_alias_rhs(ty: &syn::Type, registry: &TypeRegistry, owner: &str, errors:
                  (declare_struct) or make sure it is publicly exported."
             ));
         }
+    }
+}
+
+/// Extract every path reference in a type as a `(leading_qualifier, leaf)`
+/// pair, where `leading_qualifier` is `Some(first_segment)` for a
+/// two-or-more-segment path (e.g. `futures::SmallFutex` → `(Some("futures"),
+/// "SmallFutex")`) and `None` for a bare name (e.g. `Atomic` →
+/// `(None, "Atomic")`). Paths longer than two segments are skipped (out of
+/// scope for the lazy-emission model). Generic arguments are walked so nested
+/// references are collected too. Used by the build script to find preserved
+/// qualifiers that may need their defining module mirrored.
+pub fn collect_qualified_refs(ty: &syn::Type) -> Vec<(Option<String>, String)> {
+    let mut out = Vec::new();
+    fn walk(ty: &syn::Type, out: &mut Vec<(Option<String>, String)>) {
+        match ty {
+            syn::Type::Path(tp) => {
+                let segs: Vec<String> = tp
+                    .path
+                    .segments
+                    .iter()
+                    .map(|s| s.ident.to_string())
+                    .collect();
+                if segs.len() == 1 {
+                    out.push((None, segs[0].clone()));
+                } else if segs.len() == 2 {
+                    out.push((Some(segs[0].clone()), segs[1].clone()));
+                }
+                // Walk generic arguments.
+                for seg in &tp.path.segments {
+                    if let syn::PathArguments::AngleBracketed(ab) = &seg.arguments {
+                        for arg in &ab.args {
+                            if let syn::GenericArgument::Type(inner) = arg {
+                                walk(inner, out);
+                            }
+                        }
+                    }
+                }
+            }
+            syn::Type::Reference(tr) => walk(&tr.elem, out),
+            syn::Type::Ptr(tp) => walk(&tp.elem, out),
+            syn::Type::Tuple(tt) => {
+                for e in &tt.elems {
+                    walk(e, out);
+                }
+            }
+            syn::Type::Slice(ts) => walk(&ts.elem, out),
+            syn::Type::Array(ta) => walk(&ta.elem, out),
+            syn::Type::Paren(tp) => walk(&tp.elem, out),
+            _ => {}
+        }
+    }
+    walk(ty, &mut out);
+    out
+}
+
+// ── Qualifier resolution (shared by build-script detection + emitter routing) ─
+//
+// A type reference written with a module qualifier (e.g. `futures::SmallFutex`
+// inside `sys/sync/mutex/futures.rs`) may point, through import bindings and
+// re-export chains, at a defining module that is NOT a sibling of the current
+// module. The registry's module-relative resolver assumes the leading segment
+// is a sibling, so it cannot see these. This helper follows the actual
+// import/re-export/cfg_select chain to locate the concrete defining file. It
+// performs NO substitution — it only resolves where a qualified name lives —
+// so both the build script (to decide which minimal modules to mirror) and the
+// emitter (to rewrite the qualifier to an absolute mirror path) share one
+// source of truth for the chain-following logic.
+
+/// Resolves module-qualified type references to their concrete defining
+/// module by following import bindings, glob re-exports, and cfg_select shims
+/// across std source files (read on demand from `lib_src`).
+pub struct QualifierResolver<'a> {
+    lib_src: &'a Path,
+    cfg: &'a CfgContext,
+    /// Parsed sources keyed by file path relative to `lib_src`. Seeded by the
+    /// caller; additional files are read from disk on demand and cached here.
+    parsed: HashMap<String, ParsedSource>,
+}
+
+impl<'a> QualifierResolver<'a> {
+    pub fn new(
+        lib_src: &'a Path,
+        cfg: &'a CfgContext,
+        seed: impl IntoIterator<Item = (String, ParsedSource)>,
+    ) -> Self {
+        Self {
+            lib_src,
+            cfg,
+            parsed: seed.into_iter().collect(),
+        }
+    }
+
+    /// Parse (and cache) a source file given its path relative to `lib_src`,
+    /// returning an owned copy so callers can keep using the resolver.
+    fn source(&mut self, rel_path: &str) -> Option<ParsedSource> {
+        if let Some(p) = self.parsed.get(rel_path) {
+            return Some(p.clone());
+        }
+        let abs = self.lib_src.join(rel_path);
+        let text = std::fs::read_to_string(&abs).ok()?;
+        let parsed = parse_source_with_cfg(&text, self.cfg);
+        self.parsed.insert(rel_path.to_string(), parsed.clone());
+        Some(parsed)
+    }
+
+    /// Try both `<mod>.rs` and `<mod>/mod.rs` for a slash-separated module path.
+    fn source_module(&mut self, mod_path: &str) -> Option<ParsedSource> {
+        for candidate in [format!("{mod_path}.rs"), format!("{mod_path}/mod.rs")] {
+            if let Some(src) = self.source(&candidate) {
+                return Some(src);
+            }
+        }
+        None
+    }
+
+    /// Resolve a module-qualified reference `lead::leaf` (or bare `leaf`) seen
+    /// from `module_ctx` to the slash-separated module path of the file that
+    /// defines `leaf`, if `leaf` is a type alias reachable there. Returns
+    /// `None` when the reference does not resolve to a type alias.
+    ///
+    /// `lead` is the single leading qualifier (the first path segment before
+    /// the leaf). Multi-segment qualifiers beyond two segments are out of scope
+    /// for the lazy-emission model and return `None`.
+    pub fn resolve_qualified_alias(
+        &mut self,
+        module_ctx: &str,
+        lead: Option<&str>,
+        leaf: &str,
+    ) -> Option<String> {
+        // Bare name: must be defined in the current module itself.
+        let lead = match lead {
+            Some(l) => l,
+            None => {
+                return self
+                    .source_module(module_ctx)
+                    .filter(|src| {
+                        src.items
+                            .iter()
+                            .any(|i| i.name == leaf && i.kind == ItemKind::TypeAlias)
+                    })
+                    .map(|_| module_ctx.to_string());
+            }
+        };
+        // Case A: `lead` is a direct child/sibling module of the current module.
+        let child_mod = format!("{module_ctx}/{lead}");
+        if let Some(src) = self.source_module(&child_mod)
+            && src
+                .items
+                .iter()
+                .any(|i| i.name == leaf && i.kind == ItemKind::TypeAlias)
+        {
+            return Some(child_mod);
+        }
+        // Case B: `lead` is an import binding in the current file. Follow the
+        // import target to a concrete module, then confirm `leaf` is an alias.
+        let cur = self.source_module(module_ctx)?;
+        for stmt in &cur.use_statements {
+            let (target_segs, alias_name) = match &stmt.kind {
+                UseKind::Single(pl, alias) => (pl.segments.clone(), alias.clone()),
+                _ => continue,
+            };
+            let bound_name = match &alias_name {
+                Some(a) => a.clone(),
+                None => {
+                    let last_named = target_segs.iter().rev().find_map(|s| match s {
+                        PathSegment::Named(n) => Some(n.clone()),
+                        _ => None,
+                    });
+                    match last_named.as_deref() {
+                        Some("self") => target_segs.iter().rev().find_map(|s| match s {
+                            PathSegment::Named(n) if n != "self" => Some(n.clone()),
+                            _ => None,
+                        })?,
+                        other => other?.to_string(),
+                    }
+                }
+            };
+            if bound_name != lead {
+                continue;
+            }
+            if let Some(target_mod) = self.follow_import_target(module_ctx, &target_segs)
+                && let Some(src) = self.source_module(&target_mod)
+                && src
+                    .items
+                    .iter()
+                    .any(|i| i.name == leaf && i.kind == ItemKind::TypeAlias)
+            {
+                return Some(target_mod);
+            }
+        }
+        None
+    }
+
+    /// Given an import path (as segments) written in `from_module`, resolve it
+    /// to a concrete slash-separated module path, walking left-to-right and
+    /// following re-export indirection (glob `pub use sub::*` and cfg_select
+    /// shims) whenever a segment is not a direct child module.
+    fn follow_import_target(&mut self, from_module: &str, segs: &[PathSegment]) -> Option<String> {
+        let mut base: Vec<String> = from_module
+            .split('/')
+            .filter(|s| !s.is_empty())
+            .map(String::from)
+            .collect();
+        for seg in segs {
+            match seg {
+                PathSegment::Crate => base.clear(),
+                PathSegment::Super => {
+                    base.pop();
+                }
+                PathSegment::Self_ => {}
+                PathSegment::Named(n) => base.push(n.clone()),
+            }
+        }
+        let mut resolved: Vec<String> = Vec::new();
+        for name in &base {
+            let candidate = if resolved.is_empty() {
+                name.clone()
+            } else {
+                format!("{}/{}", resolved.join("/"), name)
+            };
+            if self.source_module(&candidate).is_some() {
+                resolved.push(name.clone());
+                continue;
+            }
+            if resolved.is_empty() {
+                return None;
+            }
+            let cur_mod = resolved.join("/");
+            let trail = self.descend_through_reexport(&cur_mod, name)?;
+            for part in trail.split('/') {
+                resolved.push(part.to_string());
+            }
+        }
+        Some(resolved.join("/"))
+    }
+
+    /// Breadth-first descent through re-export layers of `mod_path` until a
+    /// layer whose direct children include `segment`. Returns the slash-joined
+    /// trail of intermediate names followed by `segment`, or `None`.
+    fn descend_through_reexport(&mut self, mod_path: &str, segment: &str) -> Option<String> {
+        let mut queue: Vec<String> = vec![mod_path.to_string()];
+        let mut visited: HashSet<String> = HashSet::new();
+        while let Some(cur) = queue.pop() {
+            if !visited.insert(cur.clone()) {
+                continue;
+            }
+            let direct = format!("{cur}/{segment}");
+            if self.source_module(&direct).is_some() {
+                if cur == mod_path {
+                    return Some(segment.to_string());
+                }
+                let prefix_len = mod_path.len() + 1;
+                let trail = &cur[prefix_len..];
+                return Some(format!("{trail}/{segment}"));
+            }
+            let file = if self.source(&format!("{cur}.rs")).is_some() {
+                format!("{cur}.rs")
+            } else if self.source(&format!("{cur}/mod.rs")).is_some() {
+                format!("{cur}/mod.rs")
+            } else {
+                continue;
+            };
+            let src = match self.source(&file) {
+                Some(s) => s.clone(),
+                None => continue,
+            };
+            for stmt in &src.use_statements {
+                if let UseKind::Glob(pl) = &stmt.kind
+                    && matches!(stmt.visibility, Visibility::Public)
+                {
+                    let rn = pl.segments.iter().find_map(|s| match s {
+                        PathSegment::Named(n) => Some(n.clone()),
+                        _ => None,
+                    });
+                    if let Some(rn) = rn {
+                        let next = format!("{cur}/{rn}");
+                        if self.source_module(&next).is_some() {
+                            queue.push(next);
+                        }
+                    }
+                }
+            }
+            let abs = self.lib_src.join(&file);
+            if let Ok(text) = std::fs::read_to_string(&abs) {
+                let targets = cfg_select_reexport_targets(&text, self.cfg);
+                for tgt in targets {
+                    let next = format!("{cur}/{tgt}");
+                    if self.source_module(&next).is_some() {
+                        queue.push(next);
+                    }
+                }
+            }
+        }
+        None
     }
 }
 
@@ -896,6 +1299,35 @@ fn rewrite_path(
         };
     }
     let head = segs[0].ident.to_string();
+    // Preserved-qualifier routing: a two-segment path whose leading qualifier
+    // was recorded (by the build script) as resolving to a mirrored module that
+    // is not a sibling of the current one is rewritten to an absolute mirror
+    // path. This handles e.g. `futures::SmallFutex` in `sys/sync/mutex/futures`
+    // → `crate::{wrapper}::sys::pal::unix::futures::SmallFutex`. Checked before
+    // module-relative resolution, which assumes the qualifier is a sibling.
+    if segs.len() == 2
+        && leading_colon.is_none()
+        && let Some(def_module) = registry.qualifier_route(module_ctx, &head)
+    {
+        let leaf = segs[1].ident.to_string();
+        let def_colons = def_module.replace('/', "::");
+        let abs = format!("crate::{}::{def_colons}::{leaf}", registry.wrapper_mod());
+        if let Ok(p) = syn::parse_str::<syn::Path>(&abs) {
+            return p;
+        }
+        // Parsing failed unexpectedly; fall through to default resolution.
+    }
+    // Multi-segment, non-leading-colon paths are treated as module-relative
+    // references (e.g. `futex::SmallFutex` inside a file whose module is
+    // `sys::sync::mutex`). Resolve the full path against the registry so the
+    // reference can be routed to its mirror or original home. Single-segment
+    // paths fall through to the leaf-based resolution below.
+    if segs.len() > 1 && leading_colon.is_none() {
+        let all_segs: Vec<String> = segs.iter().map(|s| s.ident.to_string()).collect();
+        if let Some(res) = registry.resolve_module_relative(&all_segs, module_ctx) {
+            return build_abs_path(res, registry, &segs, module_ctx, guard);
+        }
+    }
     // Resolve the leading segment against the registry. `Self` is never
     // rewritten (it refers to the enclosing type); everything else goes
     // through the registry lookup with module context and the local-name guard.
@@ -948,15 +1380,88 @@ fn rewrite_path(
         }
     };
 
-    // Build the substituted path from its `::`-separated parts plus any
-    // remaining original segments (associated items). Each part becomes a
-    // segment; the last one carries the generic arguments of the original
-    // head (the only place type arguments can legally appear here).
+    build_abs_path_from_str(abs_path, &segs, registry, module_ctx, guard)
+}
+
+/// Compute the absolute replacement path string for a resolved reference.
+fn abs_path_for(res: &FieldRefResolution, registry: &TypeRegistry) -> Option<String> {
+    match res {
+        FieldRefResolution::Mirrored(canonical) => {
+            let rest = canonical
+                .split_once("::")
+                .map(|(_, r)| r)
+                .unwrap_or(canonical.as_str());
+            Some(format!("crate::{}::{rest}", registry.wrapper_mod()))
+        }
+        FieldRefResolution::Original(canonical) => {
+            let lib = canonical.split("::").next().unwrap_or("");
+            let rest = canonical
+                .strip_prefix(lib)
+                .unwrap_or("")
+                .trim_start_matches("::");
+            Some(format!("::__rustyfill_builtin_{lib}::{rest}"))
+        }
+        _ => None,
+    }
+}
+
+/// Assemble the final [`syn::Path`] for a fully-resolved module-relative
+/// reference. The entire original path was consumed by the resolution, so no
+/// associated-item tail is appended; the last emitted segment inherits the
+/// generic arguments of the original *last* segment (the one that actually
+/// carried them), recursively rewritten so nested references route correctly.
+fn build_abs_path(
+    res: FieldRefResolution,
+    registry: &TypeRegistry,
+    segs: &[syn::PathSegment],
+    module_ctx: &str,
+    guard: &LocalNameGuard<'_>,
+) -> syn::Path {
+    let Some(abs_path) = abs_path_for(&res, registry) else {
+        // Should not happen for Mirrored/Original; defensive fallback.
+        return syn::Path {
+            leading_colon: None,
+            segments: segs.iter().cloned().collect(),
+        };
+    };
+    assemble_abs_path(abs_path, segs, 0, registry, module_ctx, guard)
+}
+
+fn build_abs_path_from_str(
+    abs_path: String,
+    segs: &[syn::PathSegment],
+    registry: &TypeRegistry,
+    module_ctx: &str,
+    guard: &LocalNameGuard<'_>,
+) -> syn::Path {
+    // Single-segment head: any extra original segments are associated items.
+    assemble_abs_path(abs_path, segs, segs.len().saturating_sub(1), registry, module_ctx, guard)
+}
+
+/// Build the substituted path from an absolute replacement string plus up to
+/// `assoc_tail` trailing associated-item segments from `segs`. The last
+/// emitted segment carries the generic arguments of the original head, with
+/// every nested type argument recursively rewritten through the registry so
+/// that references buried inside `<...>` (e.g. `SetValZST` in
+/// `map::OccupiedEntry<'a, T, SetValZST, A>`) are routed to their mirrors just
+/// like top-level references.
+fn assemble_abs_path(
+    abs_path: String,
+    segs: &[syn::PathSegment],
+    assoc_tail: usize,
+    registry: &TypeRegistry,
+    module_ctx: &str,
+    guard: &LocalNameGuard<'_>,
+) -> syn::Path {
     let all_parts: Vec<String> = abs_path
         .split("::")
         .filter(|p| !p.is_empty())
         .map(|p| p.to_string())
-        .chain(segs[1..].iter().map(|s| s.ident.to_string()))
+        .chain(
+            segs.iter()
+                .skip(segs.len().saturating_sub(assoc_tail))
+                .map(|s| s.ident.to_string()),
+        )
         .collect();
     let last_idx = all_parts.len().saturating_sub(1);
     let mut result_segs: Punctuated<syn::PathSegment, syn::Token![::]> = Punctuated::new();
@@ -964,7 +1469,7 @@ fn rewrite_path(
         let ident = Ident::new(part, Span::call_site());
         let mut seg = syn::PathSegment::from(ident);
         if idx == last_idx {
-            seg.arguments = segs[0].arguments.clone();
+            seg.arguments = rewrite_generic_args(&segs[0].arguments, registry, module_ctx, guard);
         }
         result_segs.push_value(seg);
         result_segs.push_punct(syn::Token![::](Span::call_site()));
@@ -975,6 +1480,69 @@ fn rewrite_path(
     syn::Path {
         leading_colon: None,
         segments: result_segs,
+    }
+}
+
+/// Recursively rewrite every type embedded in a set of generic arguments
+/// (angle-bracketed or parenthesized) through the registry, so nested type
+/// references are routed to their mirrors/originals exactly as top-level
+/// references are. Non-type arguments (lifetimes, const exprs, bindings) pass
+/// through untouched.
+fn rewrite_generic_args(
+    args: &syn::PathArguments,
+    registry: &TypeRegistry,
+    module_ctx: &str,
+    guard: &LocalNameGuard<'_>,
+) -> syn::PathArguments {
+    match args {
+        syn::PathArguments::AngleBracketed(ab) => {
+            let mut new_args: Punctuated<syn::GenericArgument, syn::Token![,]> = Punctuated::new();
+            for arg in &ab.args {
+                let rewritten = match arg {
+                    syn::GenericArgument::Type(ty) => {
+                        syn::GenericArgument::Type(rewrite_type(
+                            ty.clone(),
+                            registry,
+                            module_ctx,
+                            guard,
+                        ))
+                    }
+                    other => other.clone(),
+                };
+                new_args.push_value(rewritten);
+                new_args.push_punct(syn::Token![,](Span::call_site()));
+            }
+            if !new_args.empty_or_trailing() {
+                new_args.pop_punct();
+            }
+            syn::PathArguments::AngleBracketed(syn::AngleBracketedGenericArguments {
+                args: new_args,
+                ..ab.clone()
+            })
+        }
+        syn::PathArguments::Parenthesized(p) => {
+            let mut new_inputs: Punctuated<syn::Type, syn::Token![,]> = Punctuated::new();
+            for ty in &p.inputs {
+                new_inputs.push_value(rewrite_type(ty.clone(), registry, module_ctx, guard));
+                new_inputs.push_punct(syn::Token![,](Span::call_site()));
+            }
+            if !new_inputs.empty_or_trailing() {
+                new_inputs.pop_punct();
+            }
+            let output = match &p.output {
+                syn::ReturnType::Type(arrow, ty) => syn::ReturnType::Type(
+                    arrow.clone(),
+                    Box::new(rewrite_type((**ty).clone(), registry, module_ctx, guard)),
+                ),
+                other => other.clone(),
+            };
+            syn::PathArguments::Parenthesized(syn::ParenthesizedGenericArguments {
+                inputs: new_inputs,
+                output,
+                ..p.clone()
+            })
+        }
+        other => other.clone(),
     }
 }
 
@@ -1026,108 +1594,109 @@ const WRAPPER_MOD: &str = "std";
 const INTERNAL_TRAIT_STRIPS: &[&str] =
     &["PointeeSized", "StructuralPartialEq", "MetaSized", "Unsize"];
 
-/// Content of the preamble module. Lives in its own namespace so that
-/// `pub use core::marker::*` doesn't clash with a local `mod marker`.
-pub fn preamble_content() -> String {
-    // We deliberately avoid re-exporting traits like Clone, Debug, PartialEq,
-    // Eq, etc. because those are already in the Rust prelude and will be
-    // available without import. We only re-export things that are NOT in the
-    // language prelude but commonly referenced by std internals.
-    //
-    // Known core types are imported through __rustyfill_builtin_core. Types from
-    // alloc (Box, Vec) are re-exported from the generated bindings via relative
-    // paths so that all references converge on the single mirrored definitions.
-    r#"// Auto-generated prelude by rustyfill-sys.
- // Provides well-known types as bare names for generated bindings.
- // This module is isolated from local module namespaces (e.g. btree::marker).
+/// Static portion of the preamble module: header comment plus the core
+/// re-exports and module shims. These are invariant across targets — they make
+/// ambient core names (`Layout`, `PhantomData`, …) and common module-qualified
+/// references resolve to the original builtin types through the per-file glob
+/// import. The spec-declared [`KnownExternalType`]s (e.g. the `Atomic<T>`
+/// polyfill) are appended separately by [`preamble_content_with_known_types`].
+const PREAMBLE_CORE_CONTENT: &str = r#"// Auto-generated prelude by rustyfill-sys.
+  // Provides well-known types as bare names for generated bindings.
+  // This module is isolated from local module namespaces (e.g. btree::marker).
 
- #[allow(unused_imports)]
- pub use ::__rustyfill_builtin_core::alloc::Layout;
- #[allow(unused_imports)]
- pub use ::__rustyfill_builtin_core::borrow::Borrow;
- #[allow(unused_imports)]
- pub use ::__rustyfill_builtin_core::cell::UnsafeCell;
- #[allow(unused_imports)]
- pub use ::__rustyfill_builtin_core::cmp::Ordering;
- #[allow(unused_imports)]
- pub use ::__rustyfill_builtin_core::fmt::Debug;
- #[allow(unused_imports)]
- pub use ::__rustyfill_builtin_core::hash::{Hash, Hasher};
- #[allow(unused_imports)]
- pub use ::__rustyfill_builtin_core::iter::Peekable;
- #[allow(unused_imports)]
- pub use ::__rustyfill_builtin_core::marker::{PhantomData, PhantomPinned};
- #[allow(unused_imports)]
- pub use ::__rustyfill_builtin_core::mem::{ManuallyDrop, MaybeUninit};
- #[allow(unused_imports)]
- pub use ::__rustyfill_builtin_core::num::NonZero;
- #[allow(unused_imports)]
- pub use ::__rustyfill_builtin_core::ops::{Bound, RangeBounds};
- #[allow(unused_imports)]
- pub use ::__rustyfill_builtin_core::pin::Pin;
- #[allow(unused_imports)]
- pub use ::__rustyfill_builtin_core::ptr::NonNull;
- #[allow(unused_imports)]
- pub use ::__rustyfill_builtin_core::slice::SliceIndex;
- #[allow(unused_imports)]
- pub use crate::std::boxed::Box;
- #[allow(unused_imports)]
- pub use ::__rustyfill_builtin_alloc::vec::Vec;
- #[allow(unused_imports)]
- pub mod boxed { pub use crate::std::boxed::Box; }
- #[allow(unused_imports)]
- pub mod alloc { pub use ::__rustyfill_builtin_core::alloc::Layout; }
-  // Module shims so that bare module-qualified references (e.g., `marker::PhantomData`,
-  // `mem::ManuallyDrop`, `vec::IntoIter`) resolve to the original builtin types
-  // through this prelude. Defined once here — do not duplicate above.
   #[allow(unused_imports)]
-  pub mod marker { pub use ::__rustyfill_builtin_core::marker::*; }
+  pub use ::__rustyfill_builtin_core::alloc::Layout;
   #[allow(unused_imports)]
-  pub mod mem { pub use ::__rustyfill_builtin_core::mem::*; }
+  pub use ::__rustyfill_builtin_core::borrow::Borrow;
   #[allow(unused_imports)]
-  pub mod ptr { pub use ::__rustyfill_builtin_core::ptr::*; }
+  pub use ::__rustyfill_builtin_core::cell::UnsafeCell;
   #[allow(unused_imports)]
-  pub mod cell { pub use ::__rustyfill_builtin_core::cell::*; }
+  pub use ::__rustyfill_builtin_core::cmp::Ordering;
   #[allow(unused_imports)]
-  pub mod num { pub use ::__rustyfill_builtin_core::num::*; }
+  pub use ::__rustyfill_builtin_core::fmt::Debug;
   #[allow(unused_imports)]
-  pub mod ops { pub use ::__rustyfill_builtin_core::ops::*; }
+  pub use ::__rustyfill_builtin_core::hash::{Hash, Hasher};
   #[allow(unused_imports)]
-  pub mod pin { pub use ::__rustyfill_builtin_core::pin::*; }
+  pub use ::__rustyfill_builtin_core::iter::Peekable;
   #[allow(unused_imports)]
-  pub mod borrow { pub use ::__rustyfill_builtin_core::borrow::*; }
+  pub use ::__rustyfill_builtin_core::marker::{PhantomData, PhantomPinned};
   #[allow(unused_imports)]
-  pub mod hash { pub use ::__rustyfill_builtin_core::hash::*; }
+  pub use ::__rustyfill_builtin_core::mem::{ManuallyDrop, MaybeUninit};
   #[allow(unused_imports)]
-  pub mod iter { pub use ::__rustyfill_builtin_core::iter::*; }
+  pub use ::__rustyfill_builtin_core::num::NonZero;
   #[allow(unused_imports)]
-  pub mod cmp { pub use ::__rustyfill_builtin_core::cmp::*; }
+  pub use ::__rustyfill_builtin_core::ops::{Bound, RangeBounds};
   #[allow(unused_imports)]
-  pub mod fmt { pub use ::__rustyfill_builtin_core::fmt::*; }
+  pub use ::__rustyfill_builtin_core::pin::Pin;
   #[allow(unused_imports)]
-  pub mod slice { pub use ::__rustyfill_builtin_core::slice::*; }
+  pub use ::__rustyfill_builtin_core::ptr::NonNull;
   #[allow(unused_imports)]
-  pub mod sync { pub use ::__rustyfill_builtin_core::sync::*; }
+  pub use ::__rustyfill_builtin_core::slice::SliceIndex;
   #[allow(unused_imports)]
-  pub mod vec { pub use ::__rustyfill_builtin_alloc::vec::*; }
-  // Minimal polyfills for platform-specific types referenced by PAL modules
-  // but not mirrored in our bindings. These come from external sources:
-  // - Atomic<T>: from core::sync::atomic, a generic type with complex impls
-  //   (only the type shape matters for bindings, not atomic operations)
-  // - FileDesc: wraps std::os::fd::OwnedFd, platform-specific
-  // - lwpid_t: from libc, used by netbsd thread parking
-  // - Nanoseconds: from core::num::niche_types, internal type alias
-  // - SetValZST: zero-sized marker from alloc::collections::btree::set_val,
-  //   used by BTreeSet's internal representation as BTreeMap<T, SetValZST>
-  # [repr(transparent)]
-  pub struct Atomic < T > (::__rustyfill_builtin_core::cell::UnsafeCell < T >);
-  # [derive(Debug)] # [allow(dead_code)] pub struct FileDesc(pub i32);
-  # [allow(non_camel_case_types)] pub type lwpid_t = i32;
-  pub type Nanoseconds = u32;
-  # [derive(Debug, Eq, PartialEq, Ord, PartialOrd, Hash, Clone, Default)]
-  pub struct SetValZST;
-"#
-    .to_string()
+  pub use crate::std::boxed::Box;
+  #[allow(unused_imports)]
+  pub use ::__rustyfill_builtin_alloc::vec::Vec;
+  #[allow(unused_imports)]
+  pub mod boxed { pub use crate::std::boxed::Box; }
+  #[allow(unused_imports)]
+  pub mod alloc { pub use ::__rustyfill_builtin_core::alloc::Layout; }
+   // Module shims so that bare module-qualified references (e.g., `marker::PhantomData`,
+   // `mem::ManuallyDrop`, `vec::IntoIter`) resolve to the original builtin types
+   // through this prelude. Defined once here — do not duplicate above.
+   #[allow(unused_imports)]
+   pub mod marker { pub use ::__rustyfill_builtin_core::marker::*; }
+   #[allow(unused_imports)]
+   pub mod mem { pub use ::__rustyfill_builtin_core::mem::*; }
+   #[allow(unused_imports)]
+   pub mod ptr { pub use ::__rustyfill_builtin_core::ptr::*; }
+   #[allow(unused_imports)]
+   pub mod cell { pub use ::__rustyfill_builtin_core::cell::*; }
+   #[allow(unused_imports)]
+   pub mod num { pub use ::__rustyfill_builtin_core::num::*; }
+   #[allow(unused_imports)]
+   pub mod ops { pub use ::__rustyfill_builtin_core::ops::*; }
+   #[allow(unused_imports)]
+   pub mod pin { pub use ::__rustyfill_builtin_core::pin::*; }
+   #[allow(unused_imports)]
+   pub mod borrow { pub use ::__rustyfill_builtin_core::borrow::*; }
+   #[allow(unused_imports)]
+   pub mod hash { pub use ::__rustyfill_builtin_core::hash::*; }
+   #[allow(unused_imports)]
+   pub mod iter { pub use ::__rustyfill_builtin_core::iter::*; }
+   #[allow(unused_imports)]
+   pub mod cmp { pub use ::__rustyfill_builtin_core::cmp::*; }
+   #[allow(unused_imports)]
+   pub mod fmt { pub use ::__rustyfill_builtin_core::fmt::*; }
+   #[allow(unused_imports)]
+   pub mod slice { pub use ::__rustyfill_builtin_core::slice::*; }
+   #[allow(unused_imports)]
+   pub mod sync { pub use ::__rustyfill_builtin_core::sync::*; }
+   #[allow(unused_imports)]
+   pub mod vec { pub use ::__rustyfill_builtin_alloc::vec::*; }
+"#;
+
+/// Build the full preamble module content: the static core section followed by
+/// the spec-declared known external types. Each known type's definition is
+/// emitted verbatim, so the set of polyfilled shapes is driven entirely by the
+/// loader spec rather than hardcoded here.
+pub fn preamble_content_with_known_types(known_types: &[crate::loader_spec::KnownExternalType]) -> String {
+    let mut out = String::from(PREAMBLE_CORE_CONTENT);
+    if !known_types.is_empty() {
+        out.push_str("  // Spec-declared known external types: referenced by generated\n");
+        out.push_str("  // bindings but not mirrored from std source. Definitions are emitted\n");
+        out.push_str("  // verbatim from the loader spec.\n");
+        for kt in known_types {
+            out.push_str(&format!("  {}\n", kt.definition));
+        }
+    }
+    out
+}
+
+/// Backwards-compatible preamble content with no spec-declared known types.
+/// Retained for callers/tests that don't carry a spec; production emission uses
+/// [`preamble_content_with_known_types`].
+pub fn preamble_content() -> String {
+    preamble_content_with_known_types(&[])
 }
 
 // ── Attribute filtering (AST + token-stream level) ──────────────────────────
@@ -1503,11 +2072,7 @@ fn emit_item(out: &mut String, item: &ParsedItem, ctx: &EmitContext<'_>) {
             &mut ts,
         );
         let widened = widen_visibility(ts);
-        let rewritten = rewrite_crate_paths(
-            widened,
-            ctx.preamble_use_path,
-            ctx.path_replacements,
-        );
+        let rewritten = rewrite_crate_paths(widened, ctx.preamble_use_path, ctx.path_replacements);
         write!(out, "{}", rewritten).ok();
         out.push('\n');
         return;
@@ -1542,11 +2107,7 @@ fn emit_item(out: &mut String, item: &ParsedItem, ctx: &EmitContext<'_>) {
         ctx.extra_derives,
     );
     let widened = widen_visibility(rerouted);
-    let rewritten = rewrite_crate_paths(
-        widened,
-        ctx.preamble_use_path,
-        ctx.path_replacements,
-    );
+    let rewritten = rewrite_crate_paths(widened, ctx.preamble_use_path, ctx.path_replacements);
     write!(out, "{}", rewritten).ok();
     out.push('\n');
 }
@@ -2502,11 +3063,17 @@ fn append_manual_impls(_content: &mut String, _relative_file_path: &str) {
 }
 
 /// Emit the preamble module file for a given target library.
-/// Writes to `$OUT_DIR/__rustyfill_prelude_<lib>.rs`.
-pub fn emit_preamble_module(out_dir: &Path, _lib_name: &str) -> String {
+/// Writes to `$OUT_DIR/__rustyfill_prelude_<lib>.rs`. The spec-declared known
+/// external types (e.g. the `Atomic<T>` polyfill) are emitted into the shared
+/// preamble so bare references from any mirrored file resolve.
+pub fn emit_preamble_module(
+    out_dir: &Path,
+    _lib_name: &str,
+    known_types: &[crate::loader_spec::KnownExternalType],
+) -> String {
     let filename = format!("{}_{}.rs", PREAMBLE_MOD, _lib_name);
     let path = out_dir.join(&filename);
-    let content = format_source(&preamble_content());
+    let content = format_source(&preamble_content_with_known_types(known_types));
     std::fs::write(&path, &content)
         .unwrap_or_else(|e| panic!("Failed to write preamble {}: {}", path.display(), e));
     filename
@@ -2838,3 +3405,4 @@ fn sanitize(name: &str) -> String {
         s
     }
 }
+

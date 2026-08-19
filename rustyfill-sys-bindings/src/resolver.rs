@@ -184,6 +184,15 @@ impl ModuleResolver {
         self.emittable_files.contains(file_path)
     }
 
+    /// All registered source files with their parsed content, keyed by relative
+    /// file path. Includes both emittable canonical files and import-discovered
+    /// support files (the latter are registered so their types can be resolved
+    /// but are not themselves emitted). Consumers building a type registry use
+    /// this so that references into support files resolve correctly.
+    pub fn registered_sources(&self) -> &HashMap<String, crate::parser::ParsedSource> {
+        &self.sources
+    }
+
     /// Get all inline module names from registered sources.
     pub fn get_inline_module_names(&self) -> Vec<String> {
         let mut names = Vec::new();
@@ -794,6 +803,64 @@ impl ModuleResolver {
         }
     }
 
+    /// Follow a one-level re-export chain. When a container module does not
+    /// *define* `item_name` but *imports* it under that same name (via a plain
+    /// `use path::to::Item;`), return the canonical module path of the module
+    /// that actually defines it. This lets callers emit an import pointing at
+    /// the defining module rather than dropping the reference.
+    ///
+    /// Example: `collections/btree/set` does not define `SetValZST`; it carries
+    /// `use super::set_val::SetValZST;`. Following that yields the module path
+    /// `collections/btree/set_val`, so a dependent can emit
+    /// `use ...::set_val::SetValZST;` instead of leaving the bare name dangling.
+    /// Returns `None` if the item isn't defined locally nor re-exported by a
+    /// single resolvable use statement.
+    fn follow_reexport_to_defining_module(
+        &self,
+        container_file: &str,
+        item_name: &str,
+    ) -> Option<String> {
+        // If the container defines the item itself, nothing to follow.
+        if self.item_present_raw(container_file, item_name) {
+            return None;
+        }
+        let src = self.sources.get(container_file)?;
+        let container_mod = Self::file_to_module_path_str(container_file);
+        for stmt in &src.use_statements {
+            if let UseKind::Single(path, alias) = &stmt.kind {
+                // The imported binding must be exactly `item_name` (either the
+                // last named segment or an explicit `as` alias).
+                let bound_name = match alias.as_deref() {
+                    Some(a) => a.to_string(),
+                    None => path
+                        .segments
+                        .iter()
+                        .rev()
+                        .find_map(|s| match s {
+                            PathSegment::Named(n) => Some(n.clone()),
+                            _ => None,
+                        })?,
+                };
+                if bound_name != item_name {
+                    continue;
+                }
+                // Resolve the use target relative to the container module. The
+                // resolved string ends in the item name (e.g.,
+                // `collections/btree/set_val/SetValZST`), so strip the final
+                // segment to get the defining *module*, then look that up.
+                let resolved = self.resolve_path_segments(&path.segments, &container_mod);
+                let parts: Vec<&str> = resolved.split('/').collect();
+                if parts.len() > 1 {
+                    let def_mod = parts[..parts.len() - 1].join("/");
+                    if let Some(def_file) = self.find_module(&def_mod) {
+                        return Some(Self::file_to_module_path_str(&def_file));
+                    }
+                }
+            }
+        }
+        None
+    }
+
     /// Convert a file path to a module path string (strip .rs, strip trailing /mod).
     fn file_to_module_path_str(file: &str) -> String {
         let stem = file.strip_suffix(".rs").unwrap_or(file);
@@ -862,7 +929,7 @@ impl ModuleResolver {
                     }
                     // target_path might be a file path or a module path depending on which
                     // code path created this resolution. Normalize to module path.
-                    let target_mod = Self::file_to_module_path_str(target_path);
+                    let mut target_mod = Self::file_to_module_path_str(target_path);
                     // Skip if the target module has no items at all (wasn't emitted).
                     // We don't check for the specific item name here, because items may
                     // be re-exported via use statements rather than defined directly.
@@ -885,7 +952,21 @@ impl ModuleResolver {
                         // declaration would silently drop these imports and leave the
                         // generated code referencing unimported names.
                         if !self.item_present_raw(tf, item_name) {
-                            continue;
+                            // The container doesn't define the item. It may instead
+                            // *re-export* it via its own `use` (e.g., set.rs carries
+                            // `use super::set_val::SetValZST;`). Follow that single hop
+                            // so the emitted import points at the defining module and
+                            // the bare name resolves in the dependent file.
+                            match self.follow_reexport_to_defining_module(tf, item_name) {
+                                Some(def_mod) => {
+                                    let def_file = self.find_module(&def_mod);
+                                    if def_file.is_none() || !self.module_has_items(def_file.as_deref().unwrap()) {
+                                        continue;
+                                    }
+                                    target_mod = def_mod;
+                                }
+                                None => continue,
+                            }
                         }
                     } else {
                         continue;
@@ -974,5 +1055,48 @@ impl ModuleResolver {
 impl Default for ModuleResolver {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::parser::parse_source;
+
+    fn reg(r: &mut ModuleResolver, path: &str, src: &str) {
+        r.register_source(path, parse_source(src));
+        r.mark_emittable(path);
+    }
+
+    /// Regression test: a dependent file importing an item that its container
+    /// module only *re-exports* (via its own `use`) must still get an import
+    /// pointing at the defining module. Mirrors `collections/btree/set/entry.rs`
+    /// importing `SetValZST`, which `set.rs` re-exports from `set_val`.
+    #[test]
+    fn reexported_item_follows_to_defining_module() {
+        let mut r = ModuleResolver::new();
+        // set_val DEFINES SetValZST.
+        reg(&mut r, "collections/btree/set_val.rs", "pub(super) struct SetValZST;\n");
+        // set RE-EXPORTS it and defines nothing else relevant.
+        reg(
+            &mut r,
+            "collections/btree/set.rs",
+            "use super::set_val::SetValZST;\npub struct BTreeSet<T, A = ()> {}\n",
+        );
+        // entry imports from super (set).
+        reg(
+            &mut r,
+            "collections/btree/set/entry.rs",
+            "use super::{SetValZST, map};\npub struct OccupiedEntry {}\n",
+        );
+        // sibling map module so `map` resolves.
+        reg(&mut r, "collections/btree/map.rs", "pub struct Map {}\n");
+
+        let lines = r.emit_use_statements_for_file("collections/btree/set/entry.rs", &[]);
+        let joined = lines.join("\n");
+        assert!(
+            joined.contains("set_val::SetValZST"),
+            "expected re-export follow to emit a set_val::SetValZST import, got:\n{joined}"
+        );
     }
 }

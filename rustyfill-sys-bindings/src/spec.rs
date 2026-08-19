@@ -42,6 +42,35 @@ fn std_target() -> BindingTarget {
     target.declare_struct("sys::pal::unix::sync::mutex::Mutex");
     target.declare_struct("sys::pal::unix::sync::condvar::Condvar");
 
+    // The canonical, cfg-selected sys mutex (`std::sys::sync::mutex::Mutex`).
+    // On Linux this is the futex-backed implementation; on other unix targets
+    // it is the pthread-backed one. The fallible `Mutex` polyfill reserves its
+    // backing storage ahead of time via this type, so we mirror it and its
+    // lazy-allocation helper `OnceBox`.
+    target.declare_struct("sys::sync::mutex::Mutex");
+    // The futex Mutex (the active backend on Linux) stores its state through two
+    // file-local private type aliases. Declaring them mirrors the aliases and
+    // routes their RHS (`futex::SmallFutex` / `futex::SmallPrimitive`, both
+    // public) through the registry, satisfying the field-publicity check — the
+    // same treatment as btree's private `BoxedNode` alias.
+    target.declare_struct("sys::sync::mutex::futex::Futex");
+    target.declare_struct("sys::sync::mutex::futex::State");
+    target.declare_struct("sys::sync::once_box::OnceBox");
+
+    // ── Known external types (emitted into the shared preamble) ──────────────
+    // The futex Mutex and OnceBox reference a bare `Atomic<T>` (via
+    // `use crate::sync::atomic::{... Atomic ...}`). The real type is
+    // `#[unstable(feature = "generic_atomic")]` and holds `UnsafeCell<T::Storage>`
+    // behind an `AtomicPrimitive` bound, which won't compile in our no_std
+    // downstream tree. So we polyfill just the *shape* — a transparent
+    // `UnsafeCell<T>` wrapper — as a spec-declared known type instead of
+    // mirroring the generic machinery. Only the type shape matters for the
+    // bindings; atomic operations are provided by the main crate.
+    target.add_known_type(
+        "Atomic",
+        "#[repr(transparent)] pub struct Atomic<T>(::__rustyfill_builtin_core::cell::UnsafeCell<T>);",
+    );
+
     target
 }
 

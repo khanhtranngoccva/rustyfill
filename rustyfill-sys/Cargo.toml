@@ -16,3 +16,4 @@ drop-annotations = []
 
 [build-dependencies]
 rustyfill-sys-bindings = { path = "../rustyfill-sys-bindings" }
+syn = { version = "2", features = ["full"] }

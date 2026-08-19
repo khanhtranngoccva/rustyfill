@@ -115,7 +115,14 @@ impl CfgContext {
         let target_arch = std::env::var("CARGO_CFG_TARGET_ARCH").ok();
         let target_env = std::env::var("CARGO_CFG_TARGET_ENV").ok();
         let target_vendor = std::env::var("CARGO_CFG_TARGET_VENDOR").ok();
-        let is_unix = std::env::var("CARGO_CFG_UNIX").is_ok();
+        // Cargo does not export CARGO_CFG_UNIX, so derive unix-ness from the
+        // target family / OS instead. Without this, cfg_select! branches keyed
+        // on the bare `unix` predicate never activate and the resolver falls
+        // through to the `_` fallback (e.g. picking `unsupported` over `unix`).
+        let is_unix = match (target_family.as_deref(), target_os.as_deref()) {
+            (Some("unix"), _) => true,
+            (_, os) => matches!(os, Some("linux") | Some("macos") | Some("bsd")),
+        };
         let is_windows = target_os.as_deref() == Some("windows");
 
         Self {
@@ -124,6 +131,46 @@ impl CfgContext {
             target_arch,
             target_env,
             target_vendor,
+            is_unix,
+            is_windows,
+        }
+    }
+
+    /// Build a context from a Rust target triple (e.g.
+    /// `x86_64-unknown-linux-gnu`). Cargo always sets `TARGET`, but does NOT
+    /// export the individual `CARGO_CFG_*` variables to build scripts, so this
+    /// is the reliable way to learn the platform for cfg_select! evaluation.
+    pub fn from_target_triple(triple: &str) -> Self {
+        let parts: Vec<&str> = triple.split('-').collect();
+        // Typical layout: arch [- vendor] - os [- env]. The OS is the segment
+        // after the vendor; unknown/vendor segments are skipped.
+        let known_vendors = ["unknown", "pc", "none", "fortanix"];
+        let mut target_os: Option<String> = None;
+        let mut target_env: Option<String> = None;
+        for (i, p) in parts.iter().enumerate() {
+            if known_vendors.contains(p) || i == 0 {
+                continue;
+            }
+            if target_os.is_none() {
+                target_os = Some((*p).to_string());
+            } else if target_env.is_none() && i + 1 == parts.len() {
+                target_env = Some((*p).to_string());
+            }
+        }
+        let target_family = match target_os.as_deref() {
+            Some("linux") | Some("android") | Some("macos") | Some("ios") | Some("freebsd")
+            | Some("netbsd") | Some("openbsd") => Some("unix".to_string()),
+            Some("windows") => Some("windows".to_string()),
+            _ => None,
+        };
+        let is_unix = target_family.as_deref() == Some("unix");
+        let is_windows = target_os.as_deref() == Some("windows");
+        Self {
+            target_os,
+            target_family,
+            target_arch: parts.first().map(|s| s.to_string()),
+            target_env,
+            target_vendor: None,
             is_unix,
             is_windows,
         }
@@ -641,6 +688,21 @@ fn collect_use_kinds(use_path: &syn::UsePath) -> Vec<UseKind> {
             let mut kinds = Vec::new();
             for inner in &items {
                 match inner {
+                    // A `use ...::{self, ...}` entry binds the module itself under
+                    // its own name. Emit it as a Single whose target path is the
+                    // prefix plus the module's own identifier; the resolver maps
+                    // the trailing `Self_` back to that identifier.
+                    UseTree::Path(p) => {
+                        // A `use ...::{self, ...}` entry binds the module itself
+                        // under its own name. Emit it as a Single whose target
+                        // path is the prefix plus the module's own identifier;
+                        // the resolver maps the trailing `Self_` back to that
+                        // identifier. (Nested groups are still dropped.)
+                        let mut segs = segments.clone();
+                        segs.push(ident_to_segment(&p.ident));
+                        segs.push(PathSegment::Self_);
+                        kinds.push(UseKind::Single(PathSegmentList { segments: segs }, None));
+                    }
                     UseTree::Glob(_) => {
                         kinds.push(UseKind::Glob(PathSegmentList {
                             segments: segments.clone(),
@@ -658,31 +720,6 @@ fn collect_use_kinds(use_path: &syn::UsePath) -> Vec<UseKind> {
                             PathSegmentList { segments: segs },
                             Some(r.rename.to_string()),
                         ));
-                    }
-                    UseTree::Path(p) => {
-                        let mut segs = segments.clone();
-                        segs.push(ident_to_segment(&p.ident));
-                        let tail = collect_path_segments(&p.tree, &mut segs);
-                        match tail {
-                            TreeTerminal::Glob => {
-                                kinds.push(UseKind::Glob(PathSegmentList { segments: segs }))
-                            }
-                            TreeTerminal::Name(n) => {
-                                segs.push(PathSegment::Named(n));
-                                kinds.push(UseKind::Single(
-                                    PathSegmentList { segments: segs },
-                                    None,
-                                ));
-                            }
-                            TreeTerminal::Rename(n, a) => {
-                                segs.push(PathSegment::Named(n));
-                                kinds.push(UseKind::Single(
-                                    PathSegmentList { segments: segs },
-                                    Some(a),
-                                ));
-                            }
-                            TreeTerminal::Group(_) => {}
-                        }
                     }
                     _ => {}
                 }
@@ -792,6 +829,86 @@ fn scan_cfg_select_branches(body: &str, cfg: &CfgContext) -> Vec<ModDeclaration>
     }
 
     best_match.or(fallback).unwrap_or_default()
+}
+
+/// For a file whose top-level structure is a `cfg_select!`, return the set of
+/// re-export source modules named in the *active* branch's `pub use <mod>::…;`
+/// statements. This lets callers follow a canonical type through a
+/// cfg-gated re-export shim down to its defining submodule (e.g.
+/// `sys::sync::mutex::Mutex` → `futex::Mutex` on Linux).
+///
+/// Returns an empty vec when the file has no `cfg_select!` or the active
+/// branch carries no single-module re-exports.
+pub fn cfg_select_reexport_targets(source: &str, cfg: &CfgContext) -> Vec<String> {
+    if !source.contains("cfg_select!") {
+        return Vec::new();
+    }
+    let Some(body) = extract_cfg_select_body(source) else {
+        return Vec::new();
+    };
+    let branches = split_cfg_select_branches(&body);
+    for (predicate, branch_body) in branches {
+        let predicate = predicate.trim();
+        let active = if predicate == "_" || predicate == ".." {
+            true // fallback handled below
+        } else {
+            cfg.eval_predicate(predicate)
+        };
+        if !active {
+            continue;
+        }
+        let targets = scan_reexport_sources(branch_body.trim());
+        if !targets.is_empty() {
+            return targets;
+        }
+        // Remember fallback so we can return it if no concrete match fired.
+        if predicate == "_" || predicate == ".." {
+            return targets;
+        }
+    }
+    Vec::new()
+}
+
+/// Scan a cfg_select branch body for `pub use <path>::*;` and collect the
+/// leading module name being re-exported from. Handles `self::`, `super::`,
+/// and `crate::` prefixes by skipping them to find the actual module name.
+/// E.g. `pub use self::unix::*;` → `"unix"`, `pub use pal::*;` → `"pal"`.
+fn scan_reexport_sources(branch_body: &str) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    for line in branch_body.lines() {
+        let trimmed = line.trim();
+        // Match `pub use <path>;`
+        let rest = match trimmed.strip_prefix("pub") {
+            Some(r) => r.trim_start(),
+            None => continue,
+        };
+        let rest = match rest.strip_prefix("use") {
+            Some(r) => r.trim_start(),
+            None => continue,
+        };
+        let rest = rest.trim_end_matches(';');
+        if rest.is_empty() {
+            continue;
+        }
+        // Split into path segments on `::`.
+        let segs: Vec<&str> = rest
+            .split("::")
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .collect();
+        // Skip leading keywords (self, super, crate) to find the module name.
+        let name = segs.iter().find(|s| {
+            let s = **s;
+            !(s == "self" || s == "super" || s == "crate")
+                && s.chars().all(|c| c.is_alphanumeric() || c == '_')
+        });
+        if let Some(name) = name
+            && !out.iter().any(|s| s.as_str() == *name)
+        {
+            out.push(name.to_string());
+        }
+    }
+    out
 }
 
 /// Split cfg_select! body into (predicate, body) pairs.

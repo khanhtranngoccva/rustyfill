@@ -11,6 +11,7 @@ pub mod emitter;
 pub mod formatter;
 pub mod loader_spec;
 pub mod parser;
+pub mod pipeline;
 pub mod resolver;
 pub mod spec;
 pub mod validator;
@@ -21,9 +22,11 @@ pub use emitter::{
     TypeInfo,
 };
 pub use loader_spec::{BindingTarget, LoaderSpec};
+pub use pipeline::{GenerateOutcome, GenerateReport, PipelineInput, generate};
 pub use parser::{
-    CfgContext, ItemVisibility, ModDeclaration, ParsedItem, ParsedSource, parse_file, parse_item,
-    parse_mod_declarations, parse_source, parse_source_with_cfg, parse_use_statements,
+    CfgContext, ItemVisibility, ModDeclaration, ParsedItem, ParsedSource, cfg_select_reexport_targets,
+    parse_file, parse_item, parse_mod_declarations, parse_source, parse_source_with_cfg,
+    parse_use_statements,
 };
 pub use resolver::{ModuleResolver, Resolution, UseStatement};
 pub use spec::get_loader_spec;

@@ -167,8 +167,7 @@ pub trait TryRc<T>: Sized {
     /// [`TryClone`] instead of [`Clone`]. On failure, returns the original `Rc`
     /// alongside the clone error so the caller retains access to the shared data.
     ///
-    /// This method replaces [`Self::unwrap_or_try_clone`] under a name that
-    /// won't collide with future std additions.
+    /// This method mirrors [`Self::unwrap_or_try_clone`].
     fn unwrap_or_fallible_clone(self) -> Result<T, (Self, TryCloneError)>
     where
         T: Clone + crate::try_clone::TryClone,
