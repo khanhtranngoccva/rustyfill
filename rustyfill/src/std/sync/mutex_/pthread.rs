@@ -6,8 +6,8 @@
 //! return armed mutexes) and exposes it via `try_arm` for repairing mutexes
 //! built with plain `Mutex::new`.
 
-use super::heap_lock::{arm_once_box, OnceBoxPayload};
-use super::{assume_init_impl, assert_layout, SysMutexMirror, TryMutex};
+use super::heap_lock::{OnceBoxPayload, arm_once_box};
+use super::{SysMutexMirror, TryMutex, assert_layout, assume_init_impl};
 use crate::alloc::AllocError;
 use lang_core::mem::{self, MaybeUninit};
 use lang_core::pin::Pin;

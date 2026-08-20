@@ -432,7 +432,10 @@ impl<T: ?Sized> TryWeak<T> for Weak<T> {
                     return None;
                 }
                 // Safe: `cur < MAX_REFCOUNT <= isize::MAX`, so `+1` cannot overflow.
-                Some(cur.checked_add(1).expect("strong refcount below MAX_REFCOUNT"))
+                Some(
+                    cur.checked_add(1)
+                        .expect("strong refcount below MAX_REFCOUNT"),
+                )
             });
 
         match ok {

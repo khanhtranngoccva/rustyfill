@@ -17,9 +17,9 @@
 use std::env;
 use std::path::{Path, PathBuf};
 
+use rustyfill_sys_bindings::get_loader_spec;
 use rustyfill_sys_bindings::parser::CfgContext;
 use rustyfill_sys_bindings::pipeline::{self, PipelineInput};
-use rustyfill_sys_bindings::get_loader_spec;
 
 fn main() {
     reject_randomize_layout();

@@ -60,13 +60,13 @@
 // `GRND_NONBLOCK` fallback and use `/dev/random` instead of `/dev/urandom`
 // when secure data is required.
 
+use lang_core::mem;
 use lang_std::borrow::Cow;
 use lang_std::fs::File;
 use lang_std::io::{self, Read};
 use lang_std::os::fd::AsRawFd;
 use lang_std::sync::atomic::AtomicBool;
 use lang_std::sync::atomic::Ordering::{Acquire, Relaxed, Release};
-use lang_core::mem;
 // Fallback for get_or_try_init API
 use once_cell::sync::OnceCell;
 
@@ -123,9 +123,7 @@ fn getrandom_impl(mut bytes: &mut [u8], insecure: bool) -> Result<(), RandomErro
                 0
             };
 
-            let ret = unsafe {
-                getrandom_fn(bytes.as_mut_ptr().cast(), bytes.len(), flags)
-            };
+            let ret = unsafe { getrandom_fn(bytes.as_mut_ptr().cast(), bytes.len(), flags) };
             if ret != -1 {
                 bytes = &mut bytes[ret as usize..];
             } else {
@@ -157,9 +155,8 @@ fn getrandom_impl(mut bytes: &mut [u8], insecure: bool) -> Result<(), RandomErro
     // When we want cryptographic strength, we need to wait for the CPRNG-pool
     // to become initialized. Do this by polling `/dev/random` until it is ready.
     if !insecure && !URANDOM_READY.load(Acquire) {
-        let random = File::open("/dev/random").map_err(|_| {
-            RandomError::Platform(Cow::Borrowed("failed to open /dev/random"))
-        })?;
+        let random = File::open("/dev/random")
+            .map_err(|_| RandomError::Platform(Cow::Borrowed("failed to open /dev/random")))?;
         let mut fd = libc::pollfd {
             fd: random.as_raw_fd(),
             events: libc::POLLIN,
@@ -180,7 +177,7 @@ fn getrandom_impl(mut bytes: &mut [u8], insecure: bool) -> Result<(), RandomErro
                 _ => {
                     return Err(RandomError::Platform(Cow::Borrowed(
                         "poll(\"/dev/random\") failed",
-                    )))
+                    )));
                 }
             }
         }
@@ -188,13 +185,10 @@ fn getrandom_impl(mut bytes: &mut [u8], insecure: bool) -> Result<(), RandomErro
 
     let dev = DEVICE
         .get_or_try_init(|| File::open("/dev/urandom"))
-        .map_err(|_| {
-            RandomError::Platform(Cow::Borrowed("failed to open /dev/urandom"))
-        })?;
+        .map_err(|_| RandomError::Platform(Cow::Borrowed("failed to open /dev/urandom")))?;
     let mut dev = dev;
-    dev.read_exact(bytes).map_err(|_| {
-        RandomError::Platform(Cow::Borrowed("failed to read from /dev/urandom"))
-    })?;
+    dev.read_exact(bytes)
+        .map_err(|_| RandomError::Platform(Cow::Borrowed("failed to read from /dev/urandom")))?;
     Ok(())
 }
 

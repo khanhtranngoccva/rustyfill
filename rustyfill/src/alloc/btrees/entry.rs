@@ -939,7 +939,10 @@ fn try_insert_into_existing<'a, K, V>(
             leaf_slice_insert(leaf_edge.node.node.as_ptr(), insert_idx, key, value);
         }
         // Safe: `length` tracks total elements and is bounded by heap capacity.
-        inner_map.length = inner_map.length.checked_add(1).expect("element count fits in usize");
+        inner_map.length = inner_map
+            .length
+            .checked_add(1)
+            .expect("element count fits in usize");
         return Ok((leaf_edge.node.forget_type(), insert_idx));
     }
 
@@ -1311,7 +1314,10 @@ fn commit_split<'a, K, V>(
                 );
             }
             // Safe: `length` tracks total elements and is bounded by heap capacity.
-            inner_map.length = inner_map.length.checked_add(1).expect("element count fits in usize");
+            inner_map.length = inner_map
+                .length
+                .checked_add(1)
+                .expect("element count fits in usize");
             return finish_commit(insert_node_ptr, plan.insert_idx);
         }
 
@@ -1383,14 +1389,20 @@ fn commit_split<'a, K, V>(
         // Advance the promotion one level up.
         current_left = sys::NodeRef::<sys::Mut<'a>, K, V, sys::LeafOrInternal> {
             // Safe: tree height is bounded well below usize::MAX.
-            height: current_left.height.checked_add(1).expect("tree height fits in usize"),
+            height: current_left
+                .height
+                .checked_add(1)
+                .expect("tree height fits in usize"),
             node: parent_ptr.cast(),
             _marker: PhantomData,
         };
         // SAFETY: `ri_raw` is a freshly reserved internal node owned by this commit.
         current_right = sys::NodeRef {
             // Safe: tree height is bounded well below usize::MAX.
-            height: current_right.height.checked_add(1).expect("tree height fits in usize"),
+            height: current_right
+                .height
+                .checked_add(1)
+                .expect("tree height fits in usize"),
             node: ri_raw,
             _marker: PhantomData,
         };
@@ -1407,7 +1419,10 @@ fn commit_split<'a, K, V>(
         .expect("a root node was reserved when new_root is set");
     let nr_ptr: *mut sys::InternalNode<K, V> = nr_raw.as_ptr() as *mut _;
     // Safe: tree height is bounded well below usize::MAX.
-    let new_height = current_left.height.checked_add(1).expect("tree height fits in usize");
+    let new_height = current_left
+        .height
+        .checked_add(1)
+        .expect("tree height fits in usize");
 
     let old_root_owned: sys::NodeRef<sys::Owned, K, V, sys::LeafOrInternal> =
         unsafe { ptr::read(inner_map.root.as_ref().expect("root exists")) };
@@ -1435,7 +1450,10 @@ fn commit_split<'a, K, V>(
         _marker: PhantomData,
     });
     // Safe: `length` tracks total elements and is bounded by heap capacity.
-    inner_map.length = inner_map.length.checked_add(1).expect("element count fits in usize");
+    inner_map.length = inner_map
+        .length
+        .checked_add(1)
+        .expect("element count fits in usize");
 
     finish_commit(insert_node_ptr, plan.insert_idx)
 }

@@ -43,10 +43,7 @@ impl<T> TryExtend<T> for lang_alloc::vec::Vec<T> {
             if self.len() == self.capacity()
                 && let Err(e) = self.try_reserve(1)
             {
-                return Err((
-                    TryVecError::from(e),
-                    Resumable::new(h, iter),
-                ));
+                return Err((TryVecError::from(e), Resumable::new(h, iter)));
             }
             self.push(h);
         }
@@ -55,19 +52,13 @@ impl<T> TryExtend<T> for lang_alloc::vec::Vec<T> {
         if lower > 0
             && let Err(e) = self.try_reserve(lower)
         {
-            return Err((
-                TryVecError::from(e),
-                Resumable::from_remainder(iter),
-            ));
+            return Err((TryVecError::from(e), Resumable::from_remainder(iter)));
         }
         while let Some(item) = iter.next() {
             if self.len() == self.capacity()
                 && let Err(e) = self.try_reserve(1)
             {
-                return Err((
-                    TryVecError::from(e),
-                    Resumable::new(item, iter),
-                ));
+                return Err((TryVecError::from(e), Resumable::new(item, iter)));
             }
             self.push(item);
         }

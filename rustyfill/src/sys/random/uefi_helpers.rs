@@ -1,9 +1,9 @@
 //! Partial port for the PAL module, sufficient for dealing with random. There are sharp edges!
 #![allow(unused)]
 
+use crate::vec::TryVec;
 use lang_std::io::{self};
 use lang_std::mem::MaybeUninit;
-use crate::vec::TryVec;
 use r_efi::efi::{self, Guid, Status};
 
 #[rustversion::nightly]
@@ -11,7 +11,7 @@ use lang_std::io::const_error;
 #[rustversion::nightly]
 use lang_std::os::uefi::env::{boot_services, image_handle};
 
-use  ptr::{self, NonNull};
+use ptr::{self, NonNull};
 
 #[rustversion::nightly]
 const BOOT_SERVICES_UNAVAILABLE: io::Error = const_error!(
@@ -27,7 +27,7 @@ const OUT_OF_MEMORY: io::Error = const_error!(io::ErrorKind::Other, "Out of memo
 ///
 /// Returns an array of [Handles](r_efi::efi::Handle) that support a specified protocol.
 #[rustversion::nightly]
-pub(crate) fn locate_handles(mut guid: Guid) -> io::Result<Vec<NonNull <ffi::c_void>>> {
+pub(crate) fn locate_handles(mut guid: Guid) -> io::Result<Vec<NonNull<ffi::c_void>>> {
     fn inner(
         guid: &mut Guid,
         boot_services: NonNull<r_efi::efi::BootServices>,
@@ -93,7 +93,7 @@ pub(crate) fn locate_handles(mut guid: Guid) -> io::Result<Vec<NonNull <ffi::c_v
 /// to close the protocol interface with `EFI_BOOT_SERVICES.CloseProtocol()`
 #[rustversion::nightly]
 pub(crate) fn open_protocol<T>(
-    handle: NonNull <ffi::c_void>,
+    handle: NonNull<ffi::c_void>,
     mut protocol_guid: Guid,
 ) -> io::Result<NonNull<T>> {
     let boot_services: NonNull<efi::BootServices> =

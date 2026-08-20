@@ -379,7 +379,9 @@ where
         })
         .is_err()
     {
-        return Err(TryToOwnedError::Reserve(TryReserveErrorExt::new_alloc(Layout::new::<u8>())));
+        return Err(TryToOwnedError::Reserve(TryReserveErrorExt::new_alloc(
+            Layout::new::<u8>(),
+        )));
     }
 
     let create_new_arc = || -> Result<Arc<B::Owned>, TryToOwnedError> {

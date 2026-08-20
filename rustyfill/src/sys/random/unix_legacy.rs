@@ -18,9 +18,16 @@ static DEVICE: OnceCell<File> = OnceLock::new();
 pub fn fill_bytes(bytes: &mut [u8]) -> Result<(), RandomError> {
     let dev = DEVICE
         .get_or_try_init(|| File::open("/dev/urandom"))
-        .map_err(|_| RandomError::Platform (lang_alloc::borrow::Cow::Borrowed("failed to open /dev/urandom")))?;
+        .map_err(|_| {
+            RandomError::Platform(lang_alloc::borrow::Cow::Borrowed(
+                "failed to open /dev/urandom",
+            ))
+        })?;
     let mut dev = dev;
-    dev.read_exact(bytes)
-        .map_err(|_| RandomError::Platform (lang_alloc::borrow::Cow::Borrowed("failed to read from /dev/urandom")))?;
+    dev.read_exact(bytes).map_err(|_| {
+        RandomError::Platform(lang_alloc::borrow::Cow::Borrowed(
+            "failed to read from /dev/urandom",
+        ))
+    })?;
     Ok(())
 }

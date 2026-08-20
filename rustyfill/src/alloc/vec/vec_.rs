@@ -423,8 +423,7 @@ impl<T> TryVec<T> for Vec<T> {
     {
         let mut vec = Vec::<T>::new();
         if count > 0 {
-            vec.try_reserve(count)
-                .map_err(TryVecError::Reserve)?;
+            vec.try_reserve(count).map_err(TryVecError::Reserve)?;
         }
         for _ in 0..count {
             vec.push(value.try_clone().map_err(TryVecError::Clone)?);
@@ -462,8 +461,7 @@ impl<T> TryVec<T> for Vec<T> {
         if index > self.len() {
             return Err(TryVecError::Other("insert index out of bounds"));
         }
-        self.try_reserve(1)
-            .map_err(TryVecError::Reserve)?;
+        self.try_reserve(1).map_err(TryVecError::Reserve)?;
         self.insert(index, value);
         Ok(())
     }
@@ -545,8 +543,7 @@ impl<T> TryVec<T> for Vec<T> {
 
         let count = end.saturating_sub(start);
         // Reserve first — lazy, no element copies until allocation succeeds.
-        self.try_reserve(count)
-            .map_err(TryVecError::Reserve)?;
+        self.try_reserve(count).map_err(TryVecError::Reserve)?;
         let guard = TruncateGuard::new(self);
         for i in start..end {
             match guard.vec[i].try_clone() {
@@ -572,8 +569,7 @@ impl<T> TryVec<T> for Vec<T> {
         }
         let extra = new_len.saturating_sub(current);
         // Reserve first — lazy.
-        self.try_reserve(extra)
-            .map_err(TryVecError::Reserve)?;
+        self.try_reserve(extra).map_err(TryVecError::Reserve)?;
         let guard = TruncateGuard::new(self);
         for _ in 0..extra {
             match value.try_clone() {
@@ -663,8 +659,7 @@ impl<T> TryVec<T> for Vec<T> {
         T: TryClone,
     {
         let mut vec = Vec::<T>::new();
-        vec.try_reserve(slice.len())
-            .map_err(TryVecError::Reserve)?;
+        vec.try_reserve(slice.len()).map_err(TryVecError::Reserve)?;
         for item in slice {
             vec.push(item.try_clone().map_err(TryVecError::Clone)?);
         }

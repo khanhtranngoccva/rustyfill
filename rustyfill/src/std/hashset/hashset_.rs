@@ -402,8 +402,7 @@ impl<T: Eq + Hash, S: BuildHasher> TryHashSet<T, S> for HashSet<T, S> {
     where
         T: Eq + Hash,
     {
-        self.try_reserve(1)
-            .map_err(TryHashSetError::Reserve)?;
+        self.try_reserve(1).map_err(TryHashSetError::Reserve)?;
         Ok(self.insert(value))
     }
 

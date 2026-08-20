@@ -80,8 +80,7 @@ impl<T> TrySlice<T> for [T] {
     {
         let mut out = Vec::<T>::new();
         if !self.is_empty() {
-            out.try_reserve(self.len())
-                .map_err(TryVecError::Reserve)?;
+            out.try_reserve(self.len()).map_err(TryVecError::Reserve)?;
         }
         for elem in self.iter() {
             out.push(elem.try_clone().map_err(TryVecError::Clone)?);
@@ -99,8 +98,7 @@ impl<T> TrySlice<T> for [T] {
         }
         let total_len = len.checked_mul(n).ok_or(TryVecError::Overflow)?;
         let mut out = Vec::<T>::new();
-        out.try_reserve(total_len)
-            .map_err(TryVecError::Reserve)?;
+        out.try_reserve(total_len).map_err(TryVecError::Reserve)?;
         for _ in 0..n {
             for elem in self.iter() {
                 out.push(elem.try_clone().map_err(TryVecError::Clone)?);
@@ -208,7 +206,10 @@ impl<T: TryClone> TryClone for Box<[T]> {
                         ptr::write(slot.as_mut_ptr(), cloned);
                     }
                     // At most `slots.len()` iterations, so this cannot overflow.
-                    let count = guard.count.checked_add(1).expect("initialized slot count below slice length");
+                    let count = guard
+                        .count
+                        .checked_add(1)
+                        .expect("initialized slot count below slice length");
                     guard.count = count;
                 }
                 Err(e) => {

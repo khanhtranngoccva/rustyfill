@@ -19,7 +19,7 @@
 //!
 //! The name "heap lock" reflects what this operates on: a mutex whose actual
 //! locking state lives on the heap behind a lazily-initialised pointer, as
-//! opposed to the allocation-free backends whose entire state is at most a small 
+//! opposed to the allocation-free backends whose entire state is at most a small
 //! fixed-size value carried inline.
 
 use crate::alloc::AllocError;
@@ -82,7 +82,9 @@ pub(super) unsafe trait OnceBoxPayload: Sized + Send + Sync {
 /// the caller must guarantee no other alias to that cell exists except through
 /// this atomic. Publishing uses the same Release/Acquire CAS as std's
 /// `OnceBox::initialize`.
-pub(super) unsafe fn arm_once_box<P>(slot: &lang_core::sync::atomic::AtomicPtr<P>) -> Result<(), AllocError>
+pub(super) unsafe fn arm_once_box<P>(
+    slot: &lang_core::sync::atomic::AtomicPtr<P>,
+) -> Result<(), AllocError>
 where
     P: OnceBoxPayload,
 {
@@ -121,7 +123,12 @@ where
     // pinning invariant holds for the remainder of its life.
     let boxed = unsafe { Pin::into_inner_unchecked(pinned) };
     let new_ptr = Box::into_raw(boxed).cast::<P>();
-    match slot.compare_exchange(ptr::null_mut(), new_ptr, Ordering::Release, Ordering::Acquire) {
+    match slot.compare_exchange(
+        ptr::null_mut(),
+        new_ptr,
+        Ordering::Release,
+        Ordering::Acquire,
+    ) {
         Ok(_) => Ok(()),
         Err(winner) => {
             // Lost the race to another thread. Reclaim our freshly-activated

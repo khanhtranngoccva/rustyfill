@@ -410,8 +410,8 @@ impl TryPathBuf for PathBuf {
         // tail slice gives us the address just past the end of the file name.
         // Safe: `fname` is a subslice of `all`, so its end pointer lies at or
         // after `all`'s start; the subtraction cannot underflow.
-        let fname_end_offset = (fname[fname.len()..].as_ptr() as usize)
-            .wrapping_sub(all.as_ptr() as usize);
+        let fname_end_offset =
+            (fname[fname.len()..].as_ptr() as usize).wrapping_sub(all.as_ptr() as usize);
 
         // Reserve enough capacity for the net change: we will remove
         // `(len - fname_end_offset)` bytes (the old extension + separator)

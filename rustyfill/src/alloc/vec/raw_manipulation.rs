@@ -74,8 +74,7 @@ impl RawVecInnerView {
                 let new_size = elem_layout.size().unchecked_mul(cap);
                 // SAFETY: new_size is computed from elem_layout with the same
                 // alignment, so realloc's target alignment matches `layout`.
-                NonNull::new(alloc::realloc(ptr.as_ptr(), layout, new_size))
-                    .ok_or(AllocError)?
+                NonNull::new(alloc::realloc(ptr.as_ptr(), layout, new_size)).ok_or(AllocError)?
             };
             // SAFETY: if the allocation is valid, then the capacity is too
             self.ptr = ptr;

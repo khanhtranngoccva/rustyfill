@@ -17,17 +17,16 @@ pub mod spec;
 pub mod validator;
 
 pub use emitter::{
-    check_declared_struct_fields, emit_binding_file, emit_glob_reexport_aliases,
-    emit_hierarchical_manifest, emit_parsed_items, EmitConfig, FieldRefResolution, TypeRegistry,
-    TypeInfo,
+    EmitConfig, FieldRefResolution, TypeInfo, TypeRegistry, check_declared_struct_fields,
+    emit_binding_file, emit_glob_reexport_aliases, emit_hierarchical_manifest, emit_parsed_items,
 };
 pub use loader_spec::{BindingTarget, LoaderSpec};
-pub use pipeline::{GenerateOutcome, GenerateReport, PipelineInput, generate};
 pub use parser::{
-    CfgContext, ItemVisibility, ModDeclaration, ParsedItem, ParsedSource, cfg_select_reexport_targets,
-    parse_file, parse_item, parse_mod_declarations, parse_source, parse_source_with_cfg,
-    parse_use_statements,
+    CfgContext, ItemVisibility, ModDeclaration, ParsedItem, ParsedSource,
+    cfg_select_reexport_targets, parse_file, parse_item, parse_mod_declarations, parse_source,
+    parse_source_with_cfg, parse_use_statements,
 };
+pub use pipeline::{GenerateOutcome, GenerateReport, PipelineInput, generate};
 pub use resolver::{ModuleResolver, Resolution, UseStatement};
 pub use spec::get_loader_spec;
 pub use validator::{ValidationBuilder, ValidationErrors, ValidationResult};

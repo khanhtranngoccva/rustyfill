@@ -185,7 +185,10 @@ impl<T: TryClone, const N: usize> TryClone for [T; N] {
                         ptr::write(guard.slots[i].as_mut_ptr(), cloned);
                     }
                     // At most `N` iterations, so this cannot overflow.
-                    let count = guard.count.checked_add(1).expect("initialized slot count below array length");
+                    let count = guard
+                        .count
+                        .checked_add(1)
+                        .expect("initialized slot count below array length");
                     guard.count = count;
                 }
                 Err(e) => {

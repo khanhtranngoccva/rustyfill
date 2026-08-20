@@ -188,7 +188,10 @@ impl TypeRegistry {
         alias_name: &str,
         crate_path: &str,
     ) {
-        let entry = self.module_alias_routes.entry(referring_module.to_string()).or_default();
+        let entry = self
+            .module_alias_routes
+            .entry(referring_module.to_string())
+            .or_default();
         // Avoid recording duplicate aliases for the same referring module.
         if !entry.iter().any(|(a, _)| a == alias_name) {
             entry.push((alias_name.to_string(), crate_path.to_string()));
@@ -198,10 +201,10 @@ impl TypeRegistry {
     /// The module-alias imports to emit for the file at `referring_module`
     /// (slash-separated). Returns an empty slice when none are recorded.
     pub fn module_alias_routes(&self, referring_module: &str) -> &[(String, String)] {
-        self.module_alias_routes.get(referring_module).map_or(&[], Vec::as_slice)
+        self.module_alias_routes
+            .get(referring_module)
+            .map_or(&[], Vec::as_slice)
     }
-
-
 
     /// Register a type discovered in a source file.
     pub fn register(
@@ -709,7 +712,10 @@ impl<'a> QualifierResolver<'a> {
             if let Some(target_mod) = self.follow_import_target(module_ctx, &target_segs) {
                 // Direct definition in the target module.
                 if let Some(src) = self.source_module(&target_mod)
-                    && src.items.iter().any(|i| i.name == leaf && i.kind.is_type_def())
+                    && src
+                        .items
+                        .iter()
+                        .any(|i| i.name == leaf && i.kind.is_type_def())
                 {
                     return Some(target_mod);
                 }
@@ -743,8 +749,11 @@ impl<'a> QualifierResolver<'a> {
                                     })
                                     .collect();
                                 if segs.len() >= 2 {
-                                    let sub_mod = format!("{}/{}", target_mod, segs[segs.len() - 2]);
-                                    if let Some(defining) = self.find_defining_module(&sub_mod, leaf) {
+                                    let sub_mod =
+                                        format!("{}/{}", target_mod, segs[segs.len() - 2]);
+                                    if let Some(defining) =
+                                        self.find_defining_module(&sub_mod, leaf)
+                                    {
                                         return Some(defining);
                                     }
                                 }
@@ -755,7 +764,9 @@ impl<'a> QualifierResolver<'a> {
                                     _ => None,
                                 }) {
                                     let sub_mod = format!("{target_mod}/{rn}");
-                                    if let Some(defining) = self.find_defining_module(&sub_mod, leaf) {
+                                    if let Some(defining) =
+                                        self.find_defining_module(&sub_mod, leaf)
+                                    {
                                         return Some(defining);
                                     }
                                 }
@@ -784,11 +795,7 @@ impl<'a> QualifierResolver<'a> {
     /// module (slash-separated). This finds the `use ... as lead;` statement
     /// in the referring file and follows its path to a concrete module. Returns
     /// `None` when no such binding exists or the target can't be resolved.
-    pub fn resolve_import_target(
-        &mut self,
-        module_ctx: &str,
-        lead: &str,
-    ) -> Option<String> {
+    pub fn resolve_import_target(&mut self, module_ctx: &str, lead: &str) -> Option<String> {
         let cur = self.source_module(module_ctx)?;
         for stmt in &cur.use_statements {
             let (target_segs, alias_name) = match &stmt.kind {
@@ -873,7 +880,10 @@ impl<'a> QualifierResolver<'a> {
     fn find_defining_module(&mut self, mod_path: &str, leaf: &str) -> Option<String> {
         // Direct definition in the module's own file.
         if let Some(src) = self.source_module(mod_path)
-            && src.items.iter().any(|i| i.name == leaf && i.kind.is_type_def())
+            && src
+                .items
+                .iter()
+                .any(|i| i.name == leaf && i.kind.is_type_def())
         {
             return Some(mod_path.to_string());
         }
@@ -893,7 +903,10 @@ impl<'a> QualifierResolver<'a> {
         for tgt in cfg_select_reexport_targets(&text, self.cfg) {
             let sub = format!("{mod_path}/{tgt}");
             if let Some(src) = self.source_module(&sub)
-                && src.items.iter().any(|i| i.name == leaf && i.kind.is_type_def())
+                && src
+                    .items
+                    .iter()
+                    .any(|i| i.name == leaf && i.kind.is_type_def())
             {
                 return Some(sub);
             }
@@ -1512,12 +1525,8 @@ fn rewrite_path(
             // (e.g., `marker::Mut<'a>` → `...::marker::Mut<'a>`). Without this,
             // the lifetime/type params are silently dropped.
             if let Some(last_seg) = p.segments.last_mut() {
-                last_seg.arguments = rewrite_generic_args(
-                    &segs[1].arguments,
-                    registry,
-                    module_ctx,
-                    guard,
-                );
+                last_seg.arguments =
+                    rewrite_generic_args(&segs[1].arguments, registry, module_ctx, guard);
             }
             return p;
         }
@@ -1641,7 +1650,14 @@ fn build_abs_path_from_str(
     guard: &LocalNameGuard<'_>,
 ) -> syn::Path {
     // Single-segment head: any extra original segments are associated items.
-    assemble_abs_path(abs_path, segs, segs.len().saturating_sub(1), registry, module_ctx, guard)
+    assemble_abs_path(
+        abs_path,
+        segs,
+        segs.len().saturating_sub(1),
+        registry,
+        module_ctx,
+        guard,
+    )
 }
 
 /// Build the substituted path from an absolute replacement string plus up to
@@ -1735,14 +1751,12 @@ fn rewrite_generic_args(
             let mut new_args: Punctuated<syn::GenericArgument, syn::Token![,]> = Punctuated::new();
             for arg in &ab.args {
                 let rewritten = match arg {
-                    syn::GenericArgument::Type(ty) => {
-                        syn::GenericArgument::Type(rewrite_type(
-                            ty.clone(),
-                            registry,
-                            module_ctx,
-                            guard,
-                        ))
-                    }
+                    syn::GenericArgument::Type(ty) => syn::GenericArgument::Type(rewrite_type(
+                        ty.clone(),
+                        registry,
+                        module_ctx,
+                        guard,
+                    )),
                     other => other.clone(),
                 };
                 new_args.push_value(rewritten);
@@ -3816,4 +3830,3 @@ mod known_type_stub_tests {
         assert!(emit_known_type_stub(&tmp.0, &kt).is_none());
     }
 }
-

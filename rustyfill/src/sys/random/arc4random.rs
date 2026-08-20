@@ -18,7 +18,7 @@ use libc::arc4random_buf;
 // TODO: move this extern decl to libc once vita support is added upstream
 #[cfg(target_os = "vita")] // See https://github.com/vitasdk/newlib/blob/b89e5bc183b516945f9ee07eef483ecb916e45ff/newlib/libc/include/stdlib.h#L74
 unsafe extern "C" {
-    fn arc4random_buf(buf: *mut  ffi::c_void, nbytes: libc::size_t);
+    fn arc4random_buf(buf: *mut ffi::c_void, nbytes: libc::size_t);
 }
 
 pub fn fill_bytes(bytes: &mut [u8]) -> Result<(), RandomError> {

@@ -195,15 +195,13 @@ impl<C> Report<C> {
                 if TryVec::try_push_give_back(&mut self.head.attachments, b).is_err() {
                     // Saturates at usize::MAX; a lost-item counter degrading
                     // gracefully is preferable to panicking on overflow.
-                    self.head.lost_attachments =
-                        self.head.lost_attachments.saturating_add(1);
+                    self.head.lost_attachments = self.head.lost_attachments.saturating_add(1);
                 }
             }
             Err(_) => {
                 // Saturates at usize::MAX; a lost-item counter degrading
                 // gracefully is preferable to panicking on overflow.
-                self.head.lost_attachments =
-                    self.head.lost_attachments.saturating_add(1);
+                self.head.lost_attachments = self.head.lost_attachments.saturating_add(1);
             }
         }
         self
@@ -229,15 +227,13 @@ impl<C> Report<C> {
                 if TryVec::try_push_give_back(&mut self.head.attachments, b).is_err() {
                     // Saturates at usize::MAX; a lost-item counter degrading
                     // gracefully is preferable to panicking on overflow.
-                    self.head.lost_attachments =
-                        self.head.lost_attachments.saturating_add(1);
+                    self.head.lost_attachments = self.head.lost_attachments.saturating_add(1);
                 }
             }
             Err(_) => {
                 // Saturates at usize::MAX; a lost-item counter degrading
                 // gracefully is preferable to panicking on overflow.
-                self.head.lost_attachments =
-                    self.head.lost_attachments.saturating_add(1);
+                self.head.lost_attachments = self.head.lost_attachments.saturating_add(1);
             }
         }
         self
@@ -526,8 +522,7 @@ where
                             new_head_sf.children.pop_back();
                             // Saturates at usize::MAX; a lost-item counter
                             // degrading gracefully beats panicking on overflow.
-                            new_head_sf.lost_children =
-                                new_head_sf.lost_children.saturating_add(1);
+                            new_head_sf.lost_children = new_head_sf.lost_children.saturating_add(1);
                             new_head_sf
                                 .children
                                 .try_push_front_give_back(dropped_df)
@@ -542,16 +537,14 @@ where
                         if new_head_sf.children.pop_back().is_some() {
                             // Saturates at usize::MAX; a lost-item counter
                             // degrading gracefully beats panicking on overflow.
-                            new_head_sf.lost_children =
-                                new_head_sf.lost_children.saturating_add(1);
+                            new_head_sf.lost_children = new_head_sf.lost_children.saturating_add(1);
                             current_sf = recovered_sf;
                             continue;
                         }
                         // Nothing left to evict; give up on this frame.
                         // Saturates at usize::MAX; a lost-item counter
                         // degrading gracefully beats panicking on overflow.
-                        new_head_sf.lost_children =
-                            new_head_sf.lost_children.saturating_add(1);
+                        new_head_sf.lost_children = new_head_sf.lost_children.saturating_add(1);
                         return;
                     }
                 }

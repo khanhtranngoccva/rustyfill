@@ -12,7 +12,7 @@
 //! to [`Mutex::new`] and always succeeds — no raw-pointer surgery, no unsafety
 //! beyond the shared [`assume_init`](super::assume_init_impl) retag.
 
-use super::{assume_init_impl, TryMutex};
+use super::{TryMutex, assume_init_impl};
 use crate::alloc::AllocError;
 use lang_core::mem::MaybeUninit;
 use lang_std::sync::Mutex;

@@ -753,7 +753,10 @@ impl ModuleResolver {
             format!("{}::{}", module_qualified, item.name)
         };
         for lib in ["core", "alloc", "std"] {
-            if self.declared_paths.contains(&format!("{}::{}", lib, suffix)) {
+            if self
+                .declared_paths
+                .contains(&format!("{}::{}", lib, suffix))
+            {
                 return true;
             }
         }
@@ -797,8 +800,10 @@ impl ModuleResolver {
     /// points at something real; it never gates what gets emitted.
     pub fn item_present_raw(&self, file_path: &str, item_name: &str) -> bool {
         match self.sources.get(file_path) {
-            Some(s) => s.items.iter().any(|i| i.name == item_name)
-                || s.inline_modules.iter().any(|(name, _)| name == item_name),
+            Some(s) => {
+                s.items.iter().any(|i| i.name == item_name)
+                    || s.inline_modules.iter().any(|(name, _)| name == item_name)
+            }
             None => false,
         }
     }
@@ -832,14 +837,10 @@ impl ModuleResolver {
                 // last named segment or an explicit `as` alias).
                 let bound_name = match alias.as_deref() {
                     Some(a) => a.to_string(),
-                    None => path
-                        .segments
-                        .iter()
-                        .rev()
-                        .find_map(|s| match s {
-                            PathSegment::Named(n) => Some(n.clone()),
-                            _ => None,
-                        })?,
+                    None => path.segments.iter().rev().find_map(|s| match s {
+                        PathSegment::Named(n) => Some(n.clone()),
+                        _ => None,
+                    })?,
                 };
                 if bound_name != item_name {
                     continue;
@@ -962,7 +963,9 @@ impl ModuleResolver {
                             match self.follow_reexport_to_defining_module(tf, item_name) {
                                 Some(def_mod) => {
                                     let def_file = self.find_module(&def_mod);
-                                    if def_file.is_none() || !self.module_has_items(def_file.as_deref().unwrap()) {
+                                    if def_file.is_none()
+                                        || !self.module_has_items(def_file.as_deref().unwrap())
+                                    {
                                         continue;
                                     }
                                     target_mod = def_mod;
@@ -1101,7 +1104,11 @@ mod tests {
     fn reexported_item_follows_to_defining_module() {
         let mut r = ModuleResolver::new();
         // set_val DEFINES SetValZST.
-        reg(&mut r, "collections/btree/set_val.rs", "pub(super) struct SetValZST;\n");
+        reg(
+            &mut r,
+            "collections/btree/set_val.rs",
+            "pub(super) struct SetValZST;\n",
+        );
         // set RE-EXPORTS it and defines nothing else relevant.
         reg(
             &mut r,

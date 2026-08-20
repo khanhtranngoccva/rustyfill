@@ -125,9 +125,8 @@ impl CfgContext {
         let target_vendor = std::env::var("CARGO_CFG_TARGET_VENDOR").ok();
         // Cargo exports CARGO_CFG_TARGET_FAMILY when present but not always;
         // fall back to deriving it from the OS so the two constructors agree.
-        let target_family = target_family.or_else(|| {
-            Self::family_for_os(target_os.as_deref()).map(String::from)
-        });
+        let target_family =
+            target_family.or_else(|| Self::family_for_os(target_os.as_deref()).map(String::from));
         // Cargo does not export CARGO_CFG_UNIX, so derive unix-ness from the
         // resolved family / OS instead. Without this, cfg_select! branches
         // keyed on the bare `unix` predicate never activate and the resolver
@@ -159,8 +158,8 @@ impl CfgContext {
         // OS/architecture fragment we don't model, so we treat the *last*
         // non-arch, non-vendor segment before any trailing env as the OS.
         let known_vendors = [
-            "unknown", "pc", "none", "fortanix", "apple", "nintendo", "sony", "uwp",
-            "hurd", "contiki", "newlib", "hermit", "kmc", "wrs", "gnu", "musl",
+            "unknown", "pc", "none", "fortanix", "apple", "nintendo", "sony", "uwp", "hurd",
+            "contiki", "newlib", "hermit", "kmc", "wrs", "gnu", "musl",
         ];
         let is_known_vendor = |p: &&str| known_vendors.contains(p);
         // Collect candidate segments (everything except the leading arch).
@@ -177,23 +176,38 @@ impl CfgContext {
             match candidates.as_slice() {
                 [] => (None, None),
                 [only] => (Some(*only), None),
-            [first, rest @ ..] => {
-                let last = *rest.last().unwrap();
-                let looks_like_env = matches!(
-                    last,
-                    "gnu" | "musl" | "msvc" | "win7" | "haiku" | "none" | "kernel" | "softfloat"
-                        | "double" | "eabi" | "eabihf" | "armv6" | "armv7" | "thumbv6"
-                        | "thumbv7" | "thumbv8" | "qemu" | "simulator"
-                );
-                if looks_like_env {
-                    (Some(first), Some(last.to_string()))
-                } else {
-                    // No recognizable env suffix; the first segment is the OS
-                    // and we ignore the remainder (rare multi-segment triples).
-                    (Some(first), None)
+                [first, rest @ ..] => {
+                    let last = *rest.last().unwrap();
+                    let looks_like_env = matches!(
+                        last,
+                        "gnu"
+                            | "musl"
+                            | "msvc"
+                            | "win7"
+                            | "haiku"
+                            | "none"
+                            | "kernel"
+                            | "softfloat"
+                            | "double"
+                            | "eabi"
+                            | "eabihf"
+                            | "armv6"
+                            | "armv7"
+                            | "thumbv6"
+                            | "thumbv7"
+                            | "thumbv8"
+                            | "qemu"
+                            | "simulator"
+                    );
+                    if looks_like_env {
+                        (Some(first), Some(last.to_string()))
+                    } else {
+                        // No recognizable env suffix; the first segment is the OS
+                        // and we ignore the remainder (rare multi-segment triples).
+                        (Some(first), None)
+                    }
                 }
-            }
-        };
+            };
         // Normalize triple OS names to their `cfg(target_os = "...")` values,
         // then derive the family from the (normalized) OS through the single
         // shared lookup so this constructor agrees with `from_env`.

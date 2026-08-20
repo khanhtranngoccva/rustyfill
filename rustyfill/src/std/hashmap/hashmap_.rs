@@ -185,7 +185,7 @@ pub trait TryHashMap<K, V, S = RandomState>: Sized {
     /// Returns `Ok(None)` if the key was not previously present, or
     /// `Ok(Some(old_value))` if the key existed and was replaced.
     ///
-    /// Unlike the original [`HashMap::try_insert`], key collisions cause the old value to be evicted. 
+    /// Unlike the original [`HashMap::try_insert`], key collisions cause the old value to be evicted.
     /// See [`Self::try_insert_unique`] for the fallible version of the original behavior.
     ///
     /// **Deprecated:** This method name conflicts with the inherent
@@ -1158,12 +1158,9 @@ mod tests {
         let mut map: HashMap<String, String> = HashMap::new();
 
         use crate::try_extend::TryExtendFromSlice;
-        let r: ExtendErr<'_, String, String> = with_policy(
-            FailPolicy::fail_nth_alloc(2),
-            || {
-                <HashMap<String, String> as TryExtendFromSlice<'_, (String, String)>>::try_extend_from_slice(&mut map, &source)
-            },
-        );
+        let r: ExtendErr<'_, String, String> = with_policy(FailPolicy::fail_nth_alloc(2), || {
+            <HashMap<String, String> as TryExtendFromSlice<'_, (String, String)>>::try_extend_from_slice(&mut map, &source)
+        });
 
         match r {
             Err((remaining, err)) => {
@@ -1222,12 +1219,9 @@ mod tests {
         use crate::try_extend::TryExtendFromSlice;
         // Fail a clone well past indices 0..2 so both "dup" entries are
         // guaranteed to be committed before the failure fires.
-        let r: ExtendErr<'_, String, String> = with_policy(
-            FailPolicy::fail_nth_alloc(8),
-            || {
-                <HashMap<String, String> as TryExtendFromSlice<'_, (String, String)>>::try_extend_from_slice(&mut map, &source)
-            },
-        );
+        let r: ExtendErr<'_, String, String> = with_policy(FailPolicy::fail_nth_alloc(8), || {
+            <HashMap<String, String> as TryExtendFromSlice<'_, (String, String)>>::try_extend_from_slice(&mut map, &source)
+        });
 
         match r {
             Err((remaining, err)) => {

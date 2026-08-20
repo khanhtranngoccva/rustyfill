@@ -7,11 +7,11 @@ fn rdrand64() -> Result<u64, RandomError> {
     unsafe {
         let mut ret: u64 = 0;
         for _ in 0..RETRIES {
-            if  arch::x86_64::_rdrand64_step(&mut ret) == 1 {
+            if arch::x86_64::_rdrand64_step(&mut ret) == 1 {
                 return Ok(ret);
             }
         }
-        Err(RandomError::Platform (lang_alloc::borrow::Cow::Borrowed(
+        Err(RandomError::Platform(lang_alloc::borrow::Cow::Borrowed(
             "RDRAND64 failed after retries",
         )))
     }
@@ -21,11 +21,11 @@ fn rdrand32() -> Result<u32, RandomError> {
     unsafe {
         let mut ret: u32 = 0;
         for _ in 0..RETRIES {
-            if  arch::x86_64::_rdrand32_step(&mut ret) == 1 {
+            if arch::x86_64::_rdrand32_step(&mut ret) == 1 {
                 return Ok(ret);
             }
         }
-        Err(RandomError::Platform (lang_alloc::borrow::Cow::Borrowed(
+        Err(RandomError::Platform(lang_alloc::borrow::Cow::Borrowed(
             "RDRAND32 failed after retries",
         )))
     }
@@ -35,11 +35,11 @@ fn rdrand16() -> Result<u16, RandomError> {
     unsafe {
         let mut ret: u16 = 0;
         for _ in 0..RETRIES {
-            if  arch::x86_64::_rdrand16_step(&mut ret) == 1 {
+            if arch::x86_64::_rdrand16_step(&mut ret) == 1 {
                 return Ok(ret);
             }
         }
-        Err(RandomError::Platform (lang_alloc::borrow::Cow::Borrowed(
+        Err(RandomError::Platform(lang_alloc::borrow::Cow::Borrowed(
             "RDRAND16 failed after retries",
         )))
     }

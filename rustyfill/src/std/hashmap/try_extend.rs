@@ -63,10 +63,7 @@ where
             if self.len() == self.capacity()
                 && let Err(e) = self.try_reserve(1)
             {
-                return Err((
-                    TryHashMapError::from(e),
-                    Resumable::new(pair, iter),
-                ));
+                return Err((TryHashMapError::from(e), Resumable::new(pair, iter)));
             }
             self.insert(pair.0, pair.1);
         }
@@ -75,19 +72,13 @@ where
         if lower > 0
             && let Err(e) = self.try_reserve(lower)
         {
-            return Err((
-                TryHashMapError::from(e),
-                Resumable::from_remainder(iter),
-            ));
+            return Err((TryHashMapError::from(e), Resumable::from_remainder(iter)));
         }
         while let Some(pair) = iter.next() {
             if self.len() == self.capacity()
                 && let Err(e) = self.try_reserve(1)
             {
-                return Err((
-                    TryHashMapError::from(e),
-                    Resumable::new(pair, iter),
-                ));
+                return Err((TryHashMapError::from(e), Resumable::new(pair, iter)));
             }
             self.insert(pair.0, pair.1);
         }

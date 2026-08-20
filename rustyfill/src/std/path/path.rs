@@ -163,8 +163,7 @@ impl TryPath for Path {
         let src = self.as_os_str();
         let len = src.len();
         if len > 0 {
-            os.try_reserve(len)
-                .map_err(TryPathError::Reserve)?;
+            os.try_reserve(len).map_err(TryPathError::Reserve)?;
         }
         os.push(src);
         Ok(out)

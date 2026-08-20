@@ -43,10 +43,7 @@ impl<T> TryExtend<T> for lang_alloc::collections::VecDeque<T> {
             if self.len() == self.capacity()
                 && let Err(e) = self.try_reserve(1)
             {
-                return Err((
-                    TryVecDequeError::from(e),
-                    Resumable::new(item, iter),
-                ));
+                return Err((TryVecDequeError::from(e), Resumable::new(item, iter)));
             }
             self.push_back(item);
         }
@@ -55,19 +52,13 @@ impl<T> TryExtend<T> for lang_alloc::collections::VecDeque<T> {
         if lower > 0
             && let Err(e) = self.try_reserve(lower)
         {
-            return Err((
-                TryVecDequeError::from(e),
-                Resumable::from_remainder(iter),
-            ));
+            return Err((TryVecDequeError::from(e), Resumable::from_remainder(iter)));
         }
         while let Some(item) = iter.next() {
             if self.len() == self.capacity()
                 && let Err(e) = self.try_reserve(1)
             {
-                return Err((
-                    TryVecDequeError::from(e),
-                    Resumable::new(item, iter),
-                ));
+                return Err((TryVecDequeError::from(e), Resumable::new(item, iter)));
             }
             self.push_back(item);
         }

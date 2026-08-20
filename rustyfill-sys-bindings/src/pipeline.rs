@@ -833,7 +833,10 @@ fn mirror_minimal_modules(
         // ancestor / cfg-selected submodule, e.g. `sys/sync/mutex/futex.rs` for
         // `sys::sync::mutex::Mutex`) or a suffix of it (inline-module layout).
         let decl_mod: Vec<&str> = decl.split("::").collect();
-        let Some((def_file_rel, found_item)) = sink.parsed_cache.iter().find(|(fp, (parsed, ln))| {
+        let Some((def_file_rel, found_item)) = sink
+            .parsed_cache
+            .iter()
+            .find(|(fp, (parsed, ln))| {
                 if ln != &target.lib_name {
                     return false;
                 }
@@ -917,7 +920,8 @@ fn mirror_minimal_modules(
                 .entry(def_mod.clone())
                 .or_default()
                 .insert(lf.clone());
-            sink.registry.set_qualifier_route(module_ctx, lead, &def_mod);
+            sink.registry
+                .set_qualifier_route(module_ctx, lead, &def_mod);
 
             // Record an alias import for any non-sibling qualifier so that
             // references like `pal::Mutex` resolve without path rewriting.
@@ -933,7 +937,8 @@ fn mirror_minimal_modules(
                     sink.registry.wrapper_mod(),
                     import_target.replace('/', "::")
                 );
-                sink.registry.set_module_alias_route(module_ctx, lead, &crate_path);
+                sink.registry
+                    .set_module_alias_route(module_ctx, lead, &crate_path);
             }
         }
     }
@@ -962,12 +967,14 @@ fn mirror_minimal_modules(
                 continue;
             }
             let canonical = format!("{}::{}::{}", target.lib_name, mod_path, item.name);
-            sink.registry.insert_declared_alias(&canonical, &def_file_abs);
+            sink.registry
+                .insert_declared_alias(&canonical, &def_file_abs);
             if let Some(rhs) = &item.alias_rhs {
                 sink.registry.set_alias_rhs(&canonical, rhs.clone());
             }
         }
-        sink.parsed_cache.insert(def_file, (parsed, target.lib_name.clone()));
+        sink.parsed_cache
+            .insert(def_file, (parsed, target.lib_name.clone()));
     }
 
     // Strategy B: materialize a re-export shim for every preserved qualifier
