@@ -1,5 +1,5 @@
-// Module verified. 
-// On nightly, we can access EFI helpers internals and the feature works as expected. 
+// Module verified.
+// On nightly, we can access EFI helpers internals and the feature works as expected.
 // On stable, full support for UEFI is practically out of scope so it practically only works on x86_64.
 #![cfg(target_os = "uefi")]
 use super::RandomError;
@@ -39,8 +39,8 @@ mod rng_protocol {
     #[rustversion::nightly]
     pub(crate) fn fill_bytes(bytes: &mut [u8]) -> bool {
         use super::super::uefi_helpers as helpers;
+        use ptr;
         use r_efi::protocols::rng;
-        use  ptr;
 
         if let Ok(handles) = helpers::locate_handles(rng::PROTOCOL_GUID) {
             for handle in handles {
@@ -63,7 +63,7 @@ mod rng_protocol {
                 }
             }
         }
-        
+
         false
     }
 }
@@ -71,13 +71,15 @@ mod rng_protocol {
 /// Port from [getrandom](https://github.com/rust-random/getrandom/blob/master/src/backends/rdrand.rs)
 #[cfg(any(target_arch = "x86_64", target_arch = "x86"))]
 mod rdrand {
-    cfg_select! {
-        target_arch = "x86_64" => {
+    use cfg_if::cfg_if;
+
+    cfg_if! {
+        if #[cfg(target_arch = "x86_64")] => {
             use  arch::x86_64 as arch;
             use arch::_rdrand64_step as rdrand_step;
             type Word = u64;
         }
-        target_arch = "x86" => {
+        else if #[cfg(target_arch = "x86")] => {
             use  arch::x86 as arch;
             use arch::_rdrand32_step as rdrand_step;
             type Word = u32;

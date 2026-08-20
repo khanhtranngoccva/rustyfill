@@ -11,10 +11,11 @@
 //! Both the platform-specific backend functions and the public API return
 //! [`Result`] instead of panicking.
 
+use crate::try_fmt::{TryDebug, helpers::FormatterExt};
+#[cfg(feature = "std")]
+use cfg_if::cfg_if;
 use lang_alloc::borrow::Cow;
 use lang_core::fmt;
-
-use crate::try_fmt::{TryDebug, helpers::FormatterExt};
 
 // ── Error Type ────────────────────────────────────────────────────────────────────
 
@@ -60,22 +61,19 @@ impl TryDebug for RandomError {
 // Most backends are cfg-gated and only active on their respective platforms.
 // All backends require the `std` feature (they depend on libc or platform crates).
 #[cfg(feature = "std")]
-cfg_select! {
+cfg_if! {
     // Tier 1
-    any(target_os = "linux", target_os = "android") => {
+    if #[cfg(any(target_os = "linux", target_os = "android"))] {
         mod linux;
         pub use linux::{fill_bytes, hashmap_random_keys};
-    }
-    target_os = "windows" => {
+    } else if #[cfg(target_os = "windows")] {
         mod windows;
         pub use windows::fill_bytes;
-    }
-    target_vendor = "apple" => {
+    } else if #[cfg(target_vendor = "apple")] {
         mod apple;
         pub use apple::fill_bytes;
     // Others, in alphabetical ordering.
-    }
-    any(
+    } else if #[cfg(any(
         target_os = "dragonfly",
         target_os = "freebsd",
         target_os = "haiku",
@@ -86,97 +84,81 @@ cfg_select! {
         target_os = "solaris",
         target_os = "vita",
         target_os = "nuttx",
-    ) => {
+    ))] {
         mod arc4random;
         pub use arc4random::fill_bytes;
-    }
-    target_os = "emscripten" => {
+    } else if #[cfg(target_os = "emscripten")] {
         mod getentropy;
         pub use getentropy::fill_bytes;
-    }
-    target_os = "espidf" => {
+    } else if #[cfg(target_os = "espidf")] {
         mod espidf;
         pub use espidf::fill_bytes;
-    }
-    target_os = "fuchsia" => {
+    } else if #[cfg(target_os = "fuchsia")] {
         mod fuchsia;
         pub use fuchsia::fill_bytes;
-    }
-    target_os = "hermit" => {
+    } else if #[cfg(target_os = "hermit")] {
         mod hermit;
         pub use hermit::fill_bytes;
-    }
-    any(target_os = "horizon", target_os = "cygwin") => {
+    } else if #[cfg(any(target_os = "horizon", target_os = "cygwin"))] {
         // TODO(horizon): add arc4random_buf to shim-3ds for faster random generation
         mod getrandom;
         pub use getrandom::fill_bytes;
-    }
-    any(
+    } else if #[cfg(any(
         target_os = "aix",
         target_os = "hurd",
         target_os = "l4re",
         target_os = "nto",
         target_os = "qnx",
-    ) => {
+    ))] {
         mod unix_legacy;
         pub use unix_legacy::fill_bytes;
-    }
-    target_os = "redox" => {
+    } else if #[cfg(target_os = "redox")] {
         mod redox;
         pub use redox::fill_bytes;
-    }
-    target_os = "motor" => {
+    } else if #[cfg(target_os = "motor")] {
         mod motor;
         pub use motor::fill_bytes;
-    }
-    all(target_vendor = "fortanix", target_env = "sgx") => {
+    } else if #[cfg(all(target_vendor = "fortanix", target_env = "sgx"))] {
         mod sgx;
         pub use sgx::fill_bytes;
-    }
-    target_os = "solid_asp3" => {
+    } else if #[cfg(target_os = "solid_asp3")] {
         mod solid;
         pub use solid::fill_bytes;
-    }
-    target_os = "teeos" => {
+    } else if #[cfg(target_os = "teeos")] {
         mod teeos;
         pub use teeos::fill_bytes;
-    }
-    target_os = "trusty" => {
+    } else if #[cfg(target_os = "trusty")] {
         mod trusty;
         pub use trusty::fill_bytes;
-    }
-    target_os = "uefi" => {
+    } else if #[cfg(target_os = "uefi")] {
         mod uefi;
         mod uefi_helpers;
         pub use uefi::fill_bytes;
-    }
-    target_os = "vxworks" => {
+    } else if #[cfg(target_os = "vxworks")] {
         mod vxworks;
         pub use vxworks::fill_bytes;
-    }
-    all(target_os = "wasi", target_env = "p1") => {
+    } else if #[cfg(all(target_os = "wasi", target_env = "p1"))] {
         mod wasip1;
         pub use wasip1::fill_bytes;
-    }
-    all(target_os = "wasi", any(target_env = "p2", target_env = "p3")) => {
+    } else if #[cfg(all(target_os = "wasi", any(target_env = "p2", target_env = "p3")))] {
         mod wasi;
         pub use wasi::{fill_bytes, hashmap_random_keys};
-    }
-    target_os = "zkvm" => {
+    } else if #[cfg(target_os = "zkvm")] {
         mod zkvm;
         pub use zkvm::fill_bytes;
-    }
-    any(
+    } else if #[cfg(any(
         all(target_family = "wasm", target_os = "unknown"),
         target_os = "xous",
         target_os = "vexos",
-    ) => {
+    ))] {
         // TODO: remove std support for wasm32-unknown-unknown when feasible
         // TODO(xous): add random data generation support
         mod unsupported;
         pub use unsupported::{fill_bytes, hashmap_random_keys};
+    } else {
+        // No supported backend on this target; the infallible SplitMix64 fallback
+        // (`hashmap_random_keys_mt`) covers the public API.
     }
-    _ => {}
 }
 
 // ── SplitMix64 fallback ──────────────────────────────────────────────────────────
