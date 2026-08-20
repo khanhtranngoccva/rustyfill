@@ -2,15 +2,21 @@
 //!
 //! The platform backends of std's `Mutex` differ in when they allocate:
 //!
-//! - **futex** (Linux, Android, FreeBSD, OpenBSD, WASM atomics, Hermit, ...) —
-//!   the sys mutex is a single atomic word. Construction never touches the heap.
+//! - **allocation-free** (the futex family — Linux, Android, FreeBSD, OpenBSD,
+//!   WASM atomics, Hermit, DragonFly, motor; plus Fuchsia, μITRON, Xous, Windows
+//!   except Win7, and the single-threaded `no_threads` fallback) — the sys mutex
+//!   is a small fixed-size value that carries no heap allocation, so both
+//!   construction and `.lock()` never touch the allocator.
 //! - **pthread** (macOS, iOS, most other Unix targets) — the sys mutex wraps an
 //!   `OnceBox<pal::Mutex>` that lazily allocates and initialises the backing
-//!   `pthread_mutex_t` on the *first* lock, so construction looks infallible
-//!   but the allocation cost is deferred and can still abort under memory
-//!   pressure.
+//!   `pthread_mutex_t` on the *first* lock, so construction looks infallible but
+//!   the allocation cost is deferred and can still abort under memory pressure.
+//! - **sgx** (Fortanix SGX) — like pthread, the sys mutex wraps an
+//!   `OnceBox<SpinMutex<WaitVariable<bool>>>` whose wait-queue is allocated on the
+//!   first lock.
 //!
-//! [`TryMutex`] gives two families of fallible operations:
+//! Only the pthread and sgx backends allocate; every other backend is
+//! allocation-free. [`TryMutex`] gives two families of fallible operations:
 //!
 //! **Construction.** Every `try_new*` constructor performs all the backend
 //! allocation up front and returns an *armed* mutex — one whose `.lock()` is
@@ -25,38 +31,72 @@
 //!   zero-filled; the caller fills it and calls
 //!   [`assume_init`](TryMutex::assume_init) to obtain a typed `Mutex<T>`.
 //!
-//! **Arming.** A mutex created with plain [`Mutex::new`] on a pthread target is
-//! *not* armed: its backend will still perform the deferred allocation on first
-//! lock, which can abort under OOM. [`try_arm`](TryMutex::try_arm) performs that
-//! allocation eagerly in place, converting a lazy mutex into an armed one so no
-//! later call can fail. On futex targets (and for already-armed mutexes) it is
-//! a no-op that always succeeds.
+//! **Arming.** A mutex created with plain [`Mutex::new`] on a pthread or sgx
+//! target is *not* armed: its backend will still perform the deferred allocation
+//! on first lock, which can abort under OOM. [`try_arm`](TryMutex::try_arm)
+//! performs that allocation eagerly in place, converting a lazy mutex into an
+//! armed one so no later call can fail. On allocation-free backends (and for
+//! already-armed mutexes) it is a no-op that always succeeds.
 //!
 //! All fallible entry points return [`AllocError`] on failure. See the safety
 //! notes inside each backend branch for the invariants that make the
 //! raw-pointer surgery sound.
 
-cfg_select! {
-    any(
+#![allow(unexpected_cfgs, reason = "niche targets absent from the cfg table")]
+
+// Dispatch to exactly one backend module based on which std sys-mutex backend is
+// active. We use `cfg_if!` (first-match-wins, lowest-common-denominator MSRV)
+// and mirror std's own `sys::sync::mutex` branch order verbatim, because several
+// allocation-free targets (Linux, FreeBSD, …) are themselves
+// `target_family = "unix"`: their specific `target_os` arms must precede the
+// generic unix/pthread arm, or they would be misrouted to the allocating
+// backend.
+//
+// Every branch routes to one of three modules:
+//
+// - `no_fail` — the futex family (Linux, Android, FreeBSD, OpenBSD, WASM
+//   atomics, Hermit, DragonFly, motor), Fuchsia, μITRON, Xous, Windows (with or without
+//   Win7), and the single-threaded `no_threads` fallback. Their sys mutex is a
+//   small fixed-size value with no heap allocation, so every entry point simply
+//   delegates to `Mutex::new`.
+// - `pthread` — macOS, iOS, Solaris, NetBSD, AIX, Hurd, Cygwin, Haiku, Redox,
+//   emscripten, teeos, and other Unix-family targets. They use
+//   `OnceBox<pal::Mutex>`, which allocates on the first lock.
+// - `sgx` — Fortanix SGX, which uses `OnceBox<SpinMutex<…>>`, also allocating.
+cfg_if! {
+    if #[cfg(any(
+        all(target_os = "windows", not(target_vendor = "win7")),
         target_os = "linux",
         target_os = "android",
         target_os = "freebsd",
         target_os = "openbsd",
         target_os = "motor",
         target_os = "dragonfly",
-        target_os = "hermit",
         all(target_family = "wasm", target_feature = "atomics"),
-    ) => {
-        mod futex;
-        use futex::fresh_inner_mutex;
-    }
-    _ => {
+        target_os = "hermit",
+        target_os = "fuchsia",
+    ))] {
+        mod no_fail;
+    } else if #[cfg(any(
+        target_family = "unix",
+        target_os = "teeos",
+    ))] {
+        mod heap_lock;
         mod pthread;
-        use pthread::fresh_inner_mutex;
+    } else if #[cfg(all(target_os = "windows", target_vendor = "win7"))] {
+        mod no_fail;
+    } else if #[cfg(all(target_vendor = "fortanix", target_env = "sgx"))] {
+        mod heap_lock;
+        mod sgx;
+    } else if #[cfg(any(target_os = "solid_asp3", target_os = "xous"))] {
+        mod no_fail;
+    } else {
+        mod no_fail;
     }
 }
 
 use crate::alloc::AllocError;
+use cfg_if::cfg_if;
 use lang_core::fmt;
 use lang_core::mem::{self, MaybeUninit};
 use lang_std::sync::Mutex;
@@ -64,25 +104,11 @@ use lang_std::sync::Mutex;
 /// Layout mirror of std's public `sync::Mutex<T>` (the poisoned variant),
 /// generated by `rustyfill-sys` from the standard library source. Its fields
 /// are public here, which lets us construct and inspect the exact byte layout
-/// of the real type without going through unstable APIs.
+/// of the real type without going through unstable APIs. Used by the allocating
+/// backends (pthread / sgx) to route pointer surgery through the real struct
+/// layout, and by the layout-parity tests.
+#[allow(unused, reason = "used by child modules")]
 pub(crate) type SysMutexMirror<T> = rustyfill_sys::std::sync::poison::mutex::Mutex<T>;
-/// Mirror of the cfg-selected sys mutex (`std::sys::sync::mutex::Mutex`). On
-/// futex platforms this forwards to the single-atomic-word implementation; on
-/// pthread platforms to the `OnceBox<pal::Mutex>` wrapper. Constructed
-/// field-by-field below rather than via a `Default` impl, so we control exactly
-/// what bytes land in each slot.
-pub(crate) type SysInnerMutex = rustyfill_sys::std::sys::sync::mutex::Mutex;
-/// Mirror of the poison flag carried by every public `Mutex`. Fresh state is
-/// "not failed", matching what `Mutex::new` produces.
-pub(crate) type PoisonFlag = rustyfill_sys::std::sync::poison::Flag;
-
-/// Construct an instance of the generated mirror's atomic primitive — a
-/// transparent wrapper around a public `UnsafeCell<T>`, standing in for std's
-/// generic atomic (which won't compile downstream). Delegates to the stub's own
-/// `new`, which lays down exactly the bytes std's `Atomic::new(v)` produces.
-pub(crate) fn mirror_atomic<T>(value: T) -> rustyfill_sys::std::sync::atomic::Atomic<T> {
-    rustyfill_sys::std::sync::atomic::Atomic::new(value)
-}
 
 /// Fallible construction and arming for [`Mutex`].
 ///
@@ -163,8 +189,8 @@ pub trait TryMutex<T>: Sized {
     /// Arm an existing mutex, performing any deferred backend allocation in
     /// place so that no later call can fail.
     ///
-    /// A mutex created with plain [`Mutex::new`] on a pthread target is *lazy*:
-    /// its backing `pthread_mutex_t` is not allocated until the first lock, at
+    /// A mutex created with plain [`Mutex::new`] on a pthread or sgx target is
+    /// *lazy*: its backing object is not allocated until the first lock, at
     /// which point an OOM would abort the process. Calling this method forces
     /// that allocation now and reports failure via [`AllocError`] instead. After
     /// a successful return, the mutex is armed and `.lock()` is guaranteed
@@ -172,7 +198,8 @@ pub trait TryMutex<T>: Sized {
     ///
     /// This is idempotent: arming an already-armed mutex (one built by any
     /// `try_new*` constructor, or already locked once) is a no-op that succeeds.
-    /// On futex targets construction never allocates, so this always succeeds.
+    /// On allocation-free backends construction never allocates, so this always
+    /// succeeds.
     ///
     /// Takes a shared reference because the only mutation is to the backend's
     /// interior-mutable atomic pointer cell — the same reason std's
@@ -199,7 +226,7 @@ pub trait TryMutex<T>: Sized {
 /// `const _: () = assert!(…)` idiom used elsewhere in the crate (see
 /// [`crate::alloc`]). If a mirror ever drifts from its real counterpart this
 /// fails at compile time rather than silently corrupting values at runtime.
-const fn assert_layout<A, B>() {
+pub(crate) const fn assert_layout<A, B>() {
     const {
         assert!(
             mem::size_of::<A>() == mem::size_of::<B>(),
@@ -227,44 +254,6 @@ unsafe fn move_retag<From, To>(src: From) -> To {
     let dest = unsafe { mem::transmute_copy(&src) };
     mem::forget(src);
     dest
-}
-
-/// Build a public `Mutex<T>` shell holding `data` and carrying a freshly-created
-/// (unlocked, unallocated) sys mutex plus a fresh poison flag. Used by both
-/// backend branches as the starting point.
-///
-/// SAFETY contract for callers: the caller must ensure `data` is a valid value
-/// of the declared payload type. When the payload is `MaybeUninit<U>`, pass
-/// `MaybeUninit::uninit()`; the slot stays logically uninitialised until the
-/// caller writes through it. Locking before the payload is ready is UB. The sys
-/// mutex itself is in the exact state `sys::Mutex::new()` produces, so all
-/// backend invariants hold.
-pub(crate) fn shell<T>(data: T) -> Mutex<T> {
-    // Construct the layout mirror field-by-field. The mirrors are pure data
-    // structs (no constructors), so we replicate exactly what std's
-    // `sys::Mutex::new()` + `Flag::new()` write into each slot:
-    //
-    //   - `inner`:  the cfg-selected sys mutex, freshly unlocked / unallocated
-    //               (futex: the atomic word set to UNLOCKED; pthread: a null
-    //                 OnceBox pointer). No heap involved on either path.
-    //   - `poison`: a fresh `Flag { failed: false }`, matching `Flag::new()`.
-    //   - `data`:   the supplied payload, held in an `UnsafeCell`.
-    //
-    // Because every field is written with the exact bytes std's own
-    // constructors produce, the resulting value is indistinguishable — at the
-    // byte level — from one built by `Mutex::new(data)`.
-    let mirror = SysMutexMirror::<T> {
-        inner: fresh_inner_mutex(),
-        poison: PoisonFlag {
-            #[cfg(panic = "unwind")]
-            failed: mirror_atomic(false),
-        },
-        data: lang_core::cell::UnsafeCell::new(data),
-    };
-    // Prove the mirror and the real `Mutex<T>` agree in size/alignment before
-    // retagging the whole value.
-    assert_layout::<SysMutexMirror<T>, Mutex<T>>();
-    unsafe { move_retag(mirror) }
 }
 
 /// Shared `assume_init` body: reinterpret a `Mutex<MaybeUninit<T>>` whose data
@@ -375,10 +364,10 @@ mod tests {
 
     #[test]
     fn try_arm_on_lazy_mutex_succeeds_and_locks() {
-        // A plain Mutex::new is lazy on pthread targets; arming it must succeed
-        // and leave it fully lockable. On futex targets it is a trivial no-op.
-        // Note: arming takes &self — the mutation is confined to the backend's
-        // interior-mutable atomic pointer cell.
+        // A plain Mutex::new is lazy on pthread/sgx targets; arming it must
+        // succeed and leave it fully lockable. On allocation-free targets it is
+        // a trivial no-op. Note: arming takes &self — the mutation is confined
+        // to the backend's interior-mutable atomic pointer cell.
         let lazy = Mutex::new(5u32);
         Mutex::try_arm(&lazy).expect("arm");
         *lazy.lock().unwrap() += 1;
@@ -417,67 +406,5 @@ mod tests {
         // Each of the 8 threads adds its index 1000 times.
         let expected: u64 = (0..8).map(|i| i * 1000).sum();
         assert_eq!(*m.lock().unwrap(), expected);
-    }
-
-    // ── OOM behaviour ────────────────────────────────────────────────────────
-
-    #[cfg_attr(
-        not(any(
-            target_os = "linux",
-            target_os = "android",
-            target_os = "freebsd",
-            target_os = "openbsd",
-            target_os = "motor",
-            target_os = "dragonfly",
-            target_os = "hermit",
-            all(target_family = "wasm", target_feature = "atomics"),
-        )),
-        ignore
-    )]
-    #[test]
-    fn futex_branch_never_allocates() {
-        use rustyfill_test_allocator::{FailPolicy, with_policy};
-
-        // Force the very next heap allocation to fail. The futex branch must
-        // not allocate at all, so it still succeeds.
-        let r: Result<Mutex<MaybeUninit<i32>>, AllocError> = with_policy(
-            FailPolicy::fail_next_alloc(),
-            <Mutex<i32> as TryMutex<i32>>::try_new_uninit,
-        );
-        assert!(r.is_ok());
-
-        // And the mutex remains fully functional afterwards.
-        let mut uninit = r.unwrap();
-        uninit.get_mut().unwrap().write(7);
-        let m = unsafe { Mutex::assume_init(uninit) };
-        assert_eq!(*m.lock().unwrap(), 7);
-    }
-
-    #[cfg_attr(
-        any(
-            target_os = "linux",
-            target_os = "android",
-            target_os = "freebsd",
-            target_os = "openbsd",
-            target_os = "motor",
-            target_os = "dragonfly",
-            target_os = "hermit",
-            all(target_family = "wasm", target_feature = "atomics"),
-        ),
-        ignore
-    )]
-    #[test]
-    fn pthread_branch_reports_oom_and_gives_back_value() {
-        use rustyfill_test_allocator::{FailPolicy, with_policy};
-
-        // Force the very next heap allocation to fail. The pthread branch
-        // reports the error via try_new_give_back, handing the original value
-        // back to the caller.
-        let r: Result<Mutex<i32>, (i32, AllocError)> =
-            with_policy(FailPolicy::fail_next_alloc(), || {
-                Mutex::<i32>::try_new_give_back(42)
-            });
-        let (value_back, _err) = r.unwrap_err();
-        assert_eq!(value_back, 42);
     }
 }

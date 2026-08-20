@@ -12,6 +12,7 @@ libc = { workspace = true, optional = true }
 once_cell = { workspace = true }
 parking_lot = { workspace = true }
 crossbeam-utils = { workspace = true }
+cfg-if = { workspace = true }
 rustversion = { workspace = true }
 
 [target.'cfg(not(target_os = "hermit"))'.dependencies]

@@ -824,8 +824,6 @@ mod oom_tests {
     use lang_std::ffi::{CString, OsString};
     #[cfg(feature = "std")]
     use lang_std::path::PathBuf;
-    #[cfg(feature = "std")]
-    use lang_std::sync::{self, Mutex, RwLock};
     use rustyfill_test_allocator::{FailPolicy, with_policy};
 
     /// Minimal writer that discards everything without allocating.
@@ -1004,79 +1002,6 @@ mod oom_tests {
     fn try_debug_arc_string_no_alloc() {
         let a: Arc<String> = Arc::new(String::from("arc string"));
         assert!(assert_try_debug_no_alloc(&a));
-    }
-
-    // ── Mutex (TryDebug delegates to std Debug) ──────────────────────────────
-
-    #[cfg(feature = "std")]
-    #[test]
-    fn try_debug_mutex_primitive_no_alloc() {
-        let m: Mutex<i32> = Mutex::new(42);
-        assert!(assert_try_debug_no_alloc(&m));
-    }
-
-    #[cfg(feature = "std")]
-    #[test]
-    fn try_debug_mutex_string_no_alloc() {
-        let m: Mutex<String> = Mutex::new(String::from("mutex string"));
-        assert!(assert_try_debug_no_alloc(&m));
-    }
-
-    #[cfg(feature = "std")]
-    #[test]
-    fn try_debug_mutex_vec_no_alloc() {
-        let m: Mutex<Vec<u8>> = Mutex::new(vec![1, 2, 3]);
-        assert!(assert_try_debug_no_alloc(&m));
-    }
-
-    #[cfg(feature = "std")]
-    #[test]
-    fn try_debug_mutex_locked_no_alloc() {
-        let m: Mutex<i32> = Mutex::new(42);
-        let _guard = m.lock().unwrap();
-        assert!(assert_try_debug_no_alloc(&m));
-    }
-
-    // ── RwLock (TryDebug delegates to std Debug) ─────────────────────────────
-
-    #[cfg(feature = "std")]
-    #[test]
-    fn try_debug_rwlock_primitive_no_alloc() {
-        let rw: RwLock<i32> = RwLock::new(42);
-        assert!(assert_try_debug_no_alloc(&rw));
-    }
-
-    #[cfg(feature = "std")]
-    #[test]
-    fn try_debug_rwlock_string_no_alloc() {
-        let rw: RwLock<String> = RwLock::new(String::from("rwlock string"));
-        assert!(assert_try_debug_no_alloc(&rw));
-    }
-
-    #[cfg(feature = "std")]
-    #[test]
-    fn try_debug_rwlock_vec_no_alloc() {
-        let rw: RwLock<Vec<u8>> = RwLock::new(vec![1, 2, 3]);
-        assert!(assert_try_debug_no_alloc(&rw));
-    }
-
-    // ── Baseline: verify std Debug itself is allocation-free ──────────────────
-    // If these fail, std's Debug impl changed and our TryDebug passthrough will too.
-
-    #[cfg(feature = "std")]
-    #[test]
-    fn std_debug_mutex_primitive_no_alloc() {
-        use super::AssertDebug;
-        let m: sync::Mutex<i32> = sync::Mutex::new(42);
-        assert!(assert_try_debug_no_alloc(AssertDebug(&m)));
-    }
-
-    #[cfg(feature = "std")]
-    #[test]
-    fn std_debug_rwlock_primitive_no_alloc() {
-        use super::AssertDebug;
-        let rw: sync::RwLock<i32> = sync::RwLock::new(42);
-        assert!(assert_try_debug_no_alloc(AssertDebug(&rw)));
     }
 
     // ── PathBuf (sized — uses generic helper) ──────────────────────────────

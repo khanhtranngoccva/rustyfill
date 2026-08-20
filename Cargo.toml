@@ -12,6 +12,7 @@ libc = "0.2.189"
 once_cell = { version = "1.21.4", default-features = false }
 parking_lot = { version = "0.12", default-features = false }
 crossbeam-utils = { version = "0.8", default-features = false }
+cfg-if = "1.0"
 rustversion = "1.0.23"
 rustyfill-macros = { path = "rustyfill-macros" }
 syn = { version = "2", features = ["full"] }
