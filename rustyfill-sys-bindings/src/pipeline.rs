@@ -19,8 +19,7 @@ use std::path::{Path, PathBuf};
 use crate::emitter::{
     EmitConfig, QualifierResolver, TypeRegistry, check_declared_struct_fields,
     collect_qualified_refs, emit_binding_file, emit_glob_reexport_aliases,
-    emit_hierarchical_manifest, emit_known_type_stub, emit_preamble_module,
-    emit_reexport_shim,
+    emit_hierarchical_manifest, emit_known_type_stub, emit_preamble_module, emit_reexport_shim,
 };
 use crate::loader_spec::LoaderSpec;
 use crate::parser::{
@@ -487,17 +486,14 @@ pub fn generate(input: &PipelineInput<'_>) -> GenerateOutcome {
         // It also materializes re-export shims (Strategy B) for non-sibling
         // preserved qualifiers, registering them with the resolver and the
         // emitted-file sets used by later phases.
-        mirror_minimal_modules(
-            target,
-            &lib_src,
-            out_dir,
-            &mut resolver,
-            cfg,
-            &mut parsed_cache,
-            &mut registry,
-            &mut emitted_canonicals,
-            &mut all_files,
-        );
+        let mut sink = EmitSink {
+            resolver: &mut resolver,
+            parsed_cache: &mut parsed_cache,
+            registry: &mut registry,
+            emitted_canonicals: &mut emitted_canonicals,
+            all_files: &mut all_files,
+        };
+        mirror_minimal_modules(target, &lib_src, out_dir, cfg, &mut sink);
     }
 
     // Materialize a re-export shim for any spec-declared type whose canonical
@@ -792,6 +788,18 @@ fn collect_ignored_names(
 
 // ── Minimal-module mirroring ────────────────────────────────────────────────
 
+/// Mutable state that [`mirror_minimal_modules`] reads from and writes into as
+/// it discovers preserved qualifiers and materializes their mirrors/shims.
+/// Bundling these accumulators keeps the mirroring entry point's argument list
+/// small; they are threaded through here rather than passed individually.
+struct EmitSink<'a> {
+    resolver: &'a mut ModuleResolver,
+    parsed_cache: &'a mut HashMap<String, (ParsedSource, String)>,
+    registry: &'a mut TypeRegistry,
+    emitted_canonicals: &'a mut HashSet<String>,
+    all_files: &'a mut Vec<(String, String)>,
+}
+
 /// Detect preserved module qualifiers in declared alias RHSes and struct
 /// fields, resolve each to its defining module, record a qualifier route for
 /// the emitter, and mirror the minimal defining module (declaring only the
@@ -800,14 +808,11 @@ fn mirror_minimal_modules(
     target: &crate::loader_spec::BindingTarget,
     lib_src: &Path,
     out_dir: &Path,
-    resolver: &mut ModuleResolver,
     cfg: &CfgContext,
-    parsed_cache: &mut HashMap<String, (ParsedSource, String)>,
-    registry: &mut TypeRegistry,
-    emitted_canonicals: &mut HashSet<String>,
-    all_files: &mut Vec<(String, String)>,
+    sink: &mut EmitSink<'_>,
 ) {
-    let seed: Vec<_> = parsed_cache
+    let seed: Vec<_> = sink
+        .parsed_cache
         .iter()
         .filter(|(_, (_, ln))| ln == &target.lib_name)
         .map(|(fp, (parsed, _))| (fp.clone(), parsed.clone()))
@@ -828,9 +833,7 @@ fn mirror_minimal_modules(
         // ancestor / cfg-selected submodule, e.g. `sys/sync/mutex/futex.rs` for
         // `sys::sync::mutex::Mutex`) or a suffix of it (inline-module layout).
         let decl_mod: Vec<&str> = decl.split("::").collect();
-        let Some((def_file_rel, found_item)) = parsed_cache
-            .iter()
-            .find(|(fp, (parsed, ln))| {
+        let Some((def_file_rel, found_item)) = sink.parsed_cache.iter().find(|(fp, (parsed, ln))| {
                 if ln != &target.lib_name {
                     return false;
                 }
@@ -914,7 +917,7 @@ fn mirror_minimal_modules(
                 .entry(def_mod.clone())
                 .or_default()
                 .insert(lf.clone());
-            registry.set_qualifier_route(module_ctx, lead, &def_mod);
+            sink.registry.set_qualifier_route(module_ctx, lead, &def_mod);
 
             // Record an alias import for any non-sibling qualifier so that
             // references like `pal::Mutex` resolve without path rewriting.
@@ -922,14 +925,15 @@ fn mirror_minimal_modules(
             // bound the same name and skips the alias to avoid E0252.
             let sibling = format!("{module_ctx}/{lead}");
             if sibling != def_mod {
-                let import_target = qres.resolve_import_target(module_ctx, lead)
+                let import_target = qres
+                    .resolve_import_target(module_ctx, lead)
                     .unwrap_or_else(|| def_mod.clone());
                 let crate_path = format!(
                     "crate::{}::{}",
-                    registry.wrapper_mod(),
+                    sink.registry.wrapper_mod(),
                     import_target.replace('/', "::")
                 );
-                registry.set_module_alias_route(module_ctx, lead, &crate_path);
+                sink.registry.set_module_alias_route(module_ctx, lead, &crate_path);
             }
         }
     }
@@ -938,8 +942,8 @@ fn mirror_minimal_modules(
     // leaves so the emitter writes a slim mirror.
     for (def_mod, leaves) in &needed_leaves {
         let def_file = format!("{def_mod}.rs");
-        if parsed_cache.contains_key(&def_file)
-            || parsed_cache.contains_key(&format!("{def_mod}/mod.rs"))
+        if sink.parsed_cache.contains_key(&def_file)
+            || sink.parsed_cache.contains_key(&format!("{def_mod}/mod.rs"))
         {
             continue;
         }
@@ -958,12 +962,12 @@ fn mirror_minimal_modules(
                 continue;
             }
             let canonical = format!("{}::{}::{}", target.lib_name, mod_path, item.name);
-            registry.insert_declared_alias(&canonical, &def_file_abs);
+            sink.registry.insert_declared_alias(&canonical, &def_file_abs);
             if let Some(rhs) = &item.alias_rhs {
-                registry.set_alias_rhs(&canonical, rhs.clone());
+                sink.registry.set_alias_rhs(&canonical, rhs.clone());
             }
         }
-        parsed_cache.insert(def_file, (parsed, target.lib_name.clone()));
+        sink.parsed_cache.insert(def_file, (parsed, target.lib_name.clone()));
     }
 
     // Strategy B: materialize a re-export shim for every preserved qualifier
@@ -993,9 +997,7 @@ fn mirror_minimal_modules(
         // Compute the name a `use` statement binds, mirroring the logic in
         // `QualifierResolver::resolve_qualified_ref`. Returns `None` when the
         // path has no usable named segment.
-        let bound_name_of = |segs: &[PathSegment],
-                             alias: &Option<String>|
-         -> Option<String> {
+        let bound_name_of = |segs: &[PathSegment], alias: &Option<String>| -> Option<String> {
             match alias {
                 Some(a) => Some(a.clone()),
                 None => {
@@ -1088,8 +1090,8 @@ fn mirror_minimal_modules(
         // output file, so a shim can safely occupy their path.
         let existing_alias_file = format!("{alias_mod}.rs");
         let existing_alias_mod = format!("{alias_mod}/mod.rs");
-        if emitted_canonicals.contains(&existing_alias_file)
-            || emitted_canonicals.contains(&existing_alias_mod)
+        if sink.emitted_canonicals.contains(&existing_alias_file)
+            || sink.emitted_canonicals.contains(&existing_alias_mod)
         {
             continue;
         }
@@ -1119,10 +1121,10 @@ fn mirror_minimal_modules(
         // new module, and record it for the manifest.
         let shim_content = fs::read_to_string(out_dir.join(&shim_rel)).unwrap_or_default();
         let parsed = parse_source_with_cfg(&shim_content, cfg);
-        resolver.register_source(&shim_rel, parsed);
-        resolver.mark_emittable(&shim_rel);
-        emitted_canonicals.insert(shim_rel.clone());
-        all_files.push((shim_rel, target.lib_name.clone()));
+        sink.resolver.register_source(&shim_rel, parsed);
+        sink.resolver.mark_emittable(&shim_rel);
+        sink.emitted_canonicals.insert(shim_rel.clone());
+        sink.all_files.push((shim_rel, target.lib_name.clone()));
     }
 }
 
@@ -1161,40 +1163,39 @@ fn emit_cfg_reexport_shims(
             }
             // Locate the concrete defining file. If it's the same as the naive
             // canonical path there's nothing to forward.
-            match locate_declared_struct(decl, &lib_src, cfg) {
-                LocatedStruct::Found(def_file) => {
-                    let def_stem = def_file.strip_suffix(".rs").unwrap_or(&def_file);
-                    let def_module = def_stem.to_string();
-                    // Same module — the struct is defined directly here; the
-                    // normal emitter handles it. No shim needed.
-                    if def_module == canon_module {
-                        continue;
-                    }
-                    // Compute the relative submodule from canon_module to def_module.
-                    let def_submodule = if let Some(rest) = def_module.strip_prefix(&format!("{canon_module}/")) {
+            if let LocatedStruct::Found(def_file) = locate_declared_struct(decl, &lib_src, cfg) {
+                let def_stem = def_file.strip_suffix(".rs").unwrap_or(&def_file);
+                let def_module = def_stem.to_string();
+                // Same module — the struct is defined directly here; the
+                // normal emitter handles it. No shim needed.
+                if def_module == canon_module {
+                    continue;
+                }
+                // Compute the relative submodule from canon_module to def_module.
+                let def_submodule =
+                    if let Some(rest) = def_module.strip_prefix(&format!("{canon_module}/")) {
                         rest.to_string()
                     } else {
                         // Definition is not nested under the canonical module —
                         // can't express as a simple re-export shim.
                         continue;
                     };
-                    let shim_rel = emit_reexport_shim(
-                        out_dir,
-                        &target.lib_name,
-                        &canon_module,
-                        leaf,
-                        &canon_module,
-                        &def_submodule,
-                    );
-                    let Some(shim_rel) = shim_rel else { continue };
-                    let shim_content = std::fs::read_to_string(out_dir.join(&shim_rel)).unwrap_or_default();
-                    let parsed = parse_source_with_cfg(&shim_content, cfg);
-                    resolver.register_source(&shim_rel, parsed);
-                    resolver.mark_emittable(&shim_rel);
-                    emitted_canonicals.insert(shim_rel.clone());
-                    all_files.push((shim_rel, target.lib_name.clone()));
-                }
-                _ => {}
+                let shim_rel = emit_reexport_shim(
+                    out_dir,
+                    &target.lib_name,
+                    &canon_module,
+                    leaf,
+                    &canon_module,
+                    &def_submodule,
+                );
+                let Some(shim_rel) = shim_rel else { continue };
+                let shim_content =
+                    std::fs::read_to_string(out_dir.join(&shim_rel)).unwrap_or_default();
+                let parsed = parse_source_with_cfg(&shim_content, cfg);
+                resolver.register_source(&shim_rel, parsed);
+                resolver.mark_emittable(&shim_rel);
+                emitted_canonicals.insert(shim_rel.clone());
+                all_files.push((shim_rel, target.lib_name.clone()));
             }
         }
     }
@@ -1762,7 +1763,7 @@ mod tests {
                 && parts
                     .iter()
                     .zip(root_segs.iter().rev())
-                    .all(|(a, b)| *a == b.to_string())
+                    .all(|(a, b)| a == b)
         };
         let mut discovered: HashSet<String> = HashSet::new();
         let mut newly: Vec<String> = Vec::new();

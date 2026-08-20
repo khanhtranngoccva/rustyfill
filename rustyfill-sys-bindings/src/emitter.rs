@@ -1767,7 +1767,7 @@ fn rewrite_generic_args(
             }
             let output = match &p.output {
                 syn::ReturnType::Type(arrow, ty) => syn::ReturnType::Type(
-                    arrow.clone(),
+                    *arrow,
                     Box::new(rewrite_type((**ty).clone(), registry, module_ctx, guard)),
                 ),
                 other => other.clone(),
