@@ -895,12 +895,14 @@ impl ModuleResolver {
                     if !self.is_emittable(target_file) {
                         continue;
                     }
-                    // Skip modules that were registered but have no actual type
-                    // definitions (e.g., sys/pal/unix/conf only exposes functions,
-                    // which means the emitter produced no content for it).
-                    if !self.module_has_items(target_file) {
-                        continue;
-                    }
+                    // For module-level imports (bringing a submodule into scope
+                    // by name, e.g. `use node::marker;`), we only need the
+                    // module to exist in the emitted tree — not for it to pass
+                    // the spec-declaration item filter. The `module_has_items`
+                    // check is appropriate for item-level imports but would
+                    // incorrectly drop valid submodule references when the
+                    // module's items haven't been spec-filtered yet at this
+                    // phase of the pipeline.
                     // Convert file path to module path for resolution.
                     let target_mod = Self::file_to_module_path_str(target_file);
                     let rel_path = self.module_path_to_super_chain(&current_module, &target_mod);
@@ -977,6 +979,29 @@ impl ModuleResolver {
                         continue;
                     }
                     if !rel_path.is_empty() {
+                        // For public re-exports (`pub use`), verify the target name
+                        // will actually exist in the emitted tree. Without this check,
+                        // a parent module that re-exports many items from a child would
+                        // emit `pub use` for types the emitter stripped out (because
+                        // they aren't in the spec), producing unresolved imports.
+                        // We accept the re-export if the target is either:
+                        //   (a) a submodule (inline or file-based) that was extracted,
+                        //   (b) an item declared in the spec (will be emitted).
+                        // Private `use` statements are safe to keep as-is because they
+                        // only bring names into local scope under #[allow(unused_imports)].
+                        if ri.use_stmt.visibility == Visibility::Public {
+                            let tf = target_file.as_deref().unwrap_or("");
+                            let is_submodule = self.find_module(item_name).is_some()
+                                || self
+                                    .sources
+                                    .get(tf)
+                                    .map(|s| s.inline_modules.iter().any(|(n, _)| n == item_name))
+                                    .unwrap_or(false);
+                            let is_declared = self.item_exists_in_module(tf, item_name);
+                            if !is_submodule && !is_declared {
+                                continue;
+                            }
+                        }
                         // When the relative path doesn't start with `super`, it refers
                         // to a local child/sibling module. Prefix with `self::` to
                         // disambiguate from names brought in by glob imports.

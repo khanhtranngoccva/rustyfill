@@ -65,6 +65,14 @@ pub enum ItemKind {
     TypeAlias,
 }
 
+impl ItemKind {
+    /// True for item kinds that define a type (struct, enum, union, alias).
+    /// Constants are excluded — they are not resolvable as type references.
+    pub fn is_type_def(self) -> bool {
+        !matches!(self, ItemKind::Const)
+    }
+}
+
 /// An external module declaration (`mod X;` / `pub mod X;`) carrying its
 /// cfg attributes so consumers can decide whether the module is active.
 #[derive(Clone)]
@@ -115,14 +123,18 @@ impl CfgContext {
         let target_arch = std::env::var("CARGO_CFG_TARGET_ARCH").ok();
         let target_env = std::env::var("CARGO_CFG_TARGET_ENV").ok();
         let target_vendor = std::env::var("CARGO_CFG_TARGET_VENDOR").ok();
+        // Cargo exports CARGO_CFG_TARGET_FAMILY when present but not always;
+        // fall back to deriving it from the OS so the two constructors agree.
+        let target_family = target_family.or_else(|| {
+            Self::family_for_os(target_os.as_deref()).map(String::from)
+        });
         // Cargo does not export CARGO_CFG_UNIX, so derive unix-ness from the
-        // target family / OS instead. Without this, cfg_select! branches keyed
-        // on the bare `unix` predicate never activate and the resolver falls
-        // through to the `_` fallback (e.g. picking `unsupported` over `unix`).
-        let is_unix = match (target_family.as_deref(), target_os.as_deref()) {
-            (Some("unix"), _) => true,
-            (_, os) => matches!(os, Some("linux") | Some("macos") | Some("bsd")),
-        };
+        // resolved family / OS instead. Without this, cfg_select! branches
+        // keyed on the bare `unix` predicate never activate and the resolver
+        // falls through to the `_` fallback (e.g. picking `unsupported` over
+        // `unix`).
+        let is_unix = target_family.as_deref() == Some("unix")
+            || Self::family_for_os(target_os.as_deref()) == Some("unix");
         let is_windows = target_os.as_deref() == Some("windows");
 
         Self {
@@ -142,27 +154,51 @@ impl CfgContext {
     /// is the reliable way to learn the platform for cfg_select! evaluation.
     pub fn from_target_triple(triple: &str) -> Self {
         let parts: Vec<&str> = triple.split('-').collect();
-        // Typical layout: arch [- vendor] - os [- env]. The OS is the segment
-        // after the vendor; unknown/vendor segments are skipped.
-        let known_vendors = ["unknown", "pc", "none", "fortanix"];
-        let mut target_os: Option<String> = None;
-        let mut target_env: Option<String> = None;
-        for (i, p) in parts.iter().enumerate() {
-            if known_vendors.contains(p) || i == 0 {
-                continue;
+        // Typical layout: arch [- vendor] - os [- env]. Vendors are a closed
+        // set of well-known strings; anything else in the vendor slot is an
+        // OS/architecture fragment we don't model, so we treat the *last*
+        // non-arch, non-vendor segment before any trailing env as the OS.
+        let known_vendors = [
+            "unknown", "pc", "none", "fortanix", "apple", "nintendo", "sony", "uwp",
+            "hurd", "contiki", "newlib", "hermit", "kmc", "wrs", "gnu", "musl",
+        ];
+        let is_known_vendor = |p: &&str| known_vendors.contains(p);
+        // Collect candidate segments (everything except the leading arch).
+        let candidates: Vec<&str> = parts
+            .iter()
+            .skip(1)
+            .filter(|p| !is_known_vendor(p))
+            .copied()
+            .collect();
+        // The OS is the first candidate; a trailing candidate is the env only
+        // when it looks like an environment (matches common env suffixes) and
+        // there is more than one candidate.
+        let (target_os_raw, target_env): (Option<&str>, Option<String>) =
+            match candidates.as_slice() {
+                [] => (None, None),
+                [only] => (Some(*only), None),
+            [first, rest @ ..] => {
+                let last = *rest.last().unwrap();
+                let looks_like_env = matches!(
+                    last,
+                    "gnu" | "musl" | "msvc" | "win7" | "haiku" | "none" | "kernel" | "softfloat"
+                        | "double" | "eabi" | "eabihf" | "armv6" | "armv7" | "thumbv6"
+                        | "thumbv7" | "thumbv8" | "qemu" | "simulator"
+                );
+                if looks_like_env {
+                    (Some(first), Some(last.to_string()))
+                } else {
+                    // No recognizable env suffix; the first segment is the OS
+                    // and we ignore the remainder (rare multi-segment triples).
+                    (Some(first), None)
+                }
             }
-            if target_os.is_none() {
-                target_os = Some((*p).to_string());
-            } else if target_env.is_none() && i + 1 == parts.len() {
-                target_env = Some((*p).to_string());
-            }
-        }
-        let target_family = match target_os.as_deref() {
-            Some("linux") | Some("android") | Some("macos") | Some("ios") | Some("freebsd")
-            | Some("netbsd") | Some("openbsd") => Some("unix".to_string()),
-            Some("windows") => Some("windows".to_string()),
-            _ => None,
         };
+        // Normalize triple OS names to their `cfg(target_os = "...")` values,
+        // then derive the family from the (normalized) OS through the single
+        // shared lookup so this constructor agrees with `from_env`.
+        let target_os = target_os_raw.map(normalize_target_os);
+        let target_family = Self::family_for_os(target_os.as_deref()).map(String::from);
         let is_unix = target_family.as_deref() == Some("unix");
         let is_windows = target_os.as_deref() == Some("windows");
         Self {
@@ -176,6 +212,34 @@ impl CfgContext {
         }
     }
 
+    /// Derive `target_family` from a normalized `cfg(target_os)` value. This is
+    /// the single source of truth for family classification, shared by both
+    /// `from_env` and `from_target_triple`, so adding an OS here updates every
+    /// code path at once instead of scattering per-OS lists.
+    fn family_for_os(os: Option<&str>) -> Option<&'static str> {
+        match os? {
+            "windows" => Some("windows"),
+            "linux" | "android" | "macos" | "ios" | "freebsd" | "netbsd" | "openbsd"
+            | "dragonfly" | "solaris" | "illumos" | "aix" | "haiku" | "l4re" | "horizon"
+            | "emscripten" | "wasi" => Some("unix"),
+            _ => None,
+        }
+    }
+}
+
+/// Map a target-triple OS segment to its `cfg(target_os = "...")` value. Most
+/// segments are already the cfg name; a few (notably Apple's) differ between
+/// the triple spelling and the cfg spelling.
+fn normalize_target_os(os: &str) -> String {
+    match os {
+        "darwin" => "macos".to_string(),
+        // iOS triples spell the OS as `ios` already in modern toolchains, but
+        // older ones used `ios` too — keep as-is.
+        other => other.to_string(),
+    }
+}
+
+impl CfgContext {
     /// Evaluate a simple cfg predicate string against this context.
     /// Supports: bare names (`unix`), key-value pairs (`target_os = "linux"`),
     /// `all(...)`, `any(...)`, `not(...)`.

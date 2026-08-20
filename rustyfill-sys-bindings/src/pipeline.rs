@@ -20,6 +20,7 @@ use crate::emitter::{
     EmitConfig, QualifierResolver, TypeRegistry, check_declared_struct_fields,
     collect_qualified_refs, emit_binding_file, emit_glob_reexport_aliases,
     emit_hierarchical_manifest, emit_known_type_stub, emit_preamble_module,
+    emit_reexport_shim,
 };
 use crate::loader_spec::LoaderSpec;
 use crate::parser::{
@@ -98,6 +99,11 @@ pub fn generate(input: &PipelineInput<'_>) -> GenerateOutcome {
     let mut preamble_emitted: HashSet<String> = HashSet::new();
     let mut pending_declarations: Vec<(String, String)> = Vec::new();
     let mut reexport_located: Vec<(String, String)> = Vec::new();
+    // Accumulated across all targets so the final manifest sees every emitted
+    // file (including re-export shims materialized during minimal-module
+    // mirroring in Phase 1d).
+    let mut all_files: Vec<(String, String)> = Vec::new();
+    let mut emitted_canonicals: HashSet<String> = HashSet::new();
 
     // ── Phase 0: Emit preamble modules per target library ───────────────────
     // The preamble carries only static core re-exports and shims; it is identical
@@ -114,7 +120,12 @@ pub fn generate(input: &PipelineInput<'_>) -> GenerateOutcome {
     for target in &spec.targets {
         let lib_src = rust_src.join(&target.lib_name).join("src");
 
-        for decl in &target.declared_structs {
+        // Collect active declarations (unconditional + cfg-gated ones whose
+        // predicate matches the current build context). This ensures that
+        // platform-specific backend types (e.g., futex-only types on Linux)
+        // are not declared on targets where they don't exist.
+        let active_decls = target.active_declarations(cfg);
+        for decl in &active_decls {
             match locate_declared_struct(decl, &lib_src, cfg) {
                 LocatedStruct::Found(def_file) => {
                     let naive = decl.replace("::", "/") + ".rs";
@@ -229,8 +240,8 @@ pub fn generate(input: &PipelineInput<'_>) -> GenerateOutcome {
     for target in &spec.targets {
         let lib_src = rust_src.join(&target.lib_name).join("src");
 
-        let declared_roots: Vec<String> = target
-            .declared_structs
+        let active_decls = target.active_declarations(cfg);
+        let declared_roots: Vec<String> = active_decls
             .iter()
             .map(|d| d.replace("::", "/"))
             .filter(|p| p.ends_with(".rs") || !p.contains(".rs"))
@@ -409,7 +420,8 @@ pub fn generate(input: &PipelineInput<'_>) -> GenerateOutcome {
         }
 
         let lib_src = rust_src.join(&target.lib_name).join("src");
-        for decl in &target.declared_structs {
+        let active_decls = target.active_declarations(cfg);
+        for decl in &active_decls {
             let canonical = format!("{}::{}", target.lib_name, decl);
             let leaf = decl.rsplit("::").next().unwrap_or("");
             let mut found_item: Option<&ParsedItem> = None;
@@ -470,8 +482,39 @@ pub fn generate(input: &PipelineInput<'_>) -> GenerateOutcome {
         }
 
         // ── Minimal-module mirroring for preserved qualifiers ───────────────
-        mirror_minimal_modules(target, &lib_src, cfg, &mut parsed_cache, &mut registry);
+        // Runs after the type registry is fully populated (including this
+        // target's declared types) so that field references route correctly.
+        // It also materializes re-export shims (Strategy B) for non-sibling
+        // preserved qualifiers, registering them with the resolver and the
+        // emitted-file sets used by later phases.
+        mirror_minimal_modules(
+            target,
+            &lib_src,
+            out_dir,
+            &mut resolver,
+            cfg,
+            &mut parsed_cache,
+            &mut registry,
+            &mut emitted_canonicals,
+            &mut all_files,
+        );
     }
+
+    // Materialize a re-export shim for any spec-declared type whose canonical
+    // module has no emitted binding file of its own but whose concrete
+    // definition lives in a cfg-selected submodule (e.g. `sys::sync::mutex::Mutex`,
+    // which on Linux is `pub use futex::Mutex;` inside `mod.rs`). Without this,
+    // the declared path would dangle because only the leaf submodule (`futex`)
+    // was mirrored.
+    emit_cfg_reexport_shims(
+        rust_src,
+        &spec.targets,
+        out_dir,
+        &mut resolver,
+        cfg,
+        &mut emitted_canonicals,
+        &mut all_files,
+    );
 
     // Hand the resolver the same declared-path set the emitter uses to filter
     // output.
@@ -493,8 +536,6 @@ pub fn generate(input: &PipelineInput<'_>) -> GenerateOutcome {
 
     // ── Phase 2: EMIT ───────────────────────────────────────────────────────
     let replacement_entries_slice = replacement_view(&replacement_entries);
-    let mut all_files: Vec<(String, String)> = Vec::new();
-    let mut emitted_canonicals: HashSet<String> = HashSet::new();
     let mut emitted_paths: Vec<PathBuf> = Vec::new();
 
     for (file_path, (parsed, lib_name)) in &parsed_cache {
@@ -502,7 +543,40 @@ pub fn generate(input: &PipelineInput<'_>) -> GenerateOutcome {
             continue;
         }
         let depth = compute_module_depth(file_path);
-        let extra_uses = resolver.emit_use_statements_for_file(file_path, &ignored_name_refs);
+        let mut extra_uses = resolver.emit_use_statements_for_file(file_path, &ignored_name_refs);
+        // Prepend module-alias imports for preserved non-sibling qualifiers so
+        // references like `pal::Mutex` resolve without path rewriting.
+        // The key must match what was recorded: strip `.rs` and `/mod` suffixes.
+        let stem = file_path.strip_suffix(".rs").unwrap_or(file_path);
+        let module_key = stem.strip_suffix("/mod").unwrap_or(stem);
+        // Collect names already bound by the resolver's imports so we don't
+        // emit a conflicting alias.
+        let mut already_bound: std::collections::HashSet<String> = std::collections::HashSet::new();
+        for line in &extra_uses {
+            let trimmed = line
+                .trim()
+                .strip_prefix("#[allow(unused_imports)]")
+                .unwrap_or(line.trim())
+                .trim();
+            if let Some(body) = trimmed.strip_prefix("use ") {
+                let body = body.strip_suffix(';').unwrap_or(body);
+                if let Some((_, alias_name)) = body.rsplit_once(" as ") {
+                    already_bound.insert(alias_name.trim().to_string());
+                } else if !body.ends_with("::*")
+                    && let Some(last_seg) = body.rsplit_once(':').map(|(_, n)| n.trim())
+                {
+                    already_bound.insert(last_seg.to_string());
+                }
+            }
+        }
+        for (alias, crate_path) in registry.module_alias_routes(module_key) {
+            if already_bound.contains(alias) {
+                continue;
+            }
+            extra_uses.push(format!(
+                "#[allow(unused_imports)] use {crate_path} as {alias};"
+            ));
+        }
         let siblings = get_sibling_modules(file_path, &all_files);
         let emit_path = out_dir.join(file_path);
 
@@ -554,8 +628,13 @@ pub fn generate(input: &PipelineInput<'_>) -> GenerateOutcome {
 
             let inline_emit_path = out_dir.join(&inline_rel_path);
             let inline_depth = compute_module_depth(&inline_rel_path);
-            let inline_extra_uses =
+            let mut inline_extra_uses =
                 resolver.emit_use_statements_for_file(&inline_rel_path, &ignored_name_refs);
+            for (alias, crate_path) in registry.module_alias_routes(&inline_rel_path) {
+                inline_extra_uses.push(format!(
+                    "#[allow(unused_imports)] use {crate_path} as {alias};"
+                ));
+            }
             let inline_siblings = get_sibling_modules(&inline_rel_path, &all_files);
             let inline_has_content = emit_binding_file(
                 &inline_emit_path,
@@ -601,7 +680,8 @@ pub fn generate(input: &PipelineInput<'_>) -> GenerateOutcome {
     // ── Phase 3: Discover and emit re-export aliases ────────────────────────
     let mut discovered_aliases = HashSet::new();
     for target in &spec.targets {
-        for decl in &target.declared_structs {
+        let active_decls = target.active_declarations(cfg);
+        for decl in &active_decls {
             let leaf = decl.rsplit("::").next().unwrap_or("");
             let def_file = parsed_cache
                 .iter()
@@ -719,9 +799,13 @@ fn collect_ignored_names(
 fn mirror_minimal_modules(
     target: &crate::loader_spec::BindingTarget,
     lib_src: &Path,
+    out_dir: &Path,
+    resolver: &mut ModuleResolver,
     cfg: &CfgContext,
     parsed_cache: &mut HashMap<String, (ParsedSource, String)>,
     registry: &mut TypeRegistry,
+    emitted_canonicals: &mut HashSet<String>,
+    all_files: &mut Vec<(String, String)>,
 ) {
     let seed: Vec<_> = parsed_cache
         .iter()
@@ -730,15 +814,56 @@ fn mirror_minimal_modules(
         .collect();
     let mut qres = QualifierResolver::new(lib_src, cfg, seed);
 
-    // Collect (module_ctx, lead, leaf) triples from every declared item's
+    // Collect (module_ctx, lead, leaf) triples from every active declaration's
     // alias RHS and struct fields.
+    let active_decls = target.active_declarations(cfg);
     let mut qual_refs: Vec<(String, Option<String>, String)> = Vec::new();
-    for decl in &target.declared_structs {
+    for decl in &active_decls {
         let leaf = decl.rsplit("::").next().unwrap_or("");
+        // Match the declaration against its actual defining file using the full
+        // module path, not just the leaf name — several files may define a type
+        // with the same leaf (e.g. `Mutex` exists in both `sync/poison/mutex`
+        // and `sys/sync/mutex/futex`). The candidate file's module path must be
+        // either a prefix of the declaration's module path (definition sits in an
+        // ancestor / cfg-selected submodule, e.g. `sys/sync/mutex/futex.rs` for
+        // `sys::sync::mutex::Mutex`) or a suffix of it (inline-module layout).
+        let decl_mod: Vec<&str> = decl.split("::").collect();
         let Some((def_file_rel, found_item)) = parsed_cache
             .iter()
-            .find(|(_, (parsed, ln))| {
-                ln == &target.lib_name && parsed.items.iter().any(|i| i.name == leaf)
+            .find(|(fp, (parsed, ln))| {
+                if ln != &target.lib_name {
+                    return false;
+                }
+                if !parsed.items.iter().any(|i| i.name == leaf) {
+                    return false;
+                }
+                let stem = fp.strip_suffix(".rs").unwrap_or(fp.as_str());
+                let fp_mod: Vec<&str> = stem
+                    .strip_suffix("/mod")
+                    .unwrap_or(stem)
+                    .split('/')
+                    .filter(|s| !s.is_empty())
+                    .collect();
+                // A leaf file (`X.rs`) lives one segment deeper than its owning
+                // module, so strip that trailing segment before comparing. A
+                // `mod.rs` file's module is already represented by the stripped
+                // stem. This yields the *module* path of the file.
+                let file_module: &[&str] = if stem.ends_with("/mod") {
+                    &fp_mod
+                } else {
+                    &fp_mod[..fp_mod.len().saturating_sub(1)]
+                };
+                // Prefix direction: file's module is at or above the declared
+                // module (definition sits in an ancestor / cfg-selected
+                // submodule, e.g. `sys/sync/mutex/futex.rs` for
+                // `sys::sync::mutex::Mutex`).
+                let is_prefix = file_module.len() <= decl_mod.len()
+                    && decl_mod[..file_module.len()] == file_module[..];
+                // Suffix direction: file's module is deeper (inline-module
+                // layout) than the declared module.
+                let is_suffix = file_module.len() >= decl_mod.len()
+                    && file_module[file_module.len() - decl_mod.len()..] == decl_mod[..];
+                is_prefix || is_suffix
             })
             .map(|(fp, (parsed, _))| (fp.clone(), parsed.items.iter().find(|i| i.name == leaf)))
         else {
@@ -773,17 +898,39 @@ fn mirror_minimal_modules(
     }
 
     // Map each resolving defining module to the set of leaf aliases actually
-    // referenced from it, and record a qualifier route for the emitter.
+    // referenced from it, and record a qualifier route for the emitter. For
+    // non-sibling qualifiers we additionally record a *module-alias import*:
+    // rather than rewriting every `lead::leaf` reference to an absolute mirror
+    // path, emit `use <mirror-of-def_mod> as lead;` at the top of the referring
+    // file so the preserved qualifier resolves through source-parity paths.
+    // This is what makes e.g. `pal::Mutex` in `sys/sync/mutex/pthread` resolve
+    // to `crate::std::sys::pal::sync::Mutex`.
     let mut needed_leaves: HashMap<String, HashSet<String>> = HashMap::new();
     for (module_ctx, lead, lf) in &qual_refs {
         if let Some(lead) = lead
-            && let Some(def_mod) = qres.resolve_qualified_alias(module_ctx, Some(lead), lf)
+            && let Some(def_mod) = qres.resolve_qualified_ref(module_ctx, Some(lead), lf)
         {
             needed_leaves
                 .entry(def_mod.clone())
                 .or_default()
                 .insert(lf.clone());
             registry.set_qualifier_route(module_ctx, lead, &def_mod);
+
+            // Record an alias import for any non-sibling qualifier so that
+            // references like `pal::Mutex` resolve without path rewriting.
+            // At emit time, the pipeline checks whether the resolver already
+            // bound the same name and skips the alias to avoid E0252.
+            let sibling = format!("{module_ctx}/{lead}");
+            if sibling != def_mod {
+                let import_target = qres.resolve_import_target(module_ctx, lead)
+                    .unwrap_or_else(|| def_mod.clone());
+                let crate_path = format!(
+                    "crate::{}::{}",
+                    registry.wrapper_mod(),
+                    import_target.replace('/', "::")
+                );
+                registry.set_module_alias_route(module_ctx, lead, &crate_path);
+            }
         }
     }
 
@@ -817,6 +964,239 @@ fn mirror_minimal_modules(
             }
         }
         parsed_cache.insert(def_file, (parsed, target.lib_name.clone()));
+    }
+
+    // Strategy B: materialize a re-export shim for every preserved qualifier
+    // whose defining module is NOT a sibling of the referring file. The shim
+    // lives at the canonical alias location (the import binding's target
+    // module) and forwards the leaf to the actual definition, so references
+    // like `sys::Mutex` in `sync/poison/mutex` resolve through source-parity
+    // paths instead of being rewritten to absolute mirror paths.
+    for (module_ctx, lead, lf) in &qual_refs {
+        let Some(lead) = lead else { continue };
+        let Some(def_mod) = qres.resolve_qualified_ref(module_ctx, Some(lead), lf) else {
+            continue;
+        };
+        // Sibling qualifiers already resolve through the emitted `use super::<lead>;`
+        // line — no shim needed. Only non-sibling routes get a shim.
+        let sibling = format!("{module_ctx}/{lead}");
+        if sibling == def_mod {
+            continue;
+        }
+        // The shim must live where the import binding points: the module that
+        // `lead` resolves to from `module_ctx`. For a plain `use crate::X as lead`,
+        // that is `X`; for `use super::Y as lead`, it is the parent's `Y`.
+        let cur = match qres.source_module(module_ctx) {
+            Some(s) => s,
+            None => continue,
+        };
+        // Compute the name a `use` statement binds, mirroring the logic in
+        // `QualifierResolver::resolve_qualified_ref`. Returns `None` when the
+        // path has no usable named segment.
+        let bound_name_of = |segs: &[PathSegment],
+                             alias: &Option<String>|
+         -> Option<String> {
+            match alias {
+                Some(a) => Some(a.clone()),
+                None => {
+                    let last_named = segs.iter().rev().find_map(|s| match s {
+                        PathSegment::Named(n) => Some(n.clone()),
+                        _ => None,
+                    });
+                    match last_named.as_deref() {
+                        Some("self") => segs.iter().rev().find_map(|s| match s {
+                            PathSegment::Named(n) if n != "self" => Some(n.clone()),
+                            _ => None,
+                        }),
+                        other => other.map(str::to_string),
+                    }
+                }
+            }
+        };
+        let mut alias_mod: Option<String> = None;
+        for stmt in &cur.use_statements {
+            let (target_segs, alias_name) = match &stmt.kind {
+                UseKind::Single(pl, alias) => (pl.segments.clone(), alias.clone()),
+                _ => continue,
+            };
+            let Some(bound_name) = bound_name_of(&target_segs, &alias_name) else {
+                continue;
+            };
+            if bound_name != *lead {
+                continue;
+            }
+            // Resolve the import target to a concrete module relative to the
+            // referring file's module context.
+            let base: Vec<String> = module_ctx
+                .split('/')
+                .filter(|s| !s.is_empty())
+                .map(String::from)
+                .collect();
+            let mut resolved_base = base;
+            for seg in &target_segs {
+                match seg {
+                    PathSegment::Crate => resolved_base.clear(),
+                    PathSegment::Super => {
+                        resolved_base.pop();
+                    }
+                    PathSegment::Self_ => {}
+                    PathSegment::Named(n) => resolved_base.push(n.clone()),
+                }
+            }
+            // Walk left-to-right, descending through re-export layers when a
+            // segment isn't a direct child module.
+            let mut trail: Vec<String> = Vec::new();
+            let mut ok = true;
+            for name in &resolved_base {
+                let candidate = if trail.is_empty() {
+                    name.clone()
+                } else {
+                    format!("{}/{}", trail.join("/"), name)
+                };
+                if qres.source_module(&candidate).is_some() {
+                    trail.push(name.clone());
+                    continue;
+                }
+                if trail.is_empty() {
+                    ok = false;
+                    break;
+                }
+                let cur_mod = trail.join("/");
+                match qres.descend_through_reexport(&cur_mod, name) {
+                    Some(t) => {
+                        for part in t.split('/') {
+                            trail.push(part.to_string());
+                        }
+                    }
+                    None => {
+                        ok = false;
+                        break;
+                    }
+                }
+            }
+            if ok && !trail.is_empty() {
+                alias_mod = Some(trail.join("/"));
+                break;
+            }
+        }
+        let Some(alias_mod) = alias_mod else { continue };
+        // Skip when the alias module already has an emitted binding file — a
+        // shim would collide with it (e.g. `sync/poison/mod.rs` is already
+        // emitted as the poison module's own file, and `marker/mod.rs` carries
+        // the marker enums). Structural parents registered in `parsed_cache`
+        // but never emitted (like `sys/sync`) do NOT count — they have no
+        // output file, so a shim can safely occupy their path.
+        let existing_alias_file = format!("{alias_mod}.rs");
+        let existing_alias_mod = format!("{alias_mod}/mod.rs");
+        if emitted_canonicals.contains(&existing_alias_file)
+            || emitted_canonicals.contains(&existing_alias_mod)
+        {
+            continue;
+        }
+        // The concrete submodule under `def_mod` that defines `leaf`. Empty when
+        // `def_mod` itself is the defining module; otherwise the relative path
+        // from `def_mod` to the defining file (e.g. `"mutex/futex"`).
+        let def_submodule = if def_mod == alias_mod {
+            String::new()
+        } else if let Some(rest) = def_mod.strip_prefix(&format!("{alias_mod}/")) {
+            rest.to_string()
+        } else {
+            // Defining module is not nested under the alias module — fall back
+            // to treating `def_mod` as a sibling of the alias's parent. This
+            // shouldn't happen for import-binding routes, but guard anyway.
+            def_mod.rsplit('/').next().unwrap_or("").to_string()
+        };
+        let shim_rel = emit_reexport_shim(
+            out_dir,
+            &target.lib_name,
+            &alias_mod,
+            lf,
+            &alias_mod,
+            &def_submodule,
+        );
+        let Some(shim_rel) = shim_rel else { continue };
+        // Register with the resolver so use-statement generation can see the
+        // new module, and record it for the manifest.
+        let shim_content = fs::read_to_string(out_dir.join(&shim_rel)).unwrap_or_default();
+        let parsed = parse_source_with_cfg(&shim_content, cfg);
+        resolver.register_source(&shim_rel, parsed);
+        resolver.mark_emittable(&shim_rel);
+        emitted_canonicals.insert(shim_rel.clone());
+        all_files.push((shim_rel, target.lib_name.clone()));
+    }
+}
+
+/// For each spec-declared type whose canonical module has no emitted binding
+/// file of its own, emit a re-export shim forwarding the leaf to the concrete
+/// definition (located via `locate_declared_struct`). This covers cfg-selected
+/// re-exports like `sys::sync::mutex::Mutex` (= `pub use futex::Mutex;` on
+/// Linux) where only the active backend submodule was mirrored.
+fn emit_cfg_reexport_shims(
+    rust_src: &Path,
+    targets: &[crate::loader_spec::BindingTarget],
+    out_dir: &Path,
+    resolver: &mut ModuleResolver,
+    cfg: &CfgContext,
+    emitted_canonicals: &mut HashSet<String>,
+    all_files: &mut Vec<(String, String)>,
+) {
+    for target in targets {
+        let lib_src = rust_src.join(&target.lib_name).join("src");
+        let active_decls = target.active_declarations(cfg);
+        for decl in &active_decls {
+            let parts: Vec<&str> = decl.split("::").collect();
+            if parts.len() < 2 {
+                continue;
+            }
+            let leaf = *parts.last().unwrap();
+            // The canonical module is everything but the leaf.
+            let canon_module = parts[..parts.len() - 1].join("/");
+            // Skip if this module already produced an emitted binding file.
+            let existing_file = format!("{canon_module}.rs");
+            let existing_mod = format!("{canon_module}/mod.rs");
+            if emitted_canonicals.contains(&existing_file)
+                || emitted_canonicals.contains(&existing_mod)
+            {
+                continue;
+            }
+            // Locate the concrete defining file. If it's the same as the naive
+            // canonical path there's nothing to forward.
+            match locate_declared_struct(decl, &lib_src, cfg) {
+                LocatedStruct::Found(def_file) => {
+                    let def_stem = def_file.strip_suffix(".rs").unwrap_or(&def_file);
+                    let def_module = def_stem.to_string();
+                    // Same module — the struct is defined directly here; the
+                    // normal emitter handles it. No shim needed.
+                    if def_module == canon_module {
+                        continue;
+                    }
+                    // Compute the relative submodule from canon_module to def_module.
+                    let def_submodule = if let Some(rest) = def_module.strip_prefix(&format!("{canon_module}/")) {
+                        rest.to_string()
+                    } else {
+                        // Definition is not nested under the canonical module —
+                        // can't express as a simple re-export shim.
+                        continue;
+                    };
+                    let shim_rel = emit_reexport_shim(
+                        out_dir,
+                        &target.lib_name,
+                        &canon_module,
+                        leaf,
+                        &canon_module,
+                        &def_submodule,
+                    );
+                    let Some(shim_rel) = shim_rel else { continue };
+                    let shim_content = std::fs::read_to_string(out_dir.join(&shim_rel)).unwrap_or_default();
+                    let parsed = parse_source_with_cfg(&shim_content, cfg);
+                    resolver.register_source(&shim_rel, parsed);
+                    resolver.mark_emittable(&shim_rel);
+                    emitted_canonicals.insert(shim_rel.clone());
+                    all_files.push((shim_rel, target.lib_name.clone()));
+                }
+                _ => {}
+            }
+        }
     }
 }
 

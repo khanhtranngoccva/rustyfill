@@ -43,19 +43,33 @@ fn std_target() -> BindingTarget {
     target.declare_struct("sys::pal::unix::sync::condvar::Condvar");
 
     // The canonical, cfg-selected sys mutex (`std::sys::sync::mutex::Mutex`).
-    // On Linux this is the futex-backed implementation; on other unix targets
-    // it is the pthread-backed one. The fallible `Mutex` polyfill reserves its
-    // backing storage ahead of time via this type, so we mirror it and its
-    // lazy-allocation helper `OnceBox`.
+    // On Linux this resolves to the futex-backed implementation; on other unix
+    // targets it resolves to the pthread-backed one.
     target.declare_struct("sys::sync::mutex::Mutex");
-    // The futex Mutex (the active backend on Linux) stores its state through two
-    // file-local private type aliases. Declaring them mirrors the aliases and
-    // routes their RHS (`futex::SmallFutex` / `futex::SmallPrimitive`, both
-    // public) through the registry, satisfying the field-publicity check — the
-    // same treatment as btree's private `BoxedNode` alias.
-    target.declare_struct("sys::sync::mutex::futex::Futex");
-    target.declare_struct("sys::sync::mutex::futex::State");
+    // The futex Mutex (the active backend on Linux/Android/FreeBSD/etc.) stores
+    // its state through two file-local private type aliases. Declaring them
+    // mirrors the aliases and routes their RHS (`futex::SmallFutex` /
+    // `futex::SmallPrimitive`, both public) through the registry, satisfying
+    // the field-publicity check — the same treatment as btree's private
+    // `BoxedNode` alias. Gated to futex-active platforms only; on pthread
+    // targets these types don't exist in the active code path.
+    target.declare_struct_cfg(
+        "sys::sync::mutex::futex::Futex",
+        "any(target_os = \"linux\", target_os = \"android\", target_os = \"freebsd\", target_os = \"openbsd\", target_os = \"motor\", target_os = \"dragonfly\", target_os = \"hermit\", all(target_family = \"wasm\", target_feature = \"atomics\"))",
+    );
+    target.declare_struct_cfg(
+        "sys::sync::mutex::futex::State",
+        "any(target_os = \"linux\", target_os = \"android\", target_os = \"freebsd\", target_os = \"openbsd\", target_os = \"motor\", target_os = \"dragonfly\", target_os = \"hermit\", all(target_family = \"wasm\", target_feature = \"atomics\"))",
+    );
+    // The lazy-allocation helper used by the pthread backend (active on
+    // macOS/iOS). Mirrored so the polyfill can interact with its pointer slot.
     target.declare_struct("sys::sync::once_box::OnceBox");
+
+    // The public `std::sync::Mutex<T>` (poison variant) and its poison flag.
+    // Mirrored as a generic layout template so the fallible `TryMutex` polyfill
+    // can construct the struct field-by-field with an uninitialised data slot.
+    target.declare_struct("sync::poison::mutex::Mutex");
+    target.declare_struct("sync::poison::Flag");
 
     target
 }
@@ -80,9 +94,32 @@ fn core_target() -> BindingTarget {
     // so references route there, and emit a stub body (a transparent
     // `UnsafeCell<T>` wrapper) in place of the parsed source. Only the type
     // shape matters for the bindings; atomic ops come from the main crate.
+    // The inner field is public so downstream polyfills (e.g. `TryMutex`) can
+    // construct and inspect the atomic word directly through its `UnsafeCell`,
+    // matching the byte layout std's real `Atomic` would have. A `new` helper
+    // mirrors std's constructor for ergonomic in-place initialisation.
     target.add_known_type(
         "sync::atomic::Atomic",
-        "#[repr(transparent)] pub struct Atomic<T>(::__rustyfill_builtin_core::cell::UnsafeCell<T>);",
+        concat!(
+            "#[repr(transparent)]\n",
+            "pub struct Atomic<T> {\n",
+            "    pub inner: ::__rustyfill_builtin_core::cell::UnsafeCell<T>,\n",
+            "}\n",
+            "impl<T> Atomic<T> {\n",
+            "    #[inline]\n",
+            "    pub const fn new(v: T) -> Self {\n",
+            "        Self { inner: ::__rustyfill_builtin_core::cell::UnsafeCell::new(v) }\n",
+            "    }\n",
+            "    #[inline]\n",
+            "    pub const unsafe fn assume_init(&self) -> &T {\n",
+            "        unsafe { &*self.inner.get() }\n",
+            "    }\n",
+            "    #[inline]\n",
+            "    pub const unsafe fn assume_init_mut(&mut self) -> &mut T {\n",
+            "        unsafe { &mut *self.inner.get() }\n",
+            "    }\n",
+            "}",
+        ),
     );
 
     target

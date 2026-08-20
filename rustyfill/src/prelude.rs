@@ -98,6 +98,11 @@ pub use crate::alloc::btrees::entry::{
     TryBTreeMapExtendFromSliceError, TryBTreeMapVacantEntry,
 };
 
+// ── Mutex (requires `std` feature) ─────────────────────
+
+#[cfg(feature = "std")]
+pub use crate::std::sync::TryMutex;
+
 // ── RefCell ──────────────────────────────────────────
 
 pub use crate::core::cell::TryRefCell;

@@ -67,6 +67,16 @@ pub struct LoaderSpec {
     pub targets: Vec<BindingTarget>,
 }
 
+/// A cfg-gated struct declaration: the struct is only declared when the
+/// predicate evaluates to true under the current build context.
+#[derive(Debug, Clone)]
+pub struct CfgGatedDecl {
+    /// The struct path, e.g. `"sys::sync::mutex::futex::Futex"`.
+    pub path: String,
+    /// The cfg predicate string, e.g. `"any(target_os = \"linux\", target_os = \"android\")"`.
+    pub predicate: String,
+}
+
 /// A single library target (e.g., "std", "core", "alloc").
 #[derive(Clone)]
 pub struct BindingTarget {
@@ -79,6 +89,10 @@ pub struct BindingTarget {
     /// declared struct (through its module tree) resolve to the same emitted
     /// definition.
     pub declared_structs: Vec<String>,
+    /// Cfg-gated struct declarations: only active when the predicate matches
+    /// the current build context. Used for platform-specific backend types
+    /// (e.g., futex-only types that don't exist on pthread targets).
+    pub cfg_gated_decls: Vec<CfgGatedDecl>,
     /// Paths to traits or types that the emitter should deliberately skip or
     /// replace during binding generation. Each entry specifies a fully
     /// qualified path and an optional replacement.
@@ -137,6 +151,7 @@ impl BindingTarget {
         Self {
             lib_name: lib_name.to_string(),
             declared_structs: Vec::new(),
+            cfg_gated_decls: Vec::new(),
             path_replacements: Vec::new(),
             ignored_structs: Vec::new(),
             extra_derives: std::collections::HashMap::new(),
@@ -176,6 +191,30 @@ impl BindingTarget {
     /// every re-export alias of the struct resolve to that definition.
     pub fn declare_struct(&mut self, path: &str) {
         self.declared_structs.push(path.to_string());
+    }
+
+    /// Declare a struct conditionally, gated on a cfg predicate. The
+    /// declaration is only active when the predicate evaluates to true under
+    /// the current build context. Used for platform-specific backend types
+    /// (e.g., futex-only types that don't exist on pthread targets).
+    pub fn declare_struct_cfg(&mut self, path: &str, predicate: &str) {
+        self.cfg_gated_decls.push(CfgGatedDecl {
+            path: path.to_string(),
+            predicate: predicate.to_string(),
+        });
+    }
+
+    /// Collect all active declarations (unconditional + cfg-gated ones whose
+    /// predicate matches) into a single list. This is what the pipeline iterates
+    /// over during discovery and emission.
+    pub fn active_declarations(&self, cfg: &crate::parser::CfgContext) -> Vec<String> {
+        let mut out: Vec<String> = self.declared_structs.clone();
+        for g in &self.cfg_gated_decls {
+            if cfg.eval_predicate(&g.predicate) {
+                out.push(g.path.clone());
+            }
+        }
+        out
     }
 
     /// Force-ignore a struct/enum/union by its fully qualified path within the
