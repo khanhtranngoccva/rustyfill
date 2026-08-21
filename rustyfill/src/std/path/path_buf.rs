@@ -216,30 +216,32 @@ fn prefix_is_verbatim(prefix: &Prefix<'_>) -> bool {
 }
 
 /// Replicates the platform-dependent logic of `PathBuf::_push`.
+///
+/// Decides which push strategy applies (absolute replacement, verbatim
+/// normalization, rooted truncation, or plain relative append) and delegates
+/// to the corresponding helper.
 pub(crate) fn inner_push(target: &mut PathBuf, path: &Path) -> Result<(), TryReserveError> {
     // in general, a separator is needed if the rightmost byte is not a separator
-    let buf = target.as_os_str().as_encoded_bytes();
-    let mut need_sep = buf
+    let mut need_sep = target
+        .as_os_str()
+        .as_encoded_bytes()
         .last()
         .map(|c| !is_separator(*c as char))
         .unwrap_or(false);
 
-    let comps = target.components();
-
-    // Search for prefixes
-    let mut prefix = None;
-    for component in target.components() {
-        match component {
-            Component::Prefix(p) => prefix = Some(p.kind()),
-            _ => continue,
-        }
-    }
+    // Search for prefixes (a path can only have one prefix)
+    let prefix = target
+        .components()
+        .find_map(|c| match c {
+            Component::Prefix(p) => Some(p.kind()),
+            _ => None,
+        });
 
     // in the special case of `C:` on Windows, do *not* add a separator
-    if let Some(prefix) = &prefix {
-        let prefix_len = prefix_len(prefix);
+    if let Some(ref p) = prefix {
+        let plen = prefix_len(p);
         // Prefix-only path
-        if prefix_len > 0 && prefix_len == target.as_os_str().len() && prefix_is_drive(prefix) {
+        if plen > 0 && plen == target.as_os_str().len() && prefix_is_drive(p) {
             need_sep = false;
         }
     }
@@ -265,58 +267,15 @@ pub(crate) fn inner_push(target: &mut PathBuf, path: &Path) -> Result<(), TryRes
         target.as_mut_os_string().clear();
 
     // verbatim paths need . and .. removed
-    } else if let Some(prefix) = &prefix
-        && prefix_is_verbatim(prefix)
+    } else if let Some(ref p) = prefix
+        && prefix_is_verbatim(p)
         && !path.as_os_str().is_empty()
     {
-        let mut buf: Vec<_> = Vec::try_collect(comps)?;
-        for c in path.components() {
-            match c {
-                Component::RootDir => {
-                    buf.truncate(1);
-                    buf.try_push(c)?;
-                }
-                Component::CurDir => (),
-                Component::ParentDir => {
-                    if let Some(Component::Normal(_)) = buf.last() {
-                        buf.pop();
-                    }
-                }
-                _ => buf.try_push(c)?,
-            }
-        }
-
-        let mut res = OsString::new();
-        let mut need_sep = false;
-
-        for c in buf {
-            if need_sep && c != Component::RootDir {
-                res.try_push(OsStr::new(MAIN_SEPARATOR_STR))?;
-            }
-            res.try_push(c.as_os_str())?;
-
-            need_sep = match c {
-                Component::RootDir => false,
-                Component::Prefix(prefix) => {
-                    !prefix_is_drive(&prefix.kind()) && prefix_len(&prefix.kind()) > 0
-                }
-                _ => true,
-            }
-        }
-
-        *target.as_mut_os_string() = res;
-        return Ok(());
+        return push_verbatim_normalized(target, path);
 
     // `path` has a root but no prefix, e.g., `\windows` (Windows only)
     } else if path.has_root() {
-        let prefix_len: usize = prefix.as_ref().map(prefix_len).unwrap_or(0);
-        let current = mem::take(target.as_mut_os_string());
-        // Swap out the string to enable internal access
-        let mut current_bytes = current.into_encoded_bytes();
-        // The prefix_bytes is always valid
-        current_bytes.truncate(prefix_len);
-        *target.as_mut_os_string() =
-            unsafe { OsString::from_encoded_bytes_unchecked(current_bytes) };
+        truncate_to_prefix(target, prefix.as_ref().map(prefix_len).unwrap_or(0));
     // `path` is a pure relative path
     } else if need_sep {
         target
@@ -326,6 +285,80 @@ pub(crate) fn inner_push(target: &mut PathBuf, path: &Path) -> Result<(), TryRes
 
     target.as_mut_os_string().try_push(path.as_os_str())?;
     Ok(())
+}
+
+/// Verbatim paths (`\\?\...`) require `.` and `..` components to be resolved
+/// away before appending, since they are not interpreted by the OS. Collects
+/// the merged component list, normalizes it, and rebuilds the target string.
+fn push_verbatim_normalized(target: &mut PathBuf, path: &Path) -> Result<(), TryReserveError> {
+    let mut buf: Vec<Component<'_>> = Vec::try_collect(target.components())?;
+    append_normalized(&mut buf, path)?;
+
+    *target.as_mut_os_string() = render_components(buf)?;
+    Ok(())
+}
+
+/// Merges the components of `path` into `buf`, resolving `.` and `..` in place.
+/// This is the platform-independent normalization core shared by verbatim
+/// pushes; kept allocation-light so it can be unit-tested directly.
+fn append_normalized<'a>(
+    buf: &mut Vec<Component<'a>>,
+    path: &'a Path,
+) -> Result<(), TryReserveError> {
+    for c in path.components() {
+        match c {
+            Component::RootDir => {
+                buf.truncate(1);
+                buf.try_push(c)?;
+            }
+            Component::CurDir => (),
+            Component::ParentDir => {
+                if let Some(Component::Normal(_)) = buf.last() {
+                    buf.pop();
+                }
+            }
+            _ => buf.try_push(c)?,
+        }
+    }
+    Ok(())
+}
+
+/// Renders a normalized component list back into an `OsString`, inserting
+/// separators where needed (a separator follows every component except a root
+/// directory, and non-drive prefixes).
+fn render_components(components: Vec<Component<'_>>) -> Result<OsString, TryReserveError> {
+    let mut res = OsString::new();
+    let mut need_sep = false;
+
+    for c in components {
+        if need_sep && c != Component::RootDir {
+            res.try_push(OsStr::new(MAIN_SEPARATOR_STR))?;
+        }
+        res.try_push(c.as_os_str())?;
+
+        need_sep = match c {
+            Component::RootDir => false,
+            Component::Prefix(prefix) => {
+                !prefix_is_drive(&prefix.kind()) && prefix_len(&prefix.kind()) > 0
+            }
+            _ => true,
+        }
+    }
+
+    Ok(res)
+}
+
+/// Truncates the target's inner string down to its prefix length, discarding
+/// everything after it. Used when pushing a rooted-but-prefix-less path such
+/// as `\windows` onto a prefixed base.
+fn truncate_to_prefix(target: &mut PathBuf, prefix_len: usize) {
+    let current = mem::take(target.as_mut_os_string());
+    // Swap out the string to enable internal access
+    let mut current_bytes = current.into_encoded_bytes();
+    // The prefix bytes are always valid
+    current_bytes.truncate(prefix_len);
+    *target.as_mut_os_string() =
+        unsafe { OsString::from_encoded_bytes_unchecked(current_bytes) };
 }
 
 impl TryPathBuf for PathBuf {
@@ -937,5 +970,193 @@ mod tests {
         // Allocation works again after guard scope ends.
         let r: Result<PathBuf, TryPathBufError> = <PathBuf as TryPathBuf>::try_from_path("/y");
         assert!(r.is_ok());
+    }
+
+    // ── Verbatim-normalization OOM tests (Windows-only paths) ───────────────
+    //
+    // On Windows these exercise `push_verbatim_normalized`, which allocates a
+    // component buffer and rebuilds the target string. On other platforms the
+    // same inputs take the plain relative-append branch, so we only assert on
+    // allocation behavior there.
+
+    #[cfg(windows)]
+    #[test]
+    fn push_verbatim_fails_on_oom() {
+        let mut p = PathBuf::try_from_path(r"\\?\C:\a\b").unwrap();
+        let r = with_policy(FailPolicy::fail_next_alloc(), || p.fallible_push(r"c\d"));
+        assert!(r.is_err());
+        // Target is left unchanged on failure.
+        assert_eq!(p, Path::new(r"\\?\C:\a\b"));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn push_verbatim_parent_dir_normalizes() {
+        let mut p = PathBuf::try_from_path(r"\\?\C:\a\b").unwrap();
+        p.fallible_push(r"..\c").unwrap();
+        assert_eq!(p, Path::new(r"\\?\C:\a\c"));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn push_verbatim_root_resets() {
+        let mut p = PathBuf::try_from_path(r"\\?\C:\a\b").unwrap();
+        p.fallible_push(r"\d\e").unwrap();
+        assert_eq!(p, Path::new(r"\\?\C:\d\e"));
+    }
+
+    #[cfg(not(windows))]
+    #[test]
+    fn push_relative_long_child_grows_buffer() {
+        // Non-Windows stand-in: exercises the relative-append + realloc path.
+        let long = format!("/base/{}", "x".repeat(128));
+        let mut p = PathBuf::try_from_path(&long).unwrap();
+        let extra = format!("child/{}", "y".repeat(128));
+        p.fallible_push(extra.clone()).unwrap();
+        let expected_len = long.len() + 1 + extra.len();
+        assert_eq!(p.as_os_str().len(), expected_len);
+    }
+
+    // ── Pure normalization/rendering core (platform-independent) ─────────────
+    //
+    // `append_normalized` and `render_components` are the verbatim-push logic
+    // with allocation stripped out, so they can be exercised on any platform —
+    // including Linux, where the full `push_verbatim_normalized` is unreachable.
+
+    /// Helper: parse a base and child into component vectors for direct testing.
+    fn comps_of(p: &str) -> Vec<Component<'_>> {
+        Path::new(p).components().collect()
+    }
+
+    #[test]
+    fn append_normalized_drops_curdir() {
+        let mut buf = comps_of("a/b");
+        append_normalized(&mut buf, Path::new(".")).unwrap();
+        assert_eq!(buf, comps_of("a/b"));
+    }
+
+    #[test]
+    fn append_normalized_resolves_parentdir() {
+        let mut buf = comps_of("a/b/c");
+        append_normalized(&mut buf, Path::new("../d")).unwrap();
+        assert_eq!(buf, comps_of("a/b/d"));
+    }
+
+    #[test]
+    fn append_normalized_parentdir_at_root_is_noop() {
+        // `..` at the root has nothing to pop; std keeps it as a no-op.
+        let mut buf = comps_of("");
+        append_normalized(&mut buf, Path::new("..")).unwrap();
+        assert!(buf.is_empty());
+    }
+
+    #[test]
+    fn append_normalized_root_on_relative_base_appends() {
+        // A relative base has no prefix, so an absolute child does NOT reset —
+        // the root dir is appended after the existing components. (The
+        // truncate-to-1 reset only applies once a prefix is present, i.e. the
+        // Windows verbatim case.)
+        let mut buf = comps_of("a/b");
+        append_normalized(&mut buf, Path::new("/c/d")).unwrap();
+        assert_eq!(buf, lang_alloc::vec![
+            Component::Normal(OsStr::new("a")),
+            Component::RootDir,
+            Component::Normal(OsStr::new("c")),
+            Component::Normal(OsStr::new("d")),
+        ]);
+    }
+
+    #[test]
+    fn append_normalized_plain_append() {
+        let mut buf = comps_of("a");
+        append_normalized(&mut buf, Path::new("b/c")).unwrap();
+        assert_eq!(buf, comps_of("a/b/c"));
+    }
+
+    #[test]
+    fn render_components_inserts_separators() {
+        let rendered = render_components(comps_of("a/b/c")).unwrap();
+        assert_eq!(rendered.as_encoded_bytes(), b"a/b/c");
+    }
+
+    #[test]
+    fn render_components_leading_root_has_no_double_sep() {
+        let rendered = render_components(comps_of("/a/b")).unwrap();
+        assert_eq!(rendered.as_encoded_bytes(), b"/a/b");
+    }
+
+    #[test]
+    fn render_components_roundtrips_normalized() {
+        // Normalize then render. Leading `..` at a relative root is dropped,
+        // so `a/b + ../../c/../d` reduces to just `d`.
+        let mut buf = comps_of("a/b");
+        append_normalized(&mut buf, Path::new("../../c/../d")).unwrap();
+        let rendered = render_components(buf).unwrap();
+        assert_eq!(rendered.as_encoded_bytes(), b"d");
+    }
+
+    #[test]
+    fn render_components_interior_parentdir_collapses() {
+        // Interior `..` pops the preceding normal component: a/b/c + ../d => a/b/d.
+        let mut buf = comps_of("a/b/c");
+        append_normalized(&mut buf, Path::new("../d")).unwrap();
+        let rendered = render_components(buf).unwrap();
+        assert_eq!(rendered.as_encoded_bytes(), b"a/b/d");
+    }
+
+    #[test]
+    fn render_components_empty() {
+        let rendered = render_components(Vec::new()).unwrap();
+        assert!(rendered.is_empty());
+    }
+
+    // ── prefix_len (pure data — all variants constructible on any platform) ──
+    //
+    // `Prefix` variants carry plain fields, so we can build each one directly
+    // and assert the byte-length arithmetic without needing Windows to parse
+    // a real path. Expected values mirror the fixed-width header constants:
+    // Disk=2, VerbatimDisk=6, Verbatim/DeviceNS=4+len, UNC=2+s(+1+sh),
+    // VerbatimUNC=8+s(+1+sh).
+
+    #[test]
+    fn prefix_len_disk_and_verbatim_disk_are_fixed() {
+        assert_eq!(prefix_len(&Prefix::Disk(b'C')), 2);
+        assert_eq!(prefix_len(&Prefix::VerbatimDisk(b'D')), 6);
+    }
+
+    #[test]
+    fn prefix_len_device_namespace_is_four_plus_name() {
+        // "//./con" -> 4-byte header + "con" (3) = 7
+        assert_eq!(prefix_len(&Prefix::DeviceNS(OsStr::new("con"))), 7);
+        assert_eq!(prefix_len(&Prefix::DeviceNS(OsStr::new(""))), 4);
+    }
+
+    #[test]
+    fn prefix_len_verbatim_is_four_plus_path() {
+        // "\\?\" (4) + "C:/foo" (6) = 10
+        assert_eq!(prefix_len(&Prefix::Verbatim(OsStr::new("C:/foo"))), 10);
+        assert_eq!(prefix_len(&Prefix::Verbatim(OsStr::new(""))), 4);
+    }
+
+    #[test]
+    fn prefix_len_unc_counts_server_and_share() {
+        // "\\" (2) + "srv" (3) + "\" (1) + "shr" (3) = 9
+        assert_eq!(prefix_len(&Prefix::UNC(OsStr::new("srv"), OsStr::new("shr"))), 9);
+        // Empty share omits the trailing separator: 2 + 3 = 5
+        assert_eq!(prefix_len(&Prefix::UNC(OsStr::new("srv"), OsStr::new(""))), 5);
+    }
+
+    #[test]
+    fn prefix_len_verbatim_unc_uses_eight_byte_header() {
+        // "\\?\UNC\" (8) + "srv" (3) + "\" (1) + "shr" (3) = 15
+        assert_eq!(
+            prefix_len(&Prefix::VerbatimUNC(OsStr::new("srv"), OsStr::new("shr"))),
+            15
+        );
+        // Empty share: 8 + 3 = 11
+        assert_eq!(
+            prefix_len(&Prefix::VerbatimUNC(OsStr::new("srv"), OsStr::new(""))),
+            11
+        );
     }
 }
