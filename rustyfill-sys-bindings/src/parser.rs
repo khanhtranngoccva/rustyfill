@@ -153,74 +153,102 @@ impl CfgContext {
     /// is the reliable way to learn the platform for cfg_select! evaluation.
     pub fn from_target_triple(triple: &str) -> Self {
         let parts: Vec<&str> = triple.split('-').collect();
-        // Typical layout: arch [- vendor] - os [- env]. Vendors are a closed
-        // set of well-known strings; anything else in the vendor slot is an
-        // OS/architecture fragment we don't model, so we treat the *last*
-        // non-arch, non-vendor segment before any trailing env as the OS.
+        // Known vendors in the traditional 3-part triple layout
+        // (`arch-vendor-os[-env]`). Anything else in the vendor slot is an
+        // OS/architecture fragment we don't model.
         let known_vendors = [
             "unknown", "pc", "none", "fortanix", "apple", "nintendo", "sony", "uwp", "hurd",
-            "contiki", "newlib", "hermit", "kmc", "wrs", "gnu", "musl",
+            "contiki", "newlib", "hermit", "kmc", "wrs", "gnu", "musl", "win7",
         ];
-        let is_known_vendor = |p: &&str| known_vendors.contains(p);
-        // Collect candidate segments (everything except the leading arch).
-        let candidates: Vec<&str> = parts
-            .iter()
-            .skip(1)
-            .filter(|p| !is_known_vendor(p))
-            .copied()
-            .collect();
-        // The OS is the first candidate; a trailing candidate is the env only
-        // when it looks like an environment (matches common env suffixes) and
-        // there is more than one candidate.
-        let (target_os_raw, target_env): (Option<&str>, Option<String>) =
-            match candidates.as_slice() {
-                [] => (None, None),
-                [only] => (Some(*only), None),
-                [first, rest @ ..] => {
-                    let last = *rest.last().unwrap();
-                    let looks_like_env = matches!(
-                        last,
-                        "gnu"
-                            | "musl"
-                            | "msvc"
-                            | "win7"
-                            | "haiku"
-                            | "none"
-                            | "kernel"
-                            | "softfloat"
-                            | "double"
-                            | "eabi"
-                            | "eabihf"
-                            | "armv6"
-                            | "armv7"
-                            | "thumbv6"
-                            | "thumbv7"
-                            | "thumbv8"
-                            | "qemu"
-                            | "simulator"
-                    );
-                    if looks_like_env {
-                        (Some(first), Some(last.to_string()))
+        let is_known_vendor = |p: &str| known_vendors.contains(&p);
+        // Environment suffixes that can appear at the end of a triple.
+        let is_env_suffix = |p: &str| {
+            matches!(
+                p,
+                "gnu"
+                    | "musl"
+                    | "msvc"
+                    | "win7"
+                    | "haiku"
+                    | "none"
+                    | "kernel"
+                    | "softfloat"
+                    | "double"
+                    | "eabi"
+                    | "eabihf"
+                    | "armv6"
+                    | "armv7"
+                    | "thumbv6"
+                    | "thumbv7"
+                    | "thumbv8"
+                    | "qemu"
+                    | "simulator"
+            )
+        };
+
+        // Layout disambiguation. The traditional triple is `arch-vendor-os[-env]`
+        // with a closed set of known vendors; modern triples moved the OS into
+        // the second slot (`arch-os-vendor[-env]`). We detect the traditional
+        // layout when the second segment is a known vendor AND the third
+        // segment is not itself an environment suffix (which would make it the
+        // OS in a modern layout, e.g. `x86_64-unknown-linux-musl`).
+        let (vendor_slot, os_seg, env_seg): (Option<&str>, Option<&str>, Option<&str>) =
+            match parts.len() {
+                1 => (None, None, None),
+                2 => (None, parts.get(1).copied(), None),
+                _ => {
+                    let seg1 = parts.get(1).copied();
+                    let seg2 = parts.get(2).copied();
+                    let last = parts.last().copied();
+                    let traditional = seg1.is_some_and(|p| is_known_vendor(p))
+                        && !seg2.is_some_and(is_env_suffix);
+                    if traditional {
+                        // arch-vendor-os[-env]: vendor in slot 2, OS in slot 3,
+                        // trailing env when present.
+                        (
+                            seg1,
+                            seg2,
+                            if parts.len() >= 4 && last.is_some_and(is_env_suffix) {
+                                last
+                            } else {
+                                None
+                            },
+                        )
                     } else {
-                        // No recognizable env suffix; the first segment is the OS
-                        // and we ignore the remainder (rare multi-segment triples).
-                        (Some(first), None)
+                        // arch-os-vendor[-env]: OS in slot 2, vendor in slot 3,
+                        // trailing env when present.
+                        (
+                            seg2,
+                            seg1,
+                            if parts.len() >= 4 && last.is_some_and(is_env_suffix) {
+                                last
+                            } else {
+                                None
+                            },
+                        )
                     }
                 }
             };
+
         // Normalize triple OS names to their `cfg(target_os = "...")` values,
         // then derive the family from the (normalized) OS through the single
         // shared lookup so this constructor agrees with `from_env`.
-        let target_os = target_os_raw.map(normalize_target_os);
+        let target_os = os_seg.map(normalize_target_os);
         let target_family = Self::family_for_os(target_os.as_deref()).map(String::from);
+        // The vendor slot feeds `cfg(target_vendor = "...")` predicates such as
+        // `not(target_vendor = "win7")` in cfg_select!. Without this, Windows
+        // targets fall through to the wrong backend branch (e.g. no_threads).
+        let target_vendor = vendor_slot
+            .filter(|p| is_known_vendor(*p))
+            .map(String::from);
         let is_unix = target_family.as_deref() == Some("unix");
         let is_windows = target_os.as_deref() == Some("windows");
         Self {
             target_os,
             target_family,
             target_arch: parts.first().map(|s| s.to_string()),
-            target_env,
-            target_vendor: None,
+            target_env: env_seg.map(String::from),
+            target_vendor,
             is_unix,
             is_windows,
         }
@@ -259,21 +287,50 @@ impl CfgContext {
     /// `all(...)`, `any(...)`, `not(...)`.
     pub fn eval_predicate(&self, pred: &str) -> bool {
         let pred = pred.trim();
-        match () {
-            _ if pred.starts_with("all(") && pred.ends_with(')') => {
-                let inner = &pred[4..pred.len() - 1];
-                split_commas(inner).iter().all(|p| self.eval_predicate(p))
-            }
-            _ if pred.starts_with("any(") && pred.ends_with(')') => {
-                let inner = &pred[4..pred.len() - 1];
-                split_commas(inner).iter().any(|p| self.eval_predicate(p))
-            }
-            _ if pred.starts_with("not(") && pred.ends_with(')') => {
-                let inner = &pred[4..pred.len() - 1];
-                !self.eval_predicate(inner.trim())
-            }
-            _ => self.eval_atom(pred),
+        // Peel one balanced-paren group at a time. This handles nested
+        // predicates like `not(any(a, b))` where the outermost token is `not`
+        // but the string ends with two closing parens.
+        if let Some((func, inner)) = Self::peel_outer_parens(pred) {
+            return match func {
+                "all" => split_commas(inner)
+                    .into_iter()
+                    .all(|p| self.eval_predicate(&p)),
+                "any" => split_commas(inner)
+                    .into_iter()
+                    .any(|p| self.eval_predicate(&p)),
+                "not" => !self.eval_predicate(inner),
+                _ => self.eval_atom(pred),
+            };
         }
+        self.eval_atom(pred)
+    }
+
+    /// Split `name(args...)` into `(name, args)` when the entire input is a
+    /// single balanced parenthesized call. Returns `None` for atoms or
+    /// malformed input.
+    fn peel_outer_parens(s: &str) -> Option<(&str, &str)> {
+        let open = s.find('(')?;
+        let name = s[..open].trim();
+        // Walk from the first `(` to its matching `)`. That close must be the
+        // last non-whitespace character in the string.
+        let bytes = s.as_bytes();
+        let mut depth = 0i32;
+        for i in open..bytes.len() {
+            match bytes[i] {
+                b'(' => depth += 1,
+                b')' => {
+                    depth -= 1;
+                    if depth == 0 {
+                        if s[i + 1..].trim().is_empty() {
+                            return Some((name, &s[open + 1..i]));
+                        }
+                        return None;
+                    }
+                }
+                _ => {}
+            }
+        }
+        None
     }
 
     fn eval_atom(&self, atom: &str) -> bool {
@@ -325,16 +382,131 @@ pub fn is_cfg_inactive(attrs: &[Attribute], cfg: &CfgContext) -> bool {
     false
 }
 
-/// Split a string by commas, respecting parentheses nesting.
+/// True when the source file is excluded from compilation for the given build
+/// context via an inner `#![cfg(...)]` attribute (e.g.
+/// `sys/pal/unix/sync/mod.rs`, which carries
+/// `#![cfg(not(any(target_os = "linux", ...)))]`). Inner attributes are not
+/// surfaced by [`parse_source_with_cfg`]'s item walk, so this scans the raw
+/// text directly. Returns `None` when the file has no cfg inner attribute
+/// (i.e., it is unconditionally active).
+pub fn module_file_cfg_excluded(source: &str, cfg: &CfgContext) -> Option<bool> {
+    // Strip comments but keep string literals intact: the cfg predicate values
+    // (`target_os = "linux"`) live inside strings and must survive.
+    let no_comments = strip_line_comments(source);
+    let mut lines = no_comments.lines().peekable();
+    while let Some(raw) = lines.next() {
+        let trimmed = raw.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        if !trimmed.starts_with("#![") {
+            // Inner attributes must precede all items; the first non-attribute
+            // line ends the attribute block.
+            break;
+        }
+        // Accumulate continuation lines until the attribute's parens balance,
+        // since `#![cfg(not(any(...)))]` frequently spans multiple lines.
+        let mut buf = String::from(trimmed);
+        while !balanced_parens(&buf)
+            && let Some(cont) = lines.next()
+        {
+            buf.push(' ');
+            buf.push_str(cont.trim());
+        }
+        // Look for a `cfg(...)` list inside this attribute.
+        if let Some(pred) = extract_inner_list_arg(&buf, "cfg") {
+            return Some(cfg.eval_predicate(&pred));
+        }
+    }
+    None
+}
+
+/// Remove `//` line comments from source text, preserving newlines and string
+/// literals. Unlike [`strip_comments_and_strings`], string contents are kept —
+/// needed when inspecting cfg predicates whose values live in quoted strings.
+fn strip_line_comments(source: &str) -> String {
+    let mut result = String::with_capacity(source.len());
+    let chars: Vec<char> = source.chars().collect();
+    let len = chars.len();
+    let mut i = 0;
+    while i < len {
+        let ch = chars[i];
+        if ch == '/' && i + 1 < len && chars[i + 1] == '/' {
+            while i < len && chars[i] != '\n' {
+                i += 1;
+            }
+        } else {
+            result.push(ch);
+            i += 1;
+        }
+    }
+    result
+}
+
+/// True when every `(` in `s` has a matching `)` (parentheses are balanced).
+fn balanced_parens(s: &str) -> bool {
+    let mut depth = 0i32;
+    for &b in s.as_bytes() {
+        match b {
+            b'(' => depth += 1,
+            b')' => {
+                depth -= 1;
+                if depth < 0 {
+                    return false;
+                }
+            }
+            _ => {}
+        }
+    }
+    depth == 0
+}
+
+/// Given an attribute text like `#![cfg(not(any(a, b)))]`, return the
+/// parenthesized argument text of the named list (`not(any(a, b))` here).
+fn extract_inner_list_arg(attr: &str, name: &str) -> Option<String> {
+    let needle = format!("{name}(");
+    let start = attr.find(&needle)? + name.len(); // index of '('
+    let bytes = attr.as_bytes();
+    let mut depth = 0i32;
+    for i in start..bytes.len() {
+        match bytes[i] {
+            b'(' => depth += 1,
+            b')' => {
+                depth -= 1;
+                if depth == 0 {
+                    return Some(attr[start + 1..i].to_string());
+                }
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
+/// Public wrapper around the internal comment/string stripper, used for
+/// raw-text attribute inspection where full stripping is appropriate.
+pub fn strip_comments_and_strings_pub(source: &str) -> String {
+    strip_comments_and_strings(source)
+}
+
+/// Split a string by commas, respecting parentheses nesting. Parentheses are
+/// preserved in the output tokens so that nested predicates like
+/// `not(target_vendor = "win7")` survive intact.
 fn split_commas(s: &str) -> Vec<String> {
     let mut parts = Vec::new();
-    let mut depth = 0;
+    let mut depth = 0i32;
     let mut current = String::new();
 
     for ch in s.chars() {
         match ch {
-            '(' => depth += 1,
-            ')' => depth -= 1,
+            '(' => {
+                depth += 1;
+                current.push(ch);
+            }
+            ')' => {
+                depth -= 1;
+                current.push(ch);
+            }
             ',' if depth == 0 => {
                 let token = current.trim().to_string();
                 if !token.is_empty() {
@@ -2143,5 +2315,105 @@ mod child;
         let out = strip_glob_from_type_uses(src);
         assert!(out.contains("use super::*;"));
         assert!(out.contains("use self::inner::*;"));
+    }
+
+    // ── Target triple parsing ───────────────────────────────────────────────
+
+    #[test]
+    fn test_from_triple_windows_msvc_vendor() {
+        // Modern triple: arch-os-vendor-env. Vendor slot is `pc`, so
+        // `target_vendor = "win7"` is FALSE — the generic Windows branch fires.
+        let cfg = CfgContext::from_target_triple("x86_64-pc-windows-msvc");
+        assert_eq!(cfg.target_os.as_deref(), Some("windows"));
+        assert_eq!(cfg.target_vendor.as_deref(), Some("pc"));
+        assert_eq!(cfg.target_env.as_deref(), Some("msvc"));
+        assert!(cfg.is_windows);
+        assert!(!cfg.is_unix);
+        // The futex/SRWLock branch in std's sys/sync/mutex/mod.rs activates:
+        //   all(target_os = "windows", not(target_vendor = "win7"))
+        assert!(cfg.eval_predicate("all(target_os = \"windows\", not(target_vendor = \"win7\"))"));
+        // The win7-specific branch does NOT.
+        assert!(!cfg.eval_predicate("all(target_os = \"windows\", target_vendor = \"win7\")"));
+    }
+
+    #[test]
+    fn test_from_triple_windows_win7() {
+        // The real rustc triple for Win7 is `i686-win7-windows-msvc`
+        // (arch-vendor-os-env with vendor=`win7`). This is what makes
+        // `target_vendor = "win7"` evaluate to true.
+        let cfg = CfgContext::from_target_triple("i686-win7-windows-msvc");
+        assert_eq!(cfg.target_os.as_deref(), Some("windows"));
+        assert_eq!(cfg.target_vendor.as_deref(), Some("win7"));
+        assert_eq!(cfg.target_env.as_deref(), Some("msvc"));
+        assert!(cfg.is_windows);
+        // Generic windows branch suppressed.
+        assert!(!cfg.eval_predicate("all(target_os = \"windows\", not(target_vendor = \"win7\"))"));
+        // Dedicated win7 branch active.
+        assert!(cfg.eval_predicate("all(target_os = \"windows\", target_vendor = \"win7\")"));
+    }
+
+    #[test]
+    fn test_from_triple_linux_gnu() {
+        let cfg = CfgContext::from_target_triple("x86_64-unknown-linux-gnu");
+        assert_eq!(cfg.target_os.as_deref(), Some("linux"));
+        assert_eq!(cfg.target_family.as_deref(), Some("unix"));
+        assert_eq!(cfg.target_vendor.as_deref(), Some("unknown"));
+        assert_eq!(cfg.target_env.as_deref(), Some("gnu"));
+        assert!(cfg.is_unix);
+        assert!(!cfg.is_windows);
+    }
+
+    #[test]
+    fn test_from_triple_macos_apple() {
+        let cfg = CfgContext::from_target_triple("aarch64-apple-darwin");
+        assert_eq!(cfg.target_os.as_deref(), Some("macos"));
+        assert_eq!(cfg.target_family.as_deref(), Some("unix"));
+        assert_eq!(cfg.target_vendor.as_deref(), Some("apple"));
+        assert!(cfg.is_unix);
+    }
+
+    #[test]
+    fn test_from_triple_pal_unix_sync_gate() {
+        // The inner gate on sys/pal/unix/sync/mod.rs excludes futex-based
+        // unix targets (linux, android, freebsd, etc.) but stays active on
+        // pthread unix platforms (macOS) AND on Windows (where the module is
+        // simply unused because the outer `pal/unix` path isn't selected).
+        let pred = concat!(
+            "not(any(",
+            "target_os = \"linux\", ",
+            "target_os = \"android\", ",
+            "all(target_os = \"emscripten\", target_feature = \"atomics\"), ",
+            "target_os = \"freebsd\", ",
+            "target_os = \"openbsd\", ",
+            "target_os = \"dragonfly\", ",
+            "target_os = \"fuchsia\"",
+            "))"
+        );
+        // Active on macOS (pthread unix).
+        assert!(CfgContext::from_target_triple("aarch64-apple-darwin").eval_predicate(pred));
+        // Inactive on Linux (futex).
+        assert!(!CfgContext::from_target_triple("x86_64-unknown-linux-gnu").eval_predicate(pred));
+        // Technically active on Windows too (target_os="windows" is not in the
+        // exclusion list), but irrelevant since the outer module tree doesn't
+        // include pal/unix on Windows.
+        assert!(CfgContext::from_target_triple("x86_64-pc-windows-msvc").eval_predicate(pred));
+    }
+
+    // ── Inner #![cfg(...)] module exclusion detection ─────────────────────
+
+    #[test]
+    fn test_module_file_cfg_excluded_inactive() {
+        let source = "#![cfg(not(any(\n    target_os = \"linux\",\n    target_os = \"android\",\n)))]\nmod mutex;\n";
+        let linux = CfgContext::from_target_triple("x86_64-unknown-linux-gnu");
+        assert_eq!(module_file_cfg_excluded(source, &linux), Some(false));
+        let macos = CfgContext::from_target_triple("aarch64-apple-darwin");
+        assert_eq!(module_file_cfg_excluded(source, &macos), Some(true));
+    }
+
+    #[test]
+    fn test_module_file_cfg_excluded_no_attr() {
+        let source = "mod mutex;\npub use mutex::Mutex;\n";
+        let linux = CfgContext::from_target_triple("x86_64-unknown-linux-gnu");
+        assert_eq!(module_file_cfg_excluded(source, &linux), None);
     }
 }

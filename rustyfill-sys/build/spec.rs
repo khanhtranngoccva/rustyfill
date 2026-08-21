@@ -36,31 +36,56 @@ pub fn get_loader_spec() -> LoaderSpec {
 fn std_target() -> BindingTarget {
     let mut target = BindingTarget::new("std");
 
-    // The platform abstraction layer's synchronization primitives. Declared by
-    // path so that both the canonical location and any module-level aliases
-    // (e.g., through `sys/pal/sync`) resolve to the same emitted definitions.
-    target.declare_struct("sys::pal::unix::sync::mutex::Mutex");
-    target.declare_struct("sys::pal::unix::sync::condvar::Condvar");
+    // The platform abstraction layer's synchronization primitives (pthread
+    // backend). Declared by path so that both the canonical location and any
+    // module-level aliases (e.g., through `sys/pal/sync`) resolve to the same
+    // emitted definitions. Gated to non-futex unix targets only: the
+    // `pal::unix` subtree is absent on Windows (the outer `sys/pal/mod.rs`
+    // selects `pal::windows` instead), and the inner `#![cfg(not(any(...)))]`
+    // on `sys/pal/unix/sync/mod.rs` further excludes futex-based unix targets
+    // (Linux, FreeBSD, etc.). Combined: unix family AND not-in-the-futex-list.
+    const PAL_UNIX_SYNC_ACTIVE: &str = concat!(
+        "all(unix, not(any(",
+        "target_os = \"linux\", ",
+        "target_os = \"android\", ",
+        "all(target_os = \"emscripten\", target_feature = \"atomics\"), ",
+        "target_os = \"freebsd\", ",
+        "target_os = \"openbsd\", ",
+        "target_os = \"dragonfly\", ",
+        "target_os = \"fuchsia\"",
+        ")))",
+    );
+    target.declare_struct_cfg("sys::pal::unix::sync::mutex::Mutex", PAL_UNIX_SYNC_ACTIVE);
+    target.declare_struct_cfg(
+        "sys::pal::unix::sync::condvar::Condvar",
+        PAL_UNIX_SYNC_ACTIVE,
+    );
 
     // The canonical, cfg-selected sys mutex (`std::sys::sync::mutex::Mutex`).
-    // On Linux this resolves to the futex-backed implementation; on other unix
-    // targets it resolves to the pthread-backed one.
+    // Resolves via cfg_select! to the futex backend on Windows/Linux/FreeBSD/
+    // etc., to pthread on macOS/iOS, and to a dedicated win7 backend on Win7.
     target.declare_struct("sys::sync::mutex::Mutex");
-    // The futex Mutex (the active backend on Linux/Android/FreeBSD/etc.) stores
-    // its state through two file-local private type aliases. Declaring them
-    // mirrors the aliases and routes their RHS (`futex::SmallFutex` /
-    // `futex::SmallPrimitive`, both public) through the registry, satisfying
-    // the field-publicity check — the same treatment as btree's private
-    // `BoxedNode` alias. Gated to futex-active platforms only; on pthread
-    // targets these types don't exist in the active code path.
-    target.declare_struct_cfg(
-        "sys::sync::mutex::futex::Futex",
-        "any(target_os = \"linux\", target_os = \"android\", target_os = \"freebsd\", target_os = \"openbsd\", target_os = \"motor\", target_os = \"dragonfly\", target_os = \"hermit\", all(target_family = \"wasm\", target_feature = \"atomics\"))",
+    // The futex Mutex (the active backend on Windows non-win7, Linux, Android,
+    // FreeBSD, etc.) stores its state through two file-local private type
+    // aliases. Declaring them mirrors the aliases and routes their RHS
+    // (`futex::SmallFutex` / `futex::SmallPrimitive`, both public) through the
+    // registry, satisfying the field-publicity check. Gated to exactly the
+    // platforms where std's cfg_select picks the futex module.
+    const FUTEX_ACTIVE: &str = concat!(
+        "any(",
+        "all(target_os = \"windows\", not(target_vendor = \"win7\")), ",
+        "target_os = \"linux\", ",
+        "target_os = \"android\", ",
+        "target_os = \"freebsd\", ",
+        "target_os = \"openbsd\", ",
+        "target_os = \"motor\", ",
+        "target_os = \"dragonfly\", ",
+        "target_os = \"hermit\", ",
+        "all(target_family = \"wasm\", target_feature = \"atomics\")",
+        ")",
     );
-    target.declare_struct_cfg(
-        "sys::sync::mutex::futex::State",
-        "any(target_os = \"linux\", target_os = \"android\", target_os = \"freebsd\", target_os = \"openbsd\", target_os = \"motor\", target_os = \"dragonfly\", target_os = \"hermit\", all(target_family = \"wasm\", target_feature = \"atomics\"))",
-    );
+    target.declare_struct_cfg("sys::sync::mutex::futex::Futex", FUTEX_ACTIVE);
+    target.declare_struct_cfg("sys::sync::mutex::futex::State", FUTEX_ACTIVE);
     // The lazy-allocation helper used by the pthread backend (active on
     // macOS/iOS). Mirrored so the polyfill can interact with its pointer slot.
     target.declare_struct("sys::sync::once_box::OnceBox");

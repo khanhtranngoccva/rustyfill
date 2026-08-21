@@ -155,6 +155,18 @@ pub fn generate(input: &PipelineInput<'_>) -> GenerateOutcome {
                 LocatedStruct::NotDefinedOnDisk(path_hint) => {
                     pending_declarations.push((decl.clone(), path_hint));
                 }
+                LocatedStruct::CfgExcluded { module, predicate } => {
+                    return Err(GenerateReport {
+                        errors: vec![format!(
+                            "[spec] `{}` is defined in `{}`, which is excluded for this \
+                             target by an inner cfg gate ({predicate}). Gate the \
+                             declaration with a matching predicate (declare_struct_cfg) \
+                             so it only activates on targets where that module exists.",
+                            decl, module
+                        )],
+                        warnings: Vec::new(),
+                    });
+                }
                 LocatedStruct::BadPath(msg) => {
                     return Err(GenerateReport {
                         errors: vec![format!("[spec] {}", msg)],
@@ -1405,6 +1417,11 @@ enum LocatedStruct {
     NotDefinedOnDisk(String),
     /// The declaration itself is malformed.
     BadPath(String),
+    /// A module along the declaration's path carries an inner `#![cfg(...)]`
+    /// attribute that excludes it for the current build target. The spec
+    /// should gate this declaration with a matching cfg predicate instead of
+    /// declaring it unconditionally.
+    CfgExcluded { module: String, predicate: String },
 }
 
 /// Locate the defining file for a declared struct path like
@@ -1436,6 +1453,18 @@ fn locate_declared_struct(decl: &str, lib_src: &Path, cfg: &CfgContext) -> Locat
             let Ok(text) = fs::read_to_string(&full) else {
                 continue;
             };
+            // A module gated out by an inner `#![cfg(...)]` attribute is not a
+            // valid definition site for this target. Fail loudly so the spec
+            // can gate the declaration with a matching predicate instead of
+            // silently mirroring dead code (e.g. pthread types on Windows).
+            if let Some(active) = crate::parser::module_file_cfg_excluded(&text, cfg)
+                && !active
+            {
+                return LocatedStruct::CfgExcluded {
+                    module: rel_prefix.clone(),
+                    predicate: extract_inner_cfg_predicate(&text),
+                };
+            }
             let parsed = parse_source_with_cfg(&text, cfg);
             if parsed.items.iter().any(|i| i.name == leaf) {
                 return LocatedStruct::Found(cand.clone());
@@ -1466,6 +1495,22 @@ fn locate_declared_struct(decl: &str, lib_src: &Path, cfg: &CfgContext) -> Locat
 
     let hint = parts[..parts.len()].join("/");
     LocatedStruct::NotDefinedOnDisk(hint + ".rs")
+}
+
+/// Extract the raw text of the first inner `#![cfg(...)]` attribute from a
+/// source file, for use in diagnostic messages. Returns an empty string when
+/// no such attribute is present.
+fn extract_inner_cfg_predicate(source: &str) -> String {
+    let cleaned = crate::parser::strip_comments_and_strings_pub(source);
+    for line in cleaned.lines() {
+        let trimmed = line.trim();
+        if let Some(rest) = trimmed.strip_prefix("#![cfg(")
+            && rest.ends_with(')')
+        {
+            return format!("#![cfg({})]", &rest[..rest.len() - 1]);
+        }
+    }
+    String::new()
 }
 
 /// Register the structural parent modules of a file with the resolver so that
@@ -1851,6 +1896,7 @@ mod tests {
         match v {
             LocatedStruct::Found(f) => format!("Found({})", f),
             LocatedStruct::NotDefinedOnDisk(h) => format!("NotDefinedOnDisk({})", h),
+            LocatedStruct::CfgExcluded { module, .. } => format!("CfgExcluded({})", module),
             LocatedStruct::BadPath(m) => format!("BadPath({})", m),
         }
     }

@@ -15,10 +15,7 @@
 // Enable unstable UEFI std and const error library features when building for UEFI on nightly.
 // The `nightly_compiler` cfg is emitted by build.rs as a simple boolean flag.
 #![cfg_attr(all(nightly_compiler, target_os = "uefi"), feature(uefi_std))]
-#![cfg_attr(
-    all(nightly_compiler, target_os = "uefi"),
-    feature(io_const_error)
-)]
+#![cfg_attr(all(nightly_compiler, target_os = "uefi"), feature(io_const_error))]
 // When the `allocator-api` Cargo feature is enabled on nightly, expose the real
 // `core::alloc::AllocError` and `TryReserveErrorKind` instead of the ponyfills.
 // The cfg is emitted by build.rs only when both conditions are met.
