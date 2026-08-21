@@ -19,7 +19,7 @@ use crate::alloc::AllocError;
 use crate::alloc::TryReserveError;
 use crate::try_clone::{TryClone, TryCloneError};
 use crate::try_default::{TryDefault, TryDefaultError};
-use crate::try_fmt::{TryDebug, helpers::FormatterExt};
+use crate::try_fmt::{TryDebug, TryDisplay, helpers::FormatterExt};
 use lang_alloc::vec::Vec;
 use lang_core::alloc::Layout;
 use lang_core::cmp;
@@ -130,6 +130,12 @@ impl TryDebug for TryVecError {
                 .field("0", msg)
                 .finish(),
         }
+    }
+}
+
+impl TryDisplay for TryVecError {
+    fn try_fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        fmt::Display::fmt(self, f)
     }
 }
 
