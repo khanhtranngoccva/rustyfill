@@ -29,21 +29,21 @@ Where an operation can fail partway through, it guarantees atomicity or resumabi
 | [`experiments`](experiments/) | unpublished | Scratch benchmarks and investigations that inform design decisions. |
 | [`xtask`](xtask/) | unpublished | Developer task runner (`cargo xtask sanitize`, `cargo xtask miri`). |
 
-## Architecture
+## API and Architecture
 
 ### rustyfill: core data structures and abstractions
 
 The central challenge is that the interesting interior of `Vec`, `BTreeMap`, `Mutex`, and friends lives in `core`/`alloc`/`std` internals that are not public API. The repo addresses this in layers:
 
-**Mirrored layouts.** `rustyfill-sys` parses the actual stdlib source tree (via the `rust-src` component) at build time and emits synthetic copies of the relevant internal types — same fields, same order, same alignment — organized under a mirrored module hierarchy. Because the layout is byte-identical, `rustyfill` can operate on the innards of a real `Vec<T>` or `BTreeMap<K, V>` through these mirrors without any unsound transmutes. 
+- **Mirrored layouts.** `rustyfill-sys` parses the actual stdlib source tree (via the `rust-src` component) at build time and emits synthetic copies of the relevant internal types — same fields, same order, same alignment — organized under a mirrored module hierarchy. Because the layout is byte-identical, `rustyfill` can operate on the innards of a real `Vec<T>` or `BTreeMap<K, V>` through these mirrors without any unsound transmutes. 
 
 *Important: The build refuses to run if `-Zrandomize-layout` is active, since layout stability is a hard invariant. This requirement propagates down to the end user application.*
 
-**Ponyfilled errors.** Stable Rust has no stable representation of "the allocator said no." `rustyfill` ships its own `AllocError` and `TryReserveErrorKind` equivalents that behave like their future stdlib counterparts. On nightly with the `allocator-api` feature, it swaps in the real types transparently, so code written against the ponyfills keeps working as the ecosystem catches up.
+- **Ponyfilled errors.** Stable Rust has no stable representation of "the allocator said no." `rustyfill` ships its own `AllocError` and `TryReserveErrorKind` equivalents that behave like their future stdlib counterparts. On nightly with the `allocator-api` feature, it swaps in the real types transparently, so code written against the ponyfills keeps working as the ecosystem catches up.
 
-**Atomic-or-resume semantics.** Many mutating operations reserve capacity before doing logical work, so a failure short-circuits with nothing half-done. Iterator-driven operations (`try_extend`) can't be rolled back because iterators consume their source, and some map/set operations cannot be rolled back because values may have been overwritten; instead they hand back a `Resumable` handle carrying the stranded element plus the unconsumed remainder, letting the caller retry from exactly where it stopped.
+- **Atomic-or-resume semantics.** Many mutating operations reserve capacity before doing logical work, so a failure short-circuits with nothing half-done. Iterator-driven operations (`try_extend`) can't be rolled back because iterators consume their source, and some map/set operations cannot be rolled back because values may have been overwritten; instead they hand back a `Resumable` handle carrying the stranded element plus the unconsumed remainder, letting the caller retry from exactly where it stopped.
 
-**Provable non-panic.** The guarantee is enforced, not assumed. Tests run against `rustyfill-test-allocator`, which flips a thread-local policy to make the Nth allocation fail, then asserts the operation returned `Err` and left the structure intact. CI additionally runs Miri (UB detection) and leak/address sanitizers on nightly.
+- **Provable non-panic.** The guarantee is enforced, not assumed. Tests run against `rustyfill-test-allocator`, which flips a thread-local policy to make the Nth allocation fail, then asserts the operation returned `Err` and left the structure intact. CI additionally runs Miri (UB detection) and leak/address sanitizers on nightly.
 
 ### rustyfill-errors: context-aware error reports
 
