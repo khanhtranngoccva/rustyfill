@@ -75,7 +75,11 @@ fn cmd_crap(extra_args: &[String]) {
         args.push(String::from("--lcov"));
         args.push(String::from(LCOV_PATH));
     }
-    args.extend(extra_args.iter().filter(|a| *a != "--no-cache").cloned());
+    // Strip our own control flags before forwarding; everything else goes to
+    // cargo-crap verbatim (e.g. `-p <crate>`, `--top 50`, `--format json`).
+    args.extend(extra_args.iter().filter(|a| {
+        *a != "--no-cache" && *a != "--skip-coverage"
+    }).cloned());
 
     let status = Command::new("cargo").args(&args).status();
     match status {
