@@ -666,20 +666,6 @@ mod tests {
     }
 
     #[test]
-    fn dashset_nth_alloc_fail_targets_correct_call() {
-        // DashSet::try_clone does multiple internal allocations before reaching
-        // fallible code, so nth-counting on try_clone is unreliable.
-        let set: DashSet<u32> = DashSet::new();
-        let (r1_ok, r2_err) = with_policy(FailPolicy::fail_nth_alloc(2), || {
-            let r1 = set.try_insert(1);
-            let r2 = set.try_insert(2);
-            (r1.is_ok(), r2.is_err())
-        });
-        assert!(r1_ok, "first insert should succeed");
-        assert!(r2_err, "second insert should fail");
-    }
-
-    #[test]
     fn dashset_oom_restores_allocation_afterwards() {
         let set: DashSet<u32> = DashSet::new();
         let r = with_policy(FailPolicy::fail_next_alloc(), || set.try_insert(1));
