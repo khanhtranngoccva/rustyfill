@@ -1,8 +1,9 @@
 //! Loader specification for rustyfill-sys binding generation.
 //!
-//! Declares which data structures from the Rust standard library (core, alloc, std)
-//! need mirrored bindings. Called by `build.rs` at compile time — not part of the
-//! runtime library.
+//! This is the single source of truth for what gets mirrored; it lives here
+//! (rather than in `rustyfill-sys-bindings`) so that changes to the polyfill's
+//! needs only touch the crate whose bindings they affect. Called by
+//! `build.rs` at compile time — not part of the runtime library.
 //!
 //! Structs are declared explicitly in path syntax, relative to the library root
 //! (e.g., `"collections::btree::map::BTreeMap"`). For each declaration the build
@@ -14,8 +15,7 @@
 //!
 //! Change this file when the main polyfill's needs change.
 
-use crate::LoaderSpec;
-use crate::loader_spec::BindingTarget;
+use rustyfill_sys_bindings::{BindingTarget, LoaderSpec};
 
 /// Returns the complete loader specification for all three built-in libraries.
 pub fn get_loader_spec() -> LoaderSpec {

@@ -39,12 +39,19 @@ jobs:
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
+      # rust-src is declared up front so it lands in the toolchain cache
+      # during setup, before any code change can invalidate the build. The
+      # build script's own `rustup component add` fallback remains as a
+      # safety net for local/dev machines without the component.
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: ${{ matrix.target }}
+          components: rust-src
       - run: cargo test --workspace --target ${{ matrix.target }}
 
   # ── Miri ────────────────────────────────────────────────────────────────
+  # rust-src is declared up front (see the test job) so it is cached during
+  # toolchain setup rather than fetched mid-build by the build script.
   miri:
     name: Miri
     runs-on: ubuntu-latest
@@ -79,7 +86,11 @@ jobs:
       pull-requests: write
     steps:
       - uses: actions/checkout@v4
+      # rust-src up front (see the test job) so the build script finds it
+      # already cached instead of downloading mid-build.
       - uses: dtolnay/rust-toolchain@nightly
+        with:
+          components: rust-src
       - name: Install cargo-llvm-cov
         run: cargo install cargo-llvm-cov
       - name: Install cargo-crap

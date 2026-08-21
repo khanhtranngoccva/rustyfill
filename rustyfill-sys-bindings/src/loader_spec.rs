@@ -60,7 +60,7 @@ pub struct KnownExternalType {
     pub definition: String,
 }
 
-/// Top-level spec returned by [`crate::spec::get_loader_spec`].
+/// Top-level loader specification, built by the consuming crate's build script.
 #[derive(Clone)]
 pub struct LoaderSpec {
     /// Targets (core, alloc, std) with their struct declarations.

@@ -7,6 +7,9 @@ description = "Test-time global allocator for injecting OOM conditions"
 [dependencies]
 static_assertions = { workspace = true, optional = true }
 
+[build-dependencies]
+cargo-build = { workspace = true }
+
 [dev-dependencies]
 static_assertions = { workspace = true }
 rustyfill = { workspace = true }

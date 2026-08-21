@@ -61,6 +61,12 @@ std = [
 # so construction can still panic under memory pressure. Only enable this if you
 # accept that limitation and want the fallible mutation APIs on top.
 unstable = ["dep:dashmap", "std"]
+# On nightly, re-export the real `core::alloc::AllocError` and
+# `alloc::collections::TryReserveErrorKind` instead of the ponyfills.
+# Silently ignored on stable (ponyfills remain in effect). Downstream crates
+# that name these types in their own public signatures must also enable this
+# feature on their `rustyfill` dependency AND add `#![feature(allocator_api)]`.
+allocator-api = []
 
 [dev-dependencies]
 no-panic = { workspace = true }

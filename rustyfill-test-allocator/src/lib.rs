@@ -5,6 +5,10 @@
 //! at compile time — it is intended as a **dev-dependency** only. Do not depend on
 //! it in production code.
 
+// On nightly with `rustyfill/allocator-api`, the real `core::alloc::AllocError`
+// is re-exported; we need the same feature gate to name it in test signatures.
+#![cfg_attr(nightly_compiler, feature(allocator_api))]
+
 use std::alloc::{GlobalAlloc, Layout, System};
 use std::cell::Cell;
 use std::marker::PhantomData;

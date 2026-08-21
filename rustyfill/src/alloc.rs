@@ -1,10 +1,12 @@
 //! Custom allocation types and allocation errors.
 //!
-//! The standard library's `AllocError` and `TryReserveErrorKind` are gated
-//! behind unstable features (`allocator_api`, `try_reserve_kind`) that this
-//! crate does not enable, so we provide our own equivalents: a unit-struct
-//! [`AllocError`] and a layout-matched [`TryReserveErrorKind`] ponyfill, both
-//! used uniformly on every toolchain.
+//! By default (and always on stable), this crate provides its own
+//! [`AllocError`] ponyfill and a layout-matched [`TryReserveErrorKind`]
+//! ponyfill so that downstream crates can name these types without enabling
+//! unstable feature gates. When the `allocator-api` Cargo feature is enabled
+//! on nightly, the real `core::alloc::AllocError` and
+//! `alloc::collections::TryReserveErrorKind` replace the ponyfills, giving
+//! identity with the standard library types.
 //!
 //! [`TryReserveError`] is a re-export of the standard library's
 //! [`lang_alloc::collections::TryReserveError`]. There is exactly one such type,
@@ -18,11 +20,11 @@
 
 use crate::try_fmt::{TryDebug, TryDisplay, helpers::FormatterExt};
 use lang_core::alloc::Layout;
-#[cfg(not(nightly_compiler = "true"))]
+#[cfg(not(allocator_api_enabled))]
 use lang_core::error;
-#[cfg(nightly_compiler = "true")]
+#[cfg(allocator_api_enabled)]
 use lang_core::fmt;
-#[cfg(not(nightly_compiler = "true"))]
+#[cfg(not(allocator_api_enabled))]
 use lang_core::fmt::{self, Debug};
 
 // The layout-matched mirror of the private `TryReserveErrorKind`, generated
@@ -44,12 +46,12 @@ pub mod vecdeque;
 
 // ── AllocError ────────────────────────────────────────────────────────────────
 //
-// On nightly we alias the real `core::alloc::AllocError` (reachable because
-// `lib.rs` enables `feature(allocator_api)` under the `nightly_compiler` cfg).
-// On stable that type is not exposed, so we provide a unit-struct ponyfill with
-// the same shape (a unit struct printing fixed text) to keep the API uniform.
+// When `allocator-api` is enabled on nightly, we re-export the real
+// `core::alloc::AllocError` (a zero-sized unit struct from core). Otherwise
+// (stable, or nightly without the feature), we provide a ponyfill with the
+// same shape so downstream crates can name the type without feature gates.
 
-#[cfg(not(nightly_compiler = "true"))]
+#[cfg(not(allocator_api_enabled))]
 mod alloc_error_ponyfill {
     use super::*;
 
@@ -80,24 +82,24 @@ mod alloc_error_ponyfill {
     impl error::Error for AllocError {}
 }
 
-#[cfg(not(nightly_compiler = "true"))]
+#[cfg(not(allocator_api_enabled))]
 pub use alloc_error_ponyfill::AllocError;
 
-// On nightly `AllocError` is the real (foreign) unit struct from core, which
-// already provides `Debug`, `Display`, and `error::Error`. We only add the
-// fallible formatting traits, delegating to those std impls (a unit struct
-// prints fixed text and never allocates).
-#[cfg(nightly_compiler = "true")]
+// With `allocator-api` on nightly, `AllocError` is the real (foreign) unit
+// struct from core, which already provides `Debug`, `Display`, and
+// `error::Error`. We only add the fallible formatting traits, delegating to
+// those std impls (a unit struct prints fixed text and never allocates).
+#[cfg(allocator_api_enabled)]
 pub use lang_core::alloc::AllocError;
 
-#[cfg(nightly_compiler = "true")]
+#[cfg(allocator_api_enabled)]
 impl TryDebug for AllocError {
     fn try_fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         fmt::Debug::fmt(self, f)
     }
 }
 
-#[cfg(nightly_compiler = "true")]
+#[cfg(allocator_api_enabled)]
 impl TryDisplay for AllocError {
     fn try_fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         fmt::Display::fmt(self, f)
@@ -136,17 +138,16 @@ impl TryDisplay for AllocError {
 /// construct instances and inspect which kind of failure occurred.
 pub use lang_alloc::collections::TryReserveError;
 
-// On nightly the real `TryReserveErrorKind` is available (behind
-// `try_reserve_kind`, enabled in `lib.rs`), so we alias it directly. On stable
-// it is private, so we provide a layout-matched ponyfill with the same name and
-// shape. Either way, downstream code names the type
-// `crate::alloc::TryReserveErrorKind`.
-#[cfg(nightly_compiler = "true")]
+// With `allocator-api` on nightly, the real `TryReserveErrorKind` is available
+// (behind `try_reserve_kind`, enabled in `lib.rs`), so we alias it directly.
+// Otherwise we provide a layout-matched ponyfill. Either way, downstream code
+// names the type `crate::alloc::TryReserveErrorKind`.
+#[cfg(allocator_api_enabled)]
 pub use lang_alloc::collections::TryReserveErrorKind;
 
 /// A ponyfill of the private `alloc::collections::TryReserveErrorKind`, providing
-/// **error-kind enumeration** on stable, where the real enum and its `.kind()`
-/// accessor are gated behind the unstable `try_reserve_kind` feature.
+/// **error-kind enumeration** when the real enum is unreachable (stable, or
+/// nightly without the `allocator-api` feature).
 ///
 /// This is a *ponyfill*, not a full replica: it exposes the same two variants so
 /// callers can enumerate which kind of reservation failure occurred, but it does
@@ -160,7 +161,7 @@ pub use lang_alloc::collections::TryReserveErrorKind;
 /// decoding a `TryReserveError` into it via `transmute_copy` is sound (same
 /// guarantee as the construction path: `-Zrandomize-layout` is rejected at build
 /// time).
-#[cfg(not(nightly_compiler = "true"))]
+#[cfg(not(allocator_api_enabled))]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum TryReserveErrorKind {
     /// Error due to the computed capacity exceeding the collection's maximum.
@@ -247,14 +248,15 @@ impl TryReserveErrorExt for TryReserveError {
         unsafe { core::mem::transmute(mirror) }
     }
 
-    #[cfg(nightly_compiler = "true")]
+    #[cfg(allocator_api_enabled)]
     fn error_kind(&self) -> TryReserveErrorKind {
-        // On nightly the real `.kind()` accessor is available (behind
-        // `try_reserve_kind`), so we use it directly — no transmute needed.
+        // With `allocator-api` on nightly the real `.kind()` accessor is
+        // available (behind `try_reserve_kind`), so we use it directly —
+        // no transmute needed.
         self.kind()
     }
 
-    #[cfg(not(nightly_compiler = "true"))]
+    #[cfg(not(allocator_api_enabled))]
     fn error_kind(&self) -> TryReserveErrorKind {
         // Decode through the sys mirror, whose fields are always public and whose
         // layout provably matches the real type. We only read the discriminant

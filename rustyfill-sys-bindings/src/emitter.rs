@@ -877,7 +877,7 @@ impl<'a> QualifierResolver<'a> {
     /// definition is found. This lets callers (the qualifier-route recorder and
     /// the Strategy-B shim emitter) point at the *defining* module rather than
     /// an intermediate re-export layer.
-    fn find_defining_module(&mut self, mod_path: &str, leaf: &str) -> Option<String> {
+    pub(crate) fn find_defining_module(&mut self, mod_path: &str, leaf: &str) -> Option<String> {
         // Direct definition in the module's own file.
         if let Some(src) = self.source_module(mod_path)
             && src
@@ -3766,7 +3766,10 @@ fn sanitize(name: &str) -> String {
     }
 }
 
-#[cfg(test)]
+// Miri runs tests with filesystem isolation enabled, which forbids the real
+// `mkdir`/file writes these emission tests perform. They run under plain
+// `cargo test` (stable and nightly) where the filesystem is available.
+#[cfg(all(test, not(miri)))]
 mod known_type_stub_tests {
     use super::*;
     use crate::loader_spec::KnownExternalType;

@@ -22,6 +22,11 @@
 //!
 //! [`error-stack`]: https://crates.io/crates/error-stack
 
+// On nightly, `rustyfill` may re-export the real `core::alloc::AllocError`
+// (gated behind `feature(allocator_api)`). We enable the same feature to
+// legally name that type in our public signatures. The cfg is emitted by
+// build.rs as a simple boolean flag.
+#![cfg_attr(nightly_compiler, feature(allocator_api))]
 #![no_std]
 #![warn(missing_docs)]
 // Arithmetic in library code must never silently overflow; use checked/wrapping

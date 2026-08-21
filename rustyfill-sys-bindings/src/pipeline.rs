@@ -293,7 +293,14 @@ pub fn generate(input: &PipelineInput<'_>) -> GenerateOutcome {
                     if mod_parts.is_empty() {
                         continue;
                     }
-                    let module_candidates = if is_glob {
+                    // A trailing `Self_` (from a `use ...::{self, ...}` entry)
+                    // binds the module itself under its own name: every segment
+                    // up to and including the last named one is a module path.
+                    // Without this, e.g. `use crate::sys::sync::futex::{self, ..}`
+                    // would never register `sys/sync/futex`, leaving preserved
+                    // qualifiers like `futex::SmallFutex` unresolvable.
+                    let is_self_binding = matches!(segs.last(), Some(PathSegment::Self_));
+                    let module_candidates = if is_glob || is_self_binding {
                         vec![mod_parts.clone()]
                     } else if mod_parts.len() > 1 {
                         let mut without_last = mod_parts.clone();
@@ -911,35 +918,134 @@ fn mirror_minimal_modules(
     // file so the preserved qualifier resolves through source-parity paths.
     // This is what makes e.g. `pal::Mutex` in `sys/sync/mutex/pthread` resolve
     // to `crate::std::sys::pal::sync::Mutex`.
+    // Resolve a preserved-qualifier reference `lead::lf` seen from
+    // `module_ctx` to the slash-separated module that defines `lf`. Tries the
+    // standard import-following resolution first, then falls back to probing
+    // the named segments of the binding's own path — needed for
+    // `use ...::{self, ..}` bindings whose target module is not a direct
+    // child of the current module (e.g. nightly moved the futex types to
+    // `sys/sync/futex`, reached from `sys/sync/mutex/futex` via
+    // `use crate::sys::sync::futex::{..}`).
+    let resolve_def_mod = |qres: &mut QualifierResolver<'_>,
+                           module_ctx: &str,
+                           lead: &str,
+                           lf: &str|
+     -> Option<String> {
+        if let Some(m) = qres.resolve_qualified_ref(module_ctx, Some(lead), lf) {
+            return Some(m);
+        }
+        let cur = qres.source_module(module_ctx)?;
+        for stmt in &cur.use_statements {
+            let (target_segs, alias_name) = match &stmt.kind {
+                UseKind::Single(pl, alias) => (pl.segments.clone(), alias.clone()),
+                _ => continue,
+            };
+            let bound_name: Option<String> = match &alias_name {
+                Some(a) => Some(a.clone()),
+                None => {
+                    let last_named = target_segs.iter().rev().find_map(|s| match s {
+                        PathSegment::Named(n) => Some(n.clone()),
+                        _ => None,
+                    });
+                    match last_named.as_deref() {
+                        Some("self") => target_segs.iter().rev().find_map(|s| match s {
+                            PathSegment::Named(n) if n != "self" => Some(n.clone()),
+                            _ => None,
+                        }),
+                        other => other.map(str::to_string),
+                    }
+                }
+            };
+            if bound_name.as_deref() != Some(lead) {
+                continue;
+            }
+            let base: Vec<String> = module_ctx
+                .split('/')
+                .filter(|s| !s.is_empty())
+                .map(String::from)
+                .collect();
+            let mut resolved_base = base;
+            for seg in &target_segs {
+                match seg {
+                    PathSegment::Crate => resolved_base.clear(),
+                    PathSegment::Super => {
+                        resolved_base.pop();
+                    }
+                    PathSegment::Self_ => {}
+                    PathSegment::Named(n) => resolved_base.push(n.clone()),
+                }
+            }
+            // Probe progressively longer prefixes of the binding's concrete
+            // path; descend through re-export layers when a segment isn't a
+            // direct child module.
+            let mut trail: Vec<String> = Vec::new();
+            for name in &resolved_base {
+                let candidate = if trail.is_empty() {
+                    name.clone()
+                } else {
+                    format!("{}/{}", trail.join("/"), name)
+                };
+                if qres.source_module(&candidate).is_some() {
+                    trail.push(name.clone());
+                    continue;
+                }
+                if trail.is_empty() {
+                    break;
+                }
+                let cur_mod = trail.join("/");
+                match qres.descend_through_reexport(&cur_mod, name) {
+                    Some(t) => {
+                        for part in t.split('/') {
+                            trail.push(part.to_string());
+                        }
+                    }
+                    None => break,
+                }
+            }
+            if !trail.is_empty()
+                && let Some(def) = qres.find_defining_module(&trail.join("/"), lf)
+            {
+                return Some(def);
+            }
+        }
+        None
+    };
+
     let mut needed_leaves: HashMap<String, HashSet<String>> = HashMap::new();
     for (module_ctx, lead, lf) in &qual_refs {
-        if let Some(lead) = lead
-            && let Some(def_mod) = qres.resolve_qualified_ref(module_ctx, Some(lead), lf)
-        {
-            needed_leaves
-                .entry(def_mod.clone())
-                .or_default()
-                .insert(lf.clone());
-            sink.registry
-                .set_qualifier_route(module_ctx, lead, &def_mod);
+        let Some(lead) = lead else { continue };
+        let Some(def_mod) = resolve_def_mod(&mut qres, module_ctx, lead, lf) else {
+            continue;
+        };
+        needed_leaves
+            .entry(def_mod.clone())
+            .or_default()
+            .insert(lf.clone());
+        sink.registry
+            .set_qualifier_route(module_ctx, lead, &def_mod);
 
-            // Record an alias import for any non-sibling qualifier so that
-            // references like `pal::Mutex` resolve without path rewriting.
-            // At emit time, the pipeline checks whether the resolver already
-            // bound the same name and skips the alias to avoid E0252.
-            let sibling = format!("{module_ctx}/{lead}");
-            if sibling != def_mod {
-                let import_target = qres
-                    .resolve_import_target(module_ctx, lead)
-                    .unwrap_or_else(|| def_mod.clone());
-                let crate_path = format!(
-                    "crate::{}::{}",
-                    sink.registry.wrapper_mod(),
-                    import_target.replace('/', "::")
-                );
-                sink.registry
-                    .set_module_alias_route(module_ctx, lead, &crate_path);
-            }
+        // Record an alias import for any non-sibling qualifier so that
+        // references like `pal::Mutex` resolve without path rewriting.
+        // At emit time, the pipeline checks whether the resolver already
+        // bound the same name and skips the alias to avoid E0252.
+        let sibling = format!("{module_ctx}/{lead}");
+        if sibling != def_mod {
+            // Prefer the module that actually *defines* the leaf over the
+            // import binding's target: an intermediate re-export layer (e.g.
+            // `sys/sync/futex` with `pub use unix::*`) is not guaranteed to be
+            // mirrored with its re-exports intact, while the defining module
+            // (`sys/sync/futex/unix`) is always emitted as a slim mirror.
+            let import_target = match qres.resolve_import_target(module_ctx, lead) {
+                Some(t) if t == def_mod => t,
+                _ => def_mod.clone(),
+            };
+            let crate_path = format!(
+                "crate::{}::{}",
+                sink.registry.wrapper_mod(),
+                import_target.replace('/', "::")
+            );
+            sink.registry
+                .set_module_alias_route(module_ctx, lead, &crate_path);
         }
     }
 

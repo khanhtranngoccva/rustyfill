@@ -13,16 +13,17 @@
 //! `RandomState` helpers, etc.) are gated behind `#[cfg(feature = "std")]`.
 
 // Enable unstable UEFI std and const error library features when building for UEFI on nightly.
-// Both cfg flags (`nightly_compiler`) are set by build.rs.
-#![cfg_attr(all(nightly_compiler = "true", target_os = "uefi"), feature(uefi_std))]
+// The `nightly_compiler` cfg is emitted by build.rs as a simple boolean flag.
+#![cfg_attr(all(nightly_compiler, target_os = "uefi"), feature(uefi_std))]
 #![cfg_attr(
-    all(nightly_compiler = "true", target_os = "uefi"),
+    all(nightly_compiler, target_os = "uefi"),
     feature(io_const_error)
 )]
-// On nightly, expose the real `core::alloc::AllocError` (used by `crate::alloc`).
-#![cfg_attr(nightly_compiler = "true", feature(allocator_api))]
-// On nightly, expose the real `TryReserveErrorKind` and its `.kind()` accessor.
-#![cfg_attr(nightly_compiler = "true", feature(try_reserve_kind))]
+// When the `allocator-api` Cargo feature is enabled on nightly, expose the real
+// `core::alloc::AllocError` and `TryReserveErrorKind` instead of the ponyfills.
+// The cfg is emitted by build.rs only when both conditions are met.
+#![cfg_attr(allocator_api_enabled, feature(allocator_api))]
+#![cfg_attr(allocator_api_enabled, feature(try_reserve_kind))]
 #![no_std]
 // Arithmetic in library code must never silently overflow; use checked/wrapping
 // variants explicitly where wrap-around or saturation is intended. Scoped to

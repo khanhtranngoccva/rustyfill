@@ -13,7 +13,6 @@ pub mod loader_spec;
 pub mod parser;
 pub mod pipeline;
 pub mod resolver;
-pub mod spec;
 pub mod validator;
 
 pub use emitter::{
@@ -28,5 +27,4 @@ pub use parser::{
 };
 pub use pipeline::{GenerateOutcome, GenerateReport, PipelineInput, generate};
 pub use resolver::{ModuleResolver, Resolution, UseStatement};
-pub use spec::get_loader_spec;
 pub use validator::{ValidationBuilder, ValidationErrors, ValidationResult};

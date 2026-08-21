@@ -14,11 +14,19 @@ fn main() {
 
     // Detect if we're compiling with a nightly compiler by probing an unstable feature.
     let is_nightly = probe_nightly(&out_dir);
-    cargo_build::rustc_check_cfg("nightly_compiler", ["true", "false"]);
+    cargo_build::rustc_check_cfg("nightly_compiler", Vec::<&str>::new());
     if is_nightly {
-        println!("cargo:rustc-cfg=nightly_compiler=\"true\"");
-    } else {
-        println!("cargo:rustc-cfg=nightly_compiler=\"false\"");
+        println!("cargo:rustc-cfg=nightly_compiler");
+    }
+
+    // Emit `allocator_api_enabled` only when BOTH the `allocator-api` Cargo
+    // feature is active AND we're on nightly. This single cfg gates the
+    // `#![feature(allocator_api)]` / `#![feature(try_reserve_kind)]` attrs in
+    // lib.rs and the real-vs-ponyfill type exports in alloc.rs.
+    let feature_allocator_api = env::var_os("CARGO_FEATURE_ALLOCATOR_API").is_some();
+    cargo_build::rustc_check_cfg("allocator_api_enabled", Vec::<&str>::new());
+    if is_nightly && feature_allocator_api {
+        println!("cargo:rustc-cfg=allocator_api_enabled");
     }
 
     // Re-run if the target changes (e.g., switching between host and UEFI targets).
