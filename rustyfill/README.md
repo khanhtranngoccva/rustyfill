@@ -1,5 +1,8 @@
 # rustyfill
 
+[![CI](https://github.com/khanhtranngoccva/rustyfill/actions/workflows/ci.yml/badge.svg)](https://github.com/khanhtranngoccva/rustyfill/actions/workflows/ci.yml)
+[![CRAP](https://img.shields.io/endpoint?url=https%3A%2F%2Fraw.githubusercontent.com%2Fkhanhtranngoccva%2Frustyfill%2Fbadges%2Fcrap-badge.json)](https://github.com/khanhtranngoccva/rustyfill/actions/workflows/ci.yml)
+
 Fallible allocation polyfills for Rust's standard library types.
 
 Standard-library operations like `Clone::clone()`, `Default::default()`, and `Vec::push()` panic on out-of-memory. In safety-critical code, embedded systems, or any context where panics are unacceptable, that behavior is untenable. rustyfill provides drop-in, `Result`-returning alternatives so callers can handle allocation failures gracefully.

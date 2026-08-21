@@ -200,8 +200,8 @@ impl CfgContext {
                     let seg1 = parts.get(1).copied();
                     let seg2 = parts.get(2).copied();
                     let last = parts.last().copied();
-                    let traditional = seg1.is_some_and(|p| is_known_vendor(p))
-                        && !seg2.is_some_and(is_env_suffix);
+                    let traditional =
+                        seg1.is_some_and(&is_known_vendor) && !seg2.is_some_and(is_env_suffix);
                     if traditional {
                         // arch-vendor-os[-env]: vendor in slot 2, OS in slot 3,
                         // trailing env when present.
@@ -238,9 +238,7 @@ impl CfgContext {
         // The vendor slot feeds `cfg(target_vendor = "...")` predicates such as
         // `not(target_vendor = "win7")` in cfg_select!. Without this, Windows
         // targets fall through to the wrong backend branch (e.g. no_threads).
-        let target_vendor = vendor_slot
-            .filter(|p| is_known_vendor(*p))
-            .map(String::from);
+        let target_vendor = vendor_slot.filter(|p| is_known_vendor(p)).map(String::from);
         let is_unix = target_family.as_deref() == Some("unix");
         let is_windows = target_os.as_deref() == Some("windows");
         Self {
