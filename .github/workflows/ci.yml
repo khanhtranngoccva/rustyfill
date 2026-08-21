@@ -34,8 +34,10 @@ jobs:
             target: aarch64-apple-darwin
           - os: windows-latest
             target: x86_64-pc-windows-msvc
-          - os: freebsd-latest
-            target: x86_64-unknown-freebsd
+          # No hosted FreeBSD runner exists on GitHub Actions; re-enable with a
+          # self-hosted runner or vmactions/freebsd-vm if that becomes viable.
+          # - os: freebsd-latest
+          #   target: x86_64-unknown-freebsd
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
@@ -65,8 +67,9 @@ jobs:
             target: aarch64-apple-darwin
           - os: windows-latest
             target: x86_64-pc-windows-msvc
-          - os: freebsd-latest
-            target: x86_64-unknown-freebsd
+          # No hosted FreeBSD runner exists on GitHub Actions (see `test` job).
+          # - os: freebsd-latest
+          #   target: x86_64-unknown-freebsd
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
