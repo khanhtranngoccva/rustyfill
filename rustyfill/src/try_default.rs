@@ -26,14 +26,11 @@ use lang_core::ptr;
 
 /// Returned when a fallible default construction fails.
 #[derive(Clone, PartialEq, Eq)]
-pub enum TryDefaultError {
-    /// A raw heap allocation failed (no collection involved).
-    Alloc(AllocError),
-    /// A capacity reservation on a collection failed (overflow or OOM).
+pub enum TryDefaultError {    /// A capacity reservation on a collection failed (overflow or OOM).
     Reserve(TryReserveError),
-    /// A manually detected arithmetic overflow (e.g., size multiplication).
-    Overflow,
-    /// A logic-level failure with a static diagnostic message.
+    /// A single heap allocation failed (no reserve phase — e.g. a leaf
+    /// allocation such as a `Box`, `Arc`, or `Rc` node).
+    Alloc(AllocError),    /// A logic-level failure with a static diagnostic message.
     Other(&'static str),
 }
 
@@ -52,15 +49,14 @@ impl fmt::Display for TryDefaultError {
 impl TryDebug for TryDefaultError {
     fn try_fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::Alloc(e) => f
-                .try_debug_tuple("TryDefaultError::Alloc")
-                .field(e)
-                .finish(),
             Self::Reserve(e) => f
                 .try_debug_tuple("TryDefaultError::Reserve")
                 .field(e)
                 .finish(),
-            Self::Overflow => f.write_str("TryDefaultError::Overflow"),
+            Self::Alloc(e) => f
+                .try_debug_tuple("TryDefaultError::Alloc")
+                .field(e)
+                .finish(),
             Self::Other(msg) => f
                 .try_debug_tuple("TryDefaultError::Other")
                 .field(msg)
@@ -72,17 +68,10 @@ impl TryDebug for TryDefaultError {
 impl TryDisplay for TryDefaultError {
     fn try_fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::Alloc(_) => write!(f, "default failed: heap allocation error"),
             Self::Reserve(e) => write!(f, "default failed: {}", e),
-            Self::Overflow => write!(f, "default failed: capacity calculation overflowed"),
+            Self::Alloc(e) => write!(f, "default failed: {e}"),
             Self::Other(msg) => write!(f, "default failed: {}", msg),
         }
-    }
-}
-
-impl From<AllocError> for TryDefaultError {
-    fn from(e: AllocError) -> Self {
-        Self::Alloc(e)
     }
 }
 

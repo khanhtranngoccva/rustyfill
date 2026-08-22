@@ -2,7 +2,6 @@
 //!
 //! Every operation that may allocate returns a [`Result`] instead of panicking.
 
-use crate::alloc::AllocError;
 use crate::alloc::TryReserveError;
 use crate::alloc::vec::TryVec;
 use crate::collections::slotmap::key::{
@@ -142,10 +141,7 @@ impl<T: Debug> Debug for Slot<T> {
 // ── Error type ──────────────────────────────────────────────────────────────────
 
 /// Error returned by [`SlotMap`] operations.
-pub enum SlotMapError {
-    /// A raw heap allocation failed.
-    Alloc(AllocError),
-    /// Capacity reservation failed.
+pub enum SlotMapError {    /// Capacity reservation failed.
     Reserve(TryReserveError),
     /// The slot map has reached its maximum size (2³² − 2 slots).
     Full,
@@ -168,10 +164,6 @@ impl fmt::Display for SlotMapError {
 impl TryDebug for SlotMapError {
     fn try_fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::Alloc(e) => f
-                .try_debug_tuple("SlotMapError::Alloc")
-                .field(e)
-                .finish(),
             Self::Reserve(e) => f
                 .try_debug_tuple("SlotMapError::Reserve")
                 .field(e)
@@ -188,17 +180,10 @@ impl TryDebug for SlotMapError {
 impl TryDisplay for SlotMapError {
     fn try_fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::Alloc(e) => write!(f, "slot map allocation failed: {}", e),
             Self::Reserve(e) => write!(f, "slot map capacity reservation failed: {}", e),
             Self::Full => f.write_str("slot map is full"),
             Self::Other(msg) => f.write_str(msg),
         }
-    }
-}
-
-impl From<AllocError> for SlotMapError {
-    fn from(e: AllocError) -> Self {
-        Self::Alloc(e)
     }
 }
 
@@ -710,9 +695,8 @@ where
 impl<K: Key, V> TryDefault for SlotMap<K, V> {
     fn try_default() -> Result<Self, TryDefaultError> {
         Self::try_with_capacity_and_key(0).map_err(|e| match e {
-            SlotMapError::Alloc(a) => TryDefaultError::Alloc(a),
             SlotMapError::Reserve(r) => TryDefaultError::Reserve(r),
-            SlotMapError::Full => TryDefaultError::Overflow,
+            SlotMapError::Full => TryDefaultError::Other("slot map is full"),
             SlotMapError::Other(m) => TryDefaultError::Other(m),
         })
     }

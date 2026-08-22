@@ -40,16 +40,10 @@ use crate::dashmap::mapref::{Entry, OccupiedEntry, VacantEntry};
 /// Wraps the ways a DashMap operation can fail: a reserve failure from
 /// [`DashMap::try_reserve`](dashmap::DashMap::try_reserve) or a clone failure
 /// when an element's `try_clone` cannot allocate its internal buffers.
-pub enum TryDashMapError {
-    /// A raw heap allocation failed (no collection involved).
-    Alloc(AllocError),
-    /// A capacity reservation on the DashMap failed (overflow or OOM).
+pub enum TryDashMapError {    /// A capacity reservation on the DashMap failed (overflow or OOM).
     Reserve(TryReserveError),
     /// An element clone failed during a method that requires [`TryClone`].
-    Clone(TryCloneError),
-    /// An arithmetic overflow occurred while computing required capacity.
-    Overflow,
-    /// A logic-level failure with a static diagnostic message.
+    Clone(TryCloneError),    /// A logic-level failure with a static diagnostic message.
     Other(&'static str),
 }
 
@@ -62,12 +56,6 @@ impl fmt::Debug for TryDashMapError {
 impl fmt::Display for TryDashMapError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         TryDisplay::try_fmt(self, f)
-    }
-}
-
-impl From<AllocError> for TryDashMapError {
-    fn from(e: AllocError) -> Self {
-        Self::Alloc(e)
     }
 }
 
@@ -90,9 +78,8 @@ impl From<TryCloneError> for TryDashMapError {
 impl From<crate::try_default::TryDefaultError> for TryDashMapError {
     fn from(err: crate::try_default::TryDefaultError) -> Self {
         match err {
-            crate::try_default::TryDefaultError::Alloc(e) => Self::Alloc(e),
             crate::try_default::TryDefaultError::Reserve(e) => Self::Reserve(e),
-            crate::try_default::TryDefaultError::Overflow => Self::Overflow,
+            crate::try_default::TryDefaultError::Alloc(_) => Self::Other("allocation failed"),
             crate::try_default::TryDefaultError::Other(msg) => Self::Other(msg),
         }
     }
@@ -102,10 +89,8 @@ impl TryDebug for TryDashMapError {
     fn try_fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         use crate::errors::uniform as u;
         match self {
-            Self::Alloc(e) => u::debug_field(f, "TryDashMapError::Alloc", e),
             Self::Reserve(e) => u::debug_field(f, "TryDashMapError::Reserve", e),
             Self::Clone(e) => u::debug_field(f, "TryDashMapError::Clone", e),
-            Self::Overflow => u::debug_unit(f, "TryDashMapError::Overflow"),
             Self::Other(msg) => u::debug_field(f, "TryDashMapError::Other", msg),
         }
     }
@@ -115,10 +100,8 @@ impl TryDisplay for TryDashMapError {
     fn try_fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         use crate::errors::uniform as u;
         match self {
-            Self::Alloc(_) => u::display_fixed(f, "dash map", "heap allocation error"),
             Self::Reserve(e) => u::display_delegated(f, "dash map", e),
             Self::Clone(e) => u::display_delegated(f, "dash map", e),
-            Self::Overflow => u::display_fixed(f, "dash map", "capacity calculation overflowed"),
             Self::Other(msg) => u::display_fixed(f, "dash map", msg),
         }
     }
@@ -128,16 +111,10 @@ impl TryDisplay for TryDashMapError {
 ///
 /// Extends [`TryDashMapError`] with a [`Locked`](Self::Locked) variant for when
 /// the target shard is held by another writer and the caller chose not to block.
-pub enum TryDashMapNonblockError {
-    /// A raw heap allocation failed (no collection involved).
-    Alloc(AllocError),
-    /// A capacity reservation on the DashMap failed (overflow or OOM).
+pub enum TryDashMapNonblockError {    /// A capacity reservation on the DashMap failed (overflow or OOM).
     Reserve(TryReserveError),
     /// An element clone failed during a method that requires [`TryClone`].
-    Clone(TryCloneError),
-    /// An arithmetic overflow occurred while computing required capacity.
-    Overflow,
-    /// A logic-level failure with a static diagnostic message.
+    Clone(TryCloneError),    /// A logic-level failure with a static diagnostic message.
     Other(&'static str),
     /// The target shard is currently locked by another reader or writer.
     Locked,
@@ -157,12 +134,8 @@ impl fmt::Display for TryDashMapNonblockError {
 
 impl From<TryDashMapError> for TryDashMapNonblockError {
     fn from(err: TryDashMapError) -> Self {
-        match err {
-            TryDashMapError::Alloc(e) => Self::Alloc(e),
-            TryDashMapError::Reserve(r) => Self::Reserve(r),
-            TryDashMapError::Clone(c) => Self::Clone(c),
-            TryDashMapError::Overflow => Self::Overflow,
-            TryDashMapError::Other(m) => Self::Other(m),
+        match err {            TryDashMapError::Reserve(r) => Self::Reserve(r),
+            TryDashMapError::Clone(c) => Self::Clone(c),            TryDashMapError::Other(m) => Self::Other(m),
         }
     }
 }
@@ -171,10 +144,8 @@ impl TryDebug for TryDashMapNonblockError {
     fn try_fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         use crate::errors::uniform as u;
         match self {
-            Self::Alloc(e) => u::debug_field(f, "TryDashMapNonblockError::Alloc", e),
             Self::Reserve(e) => u::debug_field(f, "TryDashMapNonblockError::Reserve", e),
             Self::Clone(e) => u::debug_field(f, "TryDashMapNonblockError::Clone", e),
-            Self::Overflow => u::debug_unit(f, "TryDashMapNonblockError::Overflow"),
             Self::Other(msg) => u::debug_field(f, "TryDashMapNonblockError::Other", msg),
             Self::Locked => u::debug_unit(f, "TryDashMapNonblockError::Locked"),
         }
@@ -185,10 +156,8 @@ impl TryDisplay for TryDashMapNonblockError {
     fn try_fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         use crate::errors::uniform as u;
         match self {
-            Self::Alloc(_) => u::display_fixed(f, "dash map", "heap allocation error"),
             Self::Reserve(e) => u::display_delegated(f, "dash map", e),
             Self::Clone(e) => u::display_delegated(f, "dash map", e),
-            Self::Overflow => u::display_fixed(f, "dash map", "capacity calculation overflowed"),
             Self::Other(msg) => u::display_fixed(f, "dash map", msg),
             Self::Locked => u::display_fixed(f, "dash map", "shard locked"),
         }
@@ -574,9 +543,7 @@ impl<K: Eq + Hash, V, S: BuildHasher + TryClone> TryDashMap<K, V, S> for DashMap
     {
         let mut map = Self::try_new()?;
         if capacity > 0 {
-            map.try_reserve(capacity).map_err(|_| {
-                TryDashMapError::Reserve(TryReserveErrorExt::new_alloc(Layout::new::<u8>()))
-            })?;
+            map.try_reserve(capacity).map_err(TryDashMapError::Reserve)?;
         }
         Ok(map)
     }
@@ -587,9 +554,7 @@ impl<K: Eq + Hash, V, S: BuildHasher + TryClone> TryDashMap<K, V, S> for DashMap
     ) -> Result<DashMap<K, V, S>, TryDashMapError> {
         let mut map = DashMap::with_hasher(hasher);
         if capacity > 0 {
-            map.try_reserve(capacity).map_err(|_| {
-                TryDashMapError::Reserve(TryReserveErrorExt::new_alloc(Layout::new::<u8>()))
-            })?;
+            map.try_reserve(capacity).map_err(TryDashMapError::Reserve)?;
         }
         Ok(map)
     }
@@ -746,9 +711,7 @@ impl<K: Eq + Hash, V, S: BuildHasher + TryClone> TryDashMap<K, V, S> for DashMap
         // Reserve one slot first so that find_or_find_insert_slot cannot panic.
         shard
             .try_reserve(1, |(k, _v): &ShardEntry<K, V>| hf.hash_one(k))
-            .map_err(|_| {
-                TryDashMapError::Reserve(TryReserveErrorExt::new_alloc(Layout::new::<u8>()))
-            })?;
+            .map_err(|e| TryDashMapError::Reserve(crate::alloc::try_reserve_error_from_hashbrown(e)))?;
 
         // Build the entry while still holding the lock — no re-acquisition needed.
         match shard.find_or_find_insert_slot(
@@ -774,14 +737,8 @@ impl<K: Eq + Hash, V, S: BuildHasher + TryClone> TryDashMap<K, V, S> for DashMap
         let hf = self.hasher().clone();
 
         let mut shard = self.shards()[shard_idx].write();
-        match shard.try_reserve(1, |(k, _v): &ShardEntry<K, V>| hf.hash_one(k)) {
-            Ok(()) => {}
-            Err(_) => {
-                return Err((
-                    key,
-                    TryDashMapError::Reserve(TryReserveErrorExt::new_alloc(Layout::new::<u8>())),
-                ));
-            }
+        if let Err(e) = shard.try_reserve(1, |(k, _v): &ShardEntry<K, V>| hf.hash_one(k)) {
+            return Err((key, TryDashMapError::Reserve(crate::alloc::try_reserve_error_from_hashbrown(e))));
         }
 
         match shard.find_or_find_insert_slot(
@@ -816,9 +773,7 @@ impl<K: Eq + Hash, V, S: BuildHasher + TryClone> TryDashMap<K, V, S> for DashMap
         // Reserve one slot so insertion cannot panic.
         shard
             .try_reserve(1, |(k, _v): &ShardEntry<K, V>| hf.hash_one(k))
-            .map_err(|_| {
-                TryDashMapNonblockError::Reserve(TryReserveErrorExt::new_alloc(Layout::new::<u8>()))
-            })?;
+            .map_err(|e| TryDashMapNonblockError::Reserve(crate::alloc::try_reserve_error_from_hashbrown(e)))?;
 
         match shard.find_or_find_insert_slot(
             hash,
@@ -849,17 +804,8 @@ impl<K: Eq + Hash, V, S: BuildHasher + TryClone> TryDashMap<K, V, S> for DashMap
             return Err((key, TryDashMapNonblockError::Locked));
         };
 
-        match shard.try_reserve(1, |(k, _v): &ShardEntry<K, V>| hf.hash_one(k)) {
-            Ok(()) => {}
-            Err(_) => {
-                return Err((
-                    key,
-                    TryDashMapNonblockError::Reserve(TryReserveErrorExt::new_alloc(Layout::new::<
-                        u8,
-                    >(
-                    ))),
-                ));
-            }
+        if let Err(e) = shard.try_reserve(1, |(k, _v): &ShardEntry<K, V>| hf.hash_one(k)) {
+            return Err((key, TryDashMapNonblockError::Reserve(crate::alloc::try_reserve_error_from_hashbrown(e))));
         }
 
         match shard.find_or_find_insert_slot(
@@ -889,9 +835,7 @@ impl<K: Eq + Hash, V, S: BuildHasher + TryClone> TryDashMap<K, V, S> for DashMap
         // Reserve one slot first so that find_or_find_insert_slot cannot panic.
         shard
             .try_reserve(1, |(k, _v): &ShardEntry<K, V>| hf.hash_one(k))
-            .map_err(|_| {
-                TryDashMapError::Reserve(TryReserveErrorExt::new_alloc(Layout::new::<u8>()))
-            })?;
+            .map_err(|e| TryDashMapError::Reserve(crate::alloc::try_reserve_error_from_hashbrown(e)))?;
 
         // Clone the key only after reservation succeeded.
         let key = key.try_clone()?;
@@ -928,9 +872,7 @@ impl<K: Eq + Hash, V, S: BuildHasher + TryClone> TryDashMap<K, V, S> for DashMap
                 .try_reserve(count, |e: &ManuallyDrop<ShardEntry<K, V>>| {
                     hf.hash_one(&e.0)
                 })
-                .map_err(|_| {
-                    TryDashMapError::Reserve(TryReserveErrorExt::new_alloc(Layout::new::<u8>()))
-                })?;
+                .map_err(|e| TryDashMapError::Reserve(crate::alloc::try_reserve_error_from_hashbrown(e)))?;
 
             // Iterate the old table and write each entry into the new one via raw
             // pointer reads + insert. The old table's control bytes still mark these
@@ -988,9 +930,7 @@ impl<K: Eq + Hash, V, S: BuildHasher + TryClone> TryDashMap<K, V, S> for DashMap
         let capacity = upper.unwrap_or(lower);
         let mut map = Self::try_new()?;
         if capacity > 0 {
-            map.try_reserve(capacity).map_err(|_| {
-                TryDashMapError::Reserve(TryReserveErrorExt::new_alloc(Layout::new::<u8>()))
-            })?;
+            map.try_reserve(capacity).map_err(TryDashMapError::Reserve)?;
         }
         for (key, value) in iter {
             <DashMap<K, V, S> as TryDashMap<K, V, S>>::try_insert(&map, key, value)?;
@@ -1007,9 +947,7 @@ impl<K: Eq + Hash, V, S: BuildHasher + TryClone> TryDashMap<K, V, S> for DashMap
         let capacity = upper.unwrap_or(lower);
         let mut map = DashMap::with_hasher(hasher);
         if capacity > 0 {
-            map.try_reserve(capacity).map_err(|_| {
-                TryDashMapError::Reserve(TryReserveErrorExt::new_alloc(Layout::new::<u8>()))
-            })?;
+            map.try_reserve(capacity).map_err(TryDashMapError::Reserve)?;
         }
         for (key, value) in iter {
             Self::try_insert(&map, key, value)?;
@@ -1049,12 +987,8 @@ where
         let out = DashMap::with_hasher(hasher);
         // We cannot reserve everything immediately because shards may be uneven.
         for ref_cell in self.iter() {
-            let entry = TryDashMap::try_entry_ref(&out, ref_cell.key()).map_err(|e| match e {
-                TryDashMapError::Alloc(a) => TryCloneError::Alloc(a),
-                TryDashMapError::Reserve(r) => TryCloneError::Reserve(r),
-                TryDashMapError::Clone(c) => c,
-                TryDashMapError::Overflow => TryCloneError::Overflow,
-                TryDashMapError::Other(m) => TryCloneError::Other(m),
+            let entry = TryDashMap::try_entry_ref(&out, ref_cell.key()).map_err(|e| match e {                TryDashMapError::Reserve(r) => TryCloneError::Reserve(r),
+                TryDashMapError::Clone(c) => c,                TryDashMapError::Other(m) => TryCloneError::Other(m),
             })?;
             // Cloning happens only after reservation succeeded.
             let value_cloned = ref_cell.value().try_clone()?;
@@ -1131,10 +1065,8 @@ mod tests {
     #[test]
     fn dashmap_errors_cover_all_variants() {
         let dash_map = [
-            TryDashMapError::Alloc(AllocError),
             TryDashMapError::Reserve(reserve_err()),
-            TryDashMapError::Clone(TryCloneError::Alloc(AllocError)),
-            TryDashMapError::Overflow,
+            TryDashMapError::Clone(TryCloneError::Reserve(reserve_err())),
             TryDashMapError::Other("d"),
         ];
         for err in dash_map.iter() {
@@ -1147,10 +1079,8 @@ mod tests {
         }
 
         let dash_map_nb = [
-            TryDashMapNonblockError::Alloc(AllocError),
             TryDashMapNonblockError::Reserve(reserve_err()),
-            TryDashMapNonblockError::Clone(TryCloneError::Alloc(AllocError)),
-            TryDashMapNonblockError::Overflow,
+            TryDashMapNonblockError::Clone(TryCloneError::Reserve(reserve_err())),
             TryDashMapNonblockError::Other("dn"),
             TryDashMapNonblockError::Locked,
         ];
@@ -1172,22 +1102,23 @@ mod tests {
     #[test]
     fn blocking_to_nonblock_from_covers_all_variants() {
         let source = [
-            TryDashMapError::Alloc(AllocError),
             TryDashMapError::Reserve(TryReserveError::new_capacity_overflow()),
-            TryDashMapError::Clone(TryCloneError::Alloc(AllocError)),
-            TryDashMapError::Overflow,
+            TryDashMapError::Clone(TryCloneError::Reserve(
+                TryReserveError::new_capacity_overflow(),
+            )),
             TryDashMapError::Other("conv"),
         ];
         for e in source.iter() {
             let nb: TryDashMapNonblockError = match e {
-                TryDashMapError::Alloc(_) => TryDashMapError::Alloc(AllocError).into(),
                 TryDashMapError::Reserve(_) => {
                     TryDashMapError::Reserve(TryReserveError::new_capacity_overflow()).into()
                 }
                 TryDashMapError::Clone(_) => {
-                    TryDashMapError::Clone(TryCloneError::Alloc(AllocError)).into()
+                    TryDashMapError::Clone(TryCloneError::Reserve(
+                        TryReserveError::new_capacity_overflow(),
+                    ))
+                    .into()
                 }
-                TryDashMapError::Overflow => TryDashMapError::Overflow.into(),
                 TryDashMapError::Other(_) => TryDashMapError::Other("conv").into(),
             };
             let _ = format!("{nb}");

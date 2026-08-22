@@ -20,16 +20,10 @@ type DashSet<T, S = RandomState> = dashmap::DashSet<T, S>;
 // ── Error type ────────────────────────────────────────────────────────────────
 
 /// Error returned by [`TryDashSet`] operations.
-pub enum TryDashSetError {
-    /// A raw heap allocation failed (no collection involved).
-    Alloc(AllocError),
-    /// A capacity reservation on the DashSet failed (overflow or OOM).
+pub enum TryDashSetError {    /// A capacity reservation on the DashSet failed (overflow or OOM).
     Reserve(TryReserveError),
     /// An element clone failed during a method that requires [`TryClone`].
-    Clone(TryCloneError),
-    /// An arithmetic overflow occurred while computing required capacity.
-    Overflow,
-    /// A logic-level failure with a static diagnostic message.
+    Clone(TryCloneError),    /// A logic-level failure with a static diagnostic message.
     Other(&'static str),
 }
 
@@ -45,12 +39,6 @@ impl fmt::Display for TryDashSetError {
     }
 }
 
-impl From<AllocError> for TryDashSetError {
-    fn from(e: AllocError) -> Self {
-        Self::Alloc(e)
-    }
-}
-
 impl From<TryCloneError> for TryDashSetError {
     fn from(err: TryCloneError) -> Self {
         Self::Clone(err)
@@ -60,9 +48,8 @@ impl From<TryCloneError> for TryDashSetError {
 impl From<crate::try_default::TryDefaultError> for TryDashSetError {
     fn from(err: crate::try_default::TryDefaultError) -> Self {
         match err {
-            crate::try_default::TryDefaultError::Alloc(e) => Self::Alloc(e),
             crate::try_default::TryDefaultError::Reserve(e) => Self::Reserve(e),
-            crate::try_default::TryDefaultError::Overflow => Self::Overflow,
+            crate::try_default::TryDefaultError::Alloc(_) => Self::Other("allocation failed"),
             crate::try_default::TryDefaultError::Other(msg) => Self::Other(msg),
         }
     }
@@ -72,10 +59,8 @@ impl TryDebug for TryDashSetError {
     fn try_fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         use crate::errors::uniform as u;
         match self {
-            Self::Alloc(e) => u::debug_field(f, "TryDashSetError::Alloc", e),
             Self::Reserve(e) => u::debug_field(f, "TryDashSetError::Reserve", e),
             Self::Clone(e) => u::debug_field(f, "TryDashSetError::Clone", e),
-            Self::Overflow => u::debug_unit(f, "TryDashSetError::Overflow"),
             Self::Other(msg) => u::debug_field(f, "TryDashSetError::Other", msg),
         }
     }
@@ -85,12 +70,20 @@ impl TryDisplay for TryDashSetError {
     fn try_fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         use crate::errors::uniform as u;
         match self {
-            Self::Alloc(_) => u::display_fixed(f, "dash set", "heap allocation error"),
             Self::Reserve(e) => u::display_delegated(f, "dash set", e),
             Self::Clone(e) => u::display_delegated(f, "dash set", e),
-            Self::Overflow => u::display_fixed(f, "dash set", "capacity calculation overflowed"),
             Self::Other(msg) => u::display_fixed(f, "dash set", msg),
         }
+    }
+}
+
+impl From<dashmap::TryReserveError> for TryDashSetError {
+    fn from(_e: dashmap::TryReserveError) -> Self {
+        // `dashmap::TryReserveError` is a zero-sized placeholder that carries
+        // no layout information, so we cannot recover the exact failed layout.
+        // Record a minimal placeholder layout; the important signal (that an
+        // allocation, not a capacity overflow, failed) is preserved.
+        Self::Reserve(TryReserveErrorExt::new_alloc(Layout::new::<u8>()))
     }
 }
 
@@ -312,9 +305,7 @@ impl<T: Eq + Hash, S: BuildHasher + TryClone> TryDashSet<T, S> for DashSet<T, S>
     {
         let mut set = Self::try_new()?;
         if capacity > 0 {
-            convert_mut(&mut set).try_reserve(capacity).map_err(|_| {
-                TryDashSetError::Reserve(TryReserveErrorExt::new_alloc(Layout::new::<u8>()))
-            })?;
+            convert_mut(&mut set).try_reserve(capacity).map_err(TryDashSetError::Reserve)?;
         }
         Ok(set)
     }
@@ -325,9 +316,7 @@ impl<T: Eq + Hash, S: BuildHasher + TryClone> TryDashSet<T, S> for DashSet<T, S>
     ) -> Result<DashSet<T, S>, TryDashSetError> {
         let mut set = DashSet::with_hasher(hasher);
         if capacity > 0 {
-            convert_mut(&mut set).try_reserve(capacity).map_err(|_| {
-                TryDashSetError::Reserve(TryReserveErrorExt::new_alloc(Layout::new::<u8>()))
-            })?;
+            convert_mut(&mut set).try_reserve(capacity).map_err(TryDashSetError::Reserve)?;
         }
         Ok(set)
     }
@@ -388,11 +377,8 @@ impl<T: Eq + Hash, S: BuildHasher + TryClone> TryDashSet<T, S> for DashSet<T, S>
     // ── Capacity / shrink ───────────────────────────────────────────────────
 
     fn try_shrink_to_fit(&self) -> Result<(), TryDashSetError> {
-        convert_ref(self).try_shrink_to_fit().map_err(|e| match e {
-            super::TryDashMapError::Alloc(a) => TryDashSetError::Alloc(a),
-            super::TryDashMapError::Reserve(r) => TryDashSetError::Reserve(r),
+        convert_ref(self).try_shrink_to_fit().map_err(|e| match e {            super::TryDashMapError::Reserve(r) => TryDashSetError::Reserve(r),
             super::TryDashMapError::Clone(c) => TryDashSetError::Clone(c),
-            super::TryDashMapError::Overflow => TryDashSetError::Overflow,
             super::TryDashMapError::Other(m) => TryDashSetError::Other(m),
         })
     }
@@ -426,11 +412,8 @@ impl<T: Eq + Hash, S: BuildHasher + TryClone> TryDashSet<T, S> for DashSet<T, S>
 
 /// Convert a [`crate::dashmap::TryDashMapError`] into a [`TryDashSetError`].
 fn map_error_to_set(e: crate::dashmap::TryDashMapError) -> TryDashSetError {
-    match e {
-        crate::dashmap::TryDashMapError::Alloc(a) => TryDashSetError::Alloc(a),
-        crate::dashmap::TryDashMapError::Reserve(r) => TryDashSetError::Reserve(r),
+    match e {        crate::dashmap::TryDashMapError::Reserve(r) => TryDashSetError::Reserve(r),
         crate::dashmap::TryDashMapError::Clone(c) => TryDashSetError::Clone(c),
-        crate::dashmap::TryDashMapError::Overflow => TryDashSetError::Overflow,
         crate::dashmap::TryDashMapError::Other(m) => TryDashSetError::Other(m),
     }
 }
@@ -449,12 +432,8 @@ where
         if !self.is_empty() {
             let map: &DashMap<T, (), S> = convert_ref(&out);
             for elem in self.iter() {
-                let entry = TryDashMap::try_entry_ref(map, &elem).map_err(|e| match e {
-                    crate::dashmap::TryDashMapError::Alloc(a) => TryCloneError::Alloc(a),
-                    crate::dashmap::TryDashMapError::Reserve(r) => TryCloneError::Reserve(r),
-                    crate::dashmap::TryDashMapError::Clone(c) => c,
-                    crate::dashmap::TryDashMapError::Overflow => TryCloneError::Overflow,
-                    crate::dashmap::TryDashMapError::Other(m) => TryCloneError::Other(m),
+                let entry = TryDashMap::try_entry_ref(map, &elem).map_err(|e| match e {                    crate::dashmap::TryDashMapError::Reserve(r) => TryCloneError::Reserve(r),
+                    crate::dashmap::TryDashMapError::Clone(c) => c,                    crate::dashmap::TryDashMapError::Other(m) => TryCloneError::Other(m),
                 })?;
                 entry.insert(());
             }
@@ -529,10 +508,8 @@ mod tests {
     #[test]
     fn dashset_error_covers_all_variants() {
         let errs = [
-            TryDashSetError::Alloc(AllocError),
             TryDashSetError::Reserve(reserve_err()),
-            TryDashSetError::Clone(TryCloneError::Alloc(AllocError)),
-            TryDashSetError::Overflow,
+            TryDashSetError::Clone(TryCloneError::Reserve(reserve_err())),
             TryDashSetError::Other("ds"),
         ];
         for err in errs.iter() {

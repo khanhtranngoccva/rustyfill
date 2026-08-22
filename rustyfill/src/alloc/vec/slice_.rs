@@ -6,7 +6,7 @@
 //! copy so that clone-time allocation failures are also caught.
 
 use super::vec_::TryVecError;
-use crate::alloc::AllocError;
+use crate::alloc::{TryReserveErrorExt};
 use crate::try_clone::{TryClone, TryCloneError};
 use crate::try_default::{TryDefault, TryDefaultError};
 use crate::try_to_owned::{TryToOwned, TryToOwnedError};
@@ -47,7 +47,7 @@ pub trait TrySlice<T> {
     /// Returns an empty `Vec` when `n == 0` or the slice is empty.
     ///
     /// Returns [`TryVecError::Reserve`] on allocation failure,
-    /// [`TryVecError::Overflow`] if `self.len() * n` overflows, or
+    /// [`TryVecError::Reserve`] if `self.len() * n` overflows, or
     /// [`TryVecError::Clone`] if an element's [`TryClone::try_clone`] fails.
     /// On clone failure midway, the partial vector is discarded.
     fn try_repeat_clone(&self, n: usize) -> Result<Vec<T>, TryVecError>
@@ -96,7 +96,7 @@ impl<T> TrySlice<T> for [T] {
         if len == 0 || n == 0 {
             return Ok(Vec::new());
         }
-        let total_len = len.checked_mul(n).ok_or(TryVecError::Overflow)?;
+        let total_len = len.checked_mul(n).ok_or_else(|| TryVecError::Reserve(TryReserveErrorExt::new_capacity_overflow()))?;
         let mut out = Vec::<T>::new();
         out.try_reserve(total_len).map_err(TryVecError::Reserve)?;
         for _ in 0..n {
@@ -186,10 +186,10 @@ impl<T: TryClone> TryClone for Box<[T]> {
         }
 
         // Allocate exactly `len` elements — no excess capacity, no shrinking.
-        let layout = Layout::array::<T>(len).map_err(|_| TryCloneError::Overflow)?;
+        let layout = Layout::array::<T>(len).map_err(|_| TryCloneError::Reserve(TryReserveErrorExt::new_capacity_overflow()))?;
         let ptr = unsafe { alloc::alloc(layout) };
         if ptr.is_null() {
-            return Err(TryCloneError::Alloc(AllocError));
+            return Err(TryCloneError::Reserve(TryReserveErrorExt::new_alloc(layout)));
         }
 
         // Wrap immediately in a Box so Drop cleans up the allocation on panic.
@@ -357,7 +357,10 @@ mod tests {
     fn try_repeat_clone_overflow() {
         let s: &[u8] = &[1, 2];
         let result: Result<Vec<u8>, TryVecError> = s.try_repeat_clone(usize::MAX);
-        assert!(matches!(result, Err(TryVecError::Overflow)));
+        match result {
+            Err(TryVecError::Reserve(e)) => assert!(e.is_capacity_overflow()),
+            other => panic!("expected Reserve(capacity overflow), got {other:?}"),
+        }
     }
 
     #[test]

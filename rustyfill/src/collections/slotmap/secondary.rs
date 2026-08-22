@@ -5,8 +5,7 @@
 //! it uses direct indexing: the key's slot index is used as the array offset,
 //! so lookups are O(1) without hashing.
 
-use crate::alloc::AllocError;
-use crate::alloc::TryReserveError;
+use crate::alloc::{TryReserveError, TryReserveErrorExt};
 use crate::alloc::vec::TryVec;
 use crate::collections::slotmap::key::{Key, KeyData, MAX_SLOTS_LEN};
 use crate::try_clone::{TryClone, TryCloneError};
@@ -99,12 +98,8 @@ impl<T: TryClone> TryClone for Slot<T> {
 
 /// Error returned by [`SecondaryMap`] operations.
 pub enum SecondaryMapError {
-    /// A raw heap allocation failed.
-    Alloc(AllocError),
     /// Capacity reservation failed.
     Reserve(TryReserveError),
-    /// The secondary map has grown too large.
-    Overflow,
 }
 
 impl fmt::Debug for SecondaryMapError {
@@ -122,32 +117,19 @@ impl fmt::Display for SecondaryMapError {
 impl TryDebug for SecondaryMapError {
     fn try_fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::Alloc(e) => f
-                .try_debug_tuple("SecondaryMapError::Alloc")
-                .field(e)
-                .finish(),
             Self::Reserve(e) => f
                 .try_debug_tuple("SecondaryMapError::Reserve")
                 .field(e)
                 .finish(),
-            Self::Overflow => f.write_str("SecondaryMapError::Overflow"),
-        }
+            }
     }
 }
 
 impl TryDisplay for SecondaryMapError {
     fn try_fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::Alloc(e) => write!(f, "secondary map allocation failed: {}", e),
             Self::Reserve(e) => write!(f, "secondary map capacity reservation failed: {}", e),
-            Self::Overflow => f.write_str("secondary map overflow"),
         }
-    }
-}
-
-impl From<AllocError> for SecondaryMapError {
-    fn from(e: AllocError) -> Self {
-        Self::Alloc(e)
     }
 }
 
@@ -180,12 +162,12 @@ impl<K: Key, V> SecondaryMap<K, V> {
 
     /// Creates a [`SecondaryMap`] with the given capacity.
     ///
-    /// Returns [`SecondaryMapError::Overflow`] if `capacity` would exceed the
+    /// Returns [`SecondaryMapError::Reserve`] if `capacity` would exceed the
     /// maximum number of usable slots (`MAX_SLOTS_LEN` – 1), accounting for
     /// the sentinel that always occupies index 0.
     pub fn try_with_capacity(capacity: usize) -> Result<Self, SecondaryMapError> {
         if capacity >= MAX_SLOTS_LEN.saturating_sub(1) {
-            return Err(SecondaryMapError::Overflow);
+            return Err(SecondaryMapError::Reserve(TryReserveErrorExt::new_capacity_overflow()));
         }
         // Safe: `capacity < MAX_SLOTS_LEN - 1 <= usize::MAX`, so `+1` cannot overflow.
         let mut slots = Vec::<Slot<V>>::fallible_with_capacity(
@@ -221,11 +203,11 @@ impl<K: Key, V> SecondaryMap<K, V> {
 
     /// Tries to set the capacity to at least `new_capacity`.
     ///
-    /// Returns [`SecondaryMapError::Overflow`] if `new_capacity` would exceed
+    /// Returns [`SecondaryMapError::Reserve`] if `new_capacity` would exceed
     /// the maximum number of usable slots (`MAX_SLOTS_LEN` – 1).
     pub fn try_set_capacity(&mut self, new_capacity: usize) -> Result<(), SecondaryMapError> {
         if new_capacity >= MAX_SLOTS_LEN.saturating_sub(1) {
-            return Err(SecondaryMapError::Overflow);
+            return Err(SecondaryMapError::Reserve(TryReserveErrorExt::new_capacity_overflow()));
         }
         // Safe: `new_capacity < MAX_SLOTS_LEN - 1 <= usize::MAX`, so `+1` cannot overflow.
         let target = new_capacity
@@ -402,7 +384,7 @@ impl<K: Key, V> SecondaryMap<K, V> {
 
         // Guard against indices that would exceed our storage limit.
         if idx >= MAX_SLOTS_LEN.saturating_sub(1) {
-            return Err(SecondaryMapError::Overflow);
+            return Err(SecondaryMapError::Reserve(TryReserveErrorExt::new_capacity_overflow()));
         }
 
         // Ensure slot exists, growing fallibly in a single allocation.
@@ -538,9 +520,7 @@ where
 impl<K: Key, V> TryDefault for SecondaryMap<K, V> {
     fn try_default() -> Result<Self, TryDefaultError> {
         Self::try_with_capacity(0).map_err(|e| match e {
-            SecondaryMapError::Alloc(a) => TryDefaultError::Alloc(a),
             SecondaryMapError::Reserve(r) => TryDefaultError::Reserve(r),
-            SecondaryMapError::Overflow => TryDefaultError::Overflow,
         })
     }
 }

@@ -14,7 +14,6 @@
 //! The trait also implements [`TryClone`](crate::try_clone::TryClone) and
 //! [`TryDefault`](crate::try_default::TryDefault) for `String`.
 
-use crate::alloc::AllocError;
 use crate::alloc::vec::{TryVec, TryVecError};
 use crate::alloc::{TryReserveError, TryReserveErrorExt};
 use crate::try_clone::{TryClone, TryCloneError};
@@ -31,14 +30,8 @@ use lang_core::mem;
 /// Wraps the ways a string operation can fail on stable Rust: a reserve
 /// failure ([`TryReserveError`]) or an arithmetic overflow when computing
 /// the required byte capacity.
-pub enum TryStringError {
-    /// A raw heap allocation failed (no collection involved).
-    Alloc(AllocError),
-    /// A capacity reservation on the string failed (overflow or OOM).
-    Reserve(TryReserveError),
-    /// An arithmetic overflow occurred while computing required byte capacity.
-    Overflow,
-    /// A logic-level failure with a static diagnostic message.
+pub enum TryStringError {    /// A capacity reservation on the string failed (overflow or OOM).
+    Reserve(TryReserveError),    /// A logic-level failure with a static diagnostic message.
     Other(&'static str),
 }
 
@@ -54,12 +47,6 @@ impl fmt::Display for TryStringError {
     }
 }
 
-impl From<AllocError> for TryStringError {
-    fn from(e: AllocError) -> Self {
-        Self::Alloc(e)
-    }
-}
-
 impl From<TryReserveError> for TryStringError {
     fn from(err: TryReserveError) -> Self {
         Self::Reserve(err)
@@ -69,15 +56,10 @@ impl From<TryReserveError> for TryStringError {
 impl TryDebug for TryStringError {
     fn try_fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::Alloc(e) => f
-                .try_debug_tuple("TryStringError::Alloc")
-                .field(e)
-                .finish(),
             Self::Reserve(e) => f
                 .try_debug_tuple("TryStringError::Reserve")
                 .field(e)
                 .finish(),
-            Self::Overflow => f.write_str("TryStringError::Overflow"),
             Self::Other(msg) => f
                 .try_debug_tuple("TryStringError::Other")
                 .field(msg)
@@ -89,13 +71,8 @@ impl TryDebug for TryStringError {
 impl TryDisplay for TryStringError {
     fn try_fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::Alloc(_) => write!(f, "string operation failed: heap allocation error"),
             Self::Reserve(e) => write!(f, "string operation failed: {}", e),
-            Self::Overflow => write!(
-                f,
-                "string operation failed: capacity calculation overflowed"
-            ),
-            Self::Other(msg) => write!(f, "string operation failed: {}", msg),
+                        Self::Other(msg) => write!(f, "string operation failed: {}", msg),
         }
     }
 }
@@ -164,7 +141,7 @@ pub trait TryString: Sized {
     /// Fallibly shrink the capacity of this `String` to match its length.
     ///
     /// May reallocate if the current allocation is larger than needed.
-    /// Returns [`TryStringError::Alloc`] if the re-allocation fails.
+    /// Returns [`TryStringError::Reserve`] if the re-allocation fails.
     /// Equivalent to `String::shrink_to_fit()` but fallible.
     fn try_shrink_to_fit(&mut self) -> Result<(), TryStringError>;
 
@@ -172,7 +149,7 @@ pub trait TryString: Sized {
     ///
     /// If the current capacity is already less than or equal to `min_capacity`,
     /// does nothing and returns `Ok(())`. Otherwise reallocates down.
-    /// Returns [`TryStringError::Alloc`] if the re-allocation fails.
+    /// Returns [`TryStringError::Reserve`] if the re-allocation fails.
     /// Equivalent to `String::shrink_to(min_capacity)` but fallible.
     fn try_shrink_to(&mut self, min_capacity: usize) -> Result<(), TryStringError>;
 
@@ -275,12 +252,23 @@ impl TryString for String {
                 self.0.try_push_str(s).map_err(|_| fmt::Error)
             }
         }
-        fmt::write(&mut FallibleWriter(self), args).map_err(|_| {
-            // Distinguish: if the string grew since the last successful call,
-            // it was an OOM; otherwise it was a format error (shouldn't happen
-            // with valid Arguments, so treat as OOM conservatively).
-            TryReserveErrorExt::new_alloc(Layout::new::<u8>())
-        })
+        let len_before = self.len();
+        match fmt::write(&mut FallibleWriter(self), args) {
+            Ok(()) => Ok(()),
+            Err(_) => {
+                // `fmt::write` only fails here because `try_push_str` hit OOM
+                // mid-write. Report the failed allocation using the buffer's
+                // current element layout — the exact growth size is unknown, but
+                // the signal (allocation failure, not capacity overflow) is what
+                // callers need to distinguish retry-from-shrink paths.
+                // SAFETY: u8 has size 1 and alignment 1; len_before <= isize::MAX
+                // (the String already holds that many bytes), so the product
+                // cannot overflow and the resulting layout is well-aligned.
+                Err(TryReserveErrorExt::new_alloc(unsafe {
+                    Layout::from_size_align_unchecked(len_before.max(1), 1)
+                }))
+            }
+        }
     }
 
     fn try_insert(&mut self, idx: usize, c: char) -> Result<(), TryStringError> {
@@ -324,10 +312,8 @@ impl TryString for String {
         // The bytes originated from a valid String, so they remain valid UTF-8.
         *self = String::from_utf8(v).unwrap();
         result.map_err(|e| match e {
-            TryVecError::Alloc(e) => TryStringError::Alloc(e),
             TryVecError::Reserve(e) => TryStringError::Reserve(e),
             TryVecError::Clone(_) => unreachable!("shrink does not clone"),
-            TryVecError::Overflow => TryStringError::Overflow,
             TryVecError::Other(msg) => TryStringError::Other(msg),
         })
     }

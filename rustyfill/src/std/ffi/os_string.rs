@@ -16,7 +16,6 @@
 //! The trait also implements [`TryClone`](crate::try_clone::TryClone) and
 //! [`TryDefault`](crate::try_default::TryDefault) for `OsString`.
 
-use crate::alloc::AllocError;
 use crate::alloc::TryReserveError;
 use crate::alloc::vec::{TryVec, TryVecError};
 use crate::try_clone::{TryClone, TryCloneError};
@@ -33,14 +32,8 @@ use lang_std::ffi::{OsStr, OsString};
 /// Wraps the ways an `OsString` operation can fail on stable Rust: a reserve
 /// failure ([`TryReserveError`]) or an arithmetic overflow when computing
 /// the required capacity.
-pub enum TryOsStringError {
-    /// A raw heap allocation failed (no collection involved).
-    Alloc(AllocError),
-    /// A capacity reservation failed (overflow or OOM).
-    Reserve(TryReserveError),
-    /// An arithmetic overflow occurred while computing required capacity.
-    Overflow,
-    /// A logic-level failure with a static diagnostic message.
+pub enum TryOsStringError {    /// A capacity reservation failed (overflow or OOM).
+    Reserve(TryReserveError),    /// A logic-level failure with a static diagnostic message.
     Other(&'static str),
 }
 
@@ -56,12 +49,6 @@ impl fmt::Display for TryOsStringError {
     }
 }
 
-impl From<AllocError> for TryOsStringError {
-    fn from(e: AllocError) -> Self {
-        Self::Alloc(e)
-    }
-}
-
 impl From<TryReserveError> for TryOsStringError {
     fn from(err: TryReserveError) -> Self {
         Self::Reserve(err)
@@ -71,15 +58,10 @@ impl From<TryReserveError> for TryOsStringError {
 impl TryDebug for TryOsStringError {
     fn try_fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::Alloc(e) => f
-                .try_debug_tuple("TryOsStringError::Alloc")
-                .field(e)
-                .finish(),
             Self::Reserve(e) => f
                 .try_debug_tuple("TryOsStringError::Reserve")
                 .field(e)
                 .finish(),
-            Self::Overflow => f.write_str("TryOsStringError::Overflow"),
             Self::Other(msg) => f
                 .try_debug_tuple("TryOsStringError::Other")
                 .field(msg)
@@ -91,15 +73,8 @@ impl TryDebug for TryOsStringError {
 impl TryDisplay for TryOsStringError {
     fn try_fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::Alloc(_) => write!(f, "OsString operation failed: heap allocation error"),
             Self::Reserve(e) => write!(f, "OsString operation failed: {}", e),
-            Self::Overflow => {
-                write!(
-                    f,
-                    "OsString operation failed: capacity calculation overflowed"
-                )
-            }
-            Self::Other(msg) => write!(f, "OsString operation failed: {}", msg),
+                        Self::Other(msg) => write!(f, "OsString operation failed: {}", msg),
         }
     }
 }
@@ -145,7 +120,7 @@ pub trait TryOsString: Sized {
     /// Fallibly shrink the capacity of this `OsString` to match its length.
     ///
     /// May reallocate if the current allocation is larger than needed.
-    /// Returns [`TryOsStringError::Alloc`] if the re-allocation fails.
+    /// Returns [`TryOsStringError::Reserve`] if the re-allocation fails.
     /// Equivalent to `OsString::shrink_to_fit()` but fallible.
     fn try_shrink_to_fit(&mut self) -> Result<(), TryOsStringError>;
 
@@ -153,7 +128,7 @@ pub trait TryOsString: Sized {
     ///
     /// If the current capacity is already less than or equal to `min_capacity`,
     /// does nothing and returns `Ok(())`. Otherwise reallocates down.
-    /// Returns [`TryOsStringError::Alloc`] if the re-allocation fails.
+    /// Returns [`TryOsStringError::Reserve`] if the re-allocation fails.
     /// Equivalent to `OsString::shrink_to(min_capacity)` but fallible.
     fn try_shrink_to(&mut self, min_capacity: usize) -> Result<(), TryOsStringError>;
 
@@ -275,10 +250,8 @@ impl TryOsString for OsString {
         // SAFETY: the bytes originated from a valid OsString via into_encoded_bytes.
         *self = unsafe { OsString::from_encoded_bytes_unchecked(v) };
         result.map_err(|e| match e {
-            TryVecError::Alloc(e) => TryOsStringError::Alloc(e),
             TryVecError::Reserve(e) => TryOsStringError::Reserve(e),
             TryVecError::Clone(_) => unreachable!("shrink does not clone"),
-            TryVecError::Overflow => TryOsStringError::Overflow,
             TryVecError::Other(msg) => TryOsStringError::Other(msg),
         })
     }

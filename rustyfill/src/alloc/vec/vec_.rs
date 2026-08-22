@@ -15,7 +15,7 @@
 //! the respective bounds.
 
 use super::raw_manipulation::RawVecInnerView;
-use crate::alloc::AllocError;
+use crate::alloc::{TryReserveErrorExt};
 use crate::alloc::TryReserveError;
 use crate::try_clone::{TryClone, TryCloneError};
 use crate::try_default::{TryDefault, TryDefaultError};
@@ -62,16 +62,10 @@ impl<'a, T> Drop for TruncateGuard<'a, T> {
 /// failure ([`TryReserveError`], returned by the inherent `Vec::try_reserve`)
 /// or a clone failure ([`TryCloneError`]) when an element's `try_clone` cannot
 /// allocate its internal buffers.
-pub enum TryVecError {
-    /// A raw heap allocation failed (no collection involved).
-    Alloc(AllocError),
-    /// A capacity reservation on the vector failed (overflow or OOM).
+pub enum TryVecError {    /// A capacity reservation on the vector failed (overflow or OOM).
     Reserve(TryReserveError),
     /// An element clone failed during a method that requires `TryClone`.
-    Clone(TryCloneError),
-    /// An arithmetic overflow occurred while computing required capacity.
-    Overflow,
-    /// A logic-level failure with a static diagnostic message.
+    Clone(TryCloneError),    /// A logic-level failure with a static diagnostic message.
     Other(&'static str),
 }
 
@@ -84,12 +78,6 @@ impl fmt::Debug for TryVecError {
 impl fmt::Display for TryVecError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         TryDisplay::try_fmt(self, f)
-    }
-}
-
-impl From<AllocError> for TryVecError {
-    fn from(e: AllocError) -> Self {
-        Self::Alloc(e)
     }
 }
 
@@ -109,10 +97,8 @@ impl TryDebug for TryVecError {
     fn try_fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         use crate::errors::uniform as u;
         match self {
-            Self::Alloc(e) => u::debug_field(f, "TryVecError::Alloc", e),
             Self::Reserve(e) => u::debug_field(f, "TryVecError::Reserve", e),
             Self::Clone(e) => u::debug_field(f, "TryVecError::Clone", e),
-            Self::Overflow => u::debug_unit(f, "TryVecError::Overflow"),
             Self::Other(msg) => u::debug_field(f, "TryVecError::Other", msg),
         }
     }
@@ -122,10 +108,8 @@ impl TryDisplay for TryVecError {
     fn try_fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         use crate::errors::uniform as u;
         match self {
-            Self::Alloc(_) => u::display_fixed(f, "vector", "heap allocation error"),
             Self::Reserve(e) => u::display_delegated(f, "vector", e),
             Self::Clone(e) => u::display_delegated(f, "vector", e),
-            Self::Overflow => u::display_fixed(f, "vector", "capacity calculation overflowed"),
             Self::Other(msg) => u::display_fixed(f, "vector", msg),
         }
     }
@@ -351,7 +335,7 @@ pub trait TryVec<T>: Sized {
     /// Fallibly shrink the capacity of this vector to match its length.
     ///
     /// May reallocate if the current allocation is larger than needed.
-    /// Returns [`TryVecError::Alloc`] if the re-allocation fails.
+    /// Returns [`TryVecError::Reserve`] if the re-allocation fails.
     /// Equivalent to [`Vec::shrink_to_fit`] but fallible.
     ///
     /// This method replaces the deprecated [`Self::try_shrink_to_fit`] which
@@ -365,7 +349,7 @@ pub trait TryVec<T>: Sized {
     ///
     /// If the current capacity is already less than or equal to `min_capacity`,
     /// does nothing and returns `Ok(())`. Otherwise reallocates down.
-    /// Returns [`TryVecError::Alloc`] if the re-allocation fails.
+    /// Returns [`TryVecError::Reserve`] if the re-allocation fails.
     /// Equivalent to [`Vec::shrink_to`] but fallible.
     ///
     /// This method replaces the deprecated [`Self::try_shrink_to`] which shares
@@ -519,11 +503,11 @@ impl<T> TryVec<T> for Vec<T> {
     {
         let start = match range.start_bound() {
             Bound::Included(&i) => i,
-            Bound::Excluded(&i) => i.checked_add(1).ok_or(TryVecError::Overflow)?,
+            Bound::Excluded(&i) => i.checked_add(1).ok_or_else(|| TryVecError::Reserve(TryReserveErrorExt::new_capacity_overflow()))?,
             Bound::Unbounded => 0,
         };
         let end = match range.end_bound() {
-            Bound::Included(&i) => i.checked_add(1).ok_or(TryVecError::Overflow)?,
+            Bound::Included(&i) => i.checked_add(1).ok_or_else(|| TryVecError::Reserve(TryReserveErrorExt::new_capacity_overflow()))?,
             Bound::Excluded(&i) => i,
             Bound::Unbounded => self.len(),
         };
@@ -622,14 +606,14 @@ impl<T> TryVec<T> for Vec<T> {
                 *self = unsafe { current_raw.into_vec(current_len) };
                 Ok(())
             }
-            Err(e) => {
+            Err(_) => {
                 // Allocation failed. shrink_unchecked returns early via `?` on
                 // realloc failure, BEFORE updating self.ptr / self.cap — so
                 // current_raw still holds the original (unshrunk) allocation.
                 // SAFETY: pointer, length, and capacity are all still valid from
                 // the original Vec.
                 *self = unsafe { current_raw.into_vec(current_len) };
-                Err(TryVecError::Alloc(e))
+                Err(TryVecError::Reserve(TryReserveErrorExt::new_alloc(Layout::new::<T>())))
             }
         }
     }
@@ -764,22 +748,14 @@ mod tests {
 
     #[test]
     fn vec_error_display_covers_all_variants() {
-        let cases: [(TryVecError, &str); 5] = [
-            (
-                TryVecError::Alloc(AllocError),
-                "vector operation failed: heap allocation error",
-            ),
+        let cases: [(TryVecError, &str); 3] = [
             (
                 TryVecError::Reserve(reserve_err()),
                 "vector operation failed:",
             ),
             (
-                TryVecError::Clone(TryCloneError::Alloc(AllocError)),
+                TryVecError::Clone(TryCloneError::Reserve(reserve_err())),
                 "vector operation failed:",
-            ),
-            (
-                TryVecError::Overflow,
-                "vector operation failed: capacity calculation overflowed",
             ),
             (TryVecError::Other("boom"), "vector operation failed: boom"),
         ];
@@ -795,10 +771,8 @@ mod tests {
     #[test]
     fn vec_error_trydebug_covers_all_variants() {
         let errs = [
-            TryVecError::Alloc(AllocError),
             TryVecError::Reserve(reserve_err()),
-            TryVecError::Clone(TryCloneError::Alloc(AllocError)),
-            TryVecError::Overflow,
+            TryVecError::Clone(TryCloneError::Reserve(reserve_err())),
             TryVecError::Other("boom"),
         ];
         for err in errs.iter() {
@@ -811,10 +785,8 @@ mod tests {
     #[test]
     fn vec_error_trydisplay_covers_all_variants() {
         let errs = [
-            TryVecError::Alloc(AllocError),
             TryVecError::Reserve(reserve_err()),
-            TryVecError::Clone(TryCloneError::Alloc(AllocError)),
-            TryVecError::Overflow,
+            TryVecError::Clone(TryCloneError::Reserve(reserve_err())),
             TryVecError::Other("boom"),
         ];
         for err in errs.iter() {
@@ -836,7 +808,7 @@ mod tests {
         assert_eq!(actual, expected, "delegated Display drifted from original format");
 
         // Same check for the Clone arm, whose detail is a TryCloneError.
-        let clone_src = TryCloneError::Alloc(AllocError);
+        let clone_src = TryCloneError::Reserve(reserve_err());
         let clone_inner = render_display(&clone_src);
         let expected_clone = format!("vector operation failed: {clone_inner}");
         let actual_clone = render_display(&TryVecError::Clone(clone_src));

@@ -16,7 +16,7 @@
 //! [`TryDefault`](crate::try_default::TryDefault) for `VecDeque<T>` when `T`
 //! satisfies the respective bounds.
 
-use crate::alloc::AllocError;
+use crate::alloc::{TryReserveErrorExt};
 use crate::alloc::TryReserveError;
 use crate::alloc::vec::{TryVec, TryVecError};
 use crate::try_clone::{TryClone, TryCloneError};
@@ -62,10 +62,10 @@ impl<'a, T> Drop for TruncateGuard<'a, T> {
 
 /// Error returned by [`TryVecDeque`] operations.
 pub enum TryVecDequeError {
-    Alloc(AllocError),
+
     Reserve(TryReserveError),
     Clone(TryCloneError),
-    Overflow,
+
     Other(&'static str),
 }
 
@@ -78,12 +78,6 @@ impl fmt::Debug for TryVecDequeError {
 impl fmt::Display for TryVecDequeError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         TryDisplay::try_fmt(self, f)
-    }
-}
-
-impl From<AllocError> for TryVecDequeError {
-    fn from(e: AllocError) -> Self {
-        Self::Alloc(e)
     }
 }
 
@@ -103,10 +97,8 @@ impl TryDebug for TryVecDequeError {
     fn try_fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         use crate::errors::uniform as u;
         match self {
-            Self::Alloc(e) => u::debug_field(f, "TryVecDequeError::Alloc", e),
             Self::Reserve(e) => u::debug_field(f, "TryVecDequeError::Reserve", e),
             Self::Clone(e) => u::debug_field(f, "TryVecDequeError::Clone", e),
-            Self::Overflow => u::debug_unit(f, "TryVecDequeError::Overflow"),
             Self::Other(msg) => u::debug_field(f, "TryVecDequeError::Other", msg),
         }
     }
@@ -116,10 +108,8 @@ impl TryDisplay for TryVecDequeError {
     fn try_fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         use crate::errors::uniform as u;
         match self {
-            Self::Alloc(_) => u::display_fixed(f, "deque", "heap allocation error"),
             Self::Reserve(e) => u::display_delegated(f, "deque", e),
             Self::Clone(e) => u::display_delegated(f, "deque", e),
-            Self::Overflow => u::display_fixed(f, "deque", "capacity calculation overflowed"),
             Self::Other(msg) => u::display_fixed(f, "deque", msg),
         }
     }
@@ -529,11 +519,11 @@ impl<T> TryVecDeque<T> for VecDeque<T> {
     {
         let start = match range.start_bound() {
             Bound::Included(&i) => i,
-            Bound::Excluded(&i) => i.checked_add(1).ok_or(TryVecDequeError::Overflow)?,
+            Bound::Excluded(&i) => i.checked_add(1).ok_or_else(|| TryVecDequeError::Reserve(TryReserveErrorExt::new_capacity_overflow()))?,
             Bound::Unbounded => 0,
         };
         let end = match range.end_bound() {
-            Bound::Included(&i) => i.checked_add(1).ok_or(TryVecDequeError::Overflow)?,
+            Bound::Included(&i) => i.checked_add(1).ok_or_else(|| TryVecDequeError::Reserve(TryReserveErrorExt::new_capacity_overflow()))?,
             Bound::Excluded(&i) => i,
             Bound::Unbounded => self.len(),
         };
@@ -626,10 +616,8 @@ impl<T> TryVecDeque<T> for VecDeque<T> {
         // does not silently discard the original data.
         *self = vec.into();
         result.map_err(|e| match e {
-            TryVecError::Alloc(e) => TryVecDequeError::Alloc(e),
             TryVecError::Reserve(e) => TryVecDequeError::Reserve(e),
             TryVecError::Clone(_) => unreachable!("shrink does not clone"),
-            TryVecError::Overflow => TryVecDequeError::Overflow,
             TryVecError::Other(msg) => TryVecDequeError::Other(msg),
         })
     }
@@ -684,7 +672,6 @@ mod tests {
     use crate::alloc::TryReserveErrorExt;
     use lang_alloc::format;
     use lang_alloc::string::String;
-    use lang_alloc::string::ToString;
     use lang_alloc::vec;
     use lang_alloc::vec::Vec;
     use lang_core::fmt::Write as _;
@@ -733,10 +720,8 @@ mod tests {
     #[test]
     fn vecdeque_error_covers_all_variants() {
         let errs = [
-            TryVecDequeError::Alloc(AllocError),
             TryVecDequeError::Reserve(reserve_err()),
-            TryVecDequeError::Clone(TryCloneError::Alloc(AllocError)),
-            TryVecDequeError::Overflow,
+            TryVecDequeError::Clone(TryCloneError::Reserve(reserve_err())),
             TryVecDequeError::Other("q"),
         ];
         for err in errs.iter() {

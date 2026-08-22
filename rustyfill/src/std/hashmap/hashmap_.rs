@@ -15,7 +15,6 @@
 //! [`TryDefault`](crate::try_default::TryDefault) for `HashMap<K, V, S>` when
 //! `K` and `V` satisfy the respective bounds.
 
-use crate::alloc::AllocError;
 use crate::alloc::TryReserveError;
 use crate::try_clone::{TryClone, TryCloneError};
 use crate::try_default::{TryDefault, TryDefaultError};
@@ -35,16 +34,10 @@ use lang_std::hash::{BuildHasher, Hash, RandomState};
 /// failure ([`TryReserveError`], returned by the inherent `HashMap::try_reserve`)
 /// or a clone failure ([`TryCloneError`]) when an element's `try_clone` cannot
 /// allocate its internal buffers.
-pub enum TryHashMapError {
-    /// A raw heap allocation failed (no collection involved).
-    Alloc(AllocError),
-    /// A capacity reservation on the hash map failed (overflow or OOM).
+pub enum TryHashMapError {    /// A capacity reservation on the hash map failed (overflow or OOM).
     Reserve(TryReserveError),
     /// An element clone failed during a method that requires [`TryClone`].
-    Clone(TryCloneError),
-    /// An arithmetic overflow occurred while computing required capacity.
-    Overflow,
-    /// A logic-level failure with a static diagnostic message.
+    Clone(TryCloneError),    /// A logic-level failure with a static diagnostic message.
     Other(&'static str),
 }
 
@@ -57,12 +50,6 @@ impl fmt::Debug for TryHashMapError {
 impl fmt::Display for TryHashMapError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         TryDisplay::try_fmt(self, f)
-    }
-}
-
-impl From<AllocError> for TryHashMapError {
-    fn from(e: AllocError) -> Self {
-        Self::Alloc(e)
     }
 }
 
@@ -82,10 +69,8 @@ impl TryDebug for TryHashMapError {
     fn try_fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         use crate::errors::uniform as u;
         match self {
-            Self::Alloc(e) => u::debug_field(f, "TryHashMapError::Alloc", e),
             Self::Reserve(e) => u::debug_field(f, "TryHashMapError::Reserve", e),
             Self::Clone(e) => u::debug_field(f, "TryHashMapError::Clone", e),
-            Self::Overflow => u::debug_unit(f, "TryHashMapError::Overflow"),
             Self::Other(msg) => u::debug_field(f, "TryHashMapError::Other", msg),
         }
     }
@@ -95,10 +80,8 @@ impl TryDisplay for TryHashMapError {
     fn try_fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         use crate::errors::uniform as u;
         match self {
-            Self::Alloc(_) => u::display_fixed(f, "hash map", "heap allocation error"),
             Self::Reserve(e) => u::display_delegated(f, "hash map", e),
             Self::Clone(e) => u::display_delegated(f, "hash map", e),
-            Self::Overflow => u::display_fixed(f, "hash map", "capacity calculation overflowed"),
             Self::Other(msg) => u::display_fixed(f, "hash map", msg),
         }
     }
@@ -107,9 +90,8 @@ impl TryDisplay for TryHashMapError {
 impl From<TryDefaultError> for TryHashMapError {
     fn from(err: TryDefaultError) -> Self {
         match err {
-            TryDefaultError::Alloc(e) => Self::Alloc(e),
             TryDefaultError::Reserve(e) => Self::Reserve(e),
-            TryDefaultError::Overflow => Self::Overflow,
+            TryDefaultError::Alloc(_) => Self::Other("allocation failed"),
             TryDefaultError::Other(msg) => Self::Other(msg),
         }
     }
@@ -672,10 +654,8 @@ mod tests {
     #[test]
     fn hashmap_error_covers_all_variants() {
         let errs = [
-            TryHashMapError::Alloc(AllocError),
             TryHashMapError::Reserve(reserve_err()),
-            TryHashMapError::Clone(TryCloneError::Alloc(AllocError)),
-            TryHashMapError::Overflow,
+            TryHashMapError::Clone(TryCloneError::Reserve(reserve_err())),
             TryHashMapError::Other("h"),
         ];
         for err in errs.iter() {

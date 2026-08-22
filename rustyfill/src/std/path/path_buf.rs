@@ -15,8 +15,7 @@
 //! The trait also implements [`TryClone`](crate::try_clone::TryClone) and
 //! [`TryDefault`](crate::try_default::TryDefault) for `PathBuf`.
 
-use crate::alloc::AllocError;
-use crate::alloc::TryReserveError;
+use crate::alloc::{TryReserveError, TryReserveErrorExt};
 use crate::alloc::vec::TryVec;
 use crate::std::ffi::TryOsString;
 use crate::try_clone::{TryClone, TryCloneError};
@@ -33,14 +32,8 @@ use lang_std::path::{Component, MAIN_SEPARATOR_STR, Path, PathBuf, Prefix, is_se
 /// Wraps the ways a `PathBuf` operation can fail on stable Rust: a reserve
 /// failure ([`TryReserveError`]) or an arithmetic overflow when computing
 /// the required capacity.
-pub enum TryPathBufError {
-    /// A raw heap allocation failed (no collection involved).
-    Alloc(AllocError),
-    /// A capacity reservation failed (overflow or OOM).
-    Reserve(TryReserveError),
-    /// An arithmetic overflow occurred while computing required capacity.
-    Overflow,
-    /// A logic-level failure with a static diagnostic message.
+pub enum TryPathBufError {    /// A capacity reservation failed (overflow or OOM).
+    Reserve(TryReserveError),    /// A logic-level failure with a static diagnostic message.
     Other(&'static str),
 }
 
@@ -56,12 +49,6 @@ impl fmt::Display for TryPathBufError {
     }
 }
 
-impl From<AllocError> for TryPathBufError {
-    fn from(e: AllocError) -> Self {
-        Self::Alloc(e)
-    }
-}
-
 impl From<TryReserveError> for TryPathBufError {
     fn from(err: TryReserveError) -> Self {
         Self::Reserve(err)
@@ -71,15 +58,10 @@ impl From<TryReserveError> for TryPathBufError {
 impl TryDebug for TryPathBufError {
     fn try_fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::Alloc(e) => f
-                .try_debug_tuple("TryPathBufError::Alloc")
-                .field(e)
-                .finish(),
             Self::Reserve(e) => f
                 .try_debug_tuple("TryPathBufError::Reserve")
                 .field(e)
                 .finish(),
-            Self::Overflow => f.write_str("TryPathBufError::Overflow"),
             Self::Other(msg) => f
                 .try_debug_tuple("TryPathBufError::Other")
                 .field(msg)
@@ -91,15 +73,8 @@ impl TryDebug for TryPathBufError {
 impl TryDisplay for TryPathBufError {
     fn try_fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::Alloc(_) => write!(f, "PathBuf operation failed: heap allocation error"),
             Self::Reserve(e) => write!(f, "PathBuf operation failed: {}", e),
-            Self::Overflow => {
-                write!(
-                    f,
-                    "PathBuf operation failed: capacity calculation overflowed"
-                )
-            }
-            Self::Other(msg) => write!(f, "PathBuf operation failed: {}", msg),
+                        Self::Other(msg) => write!(f, "PathBuf operation failed: {}", msg),
         }
     }
 }
@@ -411,7 +386,7 @@ impl TryPathBuf for PathBuf {
         }
         // Reserve room for the dot and extension.
         if !ext.is_empty() {
-            let needed = ext.len().checked_add(1).ok_or(TryPathBufError::Overflow)?;
+            let needed = ext.len().checked_add(1).ok_or_else(|| TryPathBufError::Reserve(TryReserveErrorExt::new_capacity_overflow()))?;
             self.try_reserve(needed).map_err(TryPathBufError::Reserve)?;
         }
         self.set_extension(ext);
@@ -465,7 +440,7 @@ impl TryPathBuf for PathBuf {
         let needed = ext
             .len()
             .checked_add(1)
-            .ok_or(TryPathBufError::Overflow)?
+            .ok_or_else(|| TryPathBufError::Reserve(TryReserveErrorExt::new_capacity_overflow()))?
             .saturating_sub(bytes_to_truncate);
         if needed > 0 {
             self.as_mut_os_string()

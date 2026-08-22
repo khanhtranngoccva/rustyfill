@@ -5,21 +5,15 @@
 //! Uses [`TryReserveError`](crate::alloc::TryReserveError) as the error type
 //! for consistency with [`TryOsString`](super::os_string::TryOsString).
 
-use crate::alloc::{AllocError, TryReserveError};
+use crate::alloc::{TryReserveError};
 use crate::try_fmt::{TryDebug, TryDisplay, helpers::FormatterExt};
 use lang_core::fmt;
 use lang_std::ffi::os_str::Display;
 use lang_std::ffi::{OsStr, OsString};
 
 /// Error returned by [`TryOsStr`] operations.
-pub enum TryOsStrError {
-    /// A raw heap allocation failed (no collection involved).
-    Alloc(AllocError),
-    /// A capacity reservation failed (overflow or OOM).
-    Reserve(TryReserveError),
-    /// An arithmetic overflow occurred while computing required capacity.
-    Overflow,
-    /// A logic-level failure with a static diagnostic message.
+pub enum TryOsStrError {    /// A capacity reservation failed (overflow or OOM).
+    Reserve(TryReserveError),    /// A logic-level failure with a static diagnostic message.
     Other(&'static str),
 }
 
@@ -35,12 +29,6 @@ impl fmt::Display for TryOsStrError {
     }
 }
 
-impl From<AllocError> for TryOsStrError {
-    fn from(e: AllocError) -> Self {
-        Self::Alloc(e)
-    }
-}
-
 impl From<TryReserveError> for TryOsStrError {
     fn from(err: TryReserveError) -> Self {
         Self::Reserve(err)
@@ -50,15 +38,10 @@ impl From<TryReserveError> for TryOsStrError {
 impl TryDebug for TryOsStrError {
     fn try_fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::Alloc(e) => f
-                .try_debug_tuple("TryOsStrError::Alloc")
-                .field(e)
-                .finish(),
             Self::Reserve(e) => f
                 .try_debug_tuple("TryOsStrError::Reserve")
                 .field(e)
                 .finish(),
-            Self::Overflow => f.write_str("TryOsStrError::Overflow"),
             Self::Other(msg) => f
                 .try_debug_tuple("TryOsStrError::Other")
                 .field(msg)
@@ -70,12 +53,8 @@ impl TryDebug for TryOsStrError {
 impl TryDisplay for TryOsStrError {
     fn try_fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::Alloc(_) => write!(f, "OsStr operation failed: heap allocation error"),
             Self::Reserve(e) => write!(f, "OsStr operation failed: {}", e),
-            Self::Overflow => {
-                write!(f, "OsStr operation failed: capacity calculation overflowed")
-            }
-            Self::Other(msg) => write!(f, "OsStr operation failed: {}", msg),
+                        Self::Other(msg) => write!(f, "OsStr operation failed: {}", msg),
         }
     }
 }

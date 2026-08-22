@@ -19,8 +19,6 @@ impl TryToOwned for CStr {
         let buf = bytes.try_to_vec().map_err(|e| match e {
             TryVecError::Reserve(r) => TryToOwnedError::Reserve(r),
             TryVecError::Clone(c) => c.into(),
-            TryVecError::Overflow => TryToOwnedError::Overflow,
-            TryVecError::Alloc(e) => TryToOwnedError::Alloc(e),
             TryVecError::Other(m) => TryToOwnedError::Other(m),
         })?;
 

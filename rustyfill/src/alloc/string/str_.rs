@@ -5,7 +5,7 @@
 //! Uses [`TryReserveError`](crate::alloc::TryReserveError) as the error type
 //! for consistency with [`TryString`](super::string_::TryString).
 
-use crate::alloc::{AllocError, TryReserveError};
+use crate::alloc::{TryReserveError, TryReserveErrorExt};
 use crate::try_clone::{TryClone, TryCloneError};
 use crate::try_default::{TryDefault, TryDefaultError};
 use crate::try_fmt::{TryDebug, TryDisplay, helpers::FormatterExt};
@@ -18,14 +18,8 @@ use lang_core::mem;
 use lang_core::ptr;
 
 /// Error returned by [`TryStr`] operations.
-pub enum TryStrError {
-    /// A raw heap allocation failed (no collection involved).
-    Alloc(AllocError),
-    /// A capacity reservation on the string failed (overflow or OOM).
-    Reserve(TryReserveError),
-    /// An arithmetic overflow occurred while computing required capacity.
-    Overflow,
-    /// A logic-level failure with a static diagnostic message.
+pub enum TryStrError {    /// A capacity reservation on the string failed (overflow or OOM).
+    Reserve(TryReserveError),    /// A logic-level failure with a static diagnostic message.
     Other(&'static str),
 }
 
@@ -41,12 +35,6 @@ impl fmt::Display for TryStrError {
     }
 }
 
-impl From<AllocError> for TryStrError {
-    fn from(e: AllocError) -> Self {
-        Self::Alloc(e)
-    }
-}
-
 impl From<TryReserveError> for TryStrError {
     fn from(err: TryReserveError) -> Self {
         Self::Reserve(err)
@@ -56,15 +44,10 @@ impl From<TryReserveError> for TryStrError {
 impl TryDebug for TryStrError {
     fn try_fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::Alloc(e) => f
-                .try_debug_tuple("TryStrError::Alloc")
-                .field(e)
-                .finish(),
             Self::Reserve(e) => f
                 .try_debug_tuple("TryStrError::Reserve")
                 .field(e)
                 .finish(),
-            Self::Overflow => f.write_str("TryStrError::Overflow"),
             Self::Other(msg) => f
                 .try_debug_tuple("TryStrError::Other")
                 .field(msg)
@@ -76,9 +59,7 @@ impl TryDebug for TryStrError {
 impl TryDisplay for TryStrError {
     fn try_fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::Alloc(_) => write!(f, "str operation failed: heap allocation error"),
             Self::Reserve(e) => write!(f, "str operation failed: {}", e),
-            Self::Overflow => write!(f, "str operation failed: capacity calculation overflowed"),
             Self::Other(msg) => write!(f, "str operation failed: {}", msg),
         }
     }
@@ -104,7 +85,7 @@ pub trait TryStr {
     /// allocation failures return [`TryStrError::Reserve`] instead of panicking.
     ///
     /// Returns an empty `String` when `n == 0` or the slice is empty.
-    /// Returns [`TryStrError::Overflow`] if `self.len() * n` overflows.
+    /// Returns [`TryStrError::Reserve`] if `self.len() * n` overflows.
     fn try_repeat(&self, n: usize) -> Result<String, TryStrError>;
 
     // ── Aliases with `fallible_` prefix ─────────────────────────────────────
@@ -135,7 +116,7 @@ impl TryStr for str {
         if len == 0 || n == 0 {
             return Ok(String::new());
         }
-        let total_len = len.checked_mul(n).ok_or(TryStrError::Overflow)?;
+        let total_len = len.checked_mul(n).ok_or_else(|| TryStrError::Reserve(TryReserveErrorExt::new_capacity_overflow()))?;
         let mut out = String::new();
         out.try_reserve(total_len).map_err(TryStrError::Reserve)?;
         for _ in 0..n {
@@ -178,10 +159,10 @@ impl TryClone for Box<str> {
 
         // Allocate exactly `len` bytes — no excess capacity.
         // Layout::array handles overflow checking internally.
-        let layout = Layout::array::<u8>(len).map_err(|_| TryCloneError::Overflow)?;
+        let layout = Layout::array::<u8>(len).map_err(|_| TryCloneError::Reserve(TryReserveErrorExt::new_capacity_overflow()))?;
         let ptr = unsafe { alloc::alloc(layout) };
         if ptr.is_null() {
-            return Err(TryCloneError::Alloc(AllocError));
+            return Err(TryCloneError::Reserve(TryReserveErrorExt::new_alloc(layout)));
         }
 
         // Wrap immediately in a Box<[u8]> so that Drop cleans up on any panic
@@ -297,7 +278,10 @@ mod tests {
     fn try_repeat_overflow() {
         let s: &str = "ab";
         let result: Result<String, TryStrError> = s.try_repeat(usize::MAX);
-        assert!(matches!(result, Err(TryStrError::Overflow)));
+        match result {
+            Err(TryStrError::Reserve(e)) => assert!(e.is_capacity_overflow()),
+            other => panic!("expected Reserve(capacity overflow), got {other:?}"),
+        }
     }
 
     #[test]

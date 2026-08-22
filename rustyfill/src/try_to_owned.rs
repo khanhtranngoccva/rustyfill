@@ -20,14 +20,11 @@ use lang_core::fmt;
 
 /// Error returned by [`TryToOwned::try_to_owned`].
 #[derive(Clone, PartialEq, Eq)]
-pub enum TryToOwnedError {
-    /// A raw heap allocation failed (no collection involved).
-    Alloc(AllocError),
-    /// A capacity reservation on a collection failed (overflow or OOM).
+pub enum TryToOwnedError {    /// A capacity reservation on a collection failed (overflow or OOM).
     Reserve(TryReserveError),
-    /// A manually detected arithmetic overflow (e.g., size multiplication).
-    Overflow,
-    /// A logic-level failure with a static diagnostic message.
+    /// A single heap allocation failed (no reserve phase — e.g. a leaf
+    /// allocation such as a `Box`, `Arc`, or `Rc` node).
+    Alloc(AllocError),    /// A logic-level failure with a static diagnostic message.
     Other(&'static str),
 }
 
@@ -46,15 +43,14 @@ impl fmt::Display for TryToOwnedError {
 impl TryDebug for TryToOwnedError {
     fn try_fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::Alloc(e) => f
-                .try_debug_tuple("TryToOwnedError::Alloc")
-                .field(e)
-                .finish(),
             Self::Reserve(e) => f
                 .try_debug_tuple("TryToOwnedError::Reserve")
                 .field(e)
                 .finish(),
-            Self::Overflow => f.write_str("TryToOwnedError::Overflow"),
+            Self::Alloc(e) => f
+                .try_debug_tuple("TryToOwnedError::Alloc")
+                .field(e)
+                .finish(),
             Self::Other(msg) => f
                 .try_debug_tuple("TryToOwnedError::Other")
                 .field(msg)
@@ -66,9 +62,8 @@ impl TryDebug for TryToOwnedError {
 impl TryDisplay for TryToOwnedError {
     fn try_fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::Alloc(_) => write!(f, "to_owned failed: heap allocation error"),
             Self::Reserve(e) => write!(f, "to_owned failed: {}", e),
-            Self::Overflow => write!(f, "to_owned failed: capacity calculation overflowed"),
+            Self::Alloc(e) => write!(f, "to_owned failed: {e}"),
             Self::Other(msg) => write!(f, "to_owned failed: {}", msg),
         }
     }
@@ -78,14 +73,9 @@ impl error::Error for TryToOwnedError {
     fn source(&self) -> Option<&(dyn error::Error + 'static)> {
         match self {
             Self::Reserve(e) => Some(e),
-            Self::Alloc(_) | Self::Overflow | Self::Other(_) => None,
+            Self::Alloc(e) => Some(e),
+            Self::Other(_) => None,
         }
-    }
-}
-
-impl From<AllocError> for TryToOwnedError {
-    fn from(e: AllocError) -> Self {
-        Self::Alloc(e)
     }
 }
 
@@ -98,9 +88,8 @@ impl From<TryReserveError> for TryToOwnedError {
 impl From<TryCloneError> for TryToOwnedError {
     fn from(err: TryCloneError) -> Self {
         match err {
-            TryCloneError::Alloc(e) => Self::Alloc(e),
             TryCloneError::Reserve(e) => Self::Reserve(e),
-            TryCloneError::Overflow => Self::Overflow,
+            TryCloneError::Alloc(a) => Self::Alloc(a),
             TryCloneError::Other(msg) => Self::Other(msg),
         }
     }

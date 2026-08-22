@@ -2,8 +2,9 @@
 //! error enums.
 //!
 //! Most of these error types wrap the same canonical variants —
-//! `{Alloc(AllocError), Reserve(TryReserveError), Clone(TryCloneError), Overflow,
-//! Other(&'static str)}` plus an occasional extra like `Locked` or `Nul` — under a
+//! `{Reserve(TryReserveError), Clone(TryCloneError), Other(&'static str)}` (plus
+//! `Alloc(AllocError)` on the generic trait errors that surface leaf allocations)
+//! and an occasional extra like `Locked`, `Full`, or `Nul` — under a
 //! single human-readable prefix such as `"vector"` or `"hash map"`. Hand-writing the
 //! per-variant match arms for every type was pure duplication: each arm is a
 //! cyclomatic branch with no logic, which inflates CRAP complexity while contributing
@@ -17,7 +18,7 @@ use lang_core::fmt;
 
 /// Renders a fixed-message `TryDisplay` arm: `"{prefix} operation failed: {msg}"`.
 ///
-/// Used for the `Alloc`, `Overflow`, and `Locked` variants, whose detail is a
+/// Used for unit-valued variants like `Locked`, `Full`, or `Nul`, whose detail is a
 /// constant string rather than a wrapped value.
 #[inline]
 pub(crate) fn display_fixed(f: &mut fmt::Formatter<'_>, prefix: &str, msg: &str) -> fmt::Result {
@@ -99,7 +100,7 @@ mod tests {
 
     #[test]
     fn display_fixed_renders_prefix_and_message() {
-        let err = crate::alloc::vec::TryVecError::Overflow;
+        let err = crate::alloc::vec::TryVecError::Other("capacity calculation overflowed");
         assert_eq!(
             render_display(&err),
             "vector operation failed: capacity calculation overflowed"
@@ -124,7 +125,7 @@ mod tests {
 
     #[test]
     fn debug_unit_renders_bare_name() {
-        let err = crate::alloc::vec::TryVecError::Overflow;
-        assert_eq!(render_trydebug(&err), "TryVecError::Overflow");
+        let err = crate::collections::slotmap::SlotMapError::Full;
+        assert_eq!(render_trydebug(&err), "SlotMapError::Full");
     }
 }

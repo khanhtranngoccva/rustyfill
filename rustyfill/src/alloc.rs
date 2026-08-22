@@ -292,6 +292,28 @@ impl TryReserveErrorExt for TryReserveError {
     }
 }
 
+
+// ── Conversion from `hashbrown::TryReserveError` ───────────────────────────────
+//
+// hashbrown's `RawTable::try_reserve` returns its own `TryReserveError`, whose
+// two variants mirror the standard library's exactly. Bridge it into the real
+// std type so callers can propagate the genuine failure (layout or overflow)
+// instead of fabricating a placeholder.
+
+#[cfg(feature = "std")]
+pub(crate) fn try_reserve_error_from_hashbrown(
+    e: hashbrown::TryReserveError,
+) -> TryReserveError {
+    match e {
+        hashbrown::TryReserveError::CapacityOverflow => {
+            TryReserveErrorExt::new_capacity_overflow()
+        }
+        hashbrown::TryReserveError::AllocError { layout } => {
+            TryReserveErrorExt::new_alloc(layout)
+        }
+    }
+}
+
 impl TryDebug for TryReserveError {
     fn try_fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self.error_kind() {

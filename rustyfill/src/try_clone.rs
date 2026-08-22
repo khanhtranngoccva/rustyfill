@@ -27,14 +27,11 @@ use lang_core::ptr;
 
 /// Returned when a fallible clone operation fails.
 #[derive(Clone, PartialEq, Eq)]
-pub enum TryCloneError {
-    /// A raw heap allocation failed (no collection involved).
-    Alloc(AllocError),
-    /// A capacity reservation on a collection failed (overflow or OOM).
+pub enum TryCloneError {    /// A capacity reservation on a collection failed (overflow or OOM).
     Reserve(TryReserveError),
-    /// A manually detected arithmetic overflow (e.g., size multiplication).
-    Overflow,
-    /// A logic-level failure with a static diagnostic message.
+    /// A single heap allocation failed (no reserve phase — e.g. a leaf
+    /// allocation such as a `Box`, `Arc`, or `Rc` node).
+    Alloc(AllocError),    /// A logic-level failure with a static diagnostic message.
     Other(&'static str),
 }
 
@@ -53,15 +50,14 @@ impl fmt::Display for TryCloneError {
 impl TryDebug for TryCloneError {
     fn try_fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::Alloc(e) => f
-                .try_debug_tuple("TryCloneError::Alloc")
-                .field(e)
-                .finish(),
             Self::Reserve(e) => f
                 .try_debug_tuple("TryCloneError::Reserve")
                 .field(e)
                 .finish(),
-            Self::Overflow => f.write_str("TryCloneError::Overflow"),
+            Self::Alloc(e) => f
+                .try_debug_tuple("TryCloneError::Alloc")
+                .field(e)
+                .finish(),
             Self::Other(msg) => f
                 .try_debug_tuple("TryCloneError::Other")
                 .field(msg)
@@ -73,17 +69,10 @@ impl TryDebug for TryCloneError {
 impl TryDisplay for TryCloneError {
     fn try_fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::Alloc(_) => write!(f, "clone failed: heap allocation error"),
             Self::Reserve(e) => write!(f, "clone failed: {}", e),
-            Self::Overflow => write!(f, "clone failed: capacity calculation overflowed"),
+            Self::Alloc(e) => write!(f, "clone failed: {e}"),
             Self::Other(msg) => write!(f, "clone failed: {}", msg),
         }
-    }
-}
-
-impl From<AllocError> for TryCloneError {
-    fn from(e: AllocError) -> Self {
-        Self::Alloc(e)
     }
 }
 

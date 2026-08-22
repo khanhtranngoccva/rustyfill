@@ -1,13 +1,12 @@
 //! Core [`ConcurrentHashMap`] implementation.
 
 use crate::alloc::vec::SliceInitGuard;
-use crate::alloc::{AllocError, TryReserveError, TryReserveErrorExt};
+use crate::alloc::{TryReserveError, TryReserveErrorExt};
 use crate::try_clone::{TryClone, TryCloneError};
 use crate::try_default::{TryDefault, TryDefaultError};
 use crate::try_fmt::{TryDebug, TryDisplay};
 use lang_alloc;
 use lang_alloc::boxed::Box;
-use lang_core::alloc::Layout;
 use lang_core::borrow::Borrow;
 use lang_core::fmt;
 use lang_core::hash::{BuildHasher, Hash};
@@ -51,10 +50,10 @@ impl<K, V> ShardsStorage<K, V> {
 
 /// Error returned by blocking [`ConcurrentHashMap`] operations.
 pub enum ConcurrentHashMapError {
-    Alloc(AllocError),
+
     Reserve(TryReserveError),
     Clone(TryCloneError),
-    Overflow,
+
     Other(&'static str),
 }
 
@@ -67,12 +66,6 @@ impl fmt::Debug for ConcurrentHashMapError {
 impl fmt::Display for ConcurrentHashMapError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         TryDisplay::try_fmt(self, f)
-    }
-}
-
-impl From<AllocError> for ConcurrentHashMapError {
-    fn from(e: AllocError) -> Self {
-        Self::Alloc(e)
     }
 }
 
@@ -91,9 +84,8 @@ impl From<TryCloneError> for ConcurrentHashMapError {
 impl From<TryDefaultError> for ConcurrentHashMapError {
     fn from(e: TryDefaultError) -> Self {
         match e {
-            TryDefaultError::Alloc(a) => Self::Alloc(a),
             TryDefaultError::Reserve(r) => Self::Reserve(r),
-            TryDefaultError::Overflow => Self::Overflow,
+            TryDefaultError::Alloc(_) => Self::Other("allocation failed"),
             TryDefaultError::Other(m) => Self::Other(m),
         }
     }
@@ -103,10 +95,8 @@ impl TryDebug for ConcurrentHashMapError {
     fn try_fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         use crate::errors::uniform as u;
         match self {
-            Self::Alloc(e) => u::debug_field(f, "ConcurrentHashMapError::Alloc", e),
             Self::Reserve(e) => u::debug_field(f, "ConcurrentHashMapError::Reserve", e),
             Self::Clone(e) => u::debug_field(f, "ConcurrentHashMapError::Clone", e),
-            Self::Overflow => u::debug_unit(f, "ConcurrentHashMapError::Overflow"),
             Self::Other(msg) => u::debug_field(f, "ConcurrentHashMapError::Other", msg),
         }
     }
@@ -116,10 +106,8 @@ impl TryDisplay for ConcurrentHashMapError {
     fn try_fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         use crate::errors::uniform as u;
         match self {
-            Self::Alloc(_) => u::display_fixed(f, "concurrent hash map", "heap allocation error"),
             Self::Reserve(e) => u::display_delegated(f, "concurrent hash map", e),
             Self::Clone(e) => u::display_delegated(f, "concurrent hash map", e),
-            Self::Overflow => u::display_fixed(f, "concurrent hash map", "capacity calculation overflowed"),
             Self::Other(msg) => u::display_fixed(f, "concurrent hash map", msg),
         }
     }
@@ -127,10 +115,10 @@ impl TryDisplay for ConcurrentHashMapError {
 
 /// Error returned by non-blocking [`ConcurrentHashMap`] operations.
 pub enum ConcurrentHashMapNonblockError {
-    Alloc(AllocError),
+
     Reserve(TryReserveError),
     Clone(TryCloneError),
-    Overflow,
+
     Other(&'static str),
     Locked,
 }
@@ -149,12 +137,8 @@ impl fmt::Display for ConcurrentHashMapNonblockError {
 
 impl From<ConcurrentHashMapError> for ConcurrentHashMapNonblockError {
     fn from(e: ConcurrentHashMapError) -> Self {
-        match e {
-            ConcurrentHashMapError::Alloc(a) => Self::Alloc(a),
-            ConcurrentHashMapError::Reserve(r) => Self::Reserve(r),
-            ConcurrentHashMapError::Clone(c) => Self::Clone(c),
-            ConcurrentHashMapError::Overflow => Self::Overflow,
-            ConcurrentHashMapError::Other(m) => Self::Other(m),
+        match e {            ConcurrentHashMapError::Reserve(r) => Self::Reserve(r),
+            ConcurrentHashMapError::Clone(c) => Self::Clone(c),            ConcurrentHashMapError::Other(m) => Self::Other(m),
         }
     }
 }
@@ -163,10 +147,8 @@ impl TryDebug for ConcurrentHashMapNonblockError {
     fn try_fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         use crate::errors::uniform as u;
         match self {
-            Self::Alloc(e) => u::debug_field(f, "ConcurrentHashMapNonblockError::Alloc", e),
             Self::Reserve(e) => u::debug_field(f, "ConcurrentHashMapNonblockError::Reserve", e),
             Self::Clone(e) => u::debug_field(f, "ConcurrentHashMapNonblockError::Clone", e),
-            Self::Overflow => u::debug_unit(f, "ConcurrentHashMapNonblockError::Overflow"),
             Self::Other(msg) => u::debug_field(f, "ConcurrentHashMapNonblockError::Other", msg),
             Self::Locked => u::debug_unit(f, "ConcurrentHashMapNonblockError::Locked"),
         }
@@ -177,10 +159,8 @@ impl TryDisplay for ConcurrentHashMapNonblockError {
     fn try_fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         use crate::errors::uniform as u;
         match self {
-            Self::Alloc(_) => u::display_fixed(f, "concurrent hash map", "heap allocation error"),
             Self::Reserve(e) => u::display_delegated(f, "concurrent hash map", e),
             Self::Clone(e) => u::display_delegated(f, "concurrent hash map", e),
-            Self::Overflow => u::display_fixed(f, "concurrent hash map", "capacity calculation overflowed"),
             Self::Other(msg) => u::display_fixed(f, "concurrent hash map", msg),
             Self::Locked => u::display_fixed(f, "concurrent hash map", "shard locked"),
         }
@@ -310,10 +290,10 @@ impl<K: Eq + Hash, V, S: BuildHasher> ConcurrentHashMap<K, V, S> {
             .checked_sub(shard_count.trailing_zeros())
             .expect("trailing zeros <= BITS for nonzero power of two");
         let layout = lang_alloc::alloc::Layout::array::<Shard<K, V>>(shard_count)
-            .map_err(|_| ConcurrentHashMapError::Overflow)?;
+            .map_err(|_| ConcurrentHashMapError::Reserve(TryReserveErrorExt::new_capacity_overflow()))?;
         let ptr = unsafe { lang_alloc::alloc::alloc(layout) };
         if ptr.is_null() {
-            return Err(ConcurrentHashMapError::Alloc(AllocError));
+            return Err(ConcurrentHashMapError::Reserve(TryReserveErrorExt::new_alloc(layout)));
         }
 
         // Wrap immediately in a Box so Drop cleans up the allocation on panic.
@@ -633,11 +613,7 @@ impl<K: Eq + Hash, V, S: BuildHasher> ConcurrentHashMap<K, V, S> {
             let mut table = shard.write_table();
             table
                 .try_reserve(per_shard, |(k, _v): &(K, V)| self.hasher.hash_one(k))
-                .map_err(|_| {
-                    ConcurrentHashMapError::Reserve(TryReserveErrorExt::new_alloc(
-                        Layout::new::<u8>(),
-                    ))
-                })?;
+                .map_err(|e| ConcurrentHashMapError::Reserve(crate::alloc::try_reserve_error_from_hashbrown(e)))?;
         }
         Ok(())
     }
@@ -850,12 +826,9 @@ impl<K: Eq + Hash, V, S: BuildHasher> ConcurrentHashMap<K, V, S> {
         let idx = self.shard_index_internal(hash);
         let shard = self.shards.get_shard(idx);
         let mut guard = shard.write_table();
-
         guard
             .try_reserve(1, |(k, _v): &(K, V)| self.hasher.hash_one(k))
-            .map_err(|_| {
-                ConcurrentHashMapError::Reserve(TryReserveErrorExt::new_alloc(Layout::new::<u8>()))
-            })?;
+            .map_err(|e| ConcurrentHashMapError::Reserve(crate::alloc::try_reserve_error_from_hashbrown(e)))?;
 
         match guard.find_or_find_insert_slot(
             hash,
@@ -885,14 +858,9 @@ impl<K: Eq + Hash, V, S: BuildHasher> ConcurrentHashMap<K, V, S> {
         let mut guard = shard
             .try_write_table()
             .ok_or(ConcurrentHashMapNonblockError::Locked)?;
-
         guard
             .try_reserve(1, |(k, _v): &(K, V)| self.hasher.hash_one(k))
-            .map_err(|_| {
-                ConcurrentHashMapNonblockError::Reserve(TryReserveErrorExt::new_alloc(
-                    Layout::new::<u8>(),
-                ))
-            })?;
+            .map_err(|e| ConcurrentHashMapNonblockError::Reserve(crate::alloc::try_reserve_error_from_hashbrown(e)))?;
 
         match guard.find_or_find_insert_slot(
             hash,
@@ -917,14 +885,8 @@ impl<K: Eq + Hash, V, S: BuildHasher> ConcurrentHashMap<K, V, S> {
         let idx = self.shard_index_internal(hash);
         let shard = self.shards.get_shard(idx);
         let mut guard = shard.write_table();
-        if guard
-            .try_reserve(1, |(k, _v): &(K, V)| self.hasher.hash_one(k))
-            .is_err()
-        {
-            return Err((
-                key,
-                ConcurrentHashMapError::Reserve(TryReserveErrorExt::new_alloc(Layout::new::<u8>())),
-            ));
+        if let Err(e) = guard.try_reserve(1, |(k, _v): &(K, V)| self.hasher.hash_one(k)) {
+            return Err((key, ConcurrentHashMapError::Reserve(crate::alloc::try_reserve_error_from_hashbrown(e))));
         }
 
         match guard.find_or_find_insert_slot(
@@ -1021,12 +983,8 @@ where
     fn try_clone(&self) -> Result<Self, TryCloneError> {
         let hasher = self.hasher.try_clone()?;
         let shard_count = self.shard_count();
-        let out = Self::try_with_hasher_and_shards(hasher, shard_count).map_err(|e| match e {
-            ConcurrentHashMapError::Alloc(a) => TryCloneError::Alloc(a),
-            ConcurrentHashMapError::Reserve(r) => TryCloneError::Reserve(r),
-            ConcurrentHashMapError::Clone(c) => c,
-            ConcurrentHashMapError::Overflow => TryCloneError::Overflow,
-            ConcurrentHashMapError::Other(m) => TryCloneError::Other(m),
+        let out = Self::try_with_hasher_and_shards(hasher, shard_count).map_err(|e| match e {            ConcurrentHashMapError::Reserve(r) => TryCloneError::Reserve(r),
+            ConcurrentHashMapError::Clone(c) => c,            ConcurrentHashMapError::Other(m) => TryCloneError::Other(m),
         })?;
 
         for i in 0..self.shard_count() {
@@ -1037,12 +995,8 @@ where
                 let kv = unsafe { bucket.as_ref() };
                 let k = kv.0.try_clone()?;
                 let v = kv.1.try_clone()?;
-                out.try_insert(k, v).map_err(|e| match e {
-                    ConcurrentHashMapError::Alloc(a) => TryCloneError::Alloc(a),
-                    ConcurrentHashMapError::Reserve(r) => TryCloneError::Reserve(r),
-                    ConcurrentHashMapError::Clone(c) => c,
-                    ConcurrentHashMapError::Overflow => TryCloneError::Overflow,
-                    ConcurrentHashMapError::Other(m) => TryCloneError::Other(m),
+                out.try_insert(k, v).map_err(|e| match e {                    ConcurrentHashMapError::Reserve(r) => TryCloneError::Reserve(r),
+                    ConcurrentHashMapError::Clone(c) => c,                    ConcurrentHashMapError::Other(m) => TryCloneError::Other(m),
                 })?;
             }
         }
@@ -1108,10 +1062,8 @@ mod tests {
     #[test]
     fn chashmap_errors_cover_all_variants() {
         let blocking = [
-            ConcurrentHashMapError::Alloc(AllocError),
             ConcurrentHashMapError::Reserve(reserve_err()),
-            ConcurrentHashMapError::Clone(TryCloneError::Alloc(AllocError)),
-            ConcurrentHashMapError::Overflow,
+            ConcurrentHashMapError::Clone(TryCloneError::Reserve(reserve_err())),
             ConcurrentHashMapError::Other("c"),
         ];
         for err in blocking.iter() {
@@ -1127,10 +1079,8 @@ mod tests {
         }
 
         let nonblocking = [
-            ConcurrentHashMapNonblockError::Alloc(AllocError),
             ConcurrentHashMapNonblockError::Reserve(reserve_err()),
-            ConcurrentHashMapNonblockError::Clone(TryCloneError::Alloc(AllocError)),
-            ConcurrentHashMapNonblockError::Overflow,
+            ConcurrentHashMapNonblockError::Clone(TryCloneError::Reserve(reserve_err())),
             ConcurrentHashMapNonblockError::Other("n"),
             ConcurrentHashMapNonblockError::Locked,
         ];
@@ -1160,27 +1110,24 @@ mod tests {
     #[test]
     fn blocking_to_nonblock_from_covers_all_variants() {
         let source = [
-            ConcurrentHashMapError::Alloc(AllocError),
             ConcurrentHashMapError::Reserve(TryReserveError::new_capacity_overflow()),
-            ConcurrentHashMapError::Clone(TryCloneError::Alloc(AllocError)),
-            ConcurrentHashMapError::Overflow,
+            ConcurrentHashMapError::Clone(TryCloneError::Reserve(
+                TryReserveError::new_capacity_overflow(),
+            )),
             ConcurrentHashMapError::Other("conv"),
         ];
         for e in source.iter() {
             // Each construction is independent, so we can move by value here.
             let nb: ConcurrentHashMapNonblockError = match e {
-                ConcurrentHashMapError::Alloc(_) => {
-                    ConcurrentHashMapError::Alloc(AllocError).into()
-                }
                 ConcurrentHashMapError::Reserve(_) => ConcurrentHashMapError::Reserve(
                     TryReserveError::new_capacity_overflow(),
                 )
                 .into(),
                 ConcurrentHashMapError::Clone(_) => {
-                    ConcurrentHashMapError::Clone(TryCloneError::Alloc(AllocError)).into()
-                }
-                ConcurrentHashMapError::Overflow => {
-                    ConcurrentHashMapError::Overflow.into()
+                    ConcurrentHashMapError::Clone(TryCloneError::Reserve(
+                        TryReserveError::new_capacity_overflow(),
+                    ))
+                    .into()
                 }
                 ConcurrentHashMapError::Other(_) => {
                     ConcurrentHashMapError::Other("conv").into()
@@ -1204,7 +1151,7 @@ mod tests {
         let s = format!("{:?}", Cap(&empty));
         assert!(s.starts_with("ConcurrentHashMap { "), "got {s:?}");
 
-        let mut full: ConcurrentHashMap<&str, i32> = ConcurrentHashMap::try_new().unwrap();
+        let full: ConcurrentHashMap<&str, i32> = ConcurrentHashMap::try_new().unwrap();
         full.try_insert("a", 1).unwrap();
         full.try_insert("b", 2).unwrap();
         let s = format!("{:?}", Cap(&full));

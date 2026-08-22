@@ -29,9 +29,8 @@ use super::refs::{RefMulti, RefMutMulti};
 
 /// Error returned by [`Iter::next`] or [`IterMut::next`].
 pub enum IterError {
-    /// Failed to allocate the `Arc` wrapper around a shard guard.
+    /// Failed to allocate the `Arc` guard when yielding an item.
     Alloc(AllocError),
-    /// Failed to clone the `Arc` guard when yielding an item (refcount overflow).
     Clone(TryCloneError),
 }
 
@@ -65,7 +64,7 @@ impl TryDebug for IterError {
 impl TryDisplay for IterError {
     fn try_fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::Alloc(_) => write!(f, "iteration failed: heap allocation error"),
+            Self::Alloc(e) => write!(f, "iteration failed: {e}"),
             Self::Clone(e) => write!(f, "iteration failed: {}", e),
         }
     }
@@ -150,7 +149,7 @@ where
                         guard,
                     ) {
                         Ok(g) => g,
-                        Err(e) => {
+                        Err(_) => {
                             if self.auto_unstall {
                                 // Skip this shard — it couldn't be locked, move on.
                                 self.advance_shard();
@@ -159,7 +158,7 @@ where
                             // Stall: do not advance shard_idx so that retrying next()
                             // re-attempts this same shard. The guard is dropped here
                             // and will be reacquired on the next call.
-                            return Some(Err(IterError::Alloc(e)));
+                            return Some(Err(IterError::Alloc(AllocError)));
                         }
                     };
                 // SAFETY: arc_guard holds the read lock so the table is stable.
@@ -301,7 +300,7 @@ where
                         guard,
                     ) {
                         Ok(g) => g,
-                        Err(e) => {
+                        Err(_) => {
                             if self.auto_unstall {
                                 // Skip this shard — it couldn't be locked, move on.
                                 self.advance_shard();
@@ -310,7 +309,7 @@ where
                             // Stall: do not advance shard_idx so that retrying next()
                             // re-attempts this same shard. The guard is dropped here
                             // and will be reacquired on the next call.
-                            return Some(Err(IterError::Alloc(e)));
+                            return Some(Err(IterError::Alloc(AllocError)));
                         }
                     };
                 // SAFETY: arc_guard holds the write lock so the table is stable.

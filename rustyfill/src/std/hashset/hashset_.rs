@@ -15,7 +15,6 @@
 //! [`TryDefault`](crate::try_default::TryDefault) for `HashSet<T, S>` when
 //! `T` satisfies the respective bounds.
 
-use crate::alloc::AllocError;
 use crate::alloc::TryReserveError;
 use crate::try_clone::{TryClone, TryCloneError};
 use crate::try_default::{TryDefault, TryDefaultError};
@@ -34,16 +33,10 @@ use lang_std::hash::{BuildHasher, Hash, RandomState};
 /// failure ([`TryReserveError`], returned by the inherent `HashSet::try_reserve`)
 /// or a clone failure ([`TryCloneError`]) when an element's `try_clone` cannot
 /// allocate its internal buffers.
-pub enum TryHashSetError {
-    /// A raw heap allocation failed (no collection involved).
-    Alloc(AllocError),
-    /// A capacity reservation on the hash set failed (overflow or OOM).
+pub enum TryHashSetError {    /// A capacity reservation on the hash set failed (overflow or OOM).
     Reserve(TryReserveError),
     /// An element clone failed during a method that requires [`TryClone`].
-    Clone(TryCloneError),
-    /// An arithmetic overflow occurred while computing required capacity.
-    Overflow,
-    /// A logic-level failure with a static diagnostic message.
+    Clone(TryCloneError),    /// A logic-level failure with a static diagnostic message.
     Other(&'static str),
 }
 
@@ -56,12 +49,6 @@ impl fmt::Debug for TryHashSetError {
 impl fmt::Display for TryHashSetError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         TryDisplay::try_fmt(self, f)
-    }
-}
-
-impl From<AllocError> for TryHashSetError {
-    fn from(e: AllocError) -> Self {
-        Self::Alloc(e)
     }
 }
 
@@ -81,10 +68,8 @@ impl TryDebug for TryHashSetError {
     fn try_fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         use crate::errors::uniform as u;
         match self {
-            Self::Alloc(e) => u::debug_field(f, "TryHashSetError::Alloc", e),
             Self::Reserve(e) => u::debug_field(f, "TryHashSetError::Reserve", e),
             Self::Clone(e) => u::debug_field(f, "TryHashSetError::Clone", e),
-            Self::Overflow => u::debug_unit(f, "TryHashSetError::Overflow"),
             Self::Other(msg) => u::debug_field(f, "TryHashSetError::Other", msg),
         }
     }
@@ -94,10 +79,8 @@ impl TryDisplay for TryHashSetError {
     fn try_fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         use crate::errors::uniform as u;
         match self {
-            Self::Alloc(_) => u::display_fixed(f, "hash set", "heap allocation error"),
             Self::Reserve(e) => u::display_delegated(f, "hash set", e),
             Self::Clone(e) => u::display_delegated(f, "hash set", e),
-            Self::Overflow => u::display_fixed(f, "hash set", "capacity calculation overflowed"),
             Self::Other(msg) => u::display_fixed(f, "hash set", msg),
         }
     }
@@ -106,9 +89,8 @@ impl TryDisplay for TryHashSetError {
 impl From<TryDefaultError> for TryHashSetError {
     fn from(err: TryDefaultError) -> Self {
         match err {
-            TryDefaultError::Alloc(e) => Self::Alloc(e),
             TryDefaultError::Reserve(e) => Self::Reserve(e),
-            TryDefaultError::Overflow => Self::Overflow,
+            TryDefaultError::Alloc(_) => Self::Other("allocation failed"),
             TryDefaultError::Other(msg) => Self::Other(msg),
         }
     }
@@ -656,22 +638,14 @@ mod tests {
     /// (moved from errors::uniform).
     #[test]
     fn hashset_error_covers_all_variants() {
-        let cases: [(TryHashSetError, &str); 5] = [
-            (
-                TryHashSetError::Alloc(AllocError),
-                "hash set operation failed: heap allocation error",
-            ),
+        let cases: [(TryHashSetError, &str); 3] = [
             (
                 TryHashSetError::Reserve(reserve_err()),
                 "hash set operation failed:",
             ),
             (
-                TryHashSetError::Clone(TryCloneError::Alloc(AllocError)),
+                TryHashSetError::Clone(TryCloneError::Reserve(reserve_err())),
                 "hash set operation failed:",
-            ),
-            (
-                TryHashSetError::Overflow,
-                "hash set operation failed: capacity calculation overflowed",
             ),
             (
                 TryHashSetError::Other("bad"),
@@ -687,10 +661,8 @@ mod tests {
         }
         // Also drive the TryDebug and TryDisplay impls across every variant.
         let errs = [
-            TryHashSetError::Alloc(AllocError),
             TryHashSetError::Reserve(reserve_err()),
-            TryHashSetError::Clone(TryCloneError::Alloc(AllocError)),
-            TryHashSetError::Overflow,
+            TryHashSetError::Clone(TryCloneError::Reserve(reserve_err())),
             TryHashSetError::Other("bad"),
         ];
         for err in errs.iter() {

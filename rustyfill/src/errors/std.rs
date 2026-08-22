@@ -15,7 +15,6 @@
 use crate::try_fmt::helpers::FormatterExt;
 use crate::try_fmt::{TryDebug, TryDisplay};
 use lang_alloc::borrow::Cow;
-use lang_alloc::string::ToString;
 use lang_core::any;
 use lang_core::fmt;
 use lang_std::ffi;

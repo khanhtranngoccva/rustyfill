@@ -21,7 +21,6 @@
 //! assert!(a.ptr_eq(&b)); // Same underlying Arc
 //! ```
 
-use crate::alloc::TryReserveErrorExt;
 use crate::collections::chashmap::ConcurrentHashMap;
 use crate::std::arc::{TryArc, TryWeak};
 use crate::try_clone::TryClone;
@@ -29,10 +28,10 @@ use crate::try_clone::TryCloneError;
 use crate::try_default::{TryDefault, TryDefaultError};
 use crate::try_fmt::FormatterExt;
 use crate::try_fmt::TryDebug;
+use crate::alloc::AllocError;
 use crate::try_to_owned::{TryToOwned, TryToOwnedError};
 use lang_alloc::borrow::ToOwned;
 use lang_alloc::string::String;
-use lang_core::alloc::Layout;
 use lang_core::fmt;
 use lang_core::hash::Hash;
 use lang_std::ffi::{CStr, CString, OsStr, OsString};
@@ -373,22 +372,19 @@ where
     let shard = &map.get_shards()[idx];
     let mut guard = shard.write_table();
 
-    if guard
-        .try_reserve(1, |(k, _v): &(u64, Weak<B::Owned>)| {
-            map.hasher().hash_one(k)
-        })
-        .is_err()
-    {
-        return Err(TryToOwnedError::Reserve(TryReserveErrorExt::new_alloc(
-            Layout::new::<u8>(),
-        )));
+    if let Err(e) = guard.try_reserve(1, |(k, _v): &(u64, Weak<B::Owned>)| {
+        map.hasher().hash_one(k)
+    }) {
+        return Err(TryToOwnedError::Reserve(
+            crate::alloc::try_reserve_error_from_hashbrown(e),
+        ));
     }
 
     let create_new_arc = || -> Result<Arc<B::Owned>, TryToOwnedError> {
         let owned = borrowed.try_to_owned()?;
         let arc = match Arc::fallible_new(owned) {
             Ok(a) => a,
-            Err(alloc_err) => return Err(TryToOwnedError::Alloc(alloc_err)),
+            Err(_alloc_err) => return Err(TryToOwnedError::Alloc(AllocError)),
         };
         Ok(arc)
     };

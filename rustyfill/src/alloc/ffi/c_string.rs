@@ -14,7 +14,6 @@
 //! contents and append the terminating nul byte. The [`try_new_give_back`][TryCString::try_new_give_back]
 //! variant returns the original buffer on any failure so no data is lost.
 
-use crate::alloc::AllocError;
 use crate::alloc::TryReserveError;
 use crate::alloc::vec::{TrySlice, TryVecError};
 use crate::try_clone::{TryClone, TryCloneError};
@@ -25,14 +24,8 @@ use lang_alloc::vec::Vec;
 use lang_core::fmt;
 
 /// Error returned by [`TryCString`] operations.
-pub enum TryCStringError {
-    /// A raw heap allocation failed (no collection involved).
-    Alloc(AllocError),
-    /// A capacity reservation failed (overflow or OOM).
-    Reserve(TryReserveError),
-    /// An arithmetic overflow occurred while computing required capacity.
-    Overflow,
-    /// The input contained an interior nul byte at the given index.
+pub enum TryCStringError {    /// A capacity reservation failed (overflow or OOM).
+    Reserve(TryReserveError),    /// The input contained an interior nul byte at the given index.
     Nul(usize),
 }
 
@@ -48,12 +41,6 @@ impl fmt::Display for TryCStringError {
     }
 }
 
-impl From<AllocError> for TryCStringError {
-    fn from(e: AllocError) -> Self {
-        Self::Alloc(e)
-    }
-}
-
 impl From<TryReserveError> for TryCStringError {
     fn from(err: TryReserveError) -> Self {
         Self::Reserve(err)
@@ -63,15 +50,10 @@ impl From<TryReserveError> for TryCStringError {
 impl TryDebug for TryCStringError {
     fn try_fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::Alloc(e) => f
-                .try_debug_tuple("TryCStringError::Alloc")
-                .field(e)
-                .finish(),
             Self::Reserve(e) => f
                 .try_debug_tuple("TryCStringError::Reserve")
                 .field(e)
                 .finish(),
-            Self::Overflow => f.write_str("TryCStringError::Overflow"),
             Self::Nul(idx) => f
                 .try_debug_tuple("TryCStringError::Nul")
                 .field(idx)
@@ -83,15 +65,8 @@ impl TryDebug for TryCStringError {
 impl TryDisplay for TryCStringError {
     fn try_fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::Alloc(_) => write!(f, "CString operation failed: heap allocation error"),
             Self::Reserve(e) => write!(f, "CString operation failed: {}", e),
-            Self::Overflow => {
-                write!(
-                    f,
-                    "CString operation failed: capacity calculation overflowed"
-                )
-            }
-            Self::Nul(idx) => {
+                        Self::Nul(idx) => {
                 write!(
                     f,
                     "CString operation failed: interior nul byte at index {}",
@@ -184,8 +159,6 @@ impl TryClone for CString {
         let buf = bytes.try_to_vec().map_err(|e| match e {
             TryVecError::Reserve(r) => TryCloneError::Reserve(r),
             TryVecError::Clone(c) => c,
-            TryVecError::Overflow => TryCloneError::Overflow,
-            TryVecError::Alloc(e) => TryCloneError::Alloc(e),
             TryVecError::Other(m) => TryCloneError::Other(m),
         })?;
 

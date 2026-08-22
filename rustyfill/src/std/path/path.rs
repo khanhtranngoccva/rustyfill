@@ -16,7 +16,6 @@
 //! `&Path` (mirroring the existing `&str` impl) and
 //! [`TryToOwned`](crate::try_to_owned::TryToOwned) for `Path`.
 
-use crate::alloc::AllocError;
 use crate::alloc::TryReserveError;
 use crate::std::path::path_buf::inner_push;
 use crate::std::path::{TryPathBuf, TryPathBufError};
@@ -29,14 +28,8 @@ use lang_std::path::Display;
 use lang_std::path::{Path, PathBuf};
 
 /// Error returned by [`TryPath`] operations.
-pub enum TryPathError {
-    /// A raw heap allocation failed (no collection involved).
-    Alloc(AllocError),
-    /// A capacity reservation failed (overflow or OOM).
-    Reserve(TryReserveError),
-    /// An arithmetic overflow occurred while computing required capacity.
-    Overflow,
-    /// A logic-level failure with a static diagnostic message.
+pub enum TryPathError {    /// A capacity reservation failed (overflow or OOM).
+    Reserve(TryReserveError),    /// A logic-level failure with a static diagnostic message.
     Other(&'static str),
 }
 
@@ -52,12 +45,6 @@ impl fmt::Display for TryPathError {
     }
 }
 
-impl From<AllocError> for TryPathError {
-    fn from(e: AllocError) -> Self {
-        Self::Alloc(e)
-    }
-}
-
 impl From<TryReserveError> for TryPathError {
     fn from(err: TryReserveError) -> Self {
         Self::Reserve(err)
@@ -67,15 +54,10 @@ impl From<TryReserveError> for TryPathError {
 impl TryDebug for TryPathError {
     fn try_fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::Alloc(e) => f
-                .try_debug_tuple("TryPathError::Alloc")
-                .field(e)
-                .finish(),
             Self::Reserve(e) => f
                 .try_debug_tuple("TryPathError::Reserve")
                 .field(e)
                 .finish(),
-            Self::Overflow => f.write_str("TryPathError::Overflow"),
             Self::Other(msg) => f
                 .try_debug_tuple("TryPathError::Other")
                 .field(msg)
@@ -87,12 +69,8 @@ impl TryDebug for TryPathError {
 impl TryDisplay for TryPathError {
     fn try_fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::Alloc(_) => write!(f, "Path operation failed: heap allocation error"),
             Self::Reserve(e) => write!(f, "Path operation failed: {}", e),
-            Self::Overflow => {
-                write!(f, "Path operation failed: capacity calculation overflowed")
-            }
-            Self::Other(msg) => write!(f, "Path operation failed: {}", msg),
+                        Self::Other(msg) => write!(f, "Path operation failed: {}", msg),
         }
     }
 }
@@ -186,11 +164,7 @@ impl TryPath for Path {
 
     fn try_with_added_extension<E: AsRef<OsStr>>(&self, ext: E) -> Result<PathBuf, TryPathError> {
         let mut out = self.try_to_path_buf()?;
-        out.try_add_extension(ext).map_err(|e| match e {
-            TryPathBufError::Alloc(a) => TryPathError::Alloc(a),
-            TryPathBufError::Reserve(r) => TryPathError::Reserve(r),
-            TryPathBufError::Overflow => TryPathError::Overflow,
-            TryPathBufError::Other(m) => TryPathError::Other(m),
+        out.try_add_extension(ext).map_err(|e| match e {            TryPathBufError::Reserve(r) => TryPathError::Reserve(r),            TryPathBufError::Other(m) => TryPathError::Other(m),
         })?;
         Ok(out)
     }
