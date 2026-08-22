@@ -21,7 +21,7 @@ use crate::alloc::TryReserveError;
 use crate::std::path::path_buf::inner_push;
 use crate::std::path::{TryPathBuf, TryPathBufError};
 use crate::try_clone::{TryClone, TryCloneError};
-use crate::try_fmt::{TryDebug, helpers::FormatterExt};
+use crate::try_fmt::{TryDebug, TryDisplay, helpers::FormatterExt};
 use crate::try_to_owned::{TryToOwned, TryToOwnedError};
 use lang_core::fmt;
 use lang_std::ffi::OsStr;
@@ -29,7 +29,6 @@ use lang_std::path::Display;
 use lang_std::path::{Path, PathBuf};
 
 /// Error returned by [`TryPath`] operations.
-#[derive(Debug)]
 pub enum TryPathError {
     /// A raw heap allocation failed (no collection involved).
     Alloc(AllocError),
@@ -41,16 +40,15 @@ pub enum TryPathError {
     Other(&'static str),
 }
 
+impl fmt::Debug for TryPathError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        TryDebug::try_fmt(self, f)
+    }
+}
+
 impl fmt::Display for TryPathError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::Alloc(_) => write!(f, "Path operation failed: heap allocation error"),
-            Self::Reserve(e) => write!(f, "Path operation failed: {}", e),
-            Self::Overflow => {
-                write!(f, "Path operation failed: capacity calculation overflowed")
-            }
-            Self::Other(msg) => write!(f, "Path operation failed: {}", msg),
-        }
+        TryDisplay::try_fmt(self, f)
     }
 }
 
@@ -70,18 +68,31 @@ impl TryDebug for TryPathError {
     fn try_fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Alloc(e) => f
-                .try_debug_struct("TryPathError::Alloc")
-                .field("0", e)
+                .try_debug_tuple("TryPathError::Alloc")
+                .field(e)
                 .finish(),
             Self::Reserve(e) => f
-                .try_debug_struct("TryPathError::Reserve")
-                .field("0", e)
+                .try_debug_tuple("TryPathError::Reserve")
+                .field(e)
                 .finish(),
             Self::Overflow => f.write_str("TryPathError::Overflow"),
             Self::Other(msg) => f
-                .try_debug_struct("TryPathError::Other")
-                .field("0", msg)
+                .try_debug_tuple("TryPathError::Other")
+                .field(msg)
                 .finish(),
+        }
+    }
+}
+
+impl TryDisplay for TryPathError {
+    fn try_fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Alloc(_) => write!(f, "Path operation failed: heap allocation error"),
+            Self::Reserve(e) => write!(f, "Path operation failed: {}", e),
+            Self::Overflow => {
+                write!(f, "Path operation failed: capacity calculation overflowed")
+            }
+            Self::Other(msg) => write!(f, "Path operation failed: {}", msg),
         }
     }
 }

@@ -50,7 +50,6 @@ impl<K, V> ShardsStorage<K, V> {
 // ── Error types ────────────────────────────────────────────────────────────────
 
 /// Error returned by blocking [`ConcurrentHashMap`] operations.
-#[derive(Debug)]
 pub enum ConcurrentHashMapError {
     Alloc(AllocError),
     Reserve(TryReserveError),
@@ -59,16 +58,15 @@ pub enum ConcurrentHashMapError {
     Other(&'static str),
 }
 
+impl fmt::Debug for ConcurrentHashMapError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        TryDebug::try_fmt(self, f)
+    }
+}
+
 impl fmt::Display for ConcurrentHashMapError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        use crate::errors::uniform as u;
-        match self {
-            Self::Alloc(_) => u::display_fixed(f, "concurrent hash map", "heap allocation error"),
-            Self::Reserve(e) => u::display_delegated(f, "concurrent hash map", e),
-            Self::Clone(e) => u::display_delegated(f, "concurrent hash map", e),
-            Self::Overflow => u::display_fixed(f, "concurrent hash map", "capacity calculation overflowed"),
-            Self::Other(msg) => u::display_fixed(f, "concurrent hash map", msg),
-        }
+        TryDisplay::try_fmt(self, f)
     }
 }
 
@@ -116,12 +114,18 @@ impl TryDebug for ConcurrentHashMapError {
 
 impl TryDisplay for ConcurrentHashMapError {
     fn try_fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        fmt::Display::fmt(self, f)
+        use crate::errors::uniform as u;
+        match self {
+            Self::Alloc(_) => u::display_fixed(f, "concurrent hash map", "heap allocation error"),
+            Self::Reserve(e) => u::display_delegated(f, "concurrent hash map", e),
+            Self::Clone(e) => u::display_delegated(f, "concurrent hash map", e),
+            Self::Overflow => u::display_fixed(f, "concurrent hash map", "capacity calculation overflowed"),
+            Self::Other(msg) => u::display_fixed(f, "concurrent hash map", msg),
+        }
     }
 }
 
 /// Error returned by non-blocking [`ConcurrentHashMap`] operations.
-#[derive(Debug)]
 pub enum ConcurrentHashMapNonblockError {
     Alloc(AllocError),
     Reserve(TryReserveError),
@@ -131,17 +135,15 @@ pub enum ConcurrentHashMapNonblockError {
     Locked,
 }
 
+impl fmt::Debug for ConcurrentHashMapNonblockError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        TryDebug::try_fmt(self, f)
+    }
+}
+
 impl fmt::Display for ConcurrentHashMapNonblockError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        use crate::errors::uniform as u;
-        match self {
-            Self::Alloc(_) => u::display_fixed(f, "concurrent hash map", "heap allocation error"),
-            Self::Reserve(e) => u::display_delegated(f, "concurrent hash map", e),
-            Self::Clone(e) => u::display_delegated(f, "concurrent hash map", e),
-            Self::Overflow => u::display_fixed(f, "concurrent hash map", "capacity calculation overflowed"),
-            Self::Other(msg) => u::display_fixed(f, "concurrent hash map", msg),
-            Self::Locked => u::display_fixed(f, "concurrent hash map", "shard locked"),
-        }
+        TryDisplay::try_fmt(self, f)
     }
 }
 
@@ -173,7 +175,15 @@ impl TryDebug for ConcurrentHashMapNonblockError {
 
 impl TryDisplay for ConcurrentHashMapNonblockError {
     fn try_fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        fmt::Display::fmt(self, f)
+        use crate::errors::uniform as u;
+        match self {
+            Self::Alloc(_) => u::display_fixed(f, "concurrent hash map", "heap allocation error"),
+            Self::Reserve(e) => u::display_delegated(f, "concurrent hash map", e),
+            Self::Clone(e) => u::display_delegated(f, "concurrent hash map", e),
+            Self::Overflow => u::display_fixed(f, "concurrent hash map", "capacity calculation overflowed"),
+            Self::Other(msg) => u::display_fixed(f, "concurrent hash map", msg),
+            Self::Locked => u::display_fixed(f, "concurrent hash map", "shard locked"),
+        }
     }
 }
 

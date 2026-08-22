@@ -62,7 +62,6 @@ impl<'a, T> Drop for TruncateGuard<'a, T> {
 /// failure ([`TryReserveError`], returned by the inherent `Vec::try_reserve`)
 /// or a clone failure ([`TryCloneError`]) when an element's `try_clone` cannot
 /// allocate its internal buffers.
-#[derive(Debug)]
 pub enum TryVecError {
     /// A raw heap allocation failed (no collection involved).
     Alloc(AllocError),
@@ -76,16 +75,15 @@ pub enum TryVecError {
     Other(&'static str),
 }
 
+impl fmt::Debug for TryVecError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        TryDebug::try_fmt(self, f)
+    }
+}
+
 impl fmt::Display for TryVecError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        use crate::errors::uniform as u;
-        match self {
-            Self::Alloc(_) => u::display_fixed(f, "vector", "heap allocation error"),
-            Self::Reserve(e) => u::display_delegated(f, "vector", e),
-            Self::Clone(e) => u::display_delegated(f, "vector", e),
-            Self::Overflow => u::display_fixed(f, "vector", "capacity calculation overflowed"),
-            Self::Other(msg) => u::display_fixed(f, "vector", msg),
-        }
+        TryDisplay::try_fmt(self, f)
     }
 }
 
@@ -122,7 +120,14 @@ impl TryDebug for TryVecError {
 
 impl TryDisplay for TryVecError {
     fn try_fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        fmt::Display::fmt(self, f)
+        use crate::errors::uniform as u;
+        match self {
+            Self::Alloc(_) => u::display_fixed(f, "vector", "heap allocation error"),
+            Self::Reserve(e) => u::display_delegated(f, "vector", e),
+            Self::Clone(e) => u::display_delegated(f, "vector", e),
+            Self::Overflow => u::display_fixed(f, "vector", "capacity calculation overflowed"),
+            Self::Other(msg) => u::display_fixed(f, "vector", msg),
+        }
     }
 }
 

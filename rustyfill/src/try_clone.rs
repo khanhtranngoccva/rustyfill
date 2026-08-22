@@ -18,7 +18,7 @@
 //! which requires every field to also implement `TryClone`.
 
 use crate::alloc::{AllocError, TryReserveError};
-use crate::try_fmt::{TryDebug, helpers::FormatterExt};
+use crate::try_fmt::{TryDebug, TryDisplay, helpers::FormatterExt};
 use lang_core::array;
 use lang_core::clone::Clone;
 use lang_core::fmt;
@@ -26,7 +26,7 @@ use lang_core::mem;
 use lang_core::ptr;
 
 /// Returned when a fallible clone operation fails.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub enum TryCloneError {
     /// A raw heap allocation failed (no collection involved).
     Alloc(AllocError),
@@ -38,14 +38,15 @@ pub enum TryCloneError {
     Other(&'static str),
 }
 
+impl fmt::Debug for TryCloneError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        TryDebug::try_fmt(self, f)
+    }
+}
+
 impl fmt::Display for TryCloneError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::Alloc(_) => write!(f, "clone failed: heap allocation error"),
-            Self::Reserve(e) => write!(f, "clone failed: {}", e),
-            Self::Overflow => write!(f, "clone failed: capacity calculation overflowed"),
-            Self::Other(msg) => write!(f, "clone failed: {}", msg),
-        }
+        TryDisplay::try_fmt(self, f)
     }
 }
 
@@ -53,18 +54,29 @@ impl TryDebug for TryCloneError {
     fn try_fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Alloc(e) => f
-                .try_debug_struct("TryCloneError::Alloc")
-                .field("0", e)
+                .try_debug_tuple("TryCloneError::Alloc")
+                .field(e)
                 .finish(),
             Self::Reserve(e) => f
-                .try_debug_struct("TryCloneError::Reserve")
-                .field("0", e)
+                .try_debug_tuple("TryCloneError::Reserve")
+                .field(e)
                 .finish(),
             Self::Overflow => f.write_str("TryCloneError::Overflow"),
             Self::Other(msg) => f
-                .try_debug_struct("TryCloneError::Other")
-                .field("0", msg)
+                .try_debug_tuple("TryCloneError::Other")
+                .field(msg)
                 .finish(),
+        }
+    }
+}
+
+impl TryDisplay for TryCloneError {
+    fn try_fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Alloc(_) => write!(f, "clone failed: heap allocation error"),
+            Self::Reserve(e) => write!(f, "clone failed: {}", e),
+            Self::Overflow => write!(f, "clone failed: capacity calculation overflowed"),
+            Self::Other(msg) => write!(f, "clone failed: {}", msg),
         }
     }
 }

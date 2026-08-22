@@ -20,7 +20,7 @@ use crate::alloc::AllocError;
 use crate::recovery::Stallable;
 use crate::std::arc::TryArc;
 use crate::try_clone::{TryClone, TryCloneError};
-use crate::try_fmt::{TryDebug, helpers::FormatterExt};
+use crate::try_fmt::{TryDebug, TryDisplay, helpers::FormatterExt};
 
 use super::map::ConcurrentHashMap;
 use super::refs::{RefMulti, RefMutMulti};
@@ -28,7 +28,6 @@ use super::refs::{RefMulti, RefMutMulti};
 // ── Error type ──────────────────────────────────────────────────────────────────
 
 /// Error returned by [`Iter::next`] or [`IterMut::next`].
-#[derive(Debug)]
 pub enum IterError {
     /// Failed to allocate the `Arc` wrapper around a shard guard.
     Alloc(AllocError),
@@ -36,12 +35,15 @@ pub enum IterError {
     Clone(TryCloneError),
 }
 
+impl fmt::Debug for IterError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        TryDebug::try_fmt(self, f)
+    }
+}
+
 impl fmt::Display for IterError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::Alloc(_) => write!(f, "iteration failed: heap allocation error"),
-            Self::Clone(e) => write!(f, "iteration failed: {}", e),
-        }
+        TryDisplay::try_fmt(self, f)
     }
 }
 
@@ -49,13 +51,22 @@ impl TryDebug for IterError {
     fn try_fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Alloc(e) => f
-                .try_debug_struct("IterError::Alloc")
-                .field("0", e)
+                .try_debug_tuple("IterError::Alloc")
+                .field(e)
                 .finish(),
             Self::Clone(e) => f
-                .try_debug_struct("IterError::Clone")
-                .field("0", e)
+                .try_debug_tuple("IterError::Clone")
+                .field(e)
                 .finish(),
+        }
+    }
+}
+
+impl TryDisplay for IterError {
+    fn try_fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Alloc(_) => write!(f, "iteration failed: heap allocation error"),
+            Self::Clone(e) => write!(f, "iteration failed: {}", e),
         }
     }
 }

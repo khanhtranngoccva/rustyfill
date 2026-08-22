@@ -18,14 +18,14 @@
 //! proc macro, which requires every field in every variant to also implement `TryDefault`.
 
 use crate::alloc::{AllocError, TryReserveError};
-use crate::try_fmt::{TryDebug, helpers::FormatterExt};
+use crate::try_fmt::{TryDebug, TryDisplay, helpers::FormatterExt};
 use lang_core::array;
 use lang_core::fmt;
 use lang_core::mem;
 use lang_core::ptr;
 
 /// Returned when a fallible default construction fails.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub enum TryDefaultError {
     /// A raw heap allocation failed (no collection involved).
     Alloc(AllocError),
@@ -37,14 +37,15 @@ pub enum TryDefaultError {
     Other(&'static str),
 }
 
+impl fmt::Debug for TryDefaultError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        TryDebug::try_fmt(self, f)
+    }
+}
+
 impl fmt::Display for TryDefaultError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::Alloc(_) => write!(f, "default failed: heap allocation error"),
-            Self::Reserve(e) => write!(f, "default failed: {}", e),
-            Self::Overflow => write!(f, "default failed: capacity calculation overflowed"),
-            Self::Other(msg) => write!(f, "default failed: {}", msg),
-        }
+        TryDisplay::try_fmt(self, f)
     }
 }
 
@@ -52,18 +53,29 @@ impl TryDebug for TryDefaultError {
     fn try_fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Alloc(e) => f
-                .try_debug_struct("TryDefaultError::Alloc")
-                .field("0", e)
+                .try_debug_tuple("TryDefaultError::Alloc")
+                .field(e)
                 .finish(),
             Self::Reserve(e) => f
-                .try_debug_struct("TryDefaultError::Reserve")
-                .field("0", e)
+                .try_debug_tuple("TryDefaultError::Reserve")
+                .field(e)
                 .finish(),
             Self::Overflow => f.write_str("TryDefaultError::Overflow"),
             Self::Other(msg) => f
-                .try_debug_struct("TryDefaultError::Other")
-                .field("0", msg)
+                .try_debug_tuple("TryDefaultError::Other")
+                .field(msg)
                 .finish(),
+        }
+    }
+}
+
+impl TryDisplay for TryDefaultError {
+    fn try_fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Alloc(_) => write!(f, "default failed: heap allocation error"),
+            Self::Reserve(e) => write!(f, "default failed: {}", e),
+            Self::Overflow => write!(f, "default failed: capacity calculation overflowed"),
+            Self::Other(msg) => write!(f, "default failed: {}", msg),
         }
     }
 }

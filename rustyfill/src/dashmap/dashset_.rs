@@ -20,7 +20,6 @@ type DashSet<T, S = RandomState> = dashmap::DashSet<T, S>;
 // ── Error type ────────────────────────────────────────────────────────────────
 
 /// Error returned by [`TryDashSet`] operations.
-#[derive(Debug)]
 pub enum TryDashSetError {
     /// A raw heap allocation failed (no collection involved).
     Alloc(AllocError),
@@ -34,16 +33,15 @@ pub enum TryDashSetError {
     Other(&'static str),
 }
 
+impl fmt::Debug for TryDashSetError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        TryDebug::try_fmt(self, f)
+    }
+}
+
 impl fmt::Display for TryDashSetError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        use crate::errors::uniform as u;
-        match self {
-            Self::Alloc(_) => u::display_fixed(f, "dash set", "heap allocation error"),
-            Self::Reserve(e) => u::display_delegated(f, "dash set", e),
-            Self::Clone(e) => u::display_delegated(f, "dash set", e),
-            Self::Overflow => u::display_fixed(f, "dash set", "capacity calculation overflowed"),
-            Self::Other(msg) => u::display_fixed(f, "dash set", msg),
-        }
+        TryDisplay::try_fmt(self, f)
     }
 }
 
@@ -85,7 +83,14 @@ impl TryDebug for TryDashSetError {
 
 impl TryDisplay for TryDashSetError {
     fn try_fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        fmt::Display::fmt(self, f)
+        use crate::errors::uniform as u;
+        match self {
+            Self::Alloc(_) => u::display_fixed(f, "dash set", "heap allocation error"),
+            Self::Reserve(e) => u::display_delegated(f, "dash set", e),
+            Self::Clone(e) => u::display_delegated(f, "dash set", e),
+            Self::Overflow => u::display_fixed(f, "dash set", "capacity calculation overflowed"),
+            Self::Other(msg) => u::display_fixed(f, "dash set", msg),
+        }
     }
 }
 

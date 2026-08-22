@@ -15,6 +15,7 @@
 use crate::try_fmt::helpers::FormatterExt;
 use crate::try_fmt::{TryDebug, TryDisplay};
 use lang_alloc::borrow::Cow;
+use lang_alloc::string::ToString;
 use lang_core::any;
 use lang_core::fmt;
 use lang_std::ffi;
@@ -153,8 +154,8 @@ impl<G> TryDebug for sync::TryLockError<G> {
         match self {
             sync::TryLockError::WouldBlock => f.write_str("TryLockError::WouldBlock"),
             sync::TryLockError::Poisoned(_) => f
-                .try_debug_struct("TryLockError::Poisoned")
-                .field_owned("inner", "<PoisonError suppressed>")
+                .try_debug_tuple("TryLockError::Poisoned")
+                .field("<PoisonError suppressed>")
                 .finish(),
         }
     }

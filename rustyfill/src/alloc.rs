@@ -57,12 +57,18 @@ mod alloc_error_ponyfill {
 
     /// Allocation error returned when a heap allocation fails.
     /// Unit struct, matching the shape of the standard library's `AllocError`.
-    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    #[derive(Clone, Copy, PartialEq, Eq)]
     pub struct AllocError;
+
+    impl fmt::Debug for AllocError {
+        fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+            TryDebug::try_fmt(self, f)
+        }
+    }
 
     impl fmt::Display for AllocError {
         fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-            write!(f, "allocation failed")
+            TryDisplay::try_fmt(self, f)
         }
     }
 
@@ -74,8 +80,7 @@ mod alloc_error_ponyfill {
 
     impl TryDisplay for AllocError {
         fn try_fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-            // The unit struct's Display never allocates; delegate to it.
-            fmt::Display::fmt(self, f)
+            write!(f, "allocation failed")
         }
     }
 

@@ -103,6 +103,3 @@ pub use crate::alloc::btrees::entry::{
 #[cfg(feature = "std")]
 pub use crate::std::sync::TryMutex;
 
-// ── RefCell ──────────────────────────────────────────
-
-pub use crate::core::cell::TryRefCell;

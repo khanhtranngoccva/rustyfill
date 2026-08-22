@@ -11,7 +11,7 @@ use crate::alloc::vec::TryVec;
 use crate::collections::slotmap::key::{Key, KeyData, MAX_SLOTS_LEN};
 use crate::try_clone::{TryClone, TryCloneError};
 use crate::try_default::{TryDefault, TryDefaultError};
-use crate::try_fmt::TryDebug;
+use crate::try_fmt::{TryDebug, TryDisplay};
 use crate::try_fmt::helpers::FormatterExt;
 use lang_alloc::vec::Vec;
 use lang_core::fmt::{self, Debug};
@@ -98,7 +98,6 @@ impl<T: TryClone> TryClone for Slot<T> {
 // ── Error type ──────────────────────────────────────────────────────────────────
 
 /// Error returned by [`SecondaryMap`] operations.
-#[derive(Debug)]
 pub enum SecondaryMapError {
     /// A raw heap allocation failed.
     Alloc(AllocError),
@@ -108,13 +107,15 @@ pub enum SecondaryMapError {
     Overflow,
 }
 
+impl fmt::Debug for SecondaryMapError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        TryDebug::try_fmt(self, f)
+    }
+}
+
 impl fmt::Display for SecondaryMapError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::Alloc(e) => write!(f, "secondary map allocation failed: {}", e),
-            Self::Reserve(e) => write!(f, "secondary map capacity reservation failed: {}", e),
-            Self::Overflow => f.write_str("secondary map overflow"),
-        }
+        TryDisplay::try_fmt(self, f)
     }
 }
 
@@ -122,14 +123,24 @@ impl TryDebug for SecondaryMapError {
     fn try_fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Alloc(e) => f
-                .try_debug_struct("SecondaryMapError::Alloc")
-                .field("0", e)
+                .try_debug_tuple("SecondaryMapError::Alloc")
+                .field(e)
                 .finish(),
             Self::Reserve(e) => f
-                .try_debug_struct("SecondaryMapError::Reserve")
-                .field("0", e)
+                .try_debug_tuple("SecondaryMapError::Reserve")
+                .field(e)
                 .finish(),
             Self::Overflow => f.write_str("SecondaryMapError::Overflow"),
+        }
+    }
+}
+
+impl TryDisplay for SecondaryMapError {
+    fn try_fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Alloc(e) => write!(f, "secondary map allocation failed: {}", e),
+            Self::Reserve(e) => write!(f, "secondary map capacity reservation failed: {}", e),
+            Self::Overflow => f.write_str("secondary map overflow"),
         }
     }
 }

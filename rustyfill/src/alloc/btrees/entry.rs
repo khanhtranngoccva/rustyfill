@@ -56,6 +56,7 @@
 //! [`TryBox::fallible_new_uninit`]: crate::alloc::boxed::TryBox::fallible_new_uninit
 
 use crate::alloc::AllocError;
+use crate::try_fmt::{TryDebug, TryDisplay, helpers::FormatterExt};
 use lang_alloc::collections::BTreeMap;
 use lang_alloc::collections::btree_map::{Entry, VacantEntry};
 
@@ -107,7 +108,6 @@ fn alloc_error() -> AllocError {
 ///   [`AllocError`].
 /// - [`Self::Closure`] — the closure itself failed before any insertion; only
 ///   the key is handed back (there is no computed value to return).
-#[derive(Debug)]
 pub enum TryBTreeMapEntryWithGiveBackError<K, V, E> {
     /// Heap allocation failed while inserting the successfully computed value.
     /// Contains the key, the value, and the underlying [`AllocError`].
@@ -117,8 +117,32 @@ pub enum TryBTreeMapEntryWithGiveBackError<K, V, E> {
     Closure(K, E),
 }
 
-impl<K, V, E> fmt::Display for TryBTreeMapEntryWithGiveBackError<K, V, E> {
+impl<K: TryDebug, V: TryDebug, E: TryDebug> fmt::Debug for TryBTreeMapEntryWithGiveBackError<K, V, E> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        TryDebug::try_fmt(self, f)
+    }
+}
+
+impl<K: TryDebug, V: TryDebug, E: TryDebug> TryDebug for TryBTreeMapEntryWithGiveBackError<K, V, E> {
+    fn try_fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Alloc(k, v, e) => f
+                .try_debug_tuple("TryBTreeMapEntryWithGiveBackError::Alloc")
+                .field(k)
+                .field(v)
+                .field(e)
+                .finish(),
+            Self::Closure(k, e) => f
+                .try_debug_tuple("TryBTreeMapEntryWithGiveBackError::Closure")
+                .field(k)
+                .field(e)
+                .finish(),
+        }
+    }
+}
+
+impl<K, V, E> TryDisplay for TryBTreeMapEntryWithGiveBackError<K, V, E> {
+    fn try_fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Alloc(_, _, _) => write!(
                 f,
@@ -129,6 +153,12 @@ impl<K, V, E> fmt::Display for TryBTreeMapEntryWithGiveBackError<K, V, E> {
                 "B-tree map entry operation failed: default-value closure returned an error"
             ),
         }
+    }
+}
+
+impl<K, V, E> fmt::Display for TryBTreeMapEntryWithGiveBackError<K, V, E> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        TryDisplay::try_fmt(self, f)
     }
 }
 
@@ -151,7 +181,6 @@ impl<K, V, E> TryBTreeMapEntryWithGiveBackError<K, V, E> {
 /// only the error. Because the fallible-closure methods can fail in two ways —
 /// the closure itself errored, or the subsequent insertion hit OOM — this error
 /// keeps just those two modes without the discarded data.
-#[derive(Debug)]
 pub enum TryBTreeMapEntryWithError<E> {
     /// Heap allocation failed while inserting the successfully computed value.
     Alloc(AllocError),
@@ -160,8 +189,29 @@ pub enum TryBTreeMapEntryWithError<E> {
     Closure(E),
 }
 
-impl<E> fmt::Display for TryBTreeMapEntryWithError<E> {
+impl<E: TryDebug> fmt::Debug for TryBTreeMapEntryWithError<E> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        TryDebug::try_fmt(self, f)
+    }
+}
+
+impl<E: TryDebug> TryDebug for TryBTreeMapEntryWithError<E> {
+    fn try_fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Alloc(e) => f
+                .try_debug_tuple("TryBTreeMapEntryWithError::Alloc")
+                .field(e)
+                .finish(),
+            Self::Closure(e) => f
+                .try_debug_tuple("TryBTreeMapEntryWithError::Closure")
+                .field(e)
+                .finish(),
+        }
+    }
+}
+
+impl<E> TryDisplay for TryBTreeMapEntryWithError<E> {
+    fn try_fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Alloc(_) => write!(
                 f,
@@ -172,6 +222,12 @@ impl<E> fmt::Display for TryBTreeMapEntryWithError<E> {
                 "B-tree map entry operation failed: default-value closure returned an error"
             ),
         }
+    }
+}
+
+impl<E> fmt::Display for TryBTreeMapEntryWithError<E> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        TryDisplay::try_fmt(self, f)
     }
 }
 
@@ -193,7 +249,6 @@ impl<E> TryBTreeMapEntryWithError<E> {
 /// Slice extension clones each element before inserting, so there are two
 /// distinct failure modes: the clone itself can fail, or the subsequent
 /// insertion can hit OOM.
-#[derive(Debug)]
 pub enum TryBTreeMapExtendFromSliceError {
     /// An element clone failed during a method that requires
     /// [`TryClone`](crate::try_clone::TryClone).
@@ -202,8 +257,29 @@ pub enum TryBTreeMapExtendFromSliceError {
     Alloc(AllocError),
 }
 
-impl fmt::Display for TryBTreeMapExtendFromSliceError {
+impl fmt::Debug for TryBTreeMapExtendFromSliceError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        TryDebug::try_fmt(self, f)
+    }
+}
+
+impl TryDebug for TryBTreeMapExtendFromSliceError {
+    fn try_fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Clone(e) => f
+                .try_debug_tuple("TryBTreeMapExtendFromSliceError::Clone")
+                .field(e)
+                .finish(),
+            Self::Alloc(e) => f
+                .try_debug_tuple("TryBTreeMapExtendFromSliceError::Alloc")
+                .field(e)
+                .finish(),
+        }
+    }
+}
+
+impl TryDisplay for TryBTreeMapExtendFromSliceError {
+    fn try_fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Clone(e) => write!(f, "B-tree map extend-from-slice failed: {}", e),
             Self::Alloc(_) => write!(
@@ -211,6 +287,12 @@ impl fmt::Display for TryBTreeMapExtendFromSliceError {
                 "B-tree map extend-from-slice failed: heap allocation error"
             ),
         }
+    }
+}
+
+impl fmt::Display for TryBTreeMapExtendFromSliceError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        TryDisplay::try_fmt(self, f)
     }
 }
 

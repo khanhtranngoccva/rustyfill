@@ -11,7 +11,7 @@
 //! Both the platform-specific backend functions and the public API return
 //! [`Result`] instead of panicking.
 
-use crate::try_fmt::{TryDebug, helpers::FormatterExt};
+use crate::try_fmt::{TryDebug, TryDisplay, helpers::FormatterExt};
 #[cfg(feature = "std")]
 use cfg_if::cfg_if;
 use lang_alloc::borrow::Cow;
@@ -20,7 +20,6 @@ use lang_core::fmt;
 // ── Error Type ────────────────────────────────────────────────────────────────────
 
 /// Error returned when random data generation fails.
-#[derive(Debug)]
 #[allow(unused)]
 pub enum RandomError {
     /// The underlying syscall returned an error code.
@@ -31,13 +30,15 @@ pub enum RandomError {
     Unsupported,
 }
 
+impl fmt::Debug for RandomError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        TryDebug::try_fmt(self, f)
+    }
+}
+
 impl fmt::Display for RandomError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::Syscall(code) => write!(f, "random syscall failed with code {}", code),
-            Self::Platform(msg) => write!(f, "platform random source failed: {}", msg),
-            Self::Unsupported => write!(f, "this target does not support random data generation"),
-        }
+        TryDisplay::try_fmt(self, f)
     }
 }
 
@@ -45,14 +46,24 @@ impl TryDebug for RandomError {
     fn try_fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Syscall(code) => f
-                .try_debug_struct("RandomError::Syscall")
-                .field("0", code)
+                .try_debug_tuple("RandomError::Syscall")
+                .field(code)
                 .finish(),
             Self::Platform(msg) => f
-                .try_debug_struct("RandomError::Platform")
-                .field("0", msg)
+                .try_debug_tuple("RandomError::Platform")
+                .field(msg)
                 .finish(),
             Self::Unsupported => f.write_str("RandomError::Unsupported"),
+        }
+    }
+}
+
+impl TryDisplay for RandomError {
+    fn try_fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Syscall(code) => write!(f, "random syscall failed with code {}", code),
+            Self::Platform(msg) => write!(f, "platform random source failed: {}", msg),
+            Self::Unsupported => write!(f, "this target does not support random data generation"),
         }
     }
 }

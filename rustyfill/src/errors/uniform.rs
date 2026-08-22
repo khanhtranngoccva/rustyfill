@@ -8,14 +8,14 @@
 //! per-variant match arms for every type was pure duplication: each arm is a
 //! cyclomatic branch with no logic, which inflates CRAP complexity while contributing
 //! nothing testable. These helpers centralize the arm bodies so each error type's
-//! impl reduces to a thin delegation, and the helpers themselves are covered by the
-//! tests below (which construct real error variants directly).
+//! canonical [`TryDisplay`] / [`TryDebug`] impl reduces to a thin delegation, and the
+//! helpers themselves are covered by the tests below (which construct real error
+//! variants directly). The std `Display` / `Debug` impls delegate to these traits.
 
-// FIXME: where is TryDisplay and Display? Should not we just make this deal with TryDisplay and TryDebug only?
-use crate::try_fmt::{TryDebug, TryDisplay, helpers::FormatterExt};
+use crate::try_fmt::{TryDebug, helpers::FormatterExt};
 use lang_core::fmt;
 
-/// Renders a fixed-message `Display` arm: `"{prefix} operation failed: {msg}"`.
+/// Renders a fixed-message `TryDisplay` arm: `"{prefix} operation failed: {msg}"`.
 ///
 /// Used for the `Alloc`, `Overflow`, and `Locked` variants, whose detail is a
 /// constant string rather than a wrapped value.
@@ -24,7 +24,7 @@ pub(crate) fn display_fixed(f: &mut fmt::Formatter<'_>, prefix: &str, msg: &str)
     write!(f, "{prefix} operation failed: {msg}")
 }
 
-/// Renders a delegated `Display` arm: `"{prefix} operation failed: {e}"`, where the
+/// Renders a delegated `TryDisplay` arm: `"{prefix} operation failed: {e}"`, where the
 /// detail comes from the wrapped value's own `Display`.
 ///
 /// Used for the `Reserve`, `Clone`, and `Other` variants.
@@ -38,7 +38,7 @@ pub(crate) fn display_delegated<T: fmt::Display>(
 }
 
 /// Renders a `TryDebug` arm for a tuple variant carrying a single field, producing
-/// `<name> { 0: <field> }`. The `name` should be the fully-qualified
+/// `<name>(<field>)`. The `name` should be the fully-qualified
 /// `Type::Variant` form to match the previous hand-written output.
 #[inline]
 pub(crate) fn debug_field<'f, T: TryDebug>(
@@ -46,7 +46,7 @@ pub(crate) fn debug_field<'f, T: TryDebug>(
     name: &'f str,
     value: &T,
 ) -> fmt::Result {
-    f.try_debug_struct(name).field("0", value).finish()
+    f.try_debug_tuple(name).field(value).finish()
 }
 
 /// Renders a `TryDebug` arm for a unit variant, producing just `<name>`.

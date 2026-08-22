@@ -13,13 +13,13 @@
 
 use crate::alloc::{AllocError, TryReserveError};
 use crate::try_clone::TryCloneError;
-use crate::try_fmt::{TryDebug, helpers::FormatterExt};
+use crate::try_fmt::{TryDebug, TryDisplay, helpers::FormatterExt};
 use lang_alloc::borrow::ToOwned;
 use lang_core::error;
 use lang_core::fmt;
 
 /// Error returned by [`TryToOwned::try_to_owned`].
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub enum TryToOwnedError {
     /// A raw heap allocation failed (no collection involved).
     Alloc(AllocError),
@@ -31,14 +31,15 @@ pub enum TryToOwnedError {
     Other(&'static str),
 }
 
+impl fmt::Debug for TryToOwnedError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        TryDebug::try_fmt(self, f)
+    }
+}
+
 impl fmt::Display for TryToOwnedError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::Alloc(_) => write!(f, "to_owned failed: heap allocation error"),
-            Self::Reserve(e) => write!(f, "to_owned failed: {}", e),
-            Self::Overflow => write!(f, "to_owned failed: capacity calculation overflowed"),
-            Self::Other(msg) => write!(f, "to_owned failed: {}", msg),
-        }
+        TryDisplay::try_fmt(self, f)
     }
 }
 
@@ -46,18 +47,29 @@ impl TryDebug for TryToOwnedError {
     fn try_fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Alloc(e) => f
-                .try_debug_struct("TryToOwnedError::Alloc")
-                .field("0", e)
+                .try_debug_tuple("TryToOwnedError::Alloc")
+                .field(e)
                 .finish(),
             Self::Reserve(e) => f
-                .try_debug_struct("TryToOwnedError::Reserve")
-                .field("0", e)
+                .try_debug_tuple("TryToOwnedError::Reserve")
+                .field(e)
                 .finish(),
             Self::Overflow => f.write_str("TryToOwnedError::Overflow"),
             Self::Other(msg) => f
-                .try_debug_struct("TryToOwnedError::Other")
-                .field("0", msg)
+                .try_debug_tuple("TryToOwnedError::Other")
+                .field(msg)
                 .finish(),
+        }
+    }
+}
+
+impl TryDisplay for TryToOwnedError {
+    fn try_fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Alloc(_) => write!(f, "to_owned failed: heap allocation error"),
+            Self::Reserve(e) => write!(f, "to_owned failed: {}", e),
+            Self::Overflow => write!(f, "to_owned failed: capacity calculation overflowed"),
+            Self::Other(msg) => write!(f, "to_owned failed: {}", msg),
         }
     }
 }

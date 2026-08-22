@@ -19,7 +19,7 @@ use crate::alloc::vec::{TryVec, TryVecError};
 use crate::alloc::{TryReserveError, TryReserveErrorExt};
 use crate::try_clone::{TryClone, TryCloneError};
 use crate::try_default::{TryDefault, TryDefaultError};
-use crate::try_fmt::{TryDebug, helpers::FormatterExt};
+use crate::try_fmt::{TryDebug, TryDisplay, helpers::FormatterExt};
 use lang_alloc::string::String;
 use lang_alloc::vec::Vec;
 use lang_core::alloc::Layout;
@@ -31,29 +31,26 @@ use lang_core::mem;
 /// Wraps the ways a string operation can fail on stable Rust: a reserve
 /// failure ([`TryReserveError`]) or an arithmetic overflow when computing
 /// the required byte capacity.
-#[derive(Debug)]
 pub enum TryStringError {
     /// A raw heap allocation failed (no collection involved).
     Alloc(AllocError),
     /// A capacity reservation on the string failed (overflow or OOM).
     Reserve(TryReserveError),
-    /// An arithmetic overflow occurred while computing required capacity.
+    /// An arithmetic overflow occurred while computing required byte capacity.
     Overflow,
     /// A logic-level failure with a static diagnostic message.
     Other(&'static str),
 }
 
+impl fmt::Debug for TryStringError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        TryDebug::try_fmt(self, f)
+    }
+}
+
 impl fmt::Display for TryStringError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::Alloc(_) => write!(f, "string operation failed: heap allocation error"),
-            Self::Reserve(e) => write!(f, "string operation failed: {}", e),
-            Self::Overflow => write!(
-                f,
-                "string operation failed: capacity calculation overflowed"
-            ),
-            Self::Other(msg) => write!(f, "string operation failed: {}", msg),
-        }
+        TryDisplay::try_fmt(self, f)
     }
 }
 
@@ -73,18 +70,32 @@ impl TryDebug for TryStringError {
     fn try_fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Alloc(e) => f
-                .try_debug_struct("TryStringError::Alloc")
-                .field("0", e)
+                .try_debug_tuple("TryStringError::Alloc")
+                .field(e)
                 .finish(),
             Self::Reserve(e) => f
-                .try_debug_struct("TryStringError::Reserve")
-                .field("0", e)
+                .try_debug_tuple("TryStringError::Reserve")
+                .field(e)
                 .finish(),
             Self::Overflow => f.write_str("TryStringError::Overflow"),
             Self::Other(msg) => f
-                .try_debug_struct("TryStringError::Other")
-                .field("0", msg)
+                .try_debug_tuple("TryStringError::Other")
+                .field(msg)
                 .finish(),
+        }
+    }
+}
+
+impl TryDisplay for TryStringError {
+    fn try_fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Alloc(_) => write!(f, "string operation failed: heap allocation error"),
+            Self::Reserve(e) => write!(f, "string operation failed: {}", e),
+            Self::Overflow => write!(
+                f,
+                "string operation failed: capacity calculation overflowed"
+            ),
+            Self::Other(msg) => write!(f, "string operation failed: {}", msg),
         }
     }
 }

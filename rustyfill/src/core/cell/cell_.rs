@@ -1,92 +1,40 @@
 use crate::try_clone::{TryClone, TryCloneError};
 use crate::try_default::{TryDefault, TryDefaultError};
-use crate::try_fmt::{AssertDebug, TryDebug, helpers::FormatterExt};
-use lang_core::cell::{BorrowError, BorrowMutError, Ref, RefCell, RefMut};
+use crate::try_fmt::{TryDebug, TryDisplay};
+use lang_core::cell::{BorrowError, BorrowMutError, RefCell};
 use lang_core::fmt;
 
-/// Error returned when a fallible borrow operation fails.
-#[derive(Debug)]
-pub enum TryBorrowError {
-    /// The immutable borrow limit was exceeded (already at max readers).
-    Borrow(BorrowError),
-    /// The mutable borrow is unavailable (another borrow is active).
-    BorrowMut(BorrowMutError),
-}
+// ── TryDebug / TryDisplay for BorrowError ───────────────────────────────────
+// Both are zero-sized marker types whose std Debug/Display write fixed strings
+// with no allocation risk.
 
-impl fmt::Display for TryBorrowError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::Borrow(_) => write!(f, "immutable borrow failed: already at maximum"),
-            Self::BorrowMut(_) => write!(f, "mutable borrow failed: another borrow is active"),
-        }
-    }
-}
-
-impl From<BorrowError> for TryBorrowError {
-    fn from(e: BorrowError) -> Self {
-        Self::Borrow(e)
-    }
-}
-
-impl From<BorrowMutError> for TryBorrowError {
-    fn from(e: BorrowMutError) -> Self {
-        Self::BorrowMut(e)
-    }
-}
-
-impl TryDebug for TryBorrowError {
+impl TryDebug for BorrowError {
+    #[inline]
     fn try_fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::Borrow(e) => f
-                .try_debug_struct("TryBorrowError::Borrow")
-                .field("0", &AssertDebug(e))
-                .finish(),
-            Self::BorrowMut(e) => f
-                .try_debug_struct("TryBorrowError::BorrowMut")
-                .field("0", &AssertDebug(e))
-                .finish(),
-        }
+        fmt::Debug::fmt(self, f)
     }
 }
 
-/// Fallible operations on [`RefCell`].
-///
-/// Implemented for `RefCell<T>`. Provides [`try_borrow`](Self::try_borrow) and
-/// [`try_borrow_mut`](Self::try_borrow_mut), which return [`Result`] instead of
-/// panicking when the borrow rules are violated.
-pub trait TryRefCell<T: ?Sized> {
-    /// Attempts to immutably borrow the inner value.
-    ///
-    /// Returns `Err(TryBorrowError::Borrow)` if the value is already borrowed
-    /// mutably or if the immutable borrow count has reached its maximum.
-    fn try_borrow(&self) -> Result<Ref<'_, T>, TryBorrowError>;
-
-    /// Attempts to mutably borrow the inner value.
-    ///
-    /// Returns `Err(TryBorrowError::BorrowMut)` if the value is already
-    /// borrowed (either mutably or immutably).
-    fn try_borrow_mut(&self) -> Result<RefMut<'_, T>, TryBorrowError>;
-
-    // ── Aliases with `fallible_` prefix ─────────────────────────────────────
-
-    /// Alias for [`Self::try_borrow`].
-    fn fallible_borrow(&self) -> Result<Ref<'_, T>, TryBorrowError> {
-        Self::try_borrow(self)
-    }
-
-    /// Alias for [`Self::try_borrow_mut`].
-    fn fallible_borrow_mut(&self) -> Result<RefMut<'_, T>, TryBorrowError> {
-        Self::try_borrow_mut(self)
+impl TryDisplay for BorrowError {
+    #[inline]
+    fn try_fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        fmt::Display::fmt(self, f)
     }
 }
 
-impl<T: ?Sized> TryRefCell<T> for RefCell<T> {
-    fn try_borrow(&self) -> Result<Ref<'_, T>, TryBorrowError> {
-        RefCell::try_borrow(self).map_err(TryBorrowError::from)
-    }
+// ── TryDebug / TryDisplay for BorrowMutError ────────────────────────────────
 
-    fn try_borrow_mut(&self) -> Result<RefMut<'_, T>, TryBorrowError> {
-        RefCell::try_borrow_mut(self).map_err(TryBorrowError::from)
+impl TryDebug for BorrowMutError {
+    #[inline]
+    fn try_fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        fmt::Debug::fmt(self, f)
+    }
+}
+
+impl TryDisplay for BorrowMutError {
+    #[inline]
+    fn try_fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        fmt::Display::fmt(self, f)
     }
 }
 
@@ -94,12 +42,8 @@ impl<T: ?Sized> TryRefCell<T> for RefCell<T> {
 
 impl<T: TryClone> TryClone for RefCell<T> {
     fn try_clone(&self) -> Result<Self, TryCloneError> {
-        let inner = <Self as TryRefCell<_>>::try_borrow(self).map_err(|e| {
-            let msg = match e {
-                TryBorrowError::Borrow(_) => "RefCell clone failed: immutable borrow unavailable",
-                TryBorrowError::BorrowMut(_) => "RefCell clone failed: mutable borrow active",
-            };
-            TryCloneError::Other(msg)
+        let inner = RefCell::try_borrow(self).map_err(|_| {
+            TryCloneError::Other("RefCell clone failed: immutable borrow unavailable")
         })?;
         let cloned = (*inner).try_clone()?;
         Ok(RefCell::new(cloned))
@@ -119,7 +63,7 @@ impl<T: TryDefault> TryDefault for RefCell<T> {
 
 impl<T: ?Sized + crate::try_fmt::TryDebug> crate::try_fmt::TryDebug for RefCell<T> {
     fn try_fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self.try_borrow() {
+        match RefCell::try_borrow(self) {
             Ok(inner) => {
                 f.write_str("RefCell { value: ")?;
                 inner.try_fmt(f)?;
@@ -133,87 +77,9 @@ impl<T: ?Sized + crate::try_fmt::TryDebug> crate::try_fmt::TryDebug for RefCell<
 #[cfg(test)]
 mod tests {
     use super::*;
-    use lang_alloc::format;
+    use crate::try_format;
     use lang_alloc::string::String;
     use lang_alloc::vec;
-
-    #[test]
-    fn try_borrow_success() {
-        let cell = RefCell::new(42);
-        let r = cell.try_borrow().unwrap();
-        assert_eq!(*r, 42);
-    }
-
-    #[test]
-    fn try_borrow_mut_success() {
-        let cell = RefCell::new(42);
-        {
-            let mut r = <RefCell<i32> as TryRefCell<_>>::try_borrow_mut(&cell).unwrap();
-            *r = 99;
-        }
-        assert_eq!(*cell.borrow(), 99);
-    }
-
-    #[test]
-    fn try_borrow_fails_when_mutably_borrowed() {
-        let cell = RefCell::new(42);
-        let _mut_ref = cell.borrow_mut();
-        let result = <RefCell<i32> as TryRefCell<_>>::try_borrow(&cell);
-        assert!(result.is_err());
-        assert!(matches!(result.unwrap_err(), TryBorrowError::Borrow(_)));
-    }
-
-    #[test]
-    fn try_borrow_mut_fails_when_immutably_borrowed() {
-        let cell = RefCell::new(42);
-        let _ref = cell.borrow();
-        let result = <RefCell<i32> as TryRefCell<_>>::try_borrow_mut(&cell);
-        assert!(result.is_err());
-        assert!(matches!(result.unwrap_err(), TryBorrowError::BorrowMut(_)));
-    }
-
-    #[test]
-    fn try_borrow_mut_fails_when_mutably_borrowed() {
-        let cell = RefCell::new(42);
-        let _mut_ref = cell.borrow_mut();
-        let result = <RefCell<i32> as TryRefCell<_>>::try_borrow_mut(&cell);
-        assert!(result.is_err());
-        assert!(matches!(result.unwrap_err(), TryBorrowError::BorrowMut(_)));
-    }
-
-    #[test]
-    fn multiple_immutable_borrows_allowed() {
-        let cell = RefCell::new(42);
-        let r1 = cell.try_borrow().unwrap();
-        let r2 = cell.try_borrow().unwrap();
-        assert_eq!(*r1, 42);
-        assert_eq!(*r2, 42);
-    }
-
-    #[test]
-    fn fallible_aliases_work() {
-        let cell = RefCell::new(42);
-        let r = cell.fallible_borrow().unwrap();
-        assert_eq!(*r, 42);
-        drop(r);
-        let mut r = cell.fallible_borrow_mut().unwrap();
-        *r = 99;
-    }
-
-    #[test]
-    fn error_display_messages() {
-        let cell = RefCell::new(42);
-        let _mut_ref = cell.borrow_mut();
-        let err = <RefCell<i32> as TryRefCell<_>>::try_borrow(&cell).unwrap_err();
-        let msg = format!("{}", err);
-        assert!(msg.contains("immutable"));
-
-        drop(_mut_ref);
-        let _ref = cell.borrow();
-        let err = <RefCell<i32> as TryRefCell<_>>::try_borrow_mut(&cell).unwrap_err();
-        let msg = format!("{}", err);
-        assert!(msg.contains("mutable"));
-    }
 
     // ── TryClone tests ────────────────────────────────────────────────────────
 
@@ -257,9 +123,17 @@ mod tests {
     // ── TryDebug tests ────────────────────────────────────────────────────────
 
     #[test]
-    fn refcell_try_debug_available() {
+    fn refcell_try_debug_unborrowed() {
         let cell = RefCell::new(42i32);
-        let r = cell.try_borrow().unwrap();
-        assert_eq!(*r, 42);
+        let dbg = try_format!("{:?}", cell).unwrap();
+        assert!(dbg.contains("42"));
+    }
+
+    #[test]
+    fn refcell_try_debug_while_mutably_borrowed() {
+        let cell = RefCell::new(42i32);
+        let _r = cell.borrow_mut();
+        let dbg = try_format!("{:?}", cell).unwrap();
+        assert_eq!(dbg, "RefCell { <borrowed> }");
     }
 }

@@ -40,7 +40,6 @@ use crate::dashmap::mapref::{Entry, OccupiedEntry, VacantEntry};
 /// Wraps the ways a DashMap operation can fail: a reserve failure from
 /// [`DashMap::try_reserve`](dashmap::DashMap::try_reserve) or a clone failure
 /// when an element's `try_clone` cannot allocate its internal buffers.
-#[derive(Debug)]
 pub enum TryDashMapError {
     /// A raw heap allocation failed (no collection involved).
     Alloc(AllocError),
@@ -54,16 +53,15 @@ pub enum TryDashMapError {
     Other(&'static str),
 }
 
+impl fmt::Debug for TryDashMapError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        TryDebug::try_fmt(self, f)
+    }
+}
+
 impl fmt::Display for TryDashMapError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        use crate::errors::uniform as u;
-        match self {
-            Self::Alloc(_) => u::display_fixed(f, "dash map", "heap allocation error"),
-            Self::Reserve(e) => u::display_delegated(f, "dash map", e),
-            Self::Clone(e) => u::display_delegated(f, "dash map", e),
-            Self::Overflow => u::display_fixed(f, "dash map", "capacity calculation overflowed"),
-            Self::Other(msg) => u::display_fixed(f, "dash map", msg),
-        }
+        TryDisplay::try_fmt(self, f)
     }
 }
 
@@ -115,7 +113,14 @@ impl TryDebug for TryDashMapError {
 
 impl TryDisplay for TryDashMapError {
     fn try_fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        fmt::Display::fmt(self, f)
+        use crate::errors::uniform as u;
+        match self {
+            Self::Alloc(_) => u::display_fixed(f, "dash map", "heap allocation error"),
+            Self::Reserve(e) => u::display_delegated(f, "dash map", e),
+            Self::Clone(e) => u::display_delegated(f, "dash map", e),
+            Self::Overflow => u::display_fixed(f, "dash map", "capacity calculation overflowed"),
+            Self::Other(msg) => u::display_fixed(f, "dash map", msg),
+        }
     }
 }
 
@@ -123,7 +128,6 @@ impl TryDisplay for TryDashMapError {
 ///
 /// Extends [`TryDashMapError`] with a [`Locked`](Self::Locked) variant for when
 /// the target shard is held by another writer and the caller chose not to block.
-#[derive(Debug)]
 pub enum TryDashMapNonblockError {
     /// A raw heap allocation failed (no collection involved).
     Alloc(AllocError),
@@ -139,17 +143,15 @@ pub enum TryDashMapNonblockError {
     Locked,
 }
 
+impl fmt::Debug for TryDashMapNonblockError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        TryDebug::try_fmt(self, f)
+    }
+}
+
 impl fmt::Display for TryDashMapNonblockError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        use crate::errors::uniform as u;
-        match self {
-            Self::Alloc(_) => u::display_fixed(f, "dash map", "heap allocation error"),
-            Self::Reserve(e) => u::display_delegated(f, "dash map", e),
-            Self::Clone(e) => u::display_delegated(f, "dash map", e),
-            Self::Overflow => u::display_fixed(f, "dash map", "capacity calculation overflowed"),
-            Self::Other(msg) => u::display_fixed(f, "dash map", msg),
-            Self::Locked => u::display_fixed(f, "dash map", "shard locked"),
-        }
+        TryDisplay::try_fmt(self, f)
     }
 }
 
@@ -181,7 +183,15 @@ impl TryDebug for TryDashMapNonblockError {
 
 impl TryDisplay for TryDashMapNonblockError {
     fn try_fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        fmt::Display::fmt(self, f)
+        use crate::errors::uniform as u;
+        match self {
+            Self::Alloc(_) => u::display_fixed(f, "dash map", "heap allocation error"),
+            Self::Reserve(e) => u::display_delegated(f, "dash map", e),
+            Self::Clone(e) => u::display_delegated(f, "dash map", e),
+            Self::Overflow => u::display_fixed(f, "dash map", "capacity calculation overflowed"),
+            Self::Other(msg) => u::display_fixed(f, "dash map", msg),
+            Self::Locked => u::display_fixed(f, "dash map", "shard locked"),
+        }
     }
 }
 

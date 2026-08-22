@@ -61,7 +61,6 @@ impl<'a, T> Drop for TruncateGuard<'a, T> {
 }
 
 /// Error returned by [`TryVecDeque`] operations.
-#[derive(Debug)]
 pub enum TryVecDequeError {
     Alloc(AllocError),
     Reserve(TryReserveError),
@@ -70,16 +69,15 @@ pub enum TryVecDequeError {
     Other(&'static str),
 }
 
+impl fmt::Debug for TryVecDequeError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        TryDebug::try_fmt(self, f)
+    }
+}
+
 impl fmt::Display for TryVecDequeError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        use crate::errors::uniform as u;
-        match self {
-            Self::Alloc(_) => u::display_fixed(f, "deque", "heap allocation error"),
-            Self::Reserve(e) => u::display_delegated(f, "deque", e),
-            Self::Clone(e) => u::display_delegated(f, "deque", e),
-            Self::Overflow => u::display_fixed(f, "deque", "capacity calculation overflowed"),
-            Self::Other(msg) => u::display_fixed(f, "deque", msg),
-        }
+        TryDisplay::try_fmt(self, f)
     }
 }
 
@@ -116,7 +114,14 @@ impl TryDebug for TryVecDequeError {
 
 impl TryDisplay for TryVecDequeError {
     fn try_fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        fmt::Display::fmt(self, f)
+        use crate::errors::uniform as u;
+        match self {
+            Self::Alloc(_) => u::display_fixed(f, "deque", "heap allocation error"),
+            Self::Reserve(e) => u::display_delegated(f, "deque", e),
+            Self::Clone(e) => u::display_delegated(f, "deque", e),
+            Self::Overflow => u::display_fixed(f, "deque", "capacity calculation overflowed"),
+            Self::Other(msg) => u::display_fixed(f, "deque", msg),
+        }
     }
 }
 
