@@ -153,10 +153,12 @@ impl<G> TryDebug for sync::TryLockError<G> {
     fn try_fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             sync::TryLockError::WouldBlock => f.write_str("TryLockError::WouldBlock"),
-            sync::TryLockError::Poisoned(_) => f
-                .try_debug_tuple("TryLockError::Poisoned")
-                .field("<PoisonError suppressed>")
-                .finish(),
+            sync::TryLockError::Poisoned(_) => {
+                let msg = "<PoisonError suppressed>";
+                f.try_debug_tuple("TryLockError::Poisoned")
+                    .field(&msg)
+                    .finish()
+            }
         }
     }
 }

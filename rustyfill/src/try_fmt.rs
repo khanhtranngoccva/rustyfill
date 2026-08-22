@@ -408,14 +408,14 @@ impl_try_exp_primitives!(f32, f64);
 
 // ── References ──────────────────────────────────────────────────────────────────
 
-impl<T: TryDebug> TryDebug for &T {
+impl<T: TryDebug + ?Sized> TryDebug for &T {
     #[inline]
     fn try_fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         (**self).try_fmt(f)
     }
 }
 
-impl<T: TryDisplay> TryDisplay for &T {
+impl<T: TryDisplay + ?Sized> TryDisplay for &T {
     #[inline]
     fn try_fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         (**self).try_fmt(f)
@@ -525,24 +525,24 @@ impl TryDebug for marker::PhantomPinned {
     }
 }
 
-// ── Str and slice references ───────────────────────────────────────────────────
+// ── Unsized base types (str, [T]) ──────────────────────────────────────────────
 
 // str's Debug and Display never implicitly allocate — safe to passthrough.
-impl TryDebug for &str {
+impl TryDebug for str {
     #[inline]
     fn try_fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         fmt::Debug::fmt(self, f)
     }
 }
 
-impl TryDisplay for &str {
+impl TryDisplay for str {
     #[inline]
     fn try_fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         fmt::Display::fmt(self, f)
     }
 }
 
-impl<T: TryDebug> TryDebug for &[T] {
+impl<T: TryDebug> TryDebug for [T] {
     #[inline]
     fn try_fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         helpers::FormatterExt::try_debug_list(f)
