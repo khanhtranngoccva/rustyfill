@@ -19,7 +19,7 @@ use crate::alloc::AllocError;
 use crate::alloc::TryReserveError;
 use crate::try_clone::{TryClone, TryCloneError};
 use crate::try_default::{TryDefault, TryDefaultError};
-use crate::try_fmt::{TryDebug, helpers::FormatterExt};
+use crate::try_fmt::{TryDebug, TryDisplay};
 use lang_core::cmp;
 use lang_core::fmt;
 use lang_std::cmp::Eq;
@@ -50,15 +50,13 @@ pub enum TryHashSetError {
 
 impl fmt::Display for TryHashSetError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        use crate::errors::uniform as u;
         match self {
-            Self::Alloc(_) => write!(f, "hash set operation failed: heap allocation error"),
-            Self::Reserve(e) => write!(f, "hash set operation failed: {}", e),
-            Self::Clone(e) => write!(f, "hash set operation failed: {}", e),
-            Self::Overflow => write!(
-                f,
-                "hash set operation failed: capacity calculation overflowed"
-            ),
-            Self::Other(msg) => write!(f, "hash set operation failed: {}", msg),
+            Self::Alloc(_) => u::display_fixed(f, "hash set", "heap allocation error"),
+            Self::Reserve(e) => u::display_delegated(f, "hash set", e),
+            Self::Clone(e) => u::display_delegated(f, "hash set", e),
+            Self::Overflow => u::display_fixed(f, "hash set", "capacity calculation overflowed"),
+            Self::Other(msg) => u::display_fixed(f, "hash set", msg),
         }
     }
 }
@@ -83,25 +81,20 @@ impl From<TryCloneError> for TryHashSetError {
 
 impl TryDebug for TryHashSetError {
     fn try_fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        use crate::errors::uniform as u;
         match self {
-            Self::Alloc(e) => f
-                .try_debug_struct("TryHashSetError::Alloc")
-                .field("0", e)
-                .finish(),
-            Self::Reserve(e) => f
-                .try_debug_struct("TryHashSetError::Reserve")
-                .field("0", e)
-                .finish(),
-            Self::Clone(e) => f
-                .try_debug_struct("TryHashSetError::Clone")
-                .field("0", e)
-                .finish(),
-            Self::Overflow => f.write_str("TryHashSetError::Overflow"),
-            Self::Other(msg) => f
-                .try_debug_struct("TryHashSetError::Other")
-                .field("0", msg)
-                .finish(),
+            Self::Alloc(e) => u::debug_field(f, "TryHashSetError::Alloc", e),
+            Self::Reserve(e) => u::debug_field(f, "TryHashSetError::Reserve", e),
+            Self::Clone(e) => u::debug_field(f, "TryHashSetError::Clone", e),
+            Self::Overflow => u::debug_unit(f, "TryHashSetError::Overflow"),
+            Self::Other(msg) => u::debug_field(f, "TryHashSetError::Other", msg),
         }
+    }
+}
+
+impl TryDisplay for TryHashSetError {
+    fn try_fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        fmt::Display::fmt(self, f)
     }
 }
 
@@ -606,12 +599,102 @@ impl<T: crate::try_fmt::TryDebug, S> crate::try_fmt::TryDebug for HashSet<T, S> 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::alloc::TryReserveErrorExt;
+    use lang_alloc::format;
     use lang_alloc::string::String;
     use lang_alloc::string::ToString;
     use lang_alloc::vec;
     use lang_alloc::vec::Vec;
+    use lang_core::fmt::Write as _;
     use lang_std::hash::RandomState;
     use lang_std::iter;
+
+    /// A `TryReserveError` instance for exercising the `Reserve` arm.
+    fn reserve_err() -> TryReserveError {
+        TryReserveError::new_capacity_overflow()
+    }
+
+    /// Formats a value via its `Display` impl into a fresh String.
+    fn render_display(e: &impl fmt::Display) -> String {
+        let mut s = String::new();
+        // Our error Display impls only call `write!` on literals/wrapped values,
+        // so this cannot fail in practice; ignore the infallible-in-practice result.
+        let _ = write!(&mut s, "{e}");
+        s
+    }
+
+    /// Captures the `TryDebug` rendering of a value.
+    fn render_trydebug(e: &impl TryDebug) -> String {
+        struct Cap<'a>(&'a dyn TryDebug);
+        impl fmt::Debug for Cap<'_> {
+            fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+                self.0.try_fmt(f)
+            }
+        }
+        format!("{:?}", Cap(e))
+    }
+
+    /// Captures the `TryDisplay` rendering of a value (should match `Display`).
+    fn render_trydisplay(e: &impl TryDisplay) -> String {
+        struct Cap<'a>(&'a dyn TryDisplay);
+        impl fmt::Display for Cap<'_> {
+            fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+                self.0.try_fmt(f)
+            }
+        }
+        let mut s = String::new();
+        let _ = write!(&mut s, "{}", Cap(e));
+        s
+    }
+
+    /// Exercises every variant of `TryHashSetError` through all three impls
+    /// (moved from errors::uniform).
+    #[test]
+    fn hashset_error_covers_all_variants() {
+        let cases: [(TryHashSetError, &str); 5] = [
+            (
+                TryHashSetError::Alloc(AllocError),
+                "hash set operation failed: heap allocation error",
+            ),
+            (
+                TryHashSetError::Reserve(reserve_err()),
+                "hash set operation failed:",
+            ),
+            (
+                TryHashSetError::Clone(TryCloneError::Alloc(AllocError)),
+                "hash set operation failed:",
+            ),
+            (
+                TryHashSetError::Overflow,
+                "hash set operation failed: capacity calculation overflowed",
+            ),
+            (
+                TryHashSetError::Other("bad"),
+                "hash set operation failed: bad",
+            ),
+        ];
+        for &(ref err, expected_prefix) in cases.iter() {
+            let got = render_display(err);
+            assert!(
+                got.starts_with(expected_prefix),
+                "expected prefix {expected_prefix:?}, got {got:?}"
+            );
+        }
+        // Also drive the TryDebug and TryDisplay impls across every variant.
+        let errs = [
+            TryHashSetError::Alloc(AllocError),
+            TryHashSetError::Reserve(reserve_err()),
+            TryHashSetError::Clone(TryCloneError::Alloc(AllocError)),
+            TryHashSetError::Overflow,
+            TryHashSetError::Other("bad"),
+        ];
+        for err in errs.iter() {
+            let got = render_trydebug(err);
+            assert!(got.contains("TryHashSetError::"), "missing type tag in {got:?}");
+            let tdisp = render_trydisplay(err);
+            assert_eq!(tdisp, render_display(err), "TryDisplay must match Display");
+        }
+    }
 
     // ── Construction ─────────────────────────────────────────────────────────
 

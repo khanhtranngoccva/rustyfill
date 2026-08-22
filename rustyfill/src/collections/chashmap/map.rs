@@ -4,7 +4,7 @@ use crate::alloc::vec::SliceInitGuard;
 use crate::alloc::{AllocError, TryReserveError, TryReserveErrorExt};
 use crate::try_clone::{TryClone, TryCloneError};
 use crate::try_default::{TryDefault, TryDefaultError};
-use crate::try_fmt::{TryDebug, helpers::FormatterExt};
+use crate::try_fmt::{TryDebug, TryDisplay};
 use lang_alloc;
 use lang_alloc::boxed::Box;
 use lang_core::alloc::Layout;
@@ -61,18 +61,13 @@ pub enum ConcurrentHashMapError {
 
 impl fmt::Display for ConcurrentHashMapError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        use crate::errors::uniform as u;
         match self {
-            Self::Alloc(_) => write!(
-                f,
-                "concurrent hash map operation failed: heap allocation error"
-            ),
-            Self::Reserve(e) => write!(f, "concurrent hash map operation failed: {}", e),
-            Self::Clone(e) => write!(f, "concurrent hash map operation failed: {}", e),
-            Self::Overflow => write!(
-                f,
-                "concurrent hash map operation failed: capacity calculation overflowed"
-            ),
-            Self::Other(msg) => write!(f, "concurrent hash map operation failed: {}", msg),
+            Self::Alloc(_) => u::display_fixed(f, "concurrent hash map", "heap allocation error"),
+            Self::Reserve(e) => u::display_delegated(f, "concurrent hash map", e),
+            Self::Clone(e) => u::display_delegated(f, "concurrent hash map", e),
+            Self::Overflow => u::display_fixed(f, "concurrent hash map", "capacity calculation overflowed"),
+            Self::Other(msg) => u::display_fixed(f, "concurrent hash map", msg),
         }
     }
 }
@@ -108,25 +103,20 @@ impl From<TryDefaultError> for ConcurrentHashMapError {
 
 impl TryDebug for ConcurrentHashMapError {
     fn try_fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        use crate::errors::uniform as u;
         match self {
-            Self::Alloc(e) => f
-                .try_debug_struct("ConcurrentHashMapError::Alloc")
-                .field("0", e)
-                .finish(),
-            Self::Reserve(e) => f
-                .try_debug_struct("ConcurrentHashMapError::Reserve")
-                .field("0", e)
-                .finish(),
-            Self::Clone(e) => f
-                .try_debug_struct("ConcurrentHashMapError::Clone")
-                .field("0", e)
-                .finish(),
-            Self::Overflow => f.write_str("ConcurrentHashMapError::Overflow"),
-            Self::Other(msg) => f
-                .try_debug_struct("ConcurrentHashMapError::Other")
-                .field("0", msg)
-                .finish(),
+            Self::Alloc(e) => u::debug_field(f, "ConcurrentHashMapError::Alloc", e),
+            Self::Reserve(e) => u::debug_field(f, "ConcurrentHashMapError::Reserve", e),
+            Self::Clone(e) => u::debug_field(f, "ConcurrentHashMapError::Clone", e),
+            Self::Overflow => u::debug_unit(f, "ConcurrentHashMapError::Overflow"),
+            Self::Other(msg) => u::debug_field(f, "ConcurrentHashMapError::Other", msg),
         }
+    }
+}
+
+impl TryDisplay for ConcurrentHashMapError {
+    fn try_fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        fmt::Display::fmt(self, f)
     }
 }
 
@@ -143,19 +133,14 @@ pub enum ConcurrentHashMapNonblockError {
 
 impl fmt::Display for ConcurrentHashMapNonblockError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        use crate::errors::uniform as u;
         match self {
-            Self::Alloc(_) => write!(
-                f,
-                "concurrent hash map operation failed: heap allocation error"
-            ),
-            Self::Reserve(e) => write!(f, "concurrent hash map operation failed: {}", e),
-            Self::Clone(e) => write!(f, "concurrent hash map operation failed: {}", e),
-            Self::Overflow => write!(
-                f,
-                "concurrent hash map operation failed: capacity calculation overflowed"
-            ),
-            Self::Other(msg) => write!(f, "concurrent hash map operation failed: {}", msg),
-            Self::Locked => write!(f, "concurrent hash map operation failed: shard locked"),
+            Self::Alloc(_) => u::display_fixed(f, "concurrent hash map", "heap allocation error"),
+            Self::Reserve(e) => u::display_delegated(f, "concurrent hash map", e),
+            Self::Clone(e) => u::display_delegated(f, "concurrent hash map", e),
+            Self::Overflow => u::display_fixed(f, "concurrent hash map", "capacity calculation overflowed"),
+            Self::Other(msg) => u::display_fixed(f, "concurrent hash map", msg),
+            Self::Locked => u::display_fixed(f, "concurrent hash map", "shard locked"),
         }
     }
 }
@@ -174,26 +159,21 @@ impl From<ConcurrentHashMapError> for ConcurrentHashMapNonblockError {
 
 impl TryDebug for ConcurrentHashMapNonblockError {
     fn try_fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        use crate::errors::uniform as u;
         match self {
-            Self::Alloc(e) => f
-                .try_debug_struct("ConcurrentHashMapNonblockError::Alloc")
-                .field("0", e)
-                .finish(),
-            Self::Reserve(e) => f
-                .try_debug_struct("ConcurrentHashMapNonblockError::Reserve")
-                .field("0", e)
-                .finish(),
-            Self::Clone(e) => f
-                .try_debug_struct("ConcurrentHashMapNonblockError::Clone")
-                .field("0", e)
-                .finish(),
-            Self::Overflow => f.write_str("ConcurrentHashMapNonblockError::Overflow"),
-            Self::Other(msg) => f
-                .try_debug_struct("ConcurrentHashMapNonblockError::Other")
-                .field("0", msg)
-                .finish(),
-            Self::Locked => f.write_str("ConcurrentHashMapNonblockError::Locked"),
+            Self::Alloc(e) => u::debug_field(f, "ConcurrentHashMapNonblockError::Alloc", e),
+            Self::Reserve(e) => u::debug_field(f, "ConcurrentHashMapNonblockError::Reserve", e),
+            Self::Clone(e) => u::debug_field(f, "ConcurrentHashMapNonblockError::Clone", e),
+            Self::Overflow => u::debug_unit(f, "ConcurrentHashMapNonblockError::Overflow"),
+            Self::Other(msg) => u::debug_field(f, "ConcurrentHashMapNonblockError::Other", msg),
+            Self::Locked => u::debug_unit(f, "ConcurrentHashMapNonblockError::Locked"),
         }
+    }
+}
+
+impl TryDisplay for ConcurrentHashMapNonblockError {
+    fn try_fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        fmt::Display::fmt(self, f)
     }
 }
 
@@ -1065,19 +1045,160 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+    use lang_alloc::format;
     use lang_alloc::string::String;
     use lang_alloc::string::ToString;
     use lang_alloc::vec;
     use lang_alloc::vec::Vec;
+    use lang_core::fmt::Write as _;
     use lang_std::cell::Cell;
     use lang_std::sync::Arc;
     use lang_std::thread;
+
+    /// A `TryReserveError` instance for exercising the `Reserve` arm.
+    fn reserve_err() -> TryReserveError {
+        TryReserveError::new_capacity_overflow()
+    }
+
+    /// Formats a value via its `Display` impl into a fresh String.
+    fn render_display(e: &impl fmt::Display) -> String {
+        let mut s = String::new();
+        // Our error Display impls only call `write!` on literals/wrapped values,
+        // so this cannot fail in practice; ignore the infallible-in-practice result.
+        let _ = write!(&mut s, "{e}");
+        s
+    }
+
+    /// Captures the `TryDebug` rendering of a value.
+    fn render_trydebug(e: &impl TryDebug) -> String {
+        struct Cap<'a>(&'a dyn TryDebug);
+        impl fmt::Debug for Cap<'_> {
+            fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+                self.0.try_fmt(f)
+            }
+        }
+        format!("{:?}", Cap(e))
+    }
+
+    /// Captures the `TryDisplay` rendering of a value (should match `Display`).
+    fn render_trydisplay(e: &impl TryDisplay) -> String {
+        struct Cap<'a>(&'a dyn TryDisplay);
+        impl fmt::Display for Cap<'_> {
+            fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+                self.0.try_fmt(f)
+            }
+        }
+        let mut s = String::new();
+        let _ = write!(&mut s, "{}", Cap(e));
+        s
+    }
+
+    /// Exercises every variant of both `ConcurrentHashMapError` and its
+    /// non-blocking counterpart through all three impls (moved from errors::uniform).
+    #[test]
+    fn chashmap_errors_cover_all_variants() {
+        let blocking = [
+            ConcurrentHashMapError::Alloc(AllocError),
+            ConcurrentHashMapError::Reserve(reserve_err()),
+            ConcurrentHashMapError::Clone(TryCloneError::Alloc(AllocError)),
+            ConcurrentHashMapError::Overflow,
+            ConcurrentHashMapError::Other("c"),
+        ];
+        for err in blocking.iter() {
+            let disp = render_display(err);
+            assert!(
+                disp.starts_with("concurrent hash map operation failed:"),
+                "got {disp:?}"
+            );
+            let tdisp = render_trydisplay(err);
+            assert_eq!(tdisp, disp, "TryDisplay must match Display");
+            let dbg = render_trydebug(err);
+            assert!(dbg.contains("ConcurrentHashMapError::"), "got {dbg:?}");
+        }
+
+        let nonblocking = [
+            ConcurrentHashMapNonblockError::Alloc(AllocError),
+            ConcurrentHashMapNonblockError::Reserve(reserve_err()),
+            ConcurrentHashMapNonblockError::Clone(TryCloneError::Alloc(AllocError)),
+            ConcurrentHashMapNonblockError::Overflow,
+            ConcurrentHashMapNonblockError::Other("n"),
+            ConcurrentHashMapNonblockError::Locked,
+        ];
+        for err in nonblocking.iter() {
+            let disp = render_display(err);
+            assert!(
+                disp.starts_with("concurrent hash map operation failed:"),
+                "got {disp:?}"
+            );
+            let tdisp = render_trydisplay(err);
+            assert_eq!(tdisp, disp, "TryDisplay must match Display");
+            let dbg = render_trydebug(err);
+            assert!(dbg.contains("ConcurrentHashMapNonblockError::"), "got {dbg:?}");
+        }
+    }
 
     #[test]
     fn try_new_creates_map() {
         let map: ConcurrentHashMap<u32, String> = ConcurrentHashMap::try_new().unwrap();
         assert!(map.is_empty());
         assert!(map.shard_count() > 0);
+    }
+
+    /// Drives every variant of `ConcurrentHashMapError` through the
+    /// `From<_> for ConcurrentHashMapNonblockError` conversion so each match
+    /// arm registers coverage.
+    #[test]
+    fn blocking_to_nonblock_from_covers_all_variants() {
+        let source = [
+            ConcurrentHashMapError::Alloc(AllocError),
+            ConcurrentHashMapError::Reserve(TryReserveError::new_capacity_overflow()),
+            ConcurrentHashMapError::Clone(TryCloneError::Alloc(AllocError)),
+            ConcurrentHashMapError::Overflow,
+            ConcurrentHashMapError::Other("conv"),
+        ];
+        for e in source.iter() {
+            // Each construction is independent, so we can move by value here.
+            let nb: ConcurrentHashMapNonblockError = match e {
+                ConcurrentHashMapError::Alloc(_) => {
+                    ConcurrentHashMapError::Alloc(AllocError).into()
+                }
+                ConcurrentHashMapError::Reserve(_) => ConcurrentHashMapError::Reserve(
+                    TryReserveError::new_capacity_overflow(),
+                )
+                .into(),
+                ConcurrentHashMapError::Clone(_) => {
+                    ConcurrentHashMapError::Clone(TryCloneError::Alloc(AllocError)).into()
+                }
+                ConcurrentHashMapError::Overflow => {
+                    ConcurrentHashMapError::Overflow.into()
+                }
+                ConcurrentHashMapError::Other(_) => {
+                    ConcurrentHashMapError::Other("conv").into()
+                }
+            };
+            let _ = format!("{nb}");
+        }
+    }
+
+    /// Exercises `TryDebug for ConcurrentHashMap` (empty + populated) so the
+    /// shard/bucket iteration arms register coverage.
+    #[test]
+    fn concurrent_hashmap_trydebug_renders() {
+        struct Cap<'a>(&'a dyn TryDebug);
+        impl fmt::Debug for Cap<'_> {
+            fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+                self.0.try_fmt(f)
+            }
+        }
+        let empty: ConcurrentHashMap<&str, i32> = ConcurrentHashMap::try_new().unwrap();
+        let s = format!("{:?}", Cap(&empty));
+        assert!(s.starts_with("ConcurrentHashMap { "), "got {s:?}");
+
+        let mut full: ConcurrentHashMap<&str, i32> = ConcurrentHashMap::try_new().unwrap();
+        full.try_insert("a", 1).unwrap();
+        full.try_insert("b", 2).unwrap();
+        let s = format!("{:?}", Cap(&full));
+        assert!(s.contains("\"a\": 1") && s.contains("\"b\": 2"), "got {s:?}");
     }
 
     #[test]

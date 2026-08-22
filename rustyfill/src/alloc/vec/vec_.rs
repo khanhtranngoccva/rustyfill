@@ -19,7 +19,7 @@ use crate::alloc::AllocError;
 use crate::alloc::TryReserveError;
 use crate::try_clone::{TryClone, TryCloneError};
 use crate::try_default::{TryDefault, TryDefaultError};
-use crate::try_fmt::{TryDebug, TryDisplay, helpers::FormatterExt};
+use crate::try_fmt::{TryDebug, TryDisplay};
 use lang_alloc::vec::Vec;
 use lang_core::alloc::Layout;
 use lang_core::cmp;
@@ -78,15 +78,13 @@ pub enum TryVecError {
 
 impl fmt::Display for TryVecError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        use crate::errors::uniform as u;
         match self {
-            Self::Alloc(_) => write!(f, "vector operation failed: heap allocation error"),
-            Self::Reserve(e) => write!(f, "vector operation failed: {}", e),
-            Self::Clone(e) => write!(f, "vector operation failed: {}", e),
-            Self::Overflow => write!(
-                f,
-                "vector operation failed: capacity calculation overflowed"
-            ),
-            Self::Other(msg) => write!(f, "vector operation failed: {}", msg),
+            Self::Alloc(_) => u::display_fixed(f, "vector", "heap allocation error"),
+            Self::Reserve(e) => u::display_delegated(f, "vector", e),
+            Self::Clone(e) => u::display_delegated(f, "vector", e),
+            Self::Overflow => u::display_fixed(f, "vector", "capacity calculation overflowed"),
+            Self::Other(msg) => u::display_fixed(f, "vector", msg),
         }
     }
 }
@@ -111,24 +109,13 @@ impl From<TryCloneError> for TryVecError {
 
 impl TryDebug for TryVecError {
     fn try_fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        use crate::errors::uniform as u;
         match self {
-            Self::Alloc(e) => f
-                .try_debug_struct("TryVecError::Alloc")
-                .field("0", e)
-                .finish(),
-            Self::Reserve(e) => f
-                .try_debug_struct("TryVecError::Reserve")
-                .field("0", e)
-                .finish(),
-            Self::Clone(e) => f
-                .try_debug_struct("TryVecError::Clone")
-                .field("0", e)
-                .finish(),
-            Self::Overflow => f.write_str("TryVecError::Overflow"),
-            Self::Other(msg) => f
-                .try_debug_struct("TryVecError::Other")
-                .field("0", msg)
-                .finish(),
+            Self::Alloc(e) => u::debug_field(f, "TryVecError::Alloc", e),
+            Self::Reserve(e) => u::debug_field(f, "TryVecError::Reserve", e),
+            Self::Clone(e) => u::debug_field(f, "TryVecError::Clone", e),
+            Self::Overflow => u::debug_unit(f, "TryVecError::Overflow"),
+            Self::Other(msg) => u::debug_field(f, "TryVecError::Other", msg),
         }
     }
 }
@@ -718,10 +705,138 @@ impl<T: crate::try_fmt::TryDebug> crate::try_fmt::TryDebug for Vec<T> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::alloc::TryReserveErrorExt;
+    use lang_alloc::format;
     use lang_alloc::string::String;
     use lang_alloc::string::ToString;
     use lang_alloc::vec;
+    use lang_core::fmt::Write as _;
     use lang_core::iter;
+
+    /// A `TryReserveError` instance for exercising the `Reserve` arm.
+    fn reserve_err() -> TryReserveError {
+        TryReserveError::new_capacity_overflow()
+    }
+
+    /// Formats a value via its `Display` impl into a fresh String.
+    fn render_display(e: &impl fmt::Display) -> String {
+        let mut s = String::new();
+        // Our error Display impls only call `write!` on literals/wrapped values,
+        // so this cannot fail in practice; ignore the infallible-in-practice result.
+        let _ = write!(&mut s, "{e}");
+        s
+    }
+
+    /// Captures the `TryDebug` rendering of a value.
+    fn render_trydebug(e: &impl TryDebug) -> String {
+        struct Cap<'a>(&'a dyn TryDebug);
+        impl fmt::Debug for Cap<'_> {
+            fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+                self.0.try_fmt(f)
+            }
+        }
+        format!("{:?}", Cap(e))
+    }
+
+    /// Captures the `TryDisplay` rendering of a value (should match `Display`).
+    fn render_trydisplay(e: &impl TryDisplay) -> String {
+        struct Cap<'a>(&'a dyn TryDisplay);
+        impl fmt::Display for Cap<'_> {
+            fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+                self.0.try_fmt(f)
+            }
+        }
+        let mut s = String::new();
+        let _ = write!(&mut s, "{}", Cap(e));
+        s
+    }
+
+    // ── Error enum formatting (moved from errors::uniform) ────────────────────
+    //
+    // NOTE: we must BORROW each variant when formatting. Iterating by value moves
+    // the error out, which does NOT execute its `Display::fmt` / `TryDebug::try_fmt`
+    // — coverage tracks the formatter call, not the construction.
+
+    #[test]
+    fn vec_error_display_covers_all_variants() {
+        let cases: [(TryVecError, &str); 5] = [
+            (
+                TryVecError::Alloc(AllocError),
+                "vector operation failed: heap allocation error",
+            ),
+            (
+                TryVecError::Reserve(reserve_err()),
+                "vector operation failed:",
+            ),
+            (
+                TryVecError::Clone(TryCloneError::Alloc(AllocError)),
+                "vector operation failed:",
+            ),
+            (
+                TryVecError::Overflow,
+                "vector operation failed: capacity calculation overflowed",
+            ),
+            (TryVecError::Other("boom"), "vector operation failed: boom"),
+        ];
+        for &(ref err, expected_prefix) in cases.iter() {
+            let got = render_display(err);
+            assert!(
+                got.starts_with(expected_prefix),
+                "expected prefix {expected_prefix:?}, got {got:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn vec_error_trydebug_covers_all_variants() {
+        let errs = [
+            TryVecError::Alloc(AllocError),
+            TryVecError::Reserve(reserve_err()),
+            TryVecError::Clone(TryCloneError::Alloc(AllocError)),
+            TryVecError::Overflow,
+            TryVecError::Other("boom"),
+        ];
+        for err in errs.iter() {
+            let got = render_trydebug(err);
+            assert!(got.contains("TryVecError::"), "missing type tag in {got:?}");
+        }
+    }
+
+    /// Drives the `TryDisplay` impl across every variant; it must match `Display`.
+    #[test]
+    fn vec_error_trydisplay_covers_all_variants() {
+        let errs = [
+            TryVecError::Alloc(AllocError),
+            TryVecError::Reserve(reserve_err()),
+            TryVecError::Clone(TryCloneError::Alloc(AllocError)),
+            TryVecError::Overflow,
+            TryVecError::Other("boom"),
+        ];
+        for err in errs.iter() {
+            let tdisp = render_trydisplay(err);
+            assert_eq!(tdisp, render_display(err), "TryDisplay must match Display");
+        }
+    }
+
+    /// Byte-identity guard: the delegated `Display` arm must produce exactly
+    /// `"{prefix} operation failed: {wrapped}"`, where `{wrapped}` is the inner
+    /// error's own rendering. This pins the helper output to the original
+    /// hand-written format string character-for-character.
+    #[test]
+    fn display_delegated_is_byte_identical_to_original_format() {
+        let reserve = reserve_err();
+        let inner_text = render_display(&reserve); // std's own wording
+        let expected = format!("vector operation failed: {inner_text}");
+        let actual = render_display(&TryVecError::Reserve(reserve));
+        assert_eq!(actual, expected, "delegated Display drifted from original format");
+
+        // Same check for the Clone arm, whose detail is a TryCloneError.
+        let clone_src = TryCloneError::Alloc(AllocError);
+        let clone_inner = render_display(&clone_src);
+        let expected_clone = format!("vector operation failed: {clone_inner}");
+        let actual_clone = render_display(&TryVecError::Clone(clone_src));
+        assert_eq!(actual_clone, expected_clone);
+    }
 
     // ── Construction ─────────────────────────────────────────────────────────
 

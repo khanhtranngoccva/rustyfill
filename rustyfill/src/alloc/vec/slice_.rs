@@ -250,6 +250,27 @@ mod tests {
         assert!(v.is_empty());
     }
 
+    /// Drives all three fast/slow paths of `TryClone for Box<[T]>`: the empty
+    /// slice (no allocation), a ZST element (no allocation), and a normal
+    /// non-empty slice (allocation + per-element clone).
+    #[test]
+    fn box_slice_try_clone_paths() {
+        // Empty slice.
+        let empty: Box<[u8]> = Box::new([]);
+        let cloned: Box<[u8]> = empty.try_clone().unwrap();
+        assert!(cloned.is_empty());
+
+        // Zero-sized type (uses the standard library's ZST TryClone impl).
+        let zst: Box<[()]> = Box::new([(), (), ()]);
+        let cloned_zst: Box<[()]> = zst.try_clone().unwrap();
+        assert_eq!(cloned_zst.len(), 3);
+
+        // Normal non-empty slice.
+        let data: Box<[i32]> = Box::new([10, 20, 30]);
+        let cloned_data: Box<[i32]> = data.try_clone().unwrap();
+        assert_eq!(cloned_data.as_ref(), [10, 20, 30]);
+    }
+
     #[test]
     fn try_to_vec_single() {
         let s: &[u8] = &[42];

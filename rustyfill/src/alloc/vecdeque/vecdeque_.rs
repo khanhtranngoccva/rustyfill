@@ -21,7 +21,7 @@ use crate::alloc::TryReserveError;
 use crate::alloc::vec::{TryVec, TryVecError};
 use crate::try_clone::{TryClone, TryCloneError};
 use crate::try_default::{TryDefault, TryDefaultError};
-use crate::try_fmt::{TryDebug, helpers::FormatterExt};
+use crate::try_fmt::{TryDebug, TryDisplay};
 use lang_alloc::collections::VecDeque;
 use lang_alloc::vec::Vec;
 use lang_core::cmp;
@@ -72,14 +72,13 @@ pub enum TryVecDequeError {
 
 impl fmt::Display for TryVecDequeError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        use crate::errors::uniform as u;
         match self {
-            Self::Alloc(_) => write!(f, "deque operation failed: heap allocation error"),
-            Self::Reserve(e) => write!(f, "deque operation failed: {}", e),
-            Self::Clone(e) => write!(f, "deque operation failed: {}", e),
-            Self::Overflow => {
-                write!(f, "deque operation failed: capacity calculation overflowed")
-            }
-            Self::Other(msg) => write!(f, "deque operation failed: {}", msg),
+            Self::Alloc(_) => u::display_fixed(f, "deque", "heap allocation error"),
+            Self::Reserve(e) => u::display_delegated(f, "deque", e),
+            Self::Clone(e) => u::display_delegated(f, "deque", e),
+            Self::Overflow => u::display_fixed(f, "deque", "capacity calculation overflowed"),
+            Self::Other(msg) => u::display_fixed(f, "deque", msg),
         }
     }
 }
@@ -104,25 +103,20 @@ impl From<TryCloneError> for TryVecDequeError {
 
 impl TryDebug for TryVecDequeError {
     fn try_fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        use crate::errors::uniform as u;
         match self {
-            Self::Alloc(e) => f
-                .try_debug_struct("TryVecDequeError::Alloc")
-                .field("0", e)
-                .finish(),
-            Self::Reserve(e) => f
-                .try_debug_struct("TryVecDequeError::Reserve")
-                .field("0", e)
-                .finish(),
-            Self::Clone(e) => f
-                .try_debug_struct("TryVecDequeError::Clone")
-                .field("0", e)
-                .finish(),
-            Self::Overflow => f.write_str("TryVecDequeError::Overflow"),
-            Self::Other(msg) => f
-                .try_debug_struct("TryVecDequeError::Other")
-                .field("0", msg)
-                .finish(),
+            Self::Alloc(e) => u::debug_field(f, "TryVecDequeError::Alloc", e),
+            Self::Reserve(e) => u::debug_field(f, "TryVecDequeError::Reserve", e),
+            Self::Clone(e) => u::debug_field(f, "TryVecDequeError::Clone", e),
+            Self::Overflow => u::debug_unit(f, "TryVecDequeError::Overflow"),
+            Self::Other(msg) => u::debug_field(f, "TryVecDequeError::Other", msg),
         }
+    }
+}
+
+impl TryDisplay for TryVecDequeError {
+    fn try_fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        fmt::Display::fmt(self, f)
     }
 }
 
@@ -682,9 +676,73 @@ impl<T: crate::try_fmt::TryDebug> crate::try_fmt::TryDebug for VecDeque<T> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::alloc::TryReserveErrorExt;
+    use lang_alloc::format;
+    use lang_alloc::string::String;
+    use lang_alloc::string::ToString;
     use lang_alloc::vec;
     use lang_alloc::vec::Vec;
+    use lang_core::fmt::Write as _;
     use lang_core::iter;
+
+    /// A `TryReserveError` instance for exercising the `Reserve` arm.
+    fn reserve_err() -> TryReserveError {
+        TryReserveError::new_capacity_overflow()
+    }
+
+    /// Formats a value via its `Display` impl into a fresh String.
+    fn render_display(e: &impl fmt::Display) -> String {
+        let mut s = String::new();
+        // Our error Display impls only call `write!` on literals/wrapped values,
+        // so this cannot fail in practice; ignore the infallible-in-practice result.
+        let _ = write!(&mut s, "{e}");
+        s
+    }
+
+    /// Captures the `TryDebug` rendering of a value.
+    fn render_trydebug(e: &impl TryDebug) -> String {
+        struct Cap<'a>(&'a dyn TryDebug);
+        impl fmt::Debug for Cap<'_> {
+            fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+                self.0.try_fmt(f)
+            }
+        }
+        format!("{:?}", Cap(e))
+    }
+
+    /// Captures the `TryDisplay` rendering of a value (should match `Display`).
+    fn render_trydisplay(e: &impl TryDisplay) -> String {
+        struct Cap<'a>(&'a dyn TryDisplay);
+        impl fmt::Display for Cap<'_> {
+            fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+                self.0.try_fmt(f)
+            }
+        }
+        let mut s = String::new();
+        let _ = write!(&mut s, "{}", Cap(e));
+        s
+    }
+
+    /// Exercises every variant of `TryVecDequeError` through all three impls
+    /// (moved from errors::uniform).
+    #[test]
+    fn vecdeque_error_covers_all_variants() {
+        let errs = [
+            TryVecDequeError::Alloc(AllocError),
+            TryVecDequeError::Reserve(reserve_err()),
+            TryVecDequeError::Clone(TryCloneError::Alloc(AllocError)),
+            TryVecDequeError::Overflow,
+            TryVecDequeError::Other("q"),
+        ];
+        for err in errs.iter() {
+            let disp = render_display(err);
+            assert!(disp.starts_with("deque operation failed:"), "got {disp:?}");
+            let tdisp = render_trydisplay(err);
+            assert_eq!(tdisp, disp, "TryDisplay must match Display");
+            let dbg = render_trydebug(err);
+            assert!(dbg.contains("TryVecDequeError::"), "got {dbg:?}");
+        }
+    }
 
     #[test]
     fn try_with_capacity_zero() {

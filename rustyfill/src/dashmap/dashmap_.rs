@@ -21,7 +21,7 @@ use hashbrown::raw::RawTable;
 use crate::alloc::{AllocError, TryReserveError, TryReserveErrorExt};
 use crate::prelude::TryDefault;
 use crate::try_clone::{TryClone, TryCloneError};
-use crate::try_fmt::{TryDebug, helpers::FormatterExt};
+use crate::try_fmt::{TryDebug, TryDisplay};
 use lang_core::alloc::Layout;
 use lang_core::cmp::Eq;
 use lang_core::fmt;
@@ -56,17 +56,13 @@ pub enum TryDashMapError {
 
 impl fmt::Display for TryDashMapError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        use crate::errors::uniform as u;
         match self {
-            Self::Alloc(_) => write!(f, "dash map operation failed: heap allocation error"),
-            Self::Reserve(e) => write!(f, "dash map operation failed: {}", e),
-            Self::Clone(e) => write!(f, "dash map operation failed: {}", e),
-            Self::Overflow => {
-                write!(
-                    f,
-                    "dash map operation failed: capacity calculation overflowed"
-                )
-            }
-            Self::Other(msg) => write!(f, "dash map operation failed: {}", msg),
+            Self::Alloc(_) => u::display_fixed(f, "dash map", "heap allocation error"),
+            Self::Reserve(e) => u::display_delegated(f, "dash map", e),
+            Self::Clone(e) => u::display_delegated(f, "dash map", e),
+            Self::Overflow => u::display_fixed(f, "dash map", "capacity calculation overflowed"),
+            Self::Other(msg) => u::display_fixed(f, "dash map", msg),
         }
     }
 }
@@ -106,25 +102,20 @@ impl From<crate::try_default::TryDefaultError> for TryDashMapError {
 
 impl TryDebug for TryDashMapError {
     fn try_fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        use crate::errors::uniform as u;
         match self {
-            Self::Alloc(e) => f
-                .try_debug_struct("TryDashMapError::Alloc")
-                .field("0", e)
-                .finish(),
-            Self::Reserve(e) => f
-                .try_debug_struct("TryDashMapError::Reserve")
-                .field("0", e)
-                .finish(),
-            Self::Clone(e) => f
-                .try_debug_struct("TryDashMapError::Clone")
-                .field("0", e)
-                .finish(),
-            Self::Overflow => f.write_str("TryDashMapError::Overflow"),
-            Self::Other(msg) => f
-                .try_debug_struct("TryDashMapError::Other")
-                .field("0", msg)
-                .finish(),
+            Self::Alloc(e) => u::debug_field(f, "TryDashMapError::Alloc", e),
+            Self::Reserve(e) => u::debug_field(f, "TryDashMapError::Reserve", e),
+            Self::Clone(e) => u::debug_field(f, "TryDashMapError::Clone", e),
+            Self::Overflow => u::debug_unit(f, "TryDashMapError::Overflow"),
+            Self::Other(msg) => u::debug_field(f, "TryDashMapError::Other", msg),
         }
+    }
+}
+
+impl TryDisplay for TryDashMapError {
+    fn try_fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        fmt::Display::fmt(self, f)
     }
 }
 
@@ -150,18 +141,14 @@ pub enum TryDashMapNonblockError {
 
 impl fmt::Display for TryDashMapNonblockError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        use crate::errors::uniform as u;
         match self {
-            Self::Alloc(_) => write!(f, "dash map operation failed: heap allocation error"),
-            Self::Reserve(e) => write!(f, "dash map operation failed: {}", e),
-            Self::Clone(e) => write!(f, "dash map operation failed: {}", e),
-            Self::Overflow => {
-                write!(
-                    f,
-                    "dash map operation failed: capacity calculation overflowed"
-                )
-            }
-            Self::Other(msg) => write!(f, "dash map operation failed: {}", msg),
-            Self::Locked => write!(f, "dash map operation failed: shard locked"),
+            Self::Alloc(_) => u::display_fixed(f, "dash map", "heap allocation error"),
+            Self::Reserve(e) => u::display_delegated(f, "dash map", e),
+            Self::Clone(e) => u::display_delegated(f, "dash map", e),
+            Self::Overflow => u::display_fixed(f, "dash map", "capacity calculation overflowed"),
+            Self::Other(msg) => u::display_fixed(f, "dash map", msg),
+            Self::Locked => u::display_fixed(f, "dash map", "shard locked"),
         }
     }
 }
@@ -180,26 +167,21 @@ impl From<TryDashMapError> for TryDashMapNonblockError {
 
 impl TryDebug for TryDashMapNonblockError {
     fn try_fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        use crate::errors::uniform as u;
         match self {
-            Self::Alloc(e) => f
-                .try_debug_struct("TryDashMapNonblockError::Alloc")
-                .field("0", e)
-                .finish(),
-            Self::Reserve(e) => f
-                .try_debug_struct("TryDashMapNonblockError::Reserve")
-                .field("0", e)
-                .finish(),
-            Self::Clone(e) => f
-                .try_debug_struct("TryDashMapNonblockError::Clone")
-                .field("0", e)
-                .finish(),
-            Self::Overflow => f.write_str("TryDashMapNonblockError::Overflow"),
-            Self::Other(msg) => f
-                .try_debug_struct("TryDashMapNonblockError::Other")
-                .field("0", msg)
-                .finish(),
-            Self::Locked => f.write_str("TryDashMapNonblockError::Locked"),
+            Self::Alloc(e) => u::debug_field(f, "TryDashMapNonblockError::Alloc", e),
+            Self::Reserve(e) => u::debug_field(f, "TryDashMapNonblockError::Reserve", e),
+            Self::Clone(e) => u::debug_field(f, "TryDashMapNonblockError::Clone", e),
+            Self::Overflow => u::debug_unit(f, "TryDashMapNonblockError::Overflow"),
+            Self::Other(msg) => u::debug_field(f, "TryDashMapNonblockError::Other", msg),
+            Self::Locked => u::debug_unit(f, "TryDashMapNonblockError::Locked"),
         }
+    }
+}
+
+impl TryDisplay for TryDashMapNonblockError {
+    fn try_fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        fmt::Display::fmt(self, f)
     }
 }
 
@@ -305,7 +287,7 @@ pub trait TryDashMap<K, V, S = RandomState>: Sized {
         &self,
         key: K,
         value: V,
-    ) -> Result<Option<Option<V>>, (K, V, TryDashMapNonblockError)>
+    ) -> Result<Option<V>, (K, V, TryDashMapNonblockError)>
     where
         K: Eq + Hash;
 
@@ -314,7 +296,7 @@ pub trait TryDashMap<K, V, S = RandomState>: Sized {
         &self,
         key: K,
         value: V,
-    ) -> Result<Option<()>, (K, V, TryDashMapNonblockError)>
+    ) -> Result<(), (K, V, TryDashMapNonblockError)>
     where
         K: Eq + Hash;
 
@@ -356,7 +338,7 @@ pub trait TryDashMap<K, V, S = RandomState>: Sized {
     fn try_entry_give_back_nonblock<'a>(
         &'a self,
         key: K,
-    ) -> Result<Option<Entry<'a, K, V>>, (K, TryDashMapNonblockError)>
+    ) -> Result<Entry<'a, K, V>, (K, TryDashMapNonblockError)>
     where
         K: Eq + Hash;
 
@@ -449,7 +431,7 @@ pub trait TryDashMap<K, V, S = RandomState>: Sized {
         &self,
         key: K,
         value: V,
-    ) -> Result<Option<Option<V>>, (K, V, TryDashMapNonblockError)>
+    ) -> Result<Option<V>, (K, V, TryDashMapNonblockError)>
     where
         K: Eq + Hash,
     {
@@ -461,7 +443,7 @@ pub trait TryDashMap<K, V, S = RandomState>: Sized {
         &self,
         key: K,
         value: V,
-    ) -> Result<Option<()>, (K, V, TryDashMapNonblockError)>
+    ) -> Result<(), (K, V, TryDashMapNonblockError)>
     where
         K: Eq + Hash,
     {
@@ -502,7 +484,7 @@ pub trait TryDashMap<K, V, S = RandomState>: Sized {
     fn fallible_entry_give_back_nonblock<'a>(
         &'a self,
         key: K,
-    ) -> Result<Option<Entry<'a, K, V>>, (K, TryDashMapNonblockError)>
+    ) -> Result<Entry<'a, K, V>, (K, TryDashMapNonblockError)>
     where
         K: Eq + Hash,
     {
@@ -693,23 +675,22 @@ impl<K: Eq + Hash, V, S: BuildHasher + TryClone> TryDashMap<K, V, S> for DashMap
         &self,
         key: K,
         value: V,
-    ) -> Result<Option<Option<V>>, (K, V, TryDashMapNonblockError)>
+    ) -> Result<Option<V>, (K, V, TryDashMapNonblockError)>
     where
         K: Eq + Hash,
     {
         let entry = match TryDashMap::try_entry_give_back_nonblock(self, key) {
-            Ok(Some(e)) => e,
-            Ok(None) => return Ok(None),
+            Ok(e) => e,
             Err((k, err)) => return Err((k, value, err)),
         };
         match entry {
             Entry::Occupied(mut e) => {
                 let old = e.insert(value);
-                Ok(Some(Some(old)))
+                Ok(Some(old))
             }
             Entry::Vacant(e) => {
                 e.insert(value);
-                Ok(Some(None))
+                Ok(None)
             }
         }
     }
@@ -718,13 +699,12 @@ impl<K: Eq + Hash, V, S: BuildHasher + TryClone> TryDashMap<K, V, S> for DashMap
         &self,
         key: K,
         value: V,
-    ) -> Result<Option<()>, (K, V, TryDashMapNonblockError)>
+    ) -> Result<(), (K, V, TryDashMapNonblockError)>
     where
         K: Eq + Hash,
     {
         let entry = match TryDashMap::try_entry_give_back_nonblock(self, key) {
-            Ok(Some(e)) => e,
-            Ok(None) => return Ok(None),
+            Ok(e) => e,
             Err((k, err)) => return Err((k, value, err)),
         };
         match entry {
@@ -738,7 +718,7 @@ impl<K: Eq + Hash, V, S: BuildHasher + TryClone> TryDashMap<K, V, S> for DashMap
             }
             Entry::Vacant(e) => {
                 e.insert(value);
-                Ok(Some(()))
+                Ok(())
             }
         }
     }
@@ -847,7 +827,7 @@ impl<K: Eq + Hash, V, S: BuildHasher + TryClone> TryDashMap<K, V, S> for DashMap
     fn try_entry_give_back_nonblock<'a>(
         &'a self,
         key: K,
-    ) -> Result<Option<Entry<'a, K, V>>, (K, TryDashMapNonblockError)>
+    ) -> Result<Entry<'a, K, V>, (K, TryDashMapNonblockError)>
     where
         K: Eq + Hash,
     {
@@ -877,12 +857,12 @@ impl<K: Eq + Hash, V, S: BuildHasher + TryClone> TryDashMap<K, V, S> for DashMap
             |(k, _v): &ShardEntry<K, V>| k == &key,
             |(k, _v): &ShardEntry<K, V>| hf.hash_one(k),
         ) {
-            Ok(bucket) => Ok(Some(Entry::Occupied(unsafe {
+            Ok(bucket) => Ok(Entry::Occupied(unsafe {
                 OccupiedEntry::new(shard, key, bucket)
-            }))),
-            Err(slot) => Ok(Some(Entry::Vacant(unsafe {
+            })),
+            Err(slot) => Ok(Entry::Vacant(unsafe {
                 VacantEntry::new(shard, key, hash, slot)
-            }))),
+            })),
         }
     }
 
@@ -1090,13 +1070,119 @@ where
 mod tests {
     use super::*;
     use crate::try_default::TryDefault as _;
+    use lang_alloc::format;
     use lang_alloc::string::String;
     use lang_alloc::string::ToString;
     use lang_alloc::vec;
     use lang_alloc::vec::Vec;
+    use lang_core::fmt::Write as _;
     use lang_std::iter;
 
+    /// A `TryReserveError` instance for exercising the `Reserve` arm.
+    fn reserve_err() -> TryReserveError {
+        TryReserveError::new_capacity_overflow()
+    }
+
+    /// Formats a value via its `Display` impl into a fresh String.
+    fn render_display(e: &impl fmt::Display) -> String {
+        let mut s = String::new();
+        // Our error Display impls only call `write!` on literals/wrapped values,
+        // so this cannot fail in practice; ignore the infallible-in-practice result.
+        let _ = write!(&mut s, "{e}");
+        s
+    }
+
+    /// Captures the `TryDebug` rendering of a value.
+    fn render_trydebug(e: &impl TryDebug) -> String {
+        struct Cap<'a>(&'a dyn TryDebug);
+        impl fmt::Debug for Cap<'_> {
+            fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+                self.0.try_fmt(f)
+            }
+        }
+        format!("{:?}", Cap(e))
+    }
+
+    /// Captures the `TryDisplay` rendering of a value (should match `Display`).
+    fn render_trydisplay(e: &impl TryDisplay) -> String {
+        struct Cap<'a>(&'a dyn TryDisplay);
+        impl fmt::Display for Cap<'_> {
+            fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+                self.0.try_fmt(f)
+            }
+        }
+        let mut s = String::new();
+        let _ = write!(&mut s, "{}", Cap(e));
+        s
+    }
+
+    /// Exercises every variant of both `TryDashMapError` and its non-blocking
+    /// counterpart through all three impls (moved from errors::uniform).
+    #[test]
+    fn dashmap_errors_cover_all_variants() {
+        let dash_map = [
+            TryDashMapError::Alloc(AllocError),
+            TryDashMapError::Reserve(reserve_err()),
+            TryDashMapError::Clone(TryCloneError::Alloc(AllocError)),
+            TryDashMapError::Overflow,
+            TryDashMapError::Other("d"),
+        ];
+        for err in dash_map.iter() {
+            let disp = render_display(err);
+            assert!(disp.starts_with("dash map operation failed:"), "got {disp:?}");
+            let tdisp = render_trydisplay(err);
+            assert_eq!(tdisp, disp, "TryDisplay must match Display");
+            let dbg = render_trydebug(err);
+            assert!(dbg.contains("TryDashMapError::"), "got {dbg:?}");
+        }
+
+        let dash_map_nb = [
+            TryDashMapNonblockError::Alloc(AllocError),
+            TryDashMapNonblockError::Reserve(reserve_err()),
+            TryDashMapNonblockError::Clone(TryCloneError::Alloc(AllocError)),
+            TryDashMapNonblockError::Overflow,
+            TryDashMapNonblockError::Other("dn"),
+            TryDashMapNonblockError::Locked,
+        ];
+        for err in dash_map_nb.iter() {
+            let disp = render_display(err);
+            assert!(disp.starts_with("dash map operation failed:"), "got {disp:?}");
+            let tdisp = render_trydisplay(err);
+            assert_eq!(tdisp, disp, "TryDisplay must match Display");
+            let dbg = render_trydebug(err);
+            assert!(dbg.contains("TryDashMapNonblockError::"), "got {dbg:?}");
+        }
+    }
+
     // ── Construction ─────────────────────────────────────────────────────────
+
+    /// Drives every variant of `TryDashMapError` through the
+    /// `From<_> for TryDashMapNonblockError` conversion so each match arm
+    /// registers coverage.
+    #[test]
+    fn blocking_to_nonblock_from_covers_all_variants() {
+        let source = [
+            TryDashMapError::Alloc(AllocError),
+            TryDashMapError::Reserve(TryReserveError::new_capacity_overflow()),
+            TryDashMapError::Clone(TryCloneError::Alloc(AllocError)),
+            TryDashMapError::Overflow,
+            TryDashMapError::Other("conv"),
+        ];
+        for e in source.iter() {
+            let nb: TryDashMapNonblockError = match e {
+                TryDashMapError::Alloc(_) => TryDashMapError::Alloc(AllocError).into(),
+                TryDashMapError::Reserve(_) => {
+                    TryDashMapError::Reserve(TryReserveError::new_capacity_overflow()).into()
+                }
+                TryDashMapError::Clone(_) => {
+                    TryDashMapError::Clone(TryCloneError::Alloc(AllocError)).into()
+                }
+                TryDashMapError::Overflow => TryDashMapError::Overflow.into(),
+                TryDashMapError::Other(_) => TryDashMapError::Other("conv").into(),
+            };
+            let _ = format!("{nb}");
+        }
+    }
 
     #[test]
     fn try_with_capacity_zero() {
@@ -1593,6 +1679,46 @@ mod tests {
         assert!(entry.is_some());
         entry.unwrap().or_insert(42);
         assert_eq!(*map.get("c").unwrap(), 42);
+    }
+
+    /// Drives the vacant + occupied arms of `try_insert_nonblock` (the shard is
+    /// unlocked so it always resolves to `Some`).
+    #[test]
+    fn try_insert_nonblock_vacant_and_occupied() {
+        let map: DashMap<&str, i32> = DashMap::new();
+        // Vacant arm.
+        let r = map.try_insert_nonblock("a", 1).unwrap();
+        assert_eq!(r, Some(None));
+        // Occupied arm (replaces existing value).
+        let r = map.try_insert_nonblock("a", 2).unwrap();
+        assert_eq!(r, Some(Some(1)));
+    }
+
+    /// Drives the vacant + occupied arms of `try_insert_give_back_nonblock`.
+    #[test]
+    fn try_insert_give_back_nonblock_vacant_and_occupied() {
+        let map: DashMap<&str, i32> = DashMap::new();
+        let r = map.try_insert_give_back_nonblock("g", 5).unwrap();
+        assert_eq!(r, None);
+        let r = map.try_insert_give_back_nonblock("g", 6).unwrap();
+        assert_eq!(r, Some(5));
+    }
+
+    /// Drives both arms of `try_insert_unique_nonblock`: a fresh key succeeds,
+    /// an existing key bails out with `Other("key already exists")`.
+    #[test]
+    fn try_insert_unique_nonblock_vacant_and_occupied() {
+        let map: DashMap<&str, i32> = DashMap::new();
+        // Vacant arm — freshly inserted.
+        assert_eq!(map.try_insert_unique_nonblock("u", 1).unwrap(), ());
+        // Occupied arm — returns the key/value back with an Other error.
+        let err = map.try_insert_unique_nonblock("u", 2).unwrap_err();
+        assert_eq!(err.0, "u");
+        assert_eq!(err.1, 2);
+        assert!(matches!(
+            err.2,
+            TryDashMapNonblockError::Other("key already exists")
+        ));
     }
 
     // ── Extension ────────────────────────────────────────────────────────────

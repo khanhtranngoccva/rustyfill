@@ -200,7 +200,7 @@ fn read_urandom(bytes: &mut [u8], device: &OnceCell<File>) -> Result<(), RandomE
         .map_err(|_| RandomError::Platform(Cow::Borrowed("failed to read from /dev/urandom")))
 }
 
-fn getrandom_impl(mut bytes: &mut [u8], insecure: bool) -> Result<(), RandomError> {
+fn getrandom_impl(bytes: &mut [u8], insecure: bool) -> Result<(), RandomError> {
     static GRND_INSECURE_AVAILABLE: AtomicBool = AtomicBool::new(true);
     static URANDOM_READY: AtomicBool = AtomicBool::new(false);
     static DEVICE: OnceCell<File> = OnceCell::new();

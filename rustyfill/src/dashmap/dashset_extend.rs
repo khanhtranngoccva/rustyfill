@@ -62,3 +62,31 @@ where
         Ok(())
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use lang_alloc::vec;
+    use lang_alloc::vec::Vec;
+
+    /// Drives the `head` + `while` loop arms of `TryExtend for DashSet`: a
+    /// non-empty source inserts its first element via the head path and the
+    /// rest through the iterator loop.
+    #[test]
+    fn dashset_try_extend_nonempty_source() {
+        let set: dashmap::DashSet<i32> = dashmap::DashSet::new();
+        let src = vec![1, 2, 3];
+        set.try_extend(src).unwrap();
+        assert_eq!(set.len(), 3);
+        assert!(set.contains(&1) && set.contains(&2) && set.contains(&3));
+    }
+
+    /// An empty source hits only the `None` head arm and returns immediately.
+    #[test]
+    fn dashset_try_extend_empty_source() {
+        let set: dashmap::DashSet<i32> = dashmap::DashSet::new();
+        let src: Vec<i32> = vec![];
+        set.try_extend(src).unwrap();
+        assert!(set.is_empty());
+    }
+}

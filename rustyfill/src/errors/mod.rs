@@ -16,6 +16,7 @@ mod core;
 mod io;
 #[cfg(feature = "std")]
 mod std;
+pub(crate) mod uniform;
 
 #[cfg(feature = "std")]
 pub use io::IoErrorExt;
