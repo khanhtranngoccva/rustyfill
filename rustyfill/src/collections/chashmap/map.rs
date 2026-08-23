@@ -159,40 +159,40 @@ impl TryDisplay for ConcurrentHashMapNonblockError {
 
 /// Error for [`ConcurrentHashMap::try_insert_unique`] when the insertion fails.
 #[derive(Clone)]
-pub enum TryConcurrentHashMapInsertUniqueError {
+pub enum ConcurrentHashMapInsertUniqueError {
     /// A capacity reservation failed.
     Reserve(TryReserveError),
     /// The key already existed in the map.
     KeyAlreadyExists,
 }
 
-impl fmt::Debug for TryConcurrentHashMapInsertUniqueError {
+impl fmt::Debug for ConcurrentHashMapInsertUniqueError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         TryDebug::try_fmt(self, f)
     }
 }
 
-impl fmt::Display for TryConcurrentHashMapInsertUniqueError {
+impl fmt::Display for ConcurrentHashMapInsertUniqueError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         TryDisplay::try_fmt(self, f)
     }
 }
 
-impl TryDebug for TryConcurrentHashMapInsertUniqueError {
+impl TryDebug for ConcurrentHashMapInsertUniqueError {
     fn try_fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         use crate::errors::uniform as u;
         match self {
             Self::Reserve(e) => {
-                u::debug_field(f, "TryConcurrentHashMapInsertUniqueError::Reserve", e)
+                u::debug_field(f, "ConcurrentHashMapInsertUniqueError::Reserve", e)
             }
             Self::KeyAlreadyExists => {
-                u::debug_unit(f, "TryConcurrentHashMapInsertUniqueError::KeyAlreadyExists")
+                u::debug_unit(f, "ConcurrentHashMapInsertUniqueError::KeyAlreadyExists")
             }
         }
     }
 }
 
-impl TryDisplay for TryConcurrentHashMapInsertUniqueError {
+impl TryDisplay for ConcurrentHashMapInsertUniqueError {
     fn try_fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         use crate::errors::uniform as u;
         match self {
@@ -204,11 +204,11 @@ impl TryDisplay for TryConcurrentHashMapInsertUniqueError {
     }
 }
 
-impl From<TryConcurrentHashMapInsertUniqueError> for ConcurrentHashMapError {
-    fn from(err: TryConcurrentHashMapInsertUniqueError) -> Self {
+impl From<ConcurrentHashMapInsertUniqueError> for ConcurrentHashMapError {
+    fn from(err: ConcurrentHashMapInsertUniqueError) -> Self {
         match err {
-            TryConcurrentHashMapInsertUniqueError::Reserve(r) => Self::Reserve(r),
-            TryConcurrentHashMapInsertUniqueError::KeyAlreadyExists => {
+            ConcurrentHashMapInsertUniqueError::Reserve(r) => Self::Reserve(r),
+            ConcurrentHashMapInsertUniqueError::KeyAlreadyExists => {
                 Self::Other("key already exists")
             }
         }
@@ -598,7 +598,7 @@ impl<K: Eq + Hash, V, S: BuildHasher> ConcurrentHashMap<K, V, S> {
         &self,
         key: K,
         value: V,
-    ) -> Result<(), (K, V, TryConcurrentHashMapInsertUniqueError)>
+    ) -> Result<(), (K, V, ConcurrentHashMapInsertUniqueError)>
     where
         K: Eq + Hash + Clone,
     {
@@ -608,7 +608,7 @@ impl<K: Eq + Hash, V, S: BuildHasher> ConcurrentHashMap<K, V, S> {
                 return Err((
                     k,
                     value,
-                    TryConcurrentHashMapInsertUniqueError::Reserve(reserve_err),
+                    ConcurrentHashMapInsertUniqueError::Reserve(reserve_err),
                 ));
             }
         };
@@ -618,7 +618,7 @@ impl<K: Eq + Hash, V, S: BuildHasher> ConcurrentHashMap<K, V, S> {
                 Err((
                     k,
                     value,
-                    TryConcurrentHashMapInsertUniqueError::KeyAlreadyExists,
+                    ConcurrentHashMapInsertUniqueError::KeyAlreadyExists,
                 ))
             }
             Entry::Vacant(e) => {
@@ -847,7 +847,7 @@ impl<K: Eq + Hash, V, S: BuildHasher> ConcurrentHashMap<K, V, S> {
         &self,
         key: K,
         value: V,
-    ) -> Result<(), (K, V, TryConcurrentHashMapInsertUniqueError)>
+    ) -> Result<(), (K, V, ConcurrentHashMapInsertUniqueError)>
     where
         K: Eq + Hash + Clone,
     {

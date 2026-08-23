@@ -1,4 +1,4 @@
-//! Custom allocation types and allocation errors.
+//! Fallible polyfills for the [`alloc`](lang_alloc) crate and allocation errors.
 //!
 //! By default (and always on stable), this crate provides its own
 //! [`AllocError`] ponyfill and a layout-matched [`TryReserveErrorKind`]

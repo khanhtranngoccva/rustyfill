@@ -21,10 +21,10 @@ mod shard;
 
 pub use crate::declare_concurrent_hash_map;
 pub use entry::{Entry, OccupiedEntry, VacantEntry};
-pub use iter::{Iter, IterError, IterMut};
+pub use iter::{ConcurrentHashMapIterError, Iter, IterMut};
 pub use map::{
     ConcurrentHashMap, ConcurrentHashMapConstructionError, ConcurrentHashMapError,
-    ConcurrentHashMapNonblockError, TryConcurrentHashMapInsertUniqueError,
+    ConcurrentHashMapInsertUniqueError, ConcurrentHashMapNonblockError,
 };
 pub use refs::{Ref, RefMulti, RefMut, RefMutMulti};
 pub use shard::Shard;

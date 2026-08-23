@@ -18,11 +18,14 @@ use lang_core::mem;
 use lang_core::ptr;
 
 /// Error returned by [`TryStr`] operations.
+///
+/// Exhaustive over the failure modes of fallible `&str` operations: both
+/// [`try_to_string`](TryStr::try_to_string) and
+/// [`try_repeat`](TryStr::try_repeat) can only fail when reserving or growing
+/// the destination buffer, so a single variant suffices.
 pub enum TryStrError {
     /// A capacity reservation on the string failed (overflow or OOM).
     Reserve(TryReserveError),
-    /// A logic-level failure with a static diagnostic message.
-    Other(&'static str),
 }
 
 impl fmt::Debug for TryStrError {
@@ -47,7 +50,6 @@ impl TryDebug for TryStrError {
     fn try_fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Reserve(e) => f.try_debug_tuple("TryStrError::Reserve").field(e).finish(),
-            Self::Other(msg) => f.try_debug_tuple("TryStrError::Other").field(msg).finish(),
         }
     }
 }
@@ -56,7 +58,6 @@ impl TryDisplay for TryStrError {
     fn try_fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Reserve(e) => write!(f, "str operation failed: {}", e),
-            Self::Other(msg) => write!(f, "str operation failed: {}", msg),
         }
     }
 }

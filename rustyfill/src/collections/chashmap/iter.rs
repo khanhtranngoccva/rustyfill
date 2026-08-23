@@ -28,34 +28,34 @@ use super::refs::{RefMulti, RefMutMulti};
 // ── Error type ──────────────────────────────────────────────────────────────────
 
 /// Error returned by [`Iter::next`] or [`IterMut::next`].
-pub enum IterError {
+pub enum ConcurrentHashMapIterError {
     /// Failed to allocate the `Arc` guard when yielding an item.
     Alloc(AllocError),
     Clone(TryCloneError),
 }
 
-impl fmt::Debug for IterError {
+impl fmt::Debug for ConcurrentHashMapIterError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         TryDebug::try_fmt(self, f)
     }
 }
 
-impl fmt::Display for IterError {
+impl fmt::Display for ConcurrentHashMapIterError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         TryDisplay::try_fmt(self, f)
     }
 }
 
-impl TryDebug for IterError {
+impl TryDebug for ConcurrentHashMapIterError {
     fn try_fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::Alloc(e) => f.try_debug_tuple("IterError::Alloc").field(e).finish(),
-            Self::Clone(e) => f.try_debug_tuple("IterError::Clone").field(e).finish(),
+            Self::Alloc(e) => f.try_debug_tuple("ConcurrentHashMapIterError::Alloc").field(e).finish(),
+            Self::Clone(e) => f.try_debug_tuple("ConcurrentHashMapIterError::Clone").field(e).finish(),
         }
     }
 }
 
-impl TryDisplay for IterError {
+impl TryDisplay for ConcurrentHashMapIterError {
     fn try_fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Alloc(e) => write!(f, "iteration failed: {e}"),
@@ -122,7 +122,7 @@ impl<'a, K, V, S: BuildHasher> Iterator for Iter<'a, K, V, S>
 where
     K: Eq + Hash,
 {
-    type Item = Result<RefMulti<'a, K, V>, IterError>;
+    type Item = Result<RefMulti<'a, K, V>, ConcurrentHashMapIterError>;
 
     fn next(&mut self) -> Option<Self::Item> {
         loop {
@@ -152,7 +152,7 @@ where
                             // Stall: do not advance shard_idx so that retrying next()
                             // re-attempts this same shard. The guard is dropped here
                             // and will be reacquired on the next call.
-                            return Some(Err(IterError::Alloc(AllocError)));
+                            return Some(Err(ConcurrentHashMapIterError::Alloc(AllocError)));
                         }
                     };
                 // SAFETY: arc_guard holds the read lock so the table is stable.
@@ -193,7 +193,7 @@ where
                         // Stall: stash the bucket so retrying next() re-attempts
                         // the clone instead of advancing past this entry.
                         *pending_bucket = Some(bucket);
-                        return Some(Err(IterError::Clone(e)));
+                        return Some(Err(ConcurrentHashMapIterError::Clone(e)));
                     }
                 };
                 let kv = unsafe { bucket.as_ref() };
@@ -273,7 +273,7 @@ impl<'a, K, V, S: BuildHasher> Iterator for IterMut<'a, K, V, S>
 where
     K: Eq + Hash,
 {
-    type Item = Result<RefMutMulti<'a, K, V>, IterError>;
+    type Item = Result<RefMutMulti<'a, K, V>, ConcurrentHashMapIterError>;
 
     fn next(&mut self) -> Option<Self::Item> {
         loop {
@@ -303,7 +303,7 @@ where
                             // Stall: do not advance shard_idx so that retrying next()
                             // re-attempts this same shard. The guard is dropped here
                             // and will be reacquired on the next call.
-                            return Some(Err(IterError::Alloc(AllocError)));
+                            return Some(Err(ConcurrentHashMapIterError::Alloc(AllocError)));
                         }
                     };
                 // SAFETY: arc_guard holds the write lock so the table is stable.
@@ -344,7 +344,7 @@ where
                         // Stall: stash the bucket so retrying next() re-attempts
                         // the clone instead of advancing past this entry.
                         *pending_bucket = Some(bucket);
-                        return Some(Err(IterError::Clone(e)));
+                        return Some(Err(ConcurrentHashMapIterError::Clone(e)));
                     }
                 };
                 let kv = unsafe { bucket.as_mut() };

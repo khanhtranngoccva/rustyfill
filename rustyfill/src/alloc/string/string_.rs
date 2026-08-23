@@ -27,14 +27,15 @@ use lang_core::mem;
 
 /// Error returned by [`TryString`] operations.
 ///
-/// Wraps the ways a string operation can fail on stable Rust: a reserve
-/// failure ([`TryReserveError`]) or an arithmetic overflow when computing
-/// the required byte capacity.
+/// Exhaustive over the failure modes of fallible `String` operations:
+/// a reserve failure ([`TryReserveError`]), or an invalid insertion index
+/// that lies outside the string or in the middle of a UTF-8 character.
 pub enum TryStringError {
     /// A capacity reservation on the string failed (overflow or OOM).
     Reserve(TryReserveError),
-    /// A logic-level failure with a static diagnostic message.
-    Other(&'static str),
+    /// The insertion index was out of bounds or not on a char boundary.
+    /// Carries the offending index for programmatic recovery.
+    InvalidCharBoundary(usize),
 }
 
 impl fmt::Debug for TryStringError {
@@ -62,9 +63,9 @@ impl TryDebug for TryStringError {
                 .try_debug_tuple("TryStringError::Reserve")
                 .field(e)
                 .finish(),
-            Self::Other(msg) => f
-                .try_debug_tuple("TryStringError::Other")
-                .field(msg)
+            Self::InvalidCharBoundary(idx) => f
+                .try_debug_tuple("TryStringError::InvalidCharBoundary")
+                .field(idx)
                 .finish(),
         }
     }
@@ -74,7 +75,11 @@ impl TryDisplay for TryStringError {
     fn try_fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Reserve(e) => write!(f, "string operation failed: {}", e),
-            Self::Other(msg) => write!(f, "string operation failed: {}", msg),
+            Self::InvalidCharBoundary(idx) => write!(
+                f,
+                "string operation failed: index {} is out of bounds or not on a char boundary",
+                idx
+            ),
         }
     }
 }
@@ -126,18 +131,18 @@ pub trait TryString: Sized {
     ///
     /// The index must not exceed the length of the string and must lie on a
     /// char boundary. Returns [`TryStringError::Reserve`] if growing the
-    /// internal buffer fails, or [`TryStringError::Other`] if the index is
-    /// out of bounds or falls in the middle of a UTF-8 character.
-    /// No mutation occurs on error.
+    /// internal buffer fails, or [`TryStringError::InvalidCharBoundary`] if
+    /// the index is out of bounds or falls in the middle of a UTF-8
+    /// character. No mutation occurs on error.
     fn try_insert(&mut self, idx: usize, c: char) -> Result<(), TryStringError>;
 
     /// Fallibly insert a string slice into this `String` at a valid byte index.
     ///
     /// The index must not exceed the length of the string and must lie on a
     /// char boundary. Returns [`TryStringError::Reserve`] if growing the
-    /// internal buffer fails, or [`TryStringError::Other`] if the index is
-    /// out of bounds or falls in the middle of a UTF-8 character.
-    /// No mutation occurs on error.
+    /// internal buffer fails, or [`TryStringError::InvalidCharBoundary`] if
+    /// the index is out of bounds or falls in the middle of a UTF-8
+    /// character. No mutation occurs on error.
     fn try_insert_str(&mut self, idx: usize, s: &str) -> Result<(), TryStringError>;
 
     /// Fallibly shrink the capacity of this `String` to match its length.
@@ -275,9 +280,7 @@ impl TryString for String {
 
     fn try_insert(&mut self, idx: usize, c: char) -> Result<(), TryStringError> {
         if !self.is_char_boundary(idx) {
-            return Err(TryStringError::Other(
-                "insert index is out of bounds or not on a char boundary",
-            ));
+            return Err(TryStringError::InvalidCharBoundary(idx));
         }
         let encoded_len = c.len_utf8();
         self.try_reserve(encoded_len)
@@ -291,9 +294,7 @@ impl TryString for String {
             return Ok(());
         }
         if !self.is_char_boundary(idx) {
-            return Err(TryStringError::Other(
-                "insert index is out of bounds or not on a char boundary",
-            ));
+            return Err(TryStringError::InvalidCharBoundary(idx));
         }
         self.try_reserve(s.len()).map_err(TryStringError::from)?;
         self.insert_str(idx, s);
@@ -572,7 +573,7 @@ mod tests {
     fn try_insert_out_of_bounds_returns_error() {
         let mut s = String::try_from_str("hi").unwrap();
         let result = s.try_insert(10, 'x');
-        assert!(matches!(result, Err(TryStringError::Other(_))));
+        assert!(matches!(result, Err(TryStringError::InvalidCharBoundary(10))));
         assert_eq!(s, "hi"); // string unchanged
     }
 
@@ -581,7 +582,7 @@ mod tests {
         let mut s = String::try_from_str("αβ").unwrap();
         // 'α' is 2 bytes (0xCE, 0xB1), so index 1 is mid-character.
         let result = s.try_insert(1, 'x');
-        assert!(matches!(result, Err(TryStringError::Other(_))));
+        assert!(matches!(result, Err(TryStringError::InvalidCharBoundary(1))));
         assert_eq!(s, "αβ"); // string unchanged
     }
 
@@ -589,7 +590,7 @@ mod tests {
     fn try_insert_str_out_of_bounds_returns_error() {
         let mut s = String::try_from_str("hi").unwrap();
         let result = s.try_insert_str(10, "world");
-        assert!(matches!(result, Err(TryStringError::Other(_))));
+        assert!(matches!(result, Err(TryStringError::InvalidCharBoundary(10))));
         assert_eq!(s, "hi"); // string unchanged
     }
 
@@ -598,7 +599,7 @@ mod tests {
         let mut s = String::try_from_str("αβ").unwrap();
         // index 1 is in the middle of 'α'.
         let result = s.try_insert_str(1, "x");
-        assert!(matches!(result, Err(TryStringError::Other(_))));
+        assert!(matches!(result, Err(TryStringError::InvalidCharBoundary(1))));
         assert_eq!(s, "αβ"); // string unchanged
     }
 
