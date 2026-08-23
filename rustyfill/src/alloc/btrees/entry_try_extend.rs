@@ -2,7 +2,7 @@
 //! and `BTreeSet<T>`.
 
 use crate::alloc::AllocError;
-use crate::alloc::btrees::entry::{TryBTreeMap, TryBTreeWithCloneError, TryBTreeSet};
+use crate::alloc::btrees::entry::{TryBTreeMap, TryBTreeSet, TryBTreeWithCloneError};
 use crate::recovery::Resumable;
 use crate::try_clone::TryClone;
 use crate::try_extend::{TryExtend, TryExtendFromSlice};

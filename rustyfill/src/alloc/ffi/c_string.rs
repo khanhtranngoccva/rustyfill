@@ -24,8 +24,10 @@ use lang_alloc::vec::Vec;
 use lang_core::fmt;
 
 /// Error returned by [`TryCString`] operations.
-pub enum TryCStringError {    /// A capacity reservation failed (overflow or OOM).
-    Reserve(TryReserveError),    /// The input contained an interior nul byte at the given index.
+pub enum TryCStringError {
+    /// A capacity reservation failed (overflow or OOM).
+    Reserve(TryReserveError),
+    /// The input contained an interior nul byte at the given index.
     Nul(usize),
 }
 
@@ -66,7 +68,7 @@ impl TryDisplay for TryCStringError {
     fn try_fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Reserve(e) => write!(f, "CString operation failed: {}", e),
-                        Self::Nul(idx) => {
+            Self::Nul(idx) => {
                 write!(
                     f,
                     "CString operation failed: interior nul byte at index {}",

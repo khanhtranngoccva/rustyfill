@@ -8,6 +8,6 @@ mod try_extend;
 mod vecdeque_;
 
 pub use vecdeque_::{
-    TryVecDeque, TryVecDequeExtendFromWithinError, TryVecDequeInsertError,
-    TryVecDequeRemoveError, TryVecDequeWithCloneError,
+    TryVecDeque, TryVecDequeExtendFromWithinError, TryVecDequeInsertError, TryVecDequeRemoveError,
+    TryVecDequeWithCloneError,
 };

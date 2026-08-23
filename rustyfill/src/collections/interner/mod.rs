@@ -21,6 +21,7 @@
 //! assert!(a.ptr_eq(&b)); // Same underlying Arc
 //! ```
 
+use crate::alloc::AllocError;
 use crate::collections::chashmap::ConcurrentHashMap;
 use crate::std::arc::{TryArc, TryWeak};
 use crate::try_clone::TryClone;
@@ -28,7 +29,6 @@ use crate::try_clone::TryCloneError;
 use crate::try_default::{TryDefault, TryDefaultError};
 use crate::try_fmt::FormatterExt;
 use crate::try_fmt::TryDebug;
-use crate::alloc::AllocError;
 use crate::try_to_owned::{TryToOwned, TryToOwnedError};
 use lang_alloc::borrow::ToOwned;
 use lang_alloc::string::String;

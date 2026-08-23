@@ -15,8 +15,8 @@
 //! the respective bounds.
 
 use super::raw_manipulation::RawVecInnerView;
-use crate::alloc::{TryReserveErrorExt};
 use crate::alloc::TryReserveError;
+use crate::alloc::TryReserveErrorExt;
 use crate::try_clone::{TryClone, TryCloneError};
 use crate::try_default::{TryDefault, TryDefaultError};
 use crate::try_fmt::{TryDebug, TryDisplay};
@@ -95,7 +95,6 @@ pub enum TryVecInsertError {
     OutOfBounds,
 }
 
-
 impl fmt::Debug for TryVecInsertError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         TryDebug::try_fmt(self, f)
@@ -107,8 +106,6 @@ impl fmt::Display for TryVecInsertError {
         TryDisplay::try_fmt(self, f)
     }
 }
-
-
 
 impl TryDebug for TryVecInsertError {
     fn try_fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -129,7 +126,6 @@ impl TryDisplay for TryVecInsertError {
         }
     }
 }
-
 
 impl fmt::Debug for TryVecWithCloneError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -187,7 +183,6 @@ impl fmt::Display for TryVecExtendFromWithinError {
     }
 }
 
-
 impl TryDebug for TryVecExtendFromWithinError {
     fn try_fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         use crate::errors::uniform as u;
@@ -209,8 +204,6 @@ impl TryDisplay for TryVecExtendFromWithinError {
         }
     }
 }
-
-
 
 /// A trait for fallible vector operations.
 ///
@@ -237,10 +230,7 @@ pub trait TryVec<T>: Sized {
 
     /// Like [`Self::try_from_elem`] but takes ownership of `value` and returns
     /// it on failure so the caller is not left empty-handed.
-    fn try_from_elem_give_back(
-        value: T,
-        count: usize,
-    ) -> Result<Vec<T>, (T, TryVecWithCloneError)>
+    fn try_from_elem_give_back(value: T, count: usize) -> Result<Vec<T>, (T, TryVecWithCloneError)>
     where
         T: TryClone;
 
@@ -274,7 +264,10 @@ pub trait TryVec<T>: Sized {
     /// the start of the call so that no partially-appended elements remain.
     /// The error does not carry a remainder since the collection state is
     /// restored to exactly what it was before the call.
-    fn try_extend_from_slice_with_rollback(&mut self, other: &[T]) -> Result<(), TryVecWithCloneError>
+    fn try_extend_from_slice_with_rollback(
+        &mut self,
+        other: &[T],
+    ) -> Result<(), TryVecWithCloneError>
     where
         T: TryClone;
 
@@ -402,7 +395,10 @@ pub trait TryVec<T>: Sized {
     }
 
     /// Alias for [`Self::try_extend_from_slice_with_rollback`].
-    fn fallible_extend_from_slice_with_rollback(&mut self, other: &[T]) -> Result<(), TryVecWithCloneError>
+    fn fallible_extend_from_slice_with_rollback(
+        &mut self,
+        other: &[T],
+    ) -> Result<(), TryVecWithCloneError>
     where
         T: TryClone,
     {
@@ -514,7 +510,8 @@ impl<T> TryVec<T> for Vec<T> {
     {
         let mut vec = Vec::<T>::new();
         if count > 0 {
-            vec.try_reserve(count).map_err(TryVecWithCloneError::Reserve)?;
+            vec.try_reserve(count)
+                .map_err(TryVecWithCloneError::Reserve)?;
         }
         for _ in 0..count {
             vec.push(value.try_clone().map_err(TryVecWithCloneError::Clone)?);
@@ -522,10 +519,7 @@ impl<T> TryVec<T> for Vec<T> {
         Ok(vec)
     }
 
-    fn try_from_elem_give_back(
-        value: T,
-        count: usize,
-    ) -> Result<Vec<T>, (T, TryVecWithCloneError)>
+    fn try_from_elem_give_back(value: T, count: usize) -> Result<Vec<T>, (T, TryVecWithCloneError)>
     where
         T: TryClone,
     {
@@ -577,7 +571,10 @@ impl<T> TryVec<T> for Vec<T> {
         }
     }
 
-    fn try_extend_from_slice_with_rollback(&mut self, other: &[T]) -> Result<(), TryVecWithCloneError>
+    fn try_extend_from_slice_with_rollback(
+        &mut self,
+        other: &[T],
+    ) -> Result<(), TryVecWithCloneError>
     where
         T: TryClone,
     {
@@ -622,11 +619,15 @@ impl<T> TryVec<T> for Vec<T> {
     {
         let start = match range.start_bound() {
             Bound::Included(&i) => i,
-            Bound::Excluded(&i) => i.checked_add(1).ok_or_else(|| TryVecExtendFromWithinError::Reserve(TryReserveErrorExt::new_capacity_overflow()))?,
+            Bound::Excluded(&i) => i.checked_add(1).ok_or_else(|| {
+                TryVecExtendFromWithinError::Reserve(TryReserveErrorExt::new_capacity_overflow())
+            })?,
             Bound::Unbounded => 0,
         };
         let end = match range.end_bound() {
-            Bound::Included(&i) => i.checked_add(1).ok_or_else(|| TryVecExtendFromWithinError::Reserve(TryReserveErrorExt::new_capacity_overflow()))?,
+            Bound::Included(&i) => i.checked_add(1).ok_or_else(|| {
+                TryVecExtendFromWithinError::Reserve(TryReserveErrorExt::new_capacity_overflow())
+            })?,
             Bound::Excluded(&i) => i,
             Bound::Unbounded => self.len(),
         };
@@ -642,7 +643,8 @@ impl<T> TryVec<T> for Vec<T> {
 
         let count = end.saturating_sub(start);
         // Reserve first — lazy, no element copies until allocation succeeds.
-        self.try_reserve(count).map_err(TryVecExtendFromWithinError::Reserve)?;
+        self.try_reserve(count)
+            .map_err(TryVecExtendFromWithinError::Reserve)?;
         let guard = TruncateGuard::new(self);
         for i in start..end {
             match guard.vec[i].try_clone() {
@@ -668,7 +670,8 @@ impl<T> TryVec<T> for Vec<T> {
         }
         let extra = new_len.saturating_sub(current);
         // Reserve first — lazy.
-        self.try_reserve(extra).map_err(TryVecWithCloneError::Reserve)?;
+        self.try_reserve(extra)
+            .map_err(TryVecWithCloneError::Reserve)?;
         let guard = TruncateGuard::new(self);
         for _ in 0..extra {
             match value.try_clone() {
@@ -730,7 +733,9 @@ impl<T> TryVec<T> for Vec<T> {
                 // SAFETY: pointer, length, and capacity are all still valid from
                 // the original Vec.
                 *self = unsafe { current_raw.into_vec(current_len) };
-                Err(TryVecWithCloneError::Reserve(TryReserveErrorExt::new_alloc(Layout::new::<T>())))
+                Err(TryVecWithCloneError::Reserve(
+                    TryReserveErrorExt::new_alloc(Layout::new::<T>()),
+                ))
             }
         }
     }
@@ -758,7 +763,8 @@ impl<T> TryVec<T> for Vec<T> {
         T: TryClone,
     {
         let mut vec = Vec::<T>::new();
-        vec.try_reserve(slice.len()).map_err(TryVecWithCloneError::Reserve)?;
+        vec.try_reserve(slice.len())
+            .map_err(TryVecWithCloneError::Reserve)?;
         for item in slice {
             vec.push(item.try_clone().map_err(TryVecWithCloneError::Clone)?);
         }
@@ -892,7 +898,10 @@ mod tests {
         ];
         for err in errs.iter() {
             let got = render_trydebug(err);
-            assert!(got.contains("TryVecWithCloneError::"), "missing type tag in {got:?}");
+            assert!(
+                got.contains("TryVecWithCloneError::"),
+                "missing type tag in {got:?}"
+            );
         }
     }
 
@@ -919,7 +928,10 @@ mod tests {
         let inner_text = render_display(&reserve); // std's own wording
         let expected = format!("vector operation failed: {inner_text}");
         let actual = render_display(&TryVecWithCloneError::Reserve(reserve));
-        assert_eq!(actual, expected, "delegated Display drifted from original format");
+        assert_eq!(
+            actual, expected,
+            "delegated Display drifted from original format"
+        );
 
         // Same check for the Clone arm, whose detail is a TryCloneError.
         let clone_src = TryCloneError::Reserve(reserve_err());
@@ -1438,9 +1450,10 @@ mod tests {
     #[test]
     fn vec_try_from_slice_fails_on_oom() {
         let slice: &[u32] = &[10, 20, 30];
-        let r: Result<Vec<u32>, TryVecWithCloneError> = with_policy(FailPolicy::fail_next_alloc(), || {
-            Vec::<u32>::try_from_slice(slice)
-        });
+        let r: Result<Vec<u32>, TryVecWithCloneError> =
+            with_policy(FailPolicy::fail_next_alloc(), || {
+                Vec::<u32>::try_from_slice(slice)
+            });
         assert!(r.is_err());
     }
 
@@ -1487,9 +1500,10 @@ mod tests {
 
     #[test]
     fn vec_try_from_elem_fails_on_oom() {
-        let r: Result<Vec<u32>, TryVecWithCloneError> = with_policy(FailPolicy::fail_next_alloc(), || {
-            Vec::try_from_elem(&0u32, 5)
-        });
+        let r: Result<Vec<u32>, TryVecWithCloneError> =
+            with_policy(FailPolicy::fail_next_alloc(), || {
+                Vec::try_from_elem(&0u32, 5)
+            });
         assert!(r.is_err());
     }
 
@@ -1553,9 +1567,12 @@ mod tests {
         // try_reserve already succeeded (outside the policy scope for the
         // capacity reservation), so the first alloc inside with_policy will
         // be from the first or later String::try_clone() call.
-        let r: Result<(), TryVecWithCloneError> = with_policy(FailPolicy::fail_nth_alloc(2), || {
-            <Vec<String> as TryVec<String>>::try_extend_from_slice_with_rollback(&mut vec, &source)
-        });
+        let r: Result<(), TryVecWithCloneError> =
+            with_policy(FailPolicy::fail_nth_alloc(2), || {
+                <Vec<String> as TryVec<String>>::try_extend_from_slice_with_rollback(
+                    &mut vec, &source,
+                )
+            });
 
         match r {
             Err(TryVecWithCloneError::Clone(_)) => {
@@ -1604,9 +1621,12 @@ mod tests {
         ];
         let mut vec: Vec<String> = vec!["anchor".into()];
 
-        let _: Result<(), TryVecWithCloneError> = with_policy(FailPolicy::fail_nth_alloc(3), || {
-            <Vec<String> as TryVec<String>>::try_extend_from_slice_with_rollback(&mut vec, &source)
-        });
+        let _: Result<(), TryVecWithCloneError> =
+            with_policy(FailPolicy::fail_nth_alloc(3), || {
+                <Vec<String> as TryVec<String>>::try_extend_from_slice_with_rollback(
+                    &mut vec, &source,
+                )
+            });
 
         // Whatever happened, no source strings should appear in vec.
         for elem in vec.iter() {
@@ -1682,9 +1702,10 @@ mod tests {
         let len_before = vec.len();
 
         // Extend from [0..3], which clones 3 strings. Fail one mid-way.
-        let r: Result<(), TryVecExtendFromWithinError> = with_policy(FailPolicy::fail_nth_alloc(2), || {
-            <Vec<String> as TryVec<String>>::try_extend_from_within(&mut vec, 0..3)
-        });
+        let r: Result<(), TryVecExtendFromWithinError> =
+            with_policy(FailPolicy::fail_nth_alloc(2), || {
+                <Vec<String> as TryVec<String>>::try_extend_from_within(&mut vec, 0..3)
+            });
 
         match r {
             Err(TryVecExtendFromWithinError::Clone(_)) => {
@@ -1716,9 +1737,10 @@ mod tests {
         let len_before = vec.len();
 
         // Resize to 15 — needs 14 clones. Fail one mid-way.
-        let r: Result<(), TryVecWithCloneError> = with_policy(FailPolicy::fail_nth_alloc(3), || {
-            <Vec<String> as TryVec<String>>::try_resize(&mut vec, &val, 15)
-        });
+        let r: Result<(), TryVecWithCloneError> =
+            with_policy(FailPolicy::fail_nth_alloc(3), || {
+                <Vec<String> as TryVec<String>>::try_resize(&mut vec, &val, 15)
+            });
 
         match r {
             Err(TryVecWithCloneError::Clone(_)) => {

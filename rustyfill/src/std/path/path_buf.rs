@@ -15,8 +15,8 @@
 //! The trait also implements [`TryClone`](crate::try_clone::TryClone) and
 //! [`TryDefault`](crate::try_default::TryDefault) for `PathBuf`.
 
-use crate::alloc::{TryReserveError, TryReserveErrorExt};
 use crate::alloc::vec::TryVec;
+use crate::alloc::{TryReserveError, TryReserveErrorExt};
 use crate::std::ffi::TryOsString;
 use crate::try_clone::{TryClone, TryCloneError};
 use crate::try_default::{TryDefault, TryDefaultError};
@@ -32,8 +32,10 @@ use lang_std::path::{Component, MAIN_SEPARATOR_STR, Path, PathBuf, Prefix, is_se
 /// Wraps the ways a `PathBuf` operation can fail on stable Rust: a reserve
 /// failure ([`TryReserveError`]) or an arithmetic overflow when computing
 /// the required capacity.
-pub enum TryPathBufError {    /// A capacity reservation failed (overflow or OOM).
-    Reserve(TryReserveError),    /// A logic-level failure with a static diagnostic message.
+pub enum TryPathBufError {
+    /// A capacity reservation failed (overflow or OOM).
+    Reserve(TryReserveError),
+    /// A logic-level failure with a static diagnostic message.
     Other(&'static str),
 }
 
@@ -74,7 +76,7 @@ impl TryDisplay for TryPathBufError {
     fn try_fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Reserve(e) => write!(f, "PathBuf operation failed: {}", e),
-                        Self::Other(msg) => write!(f, "PathBuf operation failed: {}", msg),
+            Self::Other(msg) => write!(f, "PathBuf operation failed: {}", msg),
         }
     }
 }
@@ -216,12 +218,10 @@ pub(crate) fn inner_push(target: &mut PathBuf, path: &Path) -> Result<(), TryRes
         .unwrap_or(false);
 
     // Search for prefixes (a path can only have one prefix)
-    let prefix = target
-        .components()
-        .find_map(|c| match c {
-            Component::Prefix(p) => Some(p.kind()),
-            _ => None,
-        });
+    let prefix = target.components().find_map(|c| match c {
+        Component::Prefix(p) => Some(p.kind()),
+        _ => None,
+    });
 
     // in the special case of `C:` on Windows, do *not* add a separator
     if let Some(ref p) = prefix {
@@ -343,8 +343,7 @@ fn truncate_to_prefix(target: &mut PathBuf, prefix_len: usize) {
     let mut current_bytes = current.into_encoded_bytes();
     // The prefix bytes are always valid
     current_bytes.truncate(prefix_len);
-    *target.as_mut_os_string() =
-        unsafe { OsString::from_encoded_bytes_unchecked(current_bytes) };
+    *target.as_mut_os_string() = unsafe { OsString::from_encoded_bytes_unchecked(current_bytes) };
 }
 
 impl TryPathBuf for PathBuf {
@@ -386,7 +385,9 @@ impl TryPathBuf for PathBuf {
         }
         // Reserve room for the dot and extension.
         if !ext.is_empty() {
-            let needed = ext.len().checked_add(1).ok_or_else(|| TryPathBufError::Reserve(TryReserveErrorExt::new_capacity_overflow()))?;
+            let needed = ext.len().checked_add(1).ok_or_else(|| {
+                TryPathBufError::Reserve(TryReserveErrorExt::new_capacity_overflow())
+            })?;
             self.try_reserve(needed).map_err(TryPathBufError::Reserve)?;
         }
         self.set_extension(ext);
@@ -1044,12 +1045,15 @@ mod tests {
         // Windows verbatim case.)
         let mut buf = comps_of("a/b");
         append_normalized(&mut buf, Path::new("/c/d")).unwrap();
-        assert_eq!(buf, lang_alloc::vec![
-            Component::Normal(OsStr::new("a")),
-            Component::RootDir,
-            Component::Normal(OsStr::new("c")),
-            Component::Normal(OsStr::new("d")),
-        ]);
+        assert_eq!(
+            buf,
+            lang_alloc::vec![
+                Component::Normal(OsStr::new("a")),
+                Component::RootDir,
+                Component::Normal(OsStr::new("c")),
+                Component::Normal(OsStr::new("d")),
+            ]
+        );
     }
 
     #[test]
@@ -1127,9 +1131,15 @@ mod tests {
     #[test]
     fn prefix_len_unc_counts_server_and_share() {
         // "\\" (2) + "srv" (3) + "\" (1) + "shr" (3) = 9
-        assert_eq!(prefix_len(&Prefix::UNC(OsStr::new("srv"), OsStr::new("shr"))), 9);
+        assert_eq!(
+            prefix_len(&Prefix::UNC(OsStr::new("srv"), OsStr::new("shr"))),
+            9
+        );
         // Empty share omits the trailing separator: 2 + 3 = 5
-        assert_eq!(prefix_len(&Prefix::UNC(OsStr::new("srv"), OsStr::new(""))), 5);
+        assert_eq!(
+            prefix_len(&Prefix::UNC(OsStr::new("srv"), OsStr::new(""))),
+            5
+        );
     }
 
     #[test]

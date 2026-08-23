@@ -20,11 +20,13 @@ use lang_core::fmt;
 
 /// Error returned by [`TryToOwned::try_to_owned`].
 #[derive(Clone, PartialEq, Eq)]
-pub enum TryToOwnedError {    /// A capacity reservation on a collection failed (overflow or OOM).
+pub enum TryToOwnedError {
+    /// A capacity reservation on a collection failed (overflow or OOM).
     Reserve(TryReserveError),
     /// A single heap allocation failed (no reserve phase — e.g. a leaf
     /// allocation such as a `Box`, `Arc`, or `Rc` node).
-    Alloc(AllocError),    /// A logic-level failure with a static diagnostic message.
+    Alloc(AllocError),
+    /// A logic-level failure with a static diagnostic message.
     Other(&'static str),
 }
 

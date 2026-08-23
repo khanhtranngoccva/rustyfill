@@ -30,8 +30,10 @@ use lang_core::mem;
 /// Wraps the ways a string operation can fail on stable Rust: a reserve
 /// failure ([`TryReserveError`]) or an arithmetic overflow when computing
 /// the required byte capacity.
-pub enum TryStringError {    /// A capacity reservation on the string failed (overflow or OOM).
-    Reserve(TryReserveError),    /// A logic-level failure with a static diagnostic message.
+pub enum TryStringError {
+    /// A capacity reservation on the string failed (overflow or OOM).
+    Reserve(TryReserveError),
+    /// A logic-level failure with a static diagnostic message.
     Other(&'static str),
 }
 
@@ -72,7 +74,7 @@ impl TryDisplay for TryStringError {
     fn try_fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Reserve(e) => write!(f, "string operation failed: {}", e),
-                        Self::Other(msg) => write!(f, "string operation failed: {}", msg),
+            Self::Other(msg) => write!(f, "string operation failed: {}", msg),
         }
     }
 }

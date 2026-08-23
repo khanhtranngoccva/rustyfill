@@ -26,8 +26,7 @@ pub use key::{DefaultKey, Key, KeyData};
 pub use secondary::{
     Drain as SecondaryDrain, Entry, IntoIter as SecondaryIntoIter, Iter as SecondaryIter,
     IterMut as SecondaryIterMut, Keys as SecondaryKeys, OccupiedEntry, SecondaryMap,
-    SecondaryMapError, VacantEntry, Values as SecondaryValues,
-    ValuesMut as SecondaryValuesMut,
+    SecondaryMapError, VacantEntry, Values as SecondaryValues, ValuesMut as SecondaryValuesMut,
 };
 
 /// Creates one or more new key types, preventing accidental cross-slot-map usage.

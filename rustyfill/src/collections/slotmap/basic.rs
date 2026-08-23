@@ -9,8 +9,8 @@ use crate::collections::slotmap::key::{
 };
 use crate::try_clone::{TryClone, TryCloneError};
 use crate::try_default::{TryDefault, TryDefaultError};
-use crate::try_fmt::{TryDebug, TryDisplay};
 use crate::try_fmt::helpers::FormatterExt;
+use crate::try_fmt::{TryDebug, TryDisplay};
 use lang_alloc::vec::Vec;
 use lang_core::fmt::{self, Debug};
 use lang_core::hash::Hash;
@@ -141,7 +141,8 @@ impl<T: Debug> Debug for Slot<T> {
 // ── Error type ──────────────────────────────────────────────────────────────────
 
 /// Error returned by [`SlotMap`] operations.
-pub enum SlotMapError {    /// Capacity reservation failed.
+pub enum SlotMapError {
+    /// Capacity reservation failed.
     Reserve(TryReserveError),
     /// The slot map has reached its maximum size (2³² − 2 slots).
     Full,
@@ -164,15 +165,9 @@ impl fmt::Display for SlotMapError {
 impl TryDebug for SlotMapError {
     fn try_fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::Reserve(e) => f
-                .try_debug_tuple("SlotMapError::Reserve")
-                .field(e)
-                .finish(),
+            Self::Reserve(e) => f.try_debug_tuple("SlotMapError::Reserve").field(e).finish(),
             Self::Full => f.write_str("SlotMapError::Full"),
-            Self::Other(msg) => f
-                .try_debug_tuple("SlotMapError::Other")
-                .field(msg)
-                .finish(),
+            Self::Other(msg) => f.try_debug_tuple("SlotMapError::Other").field(msg).finish(),
         }
     }
 }

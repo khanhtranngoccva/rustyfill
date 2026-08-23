@@ -24,7 +24,9 @@ fn main() {
             eprintln!("  cargo xtask sanitize   — run tests on nightly with -Zsanitizer=leak");
             eprintln!("  cargo xtask miri       — run tests under Miri for undefined behavior");
             eprintln!("  cargo xtask crap [ARGS] — CRAP metric; forwards ARGS to cargo-crap");
-            eprintln!("                              (-p <crate> limits to one or more workspace members)");
+            eprintln!(
+                "                              (-p <crate> limits to one or more workspace members)"
+            );
             std::process::exit(1);
         }
     }
@@ -39,7 +41,10 @@ fn main() {
 /// is not given.
 fn cmd_crap(extra_args: &[String]) {
     let no_cache = extra_args.iter().any(|a| a == "--no-cache");
-    let skip_cov_arg = extra_args.iter().position(|a| a == "--skip-coverage").is_some();
+    let skip_cov_arg = extra_args
+        .iter()
+        .position(|a| a == "--skip-coverage")
+        .is_some();
 
     if !skip_cov_arg && (!Path::new(LCOV_PATH).exists() || no_cache) {
         println!("== Generating LCOV coverage (first time or --no-cache) ==");
@@ -68,7 +73,10 @@ fn cmd_crap(extra_args: &[String]) {
             }
         }
     } else if Path::new(LCOV_PATH).exists() {
-        println!("== Reusing cached coverage at {} (pass --no-cache to regenerate) ==", LCOV_PATH);
+        println!(
+            "== Reusing cached coverage at {} (pass --no-cache to regenerate) ==",
+            LCOV_PATH
+        );
     }
 
     // `-p` selects specific workspace members and conflicts with `--workspace`,
@@ -85,9 +93,12 @@ fn cmd_crap(extra_args: &[String]) {
     }
     // Strip our own control flags before forwarding; everything else goes to
     // cargo-crap verbatim (e.g. `-p <crate>`, `--top 50`, `--format json`).
-    args.extend(extra_args.iter().filter(|a| {
-        *a != "--no-cache" && *a != "--skip-coverage"
-    }).cloned());
+    args.extend(
+        extra_args
+            .iter()
+            .filter(|a| *a != "--no-cache" && *a != "--skip-coverage")
+            .cloned(),
+    );
 
     let status = Command::new("cargo").args(&args).status();
     match status {

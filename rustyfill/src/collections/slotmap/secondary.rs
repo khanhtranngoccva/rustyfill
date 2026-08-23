@@ -5,13 +5,13 @@
 //! it uses direct indexing: the key's slot index is used as the array offset,
 //! so lookups are O(1) without hashing.
 
-use crate::alloc::{TryReserveError, TryReserveErrorExt};
 use crate::alloc::vec::TryVec;
+use crate::alloc::{TryReserveError, TryReserveErrorExt};
 use crate::collections::slotmap::key::{Key, KeyData, MAX_SLOTS_LEN};
 use crate::try_clone::{TryClone, TryCloneError};
 use crate::try_default::{TryDefault, TryDefaultError};
-use crate::try_fmt::{TryDebug, TryDisplay};
 use crate::try_fmt::helpers::FormatterExt;
+use crate::try_fmt::{TryDebug, TryDisplay};
 use lang_alloc::vec::Vec;
 use lang_core::fmt::{self, Debug};
 use lang_core::iter::{Enumerate, Extend, FromIterator, FusedIterator};
@@ -121,7 +121,7 @@ impl TryDebug for SecondaryMapError {
                 .try_debug_tuple("SecondaryMapError::Reserve")
                 .field(e)
                 .finish(),
-            }
+        }
     }
 }
 
@@ -138,8 +138,6 @@ impl From<TryReserveError> for SecondaryMapError {
         Self::Reserve(e)
     }
 }
-
-
 
 // ── SecondaryMap ────────────────────────────────────────────────────────────────
 
@@ -169,7 +167,9 @@ impl<K: Key, V> SecondaryMap<K, V> {
     /// the sentinel that always occupies index 0.
     pub fn try_with_capacity(capacity: usize) -> Result<Self, SecondaryMapError> {
         if capacity >= MAX_SLOTS_LEN.saturating_sub(1) {
-            return Err(SecondaryMapError::Reserve(TryReserveErrorExt::new_capacity_overflow()));
+            return Err(SecondaryMapError::Reserve(
+                TryReserveErrorExt::new_capacity_overflow(),
+            ));
         }
         // Safe: `capacity < MAX_SLOTS_LEN - 1 <= usize::MAX`, so `+1` cannot overflow.
         let mut slots = Vec::<Slot<V>>::fallible_with_capacity(
@@ -209,7 +209,9 @@ impl<K: Key, V> SecondaryMap<K, V> {
     /// the maximum number of usable slots (`MAX_SLOTS_LEN` – 1).
     pub fn try_set_capacity(&mut self, new_capacity: usize) -> Result<(), SecondaryMapError> {
         if new_capacity >= MAX_SLOTS_LEN.saturating_sub(1) {
-            return Err(SecondaryMapError::Reserve(TryReserveErrorExt::new_capacity_overflow()));
+            return Err(SecondaryMapError::Reserve(
+                TryReserveErrorExt::new_capacity_overflow(),
+            ));
         }
         // Safe: `new_capacity < MAX_SLOTS_LEN - 1 <= usize::MAX`, so `+1` cannot overflow.
         let target = new_capacity
@@ -386,7 +388,9 @@ impl<K: Key, V> SecondaryMap<K, V> {
 
         // Guard against indices that would exceed our storage limit.
         if idx >= MAX_SLOTS_LEN.saturating_sub(1) {
-            return Err(SecondaryMapError::Reserve(TryReserveErrorExt::new_capacity_overflow()));
+            return Err(SecondaryMapError::Reserve(
+                TryReserveErrorExt::new_capacity_overflow(),
+            ));
         }
 
         // Ensure slot exists, growing fallibly in a single allocation.

@@ -496,11 +496,7 @@ pub trait TryDashMap<K, V, S = RandomState>: Sized {
     ///
     /// Returns `Err(TryDashMapNonblockError::Locked)` if the shard is
     /// currently locked by another writer.
-    fn try_insert_nonblock(
-        &self,
-        key: K,
-        value: V,
-    ) -> Result<Option<V>, TryDashMapNonblockError>
+    fn try_insert_nonblock(&self, key: K, value: V) -> Result<Option<V>, TryDashMapNonblockError>
     where
         K: Eq + Hash;
 
@@ -539,10 +535,7 @@ pub trait TryDashMap<K, V, S = RandomState>: Sized {
     ///
     /// Returns `Err(TryDashMapNonblockError::Locked)` if the shard is
     /// currently locked by another writer.
-    fn try_entry_nonblock<'a>(
-        &'a self,
-        key: K,
-    ) -> Result<Entry<'a, K, V>, TryDashMapNonblockError>
+    fn try_entry_nonblock<'a>(&'a self, key: K) -> Result<Entry<'a, K, V>, TryDashMapNonblockError>
     where
         K: Eq + Hash;
 
@@ -871,11 +864,7 @@ impl<K: Eq + Hash, V, S: BuildHasher + TryClone> TryDashMap<K, V, S> for DashMap
         }
     }
 
-    fn try_insert_nonblock(
-        &self,
-        key: K,
-        value: V,
-    ) -> Result<Option<V>, TryDashMapNonblockError>
+    fn try_insert_nonblock(&self, key: K, value: V) -> Result<Option<V>, TryDashMapNonblockError>
     where
         K: Eq + Hash,
     {
@@ -1004,10 +993,7 @@ impl<K: Eq + Hash, V, S: BuildHasher + TryClone> TryDashMap<K, V, S> for DashMap
         }
     }
 
-    fn try_entry_nonblock<'a>(
-        &'a self,
-        key: K,
-    ) -> Result<Entry<'a, K, V>, TryDashMapNonblockError>
+    fn try_entry_nonblock<'a>(&'a self, key: K) -> Result<Entry<'a, K, V>, TryDashMapNonblockError>
     where
         K: Eq + Hash,
     {
@@ -1023,9 +1009,7 @@ impl<K: Eq + Hash, V, S: BuildHasher + TryClone> TryDashMap<K, V, S> for DashMap
         shard
             .try_reserve(1, |(k, _v): &ShardEntry<K, V>| hf.hash_one(k))
             .map_err(|e| {
-                TryDashMapNonblockError::Reserve(
-                    crate::alloc::try_reserve_error_from_hashbrown(e),
-                )
+                TryDashMapNonblockError::Reserve(crate::alloc::try_reserve_error_from_hashbrown(e))
             })?;
 
         match shard.find_or_find_insert_slot(
@@ -1060,9 +1044,7 @@ impl<K: Eq + Hash, V, S: BuildHasher + TryClone> TryDashMap<K, V, S> for DashMap
         if let Err(e) = shard.try_reserve(1, |(k, _v): &ShardEntry<K, V>| hf.hash_one(k)) {
             return Err((
                 key,
-                TryDashMapNonblockError::Reserve(
-                    crate::alloc::try_reserve_error_from_hashbrown(e),
-                ),
+                TryDashMapNonblockError::Reserve(crate::alloc::try_reserve_error_from_hashbrown(e)),
             ));
         }
 
@@ -1223,9 +1205,7 @@ impl<K: Eq + Hash, V, S: BuildHasher + TryClone> TryDashMap<K, V, S> for DashMap
 #[inline]
 fn map_nb_to_unique(err: TryDashMapNonblockError) -> TryDashMapInsertUniqueNonblockError {
     match err {
-        TryDashMapNonblockError::Reserve(r) => {
-            TryDashMapInsertUniqueNonblockError::Reserve(r)
-        }
+        TryDashMapNonblockError::Reserve(r) => TryDashMapInsertUniqueNonblockError::Reserve(r),
         TryDashMapNonblockError::Locked => TryDashMapInsertUniqueNonblockError::Locked,
     }
 }

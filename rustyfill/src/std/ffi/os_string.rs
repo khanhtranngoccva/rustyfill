@@ -32,8 +32,10 @@ use lang_std::ffi::{OsStr, OsString};
 /// Wraps the ways an `OsString` operation can fail on stable Rust: a reserve
 /// failure ([`TryReserveError`]) or an arithmetic overflow when computing
 /// the required capacity.
-pub enum TryOsStringError {    /// A capacity reservation failed (overflow or OOM).
-    Reserve(TryReserveError),    /// A logic-level failure with a static diagnostic message.
+pub enum TryOsStringError {
+    /// A capacity reservation failed (overflow or OOM).
+    Reserve(TryReserveError),
+    /// A logic-level failure with a static diagnostic message.
     Other(&'static str),
 }
 
@@ -74,7 +76,7 @@ impl TryDisplay for TryOsStringError {
     fn try_fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Reserve(e) => write!(f, "OsString operation failed: {}", e),
-                        Self::Other(msg) => write!(f, "OsString operation failed: {}", msg),
+            Self::Other(msg) => write!(f, "OsString operation failed: {}", msg),
         }
     }
 }

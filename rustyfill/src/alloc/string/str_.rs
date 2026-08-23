@@ -18,8 +18,10 @@ use lang_core::mem;
 use lang_core::ptr;
 
 /// Error returned by [`TryStr`] operations.
-pub enum TryStrError {    /// A capacity reservation on the string failed (overflow or OOM).
-    Reserve(TryReserveError),    /// A logic-level failure with a static diagnostic message.
+pub enum TryStrError {
+    /// A capacity reservation on the string failed (overflow or OOM).
+    Reserve(TryReserveError),
+    /// A logic-level failure with a static diagnostic message.
     Other(&'static str),
 }
 
@@ -44,14 +46,8 @@ impl From<TryReserveError> for TryStrError {
 impl TryDebug for TryStrError {
     fn try_fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::Reserve(e) => f
-                .try_debug_tuple("TryStrError::Reserve")
-                .field(e)
-                .finish(),
-            Self::Other(msg) => f
-                .try_debug_tuple("TryStrError::Other")
-                .field(msg)
-                .finish(),
+            Self::Reserve(e) => f.try_debug_tuple("TryStrError::Reserve").field(e).finish(),
+            Self::Other(msg) => f.try_debug_tuple("TryStrError::Other").field(msg).finish(),
         }
     }
 }
@@ -116,7 +112,9 @@ impl TryStr for str {
         if len == 0 || n == 0 {
             return Ok(String::new());
         }
-        let total_len = len.checked_mul(n).ok_or_else(|| TryStrError::Reserve(TryReserveErrorExt::new_capacity_overflow()))?;
+        let total_len = len
+            .checked_mul(n)
+            .ok_or_else(|| TryStrError::Reserve(TryReserveErrorExt::new_capacity_overflow()))?;
         let mut out = String::new();
         out.try_reserve(total_len).map_err(TryStrError::Reserve)?;
         for _ in 0..n {
@@ -159,10 +157,13 @@ impl TryClone for Box<str> {
 
         // Allocate exactly `len` bytes — no excess capacity.
         // Layout::array handles overflow checking internally.
-        let layout = Layout::array::<u8>(len).map_err(|_| TryCloneError::Reserve(TryReserveErrorExt::new_capacity_overflow()))?;
+        let layout = Layout::array::<u8>(len)
+            .map_err(|_| TryCloneError::Reserve(TryReserveErrorExt::new_capacity_overflow()))?;
         let ptr = unsafe { alloc::alloc(layout) };
         if ptr.is_null() {
-            return Err(TryCloneError::Reserve(TryReserveErrorExt::new_alloc(layout)));
+            return Err(TryCloneError::Reserve(TryReserveErrorExt::new_alloc(
+                layout,
+            )));
         }
 
         // Wrap immediately in a Box<[u8]> so that Drop cleans up on any panic

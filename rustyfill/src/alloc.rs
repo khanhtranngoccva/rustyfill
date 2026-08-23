@@ -292,7 +292,6 @@ impl TryReserveErrorExt for TryReserveError {
     }
 }
 
-
 // ── Conversion from `hashbrown::TryReserveError` ───────────────────────────────
 //
 // hashbrown's `RawTable::try_reserve` returns its own `TryReserveError`, whose
@@ -301,16 +300,10 @@ impl TryReserveErrorExt for TryReserveError {
 // instead of fabricating a placeholder.
 
 #[cfg(feature = "std")]
-pub(crate) fn try_reserve_error_from_hashbrown(
-    e: hashbrown::TryReserveError,
-) -> TryReserveError {
+pub(crate) fn try_reserve_error_from_hashbrown(e: hashbrown::TryReserveError) -> TryReserveError {
     match e {
-        hashbrown::TryReserveError::CapacityOverflow => {
-            TryReserveErrorExt::new_capacity_overflow()
-        }
-        hashbrown::TryReserveError::AllocError { layout } => {
-            TryReserveErrorExt::new_alloc(layout)
-        }
+        hashbrown::TryReserveError::CapacityOverflow => TryReserveErrorExt::new_capacity_overflow(),
+        hashbrown::TryReserveError::AllocError { layout } => TryReserveErrorExt::new_alloc(layout),
     }
 }
 

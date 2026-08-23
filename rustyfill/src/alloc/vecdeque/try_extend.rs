@@ -1,7 +1,7 @@
 //! [`TryExtend`] / [`TryExtendFromSlice`] implementations for `VecDeque<T>`.
 
-use crate::alloc::vecdeque::TryVecDequeWithCloneError;
 use crate::alloc::TryReserveError;
+use crate::alloc::vecdeque::TryVecDequeWithCloneError;
 use crate::recovery::Resumable;
 use crate::try_clone::TryClone;
 use crate::try_extend::{TryExtend, TryExtendFromSlice};
@@ -9,7 +9,10 @@ use crate::try_extend::{TryExtend, TryExtendFromSlice};
 impl<'s, T: TryClone> TryExtendFromSlice<'s, T> for lang_alloc::collections::VecDeque<T> {
     type Error = TryVecDequeWithCloneError;
 
-    fn try_extend_from_slice(&mut self, other: &'s [T]) -> Result<(), (&'s [T], TryVecDequeWithCloneError)> {
+    fn try_extend_from_slice(
+        &mut self,
+        other: &'s [T],
+    ) -> Result<(), (&'s [T], TryVecDequeWithCloneError)> {
         if other.is_empty() {
             return Ok(());
         }

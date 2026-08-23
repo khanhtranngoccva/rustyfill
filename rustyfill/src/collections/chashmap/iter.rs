@@ -49,14 +49,8 @@ impl fmt::Display for IterError {
 impl TryDebug for IterError {
     fn try_fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::Alloc(e) => f
-                .try_debug_tuple("IterError::Alloc")
-                .field(e)
-                .finish(),
-            Self::Clone(e) => f
-                .try_debug_tuple("IterError::Clone")
-                .field(e)
-                .finish(),
+            Self::Alloc(e) => f.try_debug_tuple("IterError::Alloc").field(e).finish(),
+            Self::Clone(e) => f.try_debug_tuple("IterError::Clone").field(e).finish(),
         }
     }
 }

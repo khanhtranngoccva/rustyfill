@@ -5,15 +5,17 @@
 //! Uses [`TryReserveError`](crate::alloc::TryReserveError) as the error type
 //! for consistency with [`TryOsString`](super::os_string::TryOsString).
 
-use crate::alloc::{TryReserveError};
+use crate::alloc::TryReserveError;
 use crate::try_fmt::{TryDebug, TryDisplay, helpers::FormatterExt};
 use lang_core::fmt;
 use lang_std::ffi::os_str::Display;
 use lang_std::ffi::{OsStr, OsString};
 
 /// Error returned by [`TryOsStr`] operations.
-pub enum TryOsStrError {    /// A capacity reservation failed (overflow or OOM).
-    Reserve(TryReserveError),    /// A logic-level failure with a static diagnostic message.
+pub enum TryOsStrError {
+    /// A capacity reservation failed (overflow or OOM).
+    Reserve(TryReserveError),
+    /// A logic-level failure with a static diagnostic message.
     Other(&'static str),
 }
 
@@ -54,7 +56,7 @@ impl TryDisplay for TryOsStrError {
     fn try_fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Reserve(e) => write!(f, "OsStr operation failed: {}", e),
-                        Self::Other(msg) => write!(f, "OsStr operation failed: {}", msg),
+            Self::Other(msg) => write!(f, "OsStr operation failed: {}", msg),
         }
     }
 }

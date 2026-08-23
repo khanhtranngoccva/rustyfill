@@ -6,7 +6,7 @@
 //! copy so that clone-time allocation failures are also caught.
 
 use super::vec_::TryVecWithCloneError;
-use crate::alloc::{TryReserveErrorExt};
+use crate::alloc::TryReserveErrorExt;
 use crate::try_clone::{TryClone, TryCloneError};
 use crate::try_default::{TryDefault, TryDefaultError};
 use crate::try_to_owned::{TryToOwned, TryToOwnedError};
@@ -80,7 +80,8 @@ impl<T> TrySlice<T> for [T] {
     {
         let mut out = Vec::<T>::new();
         if !self.is_empty() {
-            out.try_reserve(self.len()).map_err(TryVecWithCloneError::Reserve)?;
+            out.try_reserve(self.len())
+                .map_err(TryVecWithCloneError::Reserve)?;
         }
         for elem in self.iter() {
             out.push(elem.try_clone().map_err(TryVecWithCloneError::Clone)?);
@@ -96,9 +97,12 @@ impl<T> TrySlice<T> for [T] {
         if len == 0 || n == 0 {
             return Ok(Vec::new());
         }
-        let total_len = len.checked_mul(n).ok_or_else(|| TryVecWithCloneError::Reserve(TryReserveErrorExt::new_capacity_overflow()))?;
+        let total_len = len.checked_mul(n).ok_or_else(|| {
+            TryVecWithCloneError::Reserve(TryReserveErrorExt::new_capacity_overflow())
+        })?;
         let mut out = Vec::<T>::new();
-        out.try_reserve(total_len).map_err(TryVecWithCloneError::Reserve)?;
+        out.try_reserve(total_len)
+            .map_err(TryVecWithCloneError::Reserve)?;
         for _ in 0..n {
             for elem in self.iter() {
                 out.push(elem.try_clone().map_err(TryVecWithCloneError::Clone)?);
@@ -186,10 +190,13 @@ impl<T: TryClone> TryClone for Box<[T]> {
         }
 
         // Allocate exactly `len` elements — no excess capacity, no shrinking.
-        let layout = Layout::array::<T>(len).map_err(|_| TryCloneError::Reserve(TryReserveErrorExt::new_capacity_overflow()))?;
+        let layout = Layout::array::<T>(len)
+            .map_err(|_| TryCloneError::Reserve(TryReserveErrorExt::new_capacity_overflow()))?;
         let ptr = unsafe { alloc::alloc(layout) };
         if ptr.is_null() {
-            return Err(TryCloneError::Reserve(TryReserveErrorExt::new_alloc(layout)));
+            return Err(TryCloneError::Reserve(TryReserveErrorExt::new_alloc(
+                layout,
+            )));
         }
 
         // Wrap immediately in a Box so Drop cleans up the allocation on panic.

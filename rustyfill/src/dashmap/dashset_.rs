@@ -20,10 +20,12 @@ type DashSet<T, S = RandomState> = dashmap::DashSet<T, S>;
 // ── Error type ────────────────────────────────────────────────────────────────
 
 /// Error returned by [`TryDashSet`] operations.
-pub enum TryDashSetError {    /// A capacity reservation on the DashSet failed (overflow or OOM).
+pub enum TryDashSetError {
+    /// A capacity reservation on the DashSet failed (overflow or OOM).
     Reserve(TryReserveError),
     /// An element clone failed during a method that requires [`TryClone`].
-    Clone(TryCloneError),    /// A logic-level failure with a static diagnostic message.
+    Clone(TryCloneError),
+    /// A logic-level failure with a static diagnostic message.
     Other(&'static str),
 }
 
@@ -149,8 +151,6 @@ impl TryDisplay for TryDashSetWithCloneError {
         }
     }
 }
-
-
 
 // ── Trait ─────────────────────────────────────────────────────────────────────
 
@@ -370,7 +370,9 @@ impl<T: Eq + Hash, S: BuildHasher + TryClone> TryDashSet<T, S> for DashSet<T, S>
     {
         let mut set = Self::try_new()?;
         if capacity > 0 {
-            convert_mut(&mut set).try_reserve(capacity).map_err(TryDashSetError::from)?;
+            convert_mut(&mut set)
+                .try_reserve(capacity)
+                .map_err(TryDashSetError::from)?;
         }
         Ok(set)
     }
@@ -381,7 +383,9 @@ impl<T: Eq + Hash, S: BuildHasher + TryClone> TryDashSet<T, S> for DashSet<T, S>
     ) -> Result<DashSet<T, S>, TryDashSetError> {
         let mut set = DashSet::with_hasher(hasher);
         if capacity > 0 {
-            convert_mut(&mut set).try_reserve(capacity).map_err(TryDashSetError::from)?;
+            convert_mut(&mut set)
+                .try_reserve(capacity)
+                .map_err(TryDashSetError::from)?;
         }
         Ok(set)
     }
@@ -442,7 +446,8 @@ impl<T: Eq + Hash, S: BuildHasher + TryClone> TryDashSet<T, S> for DashSet<T, S>
     // ── Capacity / shrink ───────────────────────────────────────────────────
 
     fn try_shrink_to_fit(&self) -> Result<(), TryDashSetError> {
-        convert_ref(self).try_shrink_to_fit().map_err(|e| match e {            super::TryDashMapError::Reserve(r) => TryDashSetError::Reserve(r),
+        convert_ref(self).try_shrink_to_fit().map_err(|e| match e {
+            super::TryDashMapError::Reserve(r) => TryDashSetError::Reserve(r),
             super::TryDashMapError::Clone(c) => TryDashSetError::Clone(c),
             super::TryDashMapError::Other(m) => TryDashSetError::Other(m),
         })
@@ -487,8 +492,10 @@ where
         if !self.is_empty() {
             let map: &DashMap<T, (), S> = convert_ref(&out);
             for elem in self.iter() {
-                let entry = TryDashMap::try_entry_ref(map, &elem).map_err(|e| match e {                    crate::dashmap::TryDashMapError::Reserve(r) => TryCloneError::Reserve(r),
-                    crate::dashmap::TryDashMapError::Clone(c) => c,                    crate::dashmap::TryDashMapError::Other(m) => TryCloneError::Other(m),
+                let entry = TryDashMap::try_entry_ref(map, &elem).map_err(|e| match e {
+                    crate::dashmap::TryDashMapError::Reserve(r) => TryCloneError::Reserve(r),
+                    crate::dashmap::TryDashMapError::Clone(c) => c,
+                    crate::dashmap::TryDashMapError::Other(m) => TryCloneError::Other(m),
                 })?;
                 entry.insert(());
             }
@@ -569,7 +576,10 @@ mod tests {
         ];
         for err in errs.iter() {
             let disp = render_display(err);
-            assert!(disp.starts_with("dash set operation failed:"), "got {disp:?}");
+            assert!(
+                disp.starts_with("dash set operation failed:"),
+                "got {disp:?}"
+            );
             let tdisp = render_trydisplay(err);
             assert_eq!(tdisp, disp, "TryDisplay must match Display");
             let dbg = render_trydebug(err);

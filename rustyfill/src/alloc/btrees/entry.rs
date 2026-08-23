@@ -207,10 +207,7 @@ impl TryDisplay for TryBTreeWithCloneError {
     fn try_fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Clone(e) => write!(f, "B-tree extend-from-slice failed: {}", e),
-            Self::Alloc(_) => write!(
-                f,
-                "B-tree extend-from-slice failed: heap allocation error"
-            ),
+            Self::Alloc(_) => write!(f, "B-tree extend-from-slice failed: heap allocation error"),
         }
     }
 }
@@ -811,7 +808,11 @@ impl<'a, K: Ord, V> TryBTreeMapEntry<'a, K, V> for Entry<'a, K, V> {
                 let value = match default() {
                     Ok(v) => v,
                     Err(e) => {
-                        return Err((vacant.into_key(), None, TryBTreeMapEntryWithError::Closure(e)));
+                        return Err((
+                            vacant.into_key(),
+                            None,
+                            TryBTreeMapEntryWithError::Closure(e),
+                        ));
                     }
                 };
                 match vacant.try_insert_give_back(value) {
@@ -834,7 +835,11 @@ impl<'a, K: Ord, V> TryBTreeMapEntry<'a, K, V> for Entry<'a, K, V> {
                 let value = match default(vacant.key()) {
                     Ok(v) => v,
                     Err(e) => {
-                        return Err((vacant.into_key(), None, TryBTreeMapEntryWithError::Closure(e)));
+                        return Err((
+                            vacant.into_key(),
+                            None,
+                            TryBTreeMapEntryWithError::Closure(e),
+                        ));
                     }
                 };
                 match vacant.try_insert_give_back(value) {

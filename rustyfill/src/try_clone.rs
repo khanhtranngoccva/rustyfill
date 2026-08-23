@@ -27,11 +27,13 @@ use lang_core::ptr;
 
 /// Returned when a fallible clone operation fails.
 #[derive(Clone, PartialEq, Eq)]
-pub enum TryCloneError {    /// A capacity reservation on a collection failed (overflow or OOM).
+pub enum TryCloneError {
+    /// A capacity reservation on a collection failed (overflow or OOM).
     Reserve(TryReserveError),
     /// A single heap allocation failed (no reserve phase — e.g. a leaf
     /// allocation such as a `Box`, `Arc`, or `Rc` node).
-    Alloc(AllocError),    /// A logic-level failure with a static diagnostic message.
+    Alloc(AllocError),
+    /// A logic-level failure with a static diagnostic message.
     Other(&'static str),
 }
 
@@ -54,10 +56,7 @@ impl TryDebug for TryCloneError {
                 .try_debug_tuple("TryCloneError::Reserve")
                 .field(e)
                 .finish(),
-            Self::Alloc(e) => f
-                .try_debug_tuple("TryCloneError::Alloc")
-                .field(e)
-                .finish(),
+            Self::Alloc(e) => f.try_debug_tuple("TryCloneError::Alloc").field(e).finish(),
             Self::Other(msg) => f
                 .try_debug_tuple("TryCloneError::Other")
                 .field(msg)

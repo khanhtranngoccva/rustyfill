@@ -1,7 +1,7 @@
 //! [`TryExtend`] / [`TryExtendFromSlice`] implementations for `Vec<T>`.
 
-use crate::alloc::vec::TryVecWithCloneError;
 use crate::alloc::TryReserveError;
+use crate::alloc::vec::TryVecWithCloneError;
 use crate::recovery::Resumable;
 use crate::try_clone::TryClone;
 use crate::try_extend::{TryExtend, TryExtendFromSlice};
@@ -9,7 +9,10 @@ use crate::try_extend::{TryExtend, TryExtendFromSlice};
 impl<'s, T: TryClone> TryExtendFromSlice<'s, T> for lang_alloc::vec::Vec<T> {
     type Error = TryVecWithCloneError;
 
-    fn try_extend_from_slice(&mut self, other: &'s [T]) -> Result<(), (&'s [T], TryVecWithCloneError)> {
+    fn try_extend_from_slice(
+        &mut self,
+        other: &'s [T],
+    ) -> Result<(), (&'s [T], TryVecWithCloneError)> {
         if other.is_empty() {
             return Ok(());
         }

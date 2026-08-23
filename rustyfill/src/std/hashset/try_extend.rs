@@ -16,7 +16,10 @@ where
 {
     type Error = TryHashSetWithCloneError;
 
-    fn try_extend_from_slice(&mut self, other: &'s [T]) -> Result<(), (&'s [T], TryHashSetWithCloneError)> {
+    fn try_extend_from_slice(
+        &mut self,
+        other: &'s [T],
+    ) -> Result<(), (&'s [T], TryHashSetWithCloneError)> {
         if other.is_empty() {
             return Ok(());
         }

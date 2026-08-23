@@ -28,8 +28,10 @@ use lang_std::path::Display;
 use lang_std::path::{Path, PathBuf};
 
 /// Error returned by [`TryPath`] operations.
-pub enum TryPathError {    /// A capacity reservation failed (overflow or OOM).
-    Reserve(TryReserveError),    /// A logic-level failure with a static diagnostic message.
+pub enum TryPathError {
+    /// A capacity reservation failed (overflow or OOM).
+    Reserve(TryReserveError),
+    /// A logic-level failure with a static diagnostic message.
     Other(&'static str),
 }
 
@@ -54,14 +56,8 @@ impl From<TryReserveError> for TryPathError {
 impl TryDebug for TryPathError {
     fn try_fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::Reserve(e) => f
-                .try_debug_tuple("TryPathError::Reserve")
-                .field(e)
-                .finish(),
-            Self::Other(msg) => f
-                .try_debug_tuple("TryPathError::Other")
-                .field(msg)
-                .finish(),
+            Self::Reserve(e) => f.try_debug_tuple("TryPathError::Reserve").field(e).finish(),
+            Self::Other(msg) => f.try_debug_tuple("TryPathError::Other").field(msg).finish(),
         }
     }
 }
@@ -70,7 +66,7 @@ impl TryDisplay for TryPathError {
     fn try_fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Reserve(e) => write!(f, "Path operation failed: {}", e),
-                        Self::Other(msg) => write!(f, "Path operation failed: {}", msg),
+            Self::Other(msg) => write!(f, "Path operation failed: {}", msg),
         }
     }
 }
@@ -164,7 +160,9 @@ impl TryPath for Path {
 
     fn try_with_added_extension<E: AsRef<OsStr>>(&self, ext: E) -> Result<PathBuf, TryPathError> {
         let mut out = self.try_to_path_buf()?;
-        out.try_add_extension(ext).map_err(|e| match e {            TryPathBufError::Reserve(r) => TryPathError::Reserve(r),            TryPathBufError::Other(m) => TryPathError::Other(m),
+        out.try_add_extension(ext).map_err(|e| match e {
+            TryPathBufError::Reserve(r) => TryPathError::Reserve(r),
+            TryPathBufError::Other(m) => TryPathError::Other(m),
         })?;
         Ok(out)
     }

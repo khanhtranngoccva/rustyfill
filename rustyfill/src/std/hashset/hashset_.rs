@@ -269,20 +269,6 @@ pub trait TryHashSet<T, S = RandomState>: Sized {
         Self::try_insert_give_back(self, value)
     }
 
-    // ── Extension ───────────────────────────────────────────────────────────
-
-    /// Fallibly extend the set with all values from an iterator source.
-    ///
-    /// Provided by [`TryExtend`](crate::try_extend::TryExtend) — see that trait
-    /// for the full contract. The error type is [`TryHashSetWithCloneError`]
-    /// paired with a [`Resumable`](crate::recovery::Resumable) remainder.
-
-    /// Fallibly extend the set by cloning elements from a slice.
-    ///
-    /// Provided by [`TryExtendFromSlice`](crate::try_extend::TryExtendFromSlice)
-    /// — see that trait for the full contract. On failure the error carries the
-    /// unprocessed tail of the input slice alongside a [`TryHashSetWithCloneError`].
-
     // ── Capacity / shrink ───────────────────────────────────────────────────
 
     /// Fallibly shrink the capacity of this hash set to match its length.
@@ -430,7 +416,6 @@ impl<T: Eq + Hash, S: BuildHasher> TryHashSet<T, S> for HashSet<T, S> {
             Err(e) => Err((value, e)),
         }
     }
-
 
     // ── Capacity / shrink ───────────────────────────────────────────────────
 
@@ -1031,5 +1016,4 @@ mod tests {
     }
 
     // ── Explicit rollback tests (mid-operation clone failure) ───────────────
-
 }

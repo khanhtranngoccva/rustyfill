@@ -26,11 +26,13 @@ use lang_core::ptr;
 
 /// Returned when a fallible default construction fails.
 #[derive(Clone, PartialEq, Eq)]
-pub enum TryDefaultError {    /// A capacity reservation on a collection failed (overflow or OOM).
+pub enum TryDefaultError {
+    /// A capacity reservation on a collection failed (overflow or OOM).
     Reserve(TryReserveError),
     /// A single heap allocation failed (no reserve phase — e.g. a leaf
     /// allocation such as a `Box`, `Arc`, or `Rc` node).
-    Alloc(AllocError),    /// A logic-level failure with a static diagnostic message.
+    Alloc(AllocError),
+    /// A logic-level failure with a static diagnostic message.
     Other(&'static str),
 }
 

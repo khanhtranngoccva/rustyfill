@@ -16,7 +16,10 @@ where
 {
     type Error = TryDashSetWithCloneError;
 
-    fn try_extend_from_slice(&mut self, other: &'s [T]) -> Result<(), (&'s [T], TryDashSetWithCloneError)> {
+    fn try_extend_from_slice(
+        &mut self,
+        other: &'s [T],
+    ) -> Result<(), (&'s [T], TryDashSetWithCloneError)> {
         let this: &Self = self;
         for (i, elem) in other.iter().enumerate() {
             match elem.try_clone() {

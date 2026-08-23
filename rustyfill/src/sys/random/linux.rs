@@ -183,7 +183,7 @@ fn wait_for_urandom_ready(insecure: bool, urandom_ready: &AtomicBool) -> Result<
             _ => {
                 return Err(RandomError::Platform(Cow::Borrowed(
                     "poll(\"/dev/random\") failed",
-                )))
+                )));
             }
         }
     }
@@ -294,7 +294,8 @@ mod tests {
     fn syscall_fills_insecure_bytes() {
         let flag = TestAtomicBool::new(true);
         let mut buf = [0u8; 8];
-        let filled = getrandom_syscall(&mut buf, true, &flag).expect("insecure syscall should succeed");
+        let filled =
+            getrandom_syscall(&mut buf, true, &flag).expect("insecure syscall should succeed");
         assert!(filled);
     }
 
@@ -342,7 +343,10 @@ mod tests {
         // pool is already initialized, so this returns promptly.
         let ready = TestAtomicBool::new(false);
         wait_for_urandom_ready(false, &ready).expect("should wait and succeed");
-        assert!(ready.load(Acquire), "ready flag must be set after successful poll");
+        assert!(
+            ready.load(Acquire),
+            "ready flag must be set after successful poll"
+        );
     }
 
     // ── read_urandom helper ──────────────────────────────────────────────────

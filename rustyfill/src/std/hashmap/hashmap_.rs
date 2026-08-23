@@ -34,10 +34,12 @@ use lang_std::hash::{BuildHasher, Hash, RandomState};
 /// failure ([`TryReserveError`], returned by the inherent `HashMap::try_reserve`)
 /// or a clone failure ([`TryCloneError`]) when an element's `try_clone` cannot
 /// allocate its internal buffers.
-pub enum TryHashMapError {    /// A capacity reservation on the hash map failed (overflow or OOM).
+pub enum TryHashMapError {
+    /// A capacity reservation on the hash map failed (overflow or OOM).
     Reserve(TryReserveError),
     /// An element clone failed during a method that requires [`TryClone`].
-    Clone(TryCloneError),    /// A logic-level failure with a static diagnostic message.
+    Clone(TryCloneError),
+    /// A logic-level failure with a static diagnostic message.
     Other(&'static str),
 }
 
@@ -261,7 +263,9 @@ impl TryDebug for TryHashMapInsertUniqueError {
         use crate::errors::uniform as u;
         match self {
             Self::Reserve(e) => u::debug_field(f, "TryHashMapInsertUniqueError::Reserve", e),
-            Self::KeyAlreadyExists => u::debug_unit(f, "TryHashMapInsertUniqueError::KeyAlreadyExists"),
+            Self::KeyAlreadyExists => {
+                u::debug_unit(f, "TryHashMapInsertUniqueError::KeyAlreadyExists")
+            }
         }
     }
 }
@@ -415,7 +419,9 @@ pub trait TryHashMap<K, V, S = RandomState>: Sized {
     }
 
     /// Alias for [`Self::try_with_capacity`].
-    fn fallible_with_capacity(capacity: usize) -> Result<HashMap<K, V, S>, TryHashMapConstructionError>
+    fn fallible_with_capacity(
+        capacity: usize,
+    ) -> Result<HashMap<K, V, S>, TryHashMapConstructionError>
     where
         S: TryDefault,
     {
@@ -701,7 +707,10 @@ impl<K: Eq + Hash, V, S: BuildHasher> TryHashMap<K, V, S> for HashMap<K, V, S> {
         if self.capacity() <= target {
             return Ok(());
         }
-        let hasher = self.hasher().try_clone().map_err(TryHashMapWithCloneError::from)?;
+        let hasher = self
+            .hasher()
+            .try_clone()
+            .map_err(TryHashMapWithCloneError::from)?;
         // Apparently, the hashbrown library also reallocates a new entire hash table for the shrink and moves items to the new table, so complexity wise, this should not be worse than the library.
         let mut new_map = HashMap::with_capacity_and_hasher(0, hasher);
         new_map
@@ -874,7 +883,10 @@ mod tests {
         ];
         for err in errs.iter() {
             let disp = render_display(err);
-            assert!(disp.starts_with("hash map operation failed:"), "got {disp:?}");
+            assert!(
+                disp.starts_with("hash map operation failed:"),
+                "got {disp:?}"
+            );
             let tdisp = render_trydisplay(err);
             assert_eq!(tdisp, disp, "TryDisplay must match Display");
             let dbg = render_trydebug(err);
@@ -969,7 +981,10 @@ mod tests {
         let (returned_key, returned_val, base_err) = result.unwrap_err();
         assert_eq!(returned_key, 1);
         assert_eq!(returned_val, "TWO");
-        assert!(matches!(base_err, TryHashMapInsertUniqueError::KeyAlreadyExists));
+        assert!(matches!(
+            base_err,
+            TryHashMapInsertUniqueError::KeyAlreadyExists
+        ));
         assert_eq!(map.get(&1), Some(&"one"));
         assert_eq!(map.len(), 1);
     }
