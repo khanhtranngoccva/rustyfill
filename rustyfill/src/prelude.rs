@@ -75,7 +75,7 @@ pub use crate::alloc::rc::{TryRc, TryWeak as TryRcWeak};
 
 // ── FFI strings ──────────────────────────────────────
 
-pub use crate::alloc::ffi::{TryCString, TryCStringError};
+pub use crate::alloc::ffi::TryCString;
 
 #[cfg(feature = "std")]
 pub use crate::std::ffi::{TryOsStr, TryOsString};
@@ -94,12 +94,10 @@ pub use crate::dashmap::{TryDashMap, TryDashSet};
 
 #[cfg(feature = "std")]
 pub use crate::alloc::btrees::entry::{
-    TryBTreeMap, TryBTreeMapEntry, TryBTreeMapEntryWithError,
-    TryBTreeMapExtendFromSliceError, TryBTreeMapVacantEntry,
+    TryBTreeMap, TryBTreeMapEntry, TryBTreeMapEntryWithError, TryBTreeMapVacantEntry,
 };
 
 // ── Mutex (requires `std` feature) ─────────────────────
 
 #[cfg(feature = "std")]
 pub use crate::std::sync::TryMutex;
-

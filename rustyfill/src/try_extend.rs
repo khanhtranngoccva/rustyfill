@@ -60,27 +60,23 @@
 //!
 //! ## Implementors
 //!
-//! | Collection          | Item        | Error                    | Remainder               | Feature     |
-//! |---------------------|-------------|--------------------------|-------------------------|-------------|
-//! | `Vec<T>`           | `T`         | `TryVecWithCloneError`            | `&'s [T]`                | (always)    |
-//! | `VecDeque<T>`      | `T`         | `TryVecDequeWithCloneError`       | `&'s [T]`                | (always)    |
-//! | `HashMap<K,V,S>`   | `(K, V)`    | `TryHashMapError`        | `&'s [(K, V)]`           | `std`       |
-//! | `HashSet<T, S>`    | `T`         | `TryHashSetError`        | `&'s [T]`                | `std`       |
-//! | `BTreeMap<K,V>`    | `(K, V)`    | `AllocError` / `TryBTreeMapExtendFromSliceError`¹ | `&'s [(K, V)]` | `std`         |
-//! | `BTreeSet<T>`      | `T`         | `AllocError` / `TryBTreeMapExtendFromSliceError`¹ | `&'s [T]`      | `std`         |
-//! | `DashMap<K,V,S>`   | `(K, V)`    | `TryDashMapError`        | `&'s [(K, V)]`           | `unstable`  |
-//! | `DashSet<T, S>`    | `T`         | `TryDashSetError`        | `&'s [T]`                | `unstable`  |
+//! | Collection          | Item        | Error                                  | Remainder               | Feature     |
+//! |---------------------|-------------|----------------------------------------|-------------------------|-------------|
+//! | `Vec<T>`           | `T`         | `TryVecWithCloneError`                 | `&'s [T]`                | (always)    |
+//! | `VecDeque<T>`      | `T`         | `TryVecDequeWithCloneError`            | `&'s [T]`                | (always)    |
+//! | `HashMap<K,V,S>`   | `(K, V)`    | `TryHashMapWithCloneError`             | `&'s [(K, V)]`           | `std`       |
+//! | `HashSet<T, S>`    | `T`         | `TryHashSetWithCloneError`             | `&'s [T]`                | `std`       |
+//! | `BTreeMap<K,V>`    | `(K, V)`    | `TryBTreeWithCloneError`               | `&'s [(K, V)]`           | `std`       |
+//! | `BTreeSet<T>`      | `T`         | `TryBTreeWithCloneError`               | `&'s [T]`                | `std`       |
+//! | `DashMap<K,V,S>`   | `(K, V)`    | `TryDashMapWithCloneError`             | `&'s [(K, V)]`           | `unstable`  |
+//! | `DashSet<T, S>`    | `T`         | `TryDashSetWithCloneError`             | `&'s [T]`                | `unstable`  |
 //!
-//! ¹ The iterator-based `TryExtend` moves items into the tree, so only
-//! allocation can fail (`AllocError`). The slice-based `TryExtendFromSlice`
-//! clones elements before inserting, so it uses
-//! `TryBTreeMapExtendFromSliceError`, which distinguishes a clone failure from
-//! an allocation failure.
+//! ## [`TryExtend`] errors
 //!
-//! DashMap/DashSet additionally require `K/V/T: TryClone` since they insert by
-//! cloning through interior-mutability locks. BTreeMap/BTreeSet require
-//! `K: Ord + TryClone` / `T: Ord + TryClone` (and `V: TryClone`) for the
-//! slice-extension variants.
+//! Iterator-based extension moves items into the collection, so only capacity
+//! reservation can fail. All implementations use `TryReserveError` directly
+//! (except BTreeMap/BTreeSet which use `AllocError`, since their insertion
+//! allocates nodes without a separate reserve phase).
 
 use crate::recovery::Resumable;
 

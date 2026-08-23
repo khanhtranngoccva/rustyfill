@@ -33,10 +33,12 @@ use lang_std::hash::{BuildHasher, Hash, RandomState};
 /// failure ([`TryReserveError`], returned by the inherent `HashSet::try_reserve`)
 /// or a clone failure ([`TryCloneError`]) when an element's `try_clone` cannot
 /// allocate its internal buffers.
-pub enum TryHashSetError {    /// A capacity reservation on the hash set failed (overflow or OOM).
+pub enum TryHashSetError {
+    /// A capacity reservation on the hash set failed (overflow or OOM).
     Reserve(TryReserveError),
     /// An element clone failed during a method that requires [`TryClone`].
-    Clone(TryCloneError),    /// A logic-level failure with a static diagnostic message.
+    Clone(TryCloneError),
+    /// A logic-level failure with a static diagnostic message.
     Other(&'static str),
 }
 
@@ -96,7 +98,66 @@ impl From<TryDefaultError> for TryHashSetError {
     }
 }
 
+/// Error for fallible hash set operations whose failure modes are limited to a
+/// capacity reservation ([`TryReserveError`]) or an element clone failure
+/// ([`TryCloneError`]).
+///
+/// Covers `try_extend_from_slice`, `try_shrink_to(_fit)`, and the
+/// [`TryExtend`](crate::try_extend::TryExtend) /
+/// [`TryExtendFromSlice`](crate::try_extend::TryExtendFromSlice) impls — any
+/// operation that can only fail by reserving capacity or cloning elements.
+/// Unlike [`TryHashSetError`], this has no `Other` variant because these
+/// operations have no logic-level failure mode.
+pub enum TryHashSetWithCloneError {
+    /// A capacity reservation on the hash set failed (overflow or OOM).
+    Reserve(TryReserveError),
+    /// An element clone failed during a method that requires [`TryClone`].
+    Clone(TryCloneError),
+}
 
+impl fmt::Debug for TryHashSetWithCloneError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        TryDebug::try_fmt(self, f)
+    }
+}
+
+impl fmt::Display for TryHashSetWithCloneError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        TryDisplay::try_fmt(self, f)
+    }
+}
+
+impl From<TryReserveError> for TryHashSetWithCloneError {
+    fn from(err: TryReserveError) -> Self {
+        Self::Reserve(err)
+    }
+}
+
+impl From<TryCloneError> for TryHashSetWithCloneError {
+    fn from(err: TryCloneError) -> Self {
+        Self::Clone(err)
+    }
+}
+
+impl TryDebug for TryHashSetWithCloneError {
+    fn try_fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        use crate::errors::uniform as u;
+        match self {
+            Self::Reserve(e) => u::debug_field(f, "TryHashSetWithCloneError::Reserve", e),
+            Self::Clone(e) => u::debug_field(f, "TryHashSetWithCloneError::Clone", e),
+        }
+    }
+}
+
+impl TryDisplay for TryHashSetWithCloneError {
+    fn try_fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        use crate::errors::uniform as u;
+        match self {
+            Self::Reserve(e) => u::display_delegated(f, "hash set", e),
+            Self::Clone(e) => u::display_delegated(f, "hash set", e),
+        }
+    }
+}
 
 // ── Trait ─────────────────────────────────────────────────────────────────────
 
@@ -212,45 +273,15 @@ pub trait TryHashSet<T, S = RandomState>: Sized {
 
     /// Fallibly extend the set with all values from an iterator source.
     ///
-    /// Accepts anything that implements [`ResumableSource`](crate::recovery::ResumableSource).
-    /// On reserve failure, returns a [`Resumable`](crate::recovery::Resumable)
-    /// containing any consumed-but-uncommitted element and the remainder of the
-    /// iterator, which the caller can pass right back in.
-    // FIXME: trait implementation file already exists
-    fn try_extend<Src>(
-        &mut self,
-        source: Src,
-    ) -> Result<(), (crate::recovery::Resumable<Src::Inner>, TryReserveError)>
-    where
-        Src: crate::recovery::ResumableSource<Item = T>;
+    /// Provided by [`TryExtend`](crate::try_extend::TryExtend) — see that trait
+    /// for the full contract. The error type is [`TryHashSetWithCloneError`]
+    /// paired with a [`Resumable`](crate::recovery::Resumable) remainder.
 
     /// Fallibly extend the set by cloning elements from a slice.
     ///
-    /// Returns [`TryHashSetError::Reserve`] on capacity failure or
-    /// [`TryHashSetError::Clone`] if an element clone fails.
-    // FIXME: trait implementation file already exists
-    fn try_extend_from_slice(&mut self, other: &[T]) -> Result<(), TryHashSetError>
-    where
-        T: Eq + Hash + TryClone;
-
-    /// Alias for [`Self::try_extend`].
-    fn fallible_extend<Src>(
-        &mut self,
-        source: Src,
-    ) -> Result<(), (crate::recovery::Resumable<Src::Inner>, TryReserveError)>
-    where
-        Src: crate::recovery::ResumableSource<Item = T>,
-    {
-        Self::try_extend(self, source)
-    }
-
-    /// Alias for [`Self::try_extend_from_slice`].
-    fn fallible_extend_from_slice(&mut self, other: &[T]) -> Result<(), TryHashSetError>
-    where
-        T: Eq + Hash + TryClone,
-    {
-        Self::try_extend_from_slice(self, other)
-    }
+    /// Provided by [`TryExtendFromSlice`](crate::try_extend::TryExtendFromSlice)
+    /// — see that trait for the full contract. On failure the error carries the
+    /// unprocessed tail of the input slice alongside a [`TryHashSetWithCloneError`].
 
     // ── Capacity / shrink ───────────────────────────────────────────────────
 
@@ -258,11 +289,11 @@ pub trait TryHashSet<T, S = RandomState>: Sized {
     ///
     /// Rebuilds the internal table so that it holds approximately `len` elements.
     /// Requires `S: TryClone` so the hasher can be safely duplicated for the new
-    /// table without risking a panic. Returns [`TryHashSetError::Reserve`] if the
-    /// allocation for the rebuilt table fails, or [`TryHashSetError::Clone`] if
-    /// duplicating the hasher factory fails. Equivalent to
-    /// [`HashSet::shrink_to_fit`] but fallible.
-    fn try_shrink_to_fit(&mut self) -> Result<(), TryHashSetError>
+    /// table without risking a panic. Returns [`TryHashSetWithCloneError::Reserve`]
+    /// if the allocation for the rebuilt table fails, or
+    /// [`TryHashSetWithCloneError::Clone`] if duplicating the hasher factory fails.
+    /// Equivalent to [`HashSet::shrink_to_fit`] but fallible.
+    fn try_shrink_to_fit(&mut self) -> Result<(), TryHashSetWithCloneError>
     where
         S: TryClone;
 
@@ -272,10 +303,10 @@ pub trait TryHashSet<T, S = RandomState>: Sized {
     /// If the current capacity is already less than or equal to `min_capacity`,
     /// does nothing and returns `Ok(())`. Otherwise rebuilds the table with the
     /// target capacity. Requires `S: TryClone` so the hasher can be safely
-    /// duplicated. Returns [`TryHashSetError::Reserve`] if the allocation fails,
-    /// or [`TryHashSetError::Clone`] if duplicating the hasher factory fails.
-    /// Equivalent to [`HashSet::shrink_to`] but fallible.
-    fn try_shrink_to(&mut self, min_capacity: usize) -> Result<(), TryHashSetError>
+    /// duplicated. Returns [`TryHashSetWithCloneError::Reserve`] if the allocation
+    /// fails, or [`TryHashSetWithCloneError::Clone`] if duplicating the hasher
+    /// factory fails. Equivalent to [`HashSet::shrink_to`] but fallible.
+    fn try_shrink_to(&mut self, min_capacity: usize) -> Result<(), TryHashSetWithCloneError>
     where
         S: TryClone;
 
@@ -283,11 +314,11 @@ pub trait TryHashSet<T, S = RandomState>: Sized {
     ///
     /// Rebuilds the internal table so that it holds approximately `len` elements.
     /// Requires `S: TryClone` so the hasher can be safely duplicated for the new
-    /// table without risking a panic. Returns [`TryHashSetError::Reserve`] if the
-    /// allocation for the rebuilt table fails, or [`TryHashSetError::Clone`] if
-    /// duplicating the hasher factory fails. Equivalent to
-    /// [`HashSet::shrink_to_fit`] but fallible.
-    fn fallible_shrink_to_fit(&mut self) -> Result<(), TryHashSetError>
+    /// table without risking a panic. Returns [`TryHashSetWithCloneError::Reserve`]
+    /// if the allocation for the rebuilt table fails, or
+    /// [`TryHashSetWithCloneError::Clone`] if duplicating the hasher factory fails.
+    /// Equivalent to [`HashSet::shrink_to_fit`] but fallible.
+    fn fallible_shrink_to_fit(&mut self) -> Result<(), TryHashSetWithCloneError>
     where
         S: TryClone,
     {
@@ -300,10 +331,10 @@ pub trait TryHashSet<T, S = RandomState>: Sized {
     /// If the current capacity is already less than or equal to `min_capacity`,
     /// does nothing and returns `Ok(())`. Otherwise rebuilds the table with the
     /// target capacity. Requires `S: TryClone` so the hasher can be safely
-    /// duplicated. Returns [`TryHashSetError::Reserve`] if the allocation fails,
-    /// or [`TryHashSetError::Clone`] if duplicating the hasher factory fails.
-    /// Equivalent to [`HashSet::shrink_to`] but fallible.
-    fn fallible_shrink_to(&mut self, min_capacity: usize) -> Result<(), TryHashSetError>
+    /// duplicated. Returns [`TryHashSetWithCloneError::Reserve`] if the allocation
+    /// fails, or [`TryHashSetWithCloneError::Clone`] if duplicating the hasher
+    /// factory fails. Equivalent to [`HashSet::shrink_to`] but fallible.
+    fn fallible_shrink_to(&mut self, min_capacity: usize) -> Result<(), TryHashSetWithCloneError>
     where
         S: TryClone,
     {
@@ -400,82 +431,17 @@ impl<T: Eq + Hash, S: BuildHasher> TryHashSet<T, S> for HashSet<T, S> {
         }
     }
 
-    // ── Extension ───────────────────────────────────────────────────────────
-
-    fn try_extend<Src>(
-        &mut self,
-        source: Src,
-    ) -> Result<(), (crate::recovery::Resumable<Src::Inner>, TryReserveError)>
-    where
-        Src: crate::recovery::ResumableSource<Item = T>,
-    {
-        use crate::recovery::Resumable;
-
-        let (head, mut iter) = source.safe_into_iter();
-
-        if let Some(value) = head {
-            if self.len() == self.capacity()
-                && let Err(e) = self.try_reserve(1)
-            {
-                return Err((Resumable::new(value, iter), e));
-            }
-            self.insert(value);
-        }
-
-        let (lower, _) = iter.size_hint();
-        if lower > 0
-            && let Err(e) = self.try_reserve(lower)
-        {
-            return Err((Resumable::from_remainder(iter), e));
-        }
-        while let Some(value) = iter.next() {
-            if self.len() == self.capacity()
-                && let Err(e) = self.try_reserve(1)
-            {
-                return Err((Resumable::new(value, iter), e));
-            }
-            self.insert(value);
-        }
-        Ok(())
-    }
-
-    fn try_extend_from_slice(&mut self, other: &[T]) -> Result<(), TryHashSetError>
-    where
-        T: Eq + Hash + TryClone,
-    {
-        if other.is_empty() {
-            return Ok(());
-        }
-        let len_before = self.len();
-        self.try_reserve(other.len())
-            .map_err(TryHashSetError::Reserve)?;
-        for elem in other {
-            match elem.try_clone() {
-                Ok(cloned) => {
-                    self.insert(cloned);
-                }
-                Err(e) => {
-                    // Drain the elements we already inserted.
-                    for _ in 0..self.len().saturating_sub(len_before) {
-                        self.drain().next();
-                    }
-                    return Err(TryHashSetError::Clone(e));
-                }
-            }
-        }
-        Ok(())
-    }
 
     // ── Capacity / shrink ───────────────────────────────────────────────────
 
-    fn try_shrink_to_fit(&mut self) -> Result<(), TryHashSetError>
+    fn try_shrink_to_fit(&mut self) -> Result<(), TryHashSetWithCloneError>
     where
         S: TryClone,
     {
         Self::try_shrink_to(self, self.len())
     }
 
-    fn try_shrink_to(&mut self, min_capacity: usize) -> Result<(), TryHashSetError>
+    fn try_shrink_to(&mut self, min_capacity: usize) -> Result<(), TryHashSetWithCloneError>
     where
         S: TryClone,
     {
@@ -483,11 +449,14 @@ impl<T: Eq + Hash, S: BuildHasher> TryHashSet<T, S> for HashSet<T, S> {
         if self.capacity() <= target {
             return Ok(());
         }
-        let hasher = self.hasher().try_clone().map_err(TryHashSetError::from)?;
+        let hasher = self
+            .hasher()
+            .try_clone()
+            .map_err(TryHashSetWithCloneError::from)?;
         let mut new_set = HashSet::with_capacity_and_hasher(0, hasher);
         new_set
             .try_reserve(target)
-            .map_err(TryHashSetError::Reserve)?;
+            .map_err(TryHashSetWithCloneError::Reserve)?;
         for v in self.drain() {
             new_set.insert(v);
         }
@@ -591,6 +560,7 @@ impl<T: crate::try_fmt::TryDebug, S> crate::try_fmt::TryDebug for HashSet<T, S> 
 mod tests {
     use super::*;
     use crate::alloc::TryReserveErrorExt;
+    use crate::try_extend::{TryExtend, TryExtendFromSlice};
     use lang_alloc::format;
     use lang_alloc::string::String;
     use lang_alloc::string::ToString;
@@ -671,7 +641,10 @@ mod tests {
         ];
         for err in errs.iter() {
             let got = render_trydebug(err);
-            assert!(got.contains("TryHashSetError::"), "missing type tag in {got:?}");
+            assert!(
+                got.contains("TryHashSetError::"),
+                "missing type tag in {got:?}"
+            );
             let tdisp = render_trydisplay(err);
             assert_eq!(tdisp, render_display(err), "TryDisplay must match Display");
         }
@@ -752,8 +725,7 @@ mod tests {
     #[test]
     fn fallible_insert_give_back_error_type_shape() {
         let mut set: HashSet<i32> = HashSet::new();
-        let result: Result<bool, (i32, TryReserveError)> =
-            set.fallible_insert_give_back(1);
+        let result: Result<bool, (i32, TryReserveError)> = set.fallible_insert_give_back(1);
         assert!(result.is_ok());
     }
 
@@ -957,7 +929,8 @@ mod tests {
     fn extend_from_slice_rollback_on_failure_type() {
         let mut set: HashSet<Vec<u8>> = HashSet::new();
         let slice: &[Vec<u8>] = &[vec![1]];
-        let result: Result<(), TryHashSetError> = set.try_extend_from_slice(slice);
+        let result: Result<(), (&[Vec<u8>], TryHashSetWithCloneError)> =
+            set.try_extend_from_slice(slice);
         assert!(result.is_ok());
         assert!(set.contains(&vec![1]));
     }
@@ -1059,95 +1032,4 @@ mod tests {
 
     // ── Explicit rollback tests (mid-operation clone failure) ───────────────
 
-    #[test]
-    fn extend_from_slice_rollback_on_mid_way_clone_failure() {
-        // try_extend_from_slice on HashSet<String> reserves capacity upfront,
-        // then clones each element. A mid-way clone failure must drain all
-        // elements already inserted during this call.
-        use lang_alloc::string::String;
-
-        let source: Vec<String> = vec![
-            "item0".into(),
-            "item1".into(),
-            "item2".into(),
-            "item3".into(),
-            "item4".into(),
-            "item5".into(),
-            "item6".into(),
-            "item7".into(),
-            "item8".into(),
-            "item9".into(),
-        ];
-        let len_source = source.len();
-
-        let mut set: HashSet<String> = HashSet::from(["pre0".into(), "pre1".into(), "pre2".into()]);
-        let len_before = set.len();
-
-        let r: Result<(), TryHashSetError> = with_policy(FailPolicy::fail_nth_alloc(2), || {
-            <HashSet<String> as TryHashSet<String, RandomState>>::try_extend_from_slice(
-                &mut set, &source,
-            )
-        });
-
-        match r {
-            Err(TryHashSetError::Clone(_)) => {
-                assert_eq!(
-                    set.len(),
-                    len_before,
-                    "drain rollback did not restore length: expected {}, got {}",
-                    len_before,
-                    set.len()
-                );
-                // Pre-existing entries must be intact.
-                assert!(set.contains("pre0"));
-                assert!(set.contains("pre1"));
-                assert!(set.contains("pre2"));
-                // No source items should appear.
-                for s in &source {
-                    assert!(
-                        !set.contains(s.as_str()),
-                        "source item found in set after rollback"
-                    );
-                }
-            }
-            Ok(()) => {
-                assert_eq!(set.len(), len_before + len_source);
-            }
-            Err(other) => {
-                panic!("unexpected error variant: {:?}", other);
-            }
-        }
-    }
-
-    #[test]
-    fn extend_from_slice_rollback_empty_start() {
-        // Start empty so any remaining entries after rollback are visible.
-        use lang_alloc::string::String;
-
-        let source: Vec<String> = vec![
-            "x0xxxxxxxx".into(),
-            "x1xxxxxxxx".into(),
-            "x2xxxxxxxx".into(),
-            "x3xxxxxxxx".into(),
-            "x4xxxxxxxx".into(),
-            "x5xxxxxxxx".into(),
-            "x6xxxxxxxx".into(),
-            "x7xxxxxxxx".into(),
-            "x8xxxxxxxx".into(),
-            "x9xxxxxxxx".into(),
-        ];
-        let mut set: HashSet<String> = HashSet::new();
-
-        let _: Result<(), TryHashSetError> = with_policy(FailPolicy::fail_nth_alloc(3), || {
-            <HashSet<String> as TryHashSet<String, RandomState>>::try_extend_from_slice(
-                &mut set, &source,
-            )
-        });
-
-        assert!(
-            set.is_empty(),
-            "set should be empty after full rollback, but has {} entries",
-            set.len()
-        );
-    }
 }

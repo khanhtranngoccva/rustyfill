@@ -12,8 +12,7 @@ mod dashset_extend;
 pub mod mapref;
 
 pub use dashmap_::{
-    TryDashMap, TryDashMapError, TryDashMapInsertUniqueError,
-    TryDashMapInsertUniqueNonblockError, TryDashMapNonblockError,
-    TryDashMapNonblockGiveBackError,
+    TryDashMap, TryDashMapConstructionError, TryDashMapError, TryDashMapInsertUniqueError,
+    TryDashMapInsertUniqueNonblockError, TryDashMapNonblockError, TryDashMapWithCloneError,
 };
-pub use dashset_::{TryDashSet, TryDashSetError};
+pub use dashset_::{TryDashSet, TryDashSetError, TryDashSetWithCloneError};

@@ -114,12 +114,13 @@ impl TryDisplay for ConcurrentHashMapError {
 }
 
 /// Error returned by non-blocking [`ConcurrentHashMap`] operations.
+/// Error returned by non-blocking [`ConcurrentHashMap`] operations.
+///
+/// Only two failure modes are possible for nonblocking entry paths:
+/// a capacity reservation failure or shard lock contention. Element cloning
+/// and other fallible operations do not occur in these code paths.
 pub enum ConcurrentHashMapNonblockError {
-
     Reserve(TryReserveError),
-    Clone(TryCloneError),
-
-    Other(&'static str),
     Locked,
 }
 
@@ -135,21 +136,11 @@ impl fmt::Display for ConcurrentHashMapNonblockError {
     }
 }
 
-impl From<ConcurrentHashMapError> for ConcurrentHashMapNonblockError {
-    fn from(e: ConcurrentHashMapError) -> Self {
-        match e {            ConcurrentHashMapError::Reserve(r) => Self::Reserve(r),
-            ConcurrentHashMapError::Clone(c) => Self::Clone(c),            ConcurrentHashMapError::Other(m) => Self::Other(m),
-        }
-    }
-}
-
 impl TryDebug for ConcurrentHashMapNonblockError {
     fn try_fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         use crate::errors::uniform as u;
         match self {
             Self::Reserve(e) => u::debug_field(f, "ConcurrentHashMapNonblockError::Reserve", e),
-            Self::Clone(e) => u::debug_field(f, "ConcurrentHashMapNonblockError::Clone", e),
-            Self::Other(msg) => u::debug_field(f, "ConcurrentHashMapNonblockError::Other", msg),
             Self::Locked => u::debug_unit(f, "ConcurrentHashMapNonblockError::Locked"),
         }
     }
@@ -160,8 +151,6 @@ impl TryDisplay for ConcurrentHashMapNonblockError {
         use crate::errors::uniform as u;
         match self {
             Self::Reserve(e) => u::display_delegated(f, "concurrent hash map", e),
-            Self::Clone(e) => u::display_delegated(f, "concurrent hash map", e),
-            Self::Other(msg) => u::display_fixed(f, "concurrent hash map", msg),
             Self::Locked => u::display_fixed(f, "concurrent hash map", "shard locked"),
         }
     }
@@ -221,6 +210,73 @@ impl From<TryConcurrentHashMapInsertUniqueError> for ConcurrentHashMapError {
     }
 }
 
+// ── Narrow construction error ─────────────────────────────────────────────────
+
+/// Error returned by [`ConcurrentHashMap`] constructors.
+///
+/// Construction can only fail via a capacity/shard-array reservation, an invalid
+/// shard count, or hasher creation; it never clones elements, so the
+/// [`ConcurrentHashMapError::Clone`] variant is not possible here.
+pub enum ConcurrentHashMapConstructionError {
+    Reserve(TryReserveError),
+    /// Hasher construction failed via [`TryDefault`].
+    Default(TryDefaultError),
+    /// The provided shard count was invalid (not a power of two or less than 2).
+    InvalidShards,
+}
+
+impl fmt::Debug for ConcurrentHashMapConstructionError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        TryDebug::try_fmt(self, f)
+    }
+}
+
+impl fmt::Display for ConcurrentHashMapConstructionError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        TryDisplay::try_fmt(self, f)
+    }
+}
+
+impl TryDebug for ConcurrentHashMapConstructionError {
+    fn try_fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        use crate::errors::uniform as u;
+        match self {
+            Self::Reserve(e) => u::debug_field(f, "ConcurrentHashMapConstructionError::Reserve", e),
+            Self::Default(e) => u::debug_field(f, "ConcurrentHashMapConstructionError::Default", e),
+            Self::InvalidShards => u::debug_unit(f, "ConcurrentHashMapConstructionError::InvalidShards"),
+        }
+    }
+}
+
+impl TryDisplay for ConcurrentHashMapConstructionError {
+    fn try_fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        use crate::errors::uniform as u;
+        match self {
+            Self::Reserve(e) => u::display_delegated(f, "concurrent hash map", e),
+            Self::Default(e) => u::display_delegated(f, "concurrent hash map", e),
+            Self::InvalidShards => u::display_fixed(f, "concurrent hash map", "shard count must be a power of two and >= 2"),
+        }
+    }
+}
+
+impl From<ConcurrentHashMapConstructionError> for ConcurrentHashMapError {
+    fn from(e: ConcurrentHashMapConstructionError) -> Self {
+        match e {
+            ConcurrentHashMapConstructionError::Reserve(r) => Self::Reserve(r),
+            ConcurrentHashMapConstructionError::Default(d) => d.into(),
+            ConcurrentHashMapConstructionError::InvalidShards => {
+                Self::Other("shard count must be a power of two and >= 2")
+            }
+        }
+    }
+}
+
+impl From<TryDefaultError> for ConcurrentHashMapConstructionError {
+    fn from(e: TryDefaultError) -> Self {
+        Self::Default(e)
+    }
+}
+
 // ── ConcurrentHashMap ─────────────────────────────────────────────────────────
 
 /// A concurrent hash map backed by sharded `RwLock<RawTable>` instances.
@@ -252,24 +308,24 @@ unsafe impl<K: Eq + Hash + Send + Sync, V: Send + Sync, S: Send + Sync> Sync
 
 impl<K: Eq + Hash, V> ConcurrentHashMap<K, V, RandomState> {
     /// Fallibly construct an empty map with a default hasher and 32 shards.
-    pub fn try_new() -> Result<Self, ConcurrentHashMapError> {
+    pub fn try_new() -> Result<Self, ConcurrentHashMapConstructionError> {
         Self::try_with_shards(32)
     }
 
     /// Fallibly construct with capacity spread across 32 shards.
-    pub fn try_with_capacity(capacity: usize) -> Result<Self, ConcurrentHashMapError> {
+    pub fn try_with_capacity(capacity: usize) -> Result<Self, ConcurrentHashMapConstructionError> {
         Self::try_with_capacity_and_shards(capacity, 32)
     }
 
     // ── Aliases with `fallible_` prefix ────────────────────────────────────────
 
     /// Alias for [`Self::try_new`].
-    pub fn fallible_new() -> Result<Self, ConcurrentHashMapError> {
+    pub fn fallible_new() -> Result<Self, ConcurrentHashMapConstructionError> {
         Self::try_new()
     }
 
     /// Alias for [`Self::try_with_capacity`].
-    pub fn fallible_with_capacity(capacity: usize) -> Result<Self, ConcurrentHashMapError> {
+    pub fn fallible_with_capacity(capacity: usize) -> Result<Self, ConcurrentHashMapConstructionError> {
         Self::try_with_capacity(capacity)
     }
 }
@@ -280,7 +336,7 @@ impl<K: Eq + Hash, V, S: BuildHasher> ConcurrentHashMap<K, V, S> {
     /// Construct an empty map with the provided hasher and 32 shards.
     ///
     /// Equivalent to `DashMap::with_hasher`.
-    pub fn try_with_hasher(hasher: S) -> Result<Self, ConcurrentHashMapError> {
+    pub fn try_with_hasher(hasher: S) -> Result<Self, ConcurrentHashMapConstructionError> {
         Self::try_with_capacity_and_hasher_and_shards(0, hasher, 32)
     }
 
@@ -292,14 +348,14 @@ impl<K: Eq + Hash, V, S: BuildHasher> ConcurrentHashMap<K, V, S> {
     pub fn try_with_capacity_and_hasher(
         capacity: usize,
         hasher: S,
-    ) -> Result<Self, ConcurrentHashMapError> {
+    ) -> Result<Self, ConcurrentHashMapConstructionError> {
         Self::try_with_capacity_and_hasher_and_shards(capacity, hasher, 32)
     }
 
     // ── Construction with custom shard count ──
 
     /// Fallibly construct with a custom number of shards and a default hasher.
-    pub fn try_with_shards(shard_count: usize) -> Result<Self, ConcurrentHashMapError>
+    pub fn try_with_shards(shard_count: usize) -> Result<Self, ConcurrentHashMapConstructionError>
     where
         S: TryDefault,
     {
@@ -311,7 +367,7 @@ impl<K: Eq + Hash, V, S: BuildHasher> ConcurrentHashMap<K, V, S> {
     pub fn try_with_capacity_and_shards(
         capacity: usize,
         shard_count: usize,
-    ) -> Result<Self, ConcurrentHashMapError>
+    ) -> Result<Self, ConcurrentHashMapConstructionError>
     where
         S: TryDefault,
     {
@@ -323,7 +379,7 @@ impl<K: Eq + Hash, V, S: BuildHasher> ConcurrentHashMap<K, V, S> {
     pub fn try_with_hasher_and_shards(
         hasher: S,
         shard_count: usize,
-    ) -> Result<Self, ConcurrentHashMapError> {
+    ) -> Result<Self, ConcurrentHashMapConstructionError> {
         Self::try_with_capacity_and_hasher_and_shards(0, hasher, shard_count)
     }
 
@@ -332,11 +388,9 @@ impl<K: Eq + Hash, V, S: BuildHasher> ConcurrentHashMap<K, V, S> {
         capacity: usize,
         hasher: S,
         shard_count: usize,
-    ) -> Result<Self, ConcurrentHashMapError> {
+    ) -> Result<Self, ConcurrentHashMapConstructionError> {
         if shard_count < 2 || !shard_count.is_power_of_two() {
-            return Err(ConcurrentHashMapError::Other(
-                "shard count must be a power of two and >= 2",
-            ));
+            return Err(ConcurrentHashMapConstructionError::InvalidShards);
         }
         // `shard_count` is a power of two in [2, usize::MAX], so its trailing
         // zero count lies in [1, BITS] and the subtraction cannot underflow.
@@ -344,10 +398,10 @@ impl<K: Eq + Hash, V, S: BuildHasher> ConcurrentHashMap<K, V, S> {
             .checked_sub(shard_count.trailing_zeros())
             .expect("trailing zeros <= BITS for nonzero power of two");
         let layout = lang_alloc::alloc::Layout::array::<Shard<K, V>>(shard_count)
-            .map_err(|_| ConcurrentHashMapError::Reserve(TryReserveErrorExt::new_capacity_overflow()))?;
+            .map_err(|_| ConcurrentHashMapConstructionError::Reserve(TryReserveErrorExt::new_capacity_overflow()))?;
         let ptr = unsafe { lang_alloc::alloc::alloc(layout) };
         if ptr.is_null() {
-            return Err(ConcurrentHashMapError::Reserve(TryReserveErrorExt::new_alloc(layout)));
+            return Err(ConcurrentHashMapConstructionError::Reserve(TryReserveErrorExt::new_alloc(layout)));
         }
 
         // Wrap immediately in a Box so Drop cleans up the allocation on panic.
@@ -381,7 +435,15 @@ impl<K: Eq + Hash, V, S: BuildHasher> ConcurrentHashMap<K, V, S> {
             shift,
         };
         if capacity > 0 {
-            map.try_reserve(capacity)?;
+            map.try_reserve(capacity)
+                .map_err(|e| match e {
+                    ConcurrentHashMapError::Reserve(r) => {
+                        ConcurrentHashMapConstructionError::Reserve(r)
+                    }
+                    // `try_reserve` only ever produces `Reserve`; any other
+                    // variant indicates an internal invariant violation.
+                    other => panic!("unexpected try_reserve error: {other:?}"),
+                })?;
         }
         Ok(map)
     }
@@ -587,41 +649,46 @@ impl<K: Eq + Hash, V, S: BuildHasher> ConcurrentHashMap<K, V, S> {
     // ── Removal ───────────────────────────────────────────────────────────
 
     /// Remove and return the value for the given key, if present.
-    // FIXME: should use borrowed key and should make the operation infallible?
-    pub fn try_remove(&self, key: K) -> Result<Option<V>, ConcurrentHashMapError>
+    ///
+    /// Accepts any type that borrows from `K` (e.g. `&str` for `K = String`).
+    /// This operation never allocates, so it is infallible.
+    pub fn remove<Q: ?Sized + Hash + Eq>(&self, key: &Q) -> Option<V>
     where
-        K: Eq + Hash,
+        K: Borrow<Q>,
     {
-        let hash = self.compute_hash_internal(&key);
+        let hash = self.hasher.hash_one(key);
         let idx = self.shard_index_internal(hash);
         let shard = self.shards.get_shard(idx);
         let mut guard = shard.write_table();
 
-        match guard.find(hash, |(k, _v)| *k == key) {
+        match guard.find(hash, |(k, _v)| k.borrow() == key) {
             Some(bucket) => {
                 let ((_, v), _) = unsafe { guard.remove(bucket) };
-                Ok(Some(v))
+                Some(v)
             }
-            None => Ok(None),
+            None => None,
         }
     }
 
     /// Remove and return the key-value pair for the given key, if present.
-    pub fn try_remove_entry(&self, key: K) -> Result<Option<(K, V)>, ConcurrentHashMapError>
+    ///
+    /// Accepts any type that borrows from `K` (e.g. `&str` for `K = String`).
+    /// This operation never allocates, so it is infallible.
+    pub fn remove_entry<Q: ?Sized + Hash + Eq>(&self, key: &Q) -> Option<(K, V)>
     where
-        K: Eq + Hash,
+        K: Borrow<Q>,
     {
-        let hash = self.compute_hash_internal(&key);
+        let hash = self.hasher.hash_one(key);
         let idx = self.shard_index_internal(hash);
         let shard = self.shards.get_shard(idx);
         let mut guard = shard.write_table();
 
-        match guard.find(hash, |(k, _v)| *k == key) {
+        match guard.find(hash, |(k, _v)| k.borrow() == key) {
             Some(bucket) => {
                 let ((k, v), _) = unsafe { guard.remove(bucket) };
-                Ok(Some((k, v)))
+                Some((k, v))
             }
-            None => Ok(None),
+            None => None,
         }
     }
 
@@ -678,7 +745,7 @@ impl<K: Eq + Hash, V, S: BuildHasher> ConcurrentHashMap<K, V, S> {
     // ── Aliases with `fallible_` prefix ────────────────────────────────────────
 
     /// Alias for [`Self::try_with_hasher`].
-    pub fn fallible_with_hasher(hasher: S) -> Result<Self, ConcurrentHashMapError> {
+    pub fn fallible_with_hasher(hasher: S) -> Result<Self, ConcurrentHashMapConstructionError> {
         Self::try_with_hasher(hasher)
     }
 
@@ -686,12 +753,12 @@ impl<K: Eq + Hash, V, S: BuildHasher> ConcurrentHashMap<K, V, S> {
     pub fn fallible_with_capacity_and_hasher(
         capacity: usize,
         hasher: S,
-    ) -> Result<Self, ConcurrentHashMapError> {
+    ) -> Result<Self, ConcurrentHashMapConstructionError> {
         Self::try_with_capacity_and_hasher(capacity, hasher)
     }
 
     /// Alias for [`Self::try_with_shards`].
-    pub fn fallible_with_shards(shard_count: usize) -> Result<Self, ConcurrentHashMapError>
+    pub fn fallible_with_shards(shard_count: usize) -> Result<Self, ConcurrentHashMapConstructionError>
     where
         S: TryDefault,
     {
@@ -702,7 +769,7 @@ impl<K: Eq + Hash, V, S: BuildHasher> ConcurrentHashMap<K, V, S> {
     pub fn fallible_with_capacity_and_shards(
         capacity: usize,
         shard_count: usize,
-    ) -> Result<Self, ConcurrentHashMapError>
+    ) -> Result<Self, ConcurrentHashMapConstructionError>
     where
         S: TryDefault,
     {
@@ -713,7 +780,7 @@ impl<K: Eq + Hash, V, S: BuildHasher> ConcurrentHashMap<K, V, S> {
     pub fn fallible_with_hasher_and_shards(
         hasher: S,
         shard_count: usize,
-    ) -> Result<Self, ConcurrentHashMapError> {
+    ) -> Result<Self, ConcurrentHashMapConstructionError> {
         Self::try_with_hasher_and_shards(hasher, shard_count)
     }
 
@@ -722,7 +789,7 @@ impl<K: Eq + Hash, V, S: BuildHasher> ConcurrentHashMap<K, V, S> {
         capacity: usize,
         hasher: S,
         shard_count: usize,
-    ) -> Result<Self, ConcurrentHashMapError> {
+    ) -> Result<Self, ConcurrentHashMapConstructionError> {
         Self::try_with_capacity_and_hasher_and_shards(capacity, hasher, shard_count)
     }
 
@@ -758,20 +825,20 @@ impl<K: Eq + Hash, V, S: BuildHasher> ConcurrentHashMap<K, V, S> {
         Self::try_insert_unique(self, key, value)
     }
 
-    /// Alias for [`Self::try_remove`].
-    pub fn fallible_remove(&self, key: K) -> Result<Option<V>, ConcurrentHashMapError>
+    /// Alias for [`Self::remove`].
+    pub fn fallible_remove<Q: ?Sized + Hash + Eq>(&self, key: &Q) -> Option<V>
     where
-        K: Eq + Hash,
+        K: Borrow<Q>,
     {
-        Self::try_remove(self, key)
+        self.remove(key)
     }
 
-    /// Alias for [`Self::try_remove_entry`].
-    pub fn fallible_remove_entry(&self, key: K) -> Result<Option<(K, V)>, ConcurrentHashMapError>
+    /// Alias for [`Self::remove_entry`].
+    pub fn fallible_remove_entry<Q: ?Sized + Hash + Eq>(&self, key: &Q) -> Option<(K, V)>
     where
-        K: Eq + Hash,
+        K: Borrow<Q>,
     {
-        Self::try_remove_entry(self, key)
+        self.remove_entry(key)
     }
 
     /// Alias for [`Self::try_entry`].
@@ -1043,8 +1110,16 @@ where
     fn try_clone(&self) -> Result<Self, TryCloneError> {
         let hasher = self.hasher.try_clone()?;
         let shard_count = self.shard_count();
-        let out = Self::try_with_hasher_and_shards(hasher, shard_count).map_err(|e| match e {            ConcurrentHashMapError::Reserve(r) => TryCloneError::Reserve(r),
-            ConcurrentHashMapError::Clone(c) => c,            ConcurrentHashMapError::Other(m) => TryCloneError::Other(m),
+        let out = Self::try_with_hasher_and_shards(hasher, shard_count).map_err(|e| match e {
+            ConcurrentHashMapConstructionError::Reserve(r) => TryCloneError::Reserve(r),
+            ConcurrentHashMapConstructionError::Default(d) => TryCloneError::Other(match d {
+                TryDefaultError::Reserve(_) => "hasher default failed (reserve)",
+                TryDefaultError::Alloc(_) => "hasher default failed (alloc)",
+                TryDefaultError::Other(m) => m,
+            }),
+            ConcurrentHashMapConstructionError::InvalidShards => {
+                TryCloneError::Other("shard count must be a power of two and >= 2")
+            }
         })?;
 
         for i in 0..self.shard_count() {
@@ -1138,8 +1213,6 @@ mod tests {
 
         let nonblocking = [
             ConcurrentHashMapNonblockError::Reserve(reserve_err()),
-            ConcurrentHashMapNonblockError::Clone(TryCloneError::Reserve(reserve_err())),
-            ConcurrentHashMapNonblockError::Other("n"),
             ConcurrentHashMapNonblockError::Locked,
         ];
         for err in nonblocking.iter() {
@@ -1162,38 +1235,6 @@ mod tests {
         assert!(map.shard_count() > 0);
     }
 
-    /// Drives every variant of `ConcurrentHashMapError` through the
-    /// `From<_> for ConcurrentHashMapNonblockError` conversion so each match
-    /// arm registers coverage.
-    #[test]
-    fn blocking_to_nonblock_from_covers_all_variants() {
-        let source = [
-            ConcurrentHashMapError::Reserve(TryReserveError::new_capacity_overflow()),
-            ConcurrentHashMapError::Clone(TryCloneError::Reserve(
-                TryReserveError::new_capacity_overflow(),
-            )),
-            ConcurrentHashMapError::Other("conv"),
-        ];
-        for e in source.iter() {
-            // Each construction is independent, so we can move by value here.
-            let nb: ConcurrentHashMapNonblockError = match e {
-                ConcurrentHashMapError::Reserve(_) => ConcurrentHashMapError::Reserve(
-                    TryReserveError::new_capacity_overflow(),
-                )
-                .into(),
-                ConcurrentHashMapError::Clone(_) => {
-                    ConcurrentHashMapError::Clone(TryCloneError::Reserve(
-                        TryReserveError::new_capacity_overflow(),
-                    ))
-                    .into()
-                }
-                ConcurrentHashMapError::Other(_) => {
-                    ConcurrentHashMapError::Other("conv").into()
-                }
-            };
-            let _ = format!("{nb}");
-        }
-    }
 
     /// Exercises `TryDebug for ConcurrentHashMap` (empty + populated) so the
     /// shard/bucket iteration arms register coverage.
@@ -1237,21 +1278,21 @@ mod tests {
     }
 
     #[test]
-    fn try_remove() {
+    fn remove() {
         let map: ConcurrentHashMap<&str, i32> = ConcurrentHashMap::try_new().unwrap();
         map.try_insert("x", 42).unwrap();
-        let val = map.try_remove("x").unwrap();
+        let val = map.remove(&"x");
         assert_eq!(val, Some(42));
         assert!(map.get(&"x").is_none());
-        let val = map.try_remove("x").unwrap();
+        let val = map.remove(&"x");
         assert!(val.is_none());
     }
 
     #[test]
-    fn try_remove_entry() {
+    fn remove_entry() {
         let map: ConcurrentHashMap<String, i32> = ConcurrentHashMap::try_new().unwrap();
         map.try_insert("hello".to_string(), 7).unwrap();
-        let entry = map.try_remove_entry("hello".to_string()).unwrap();
+        let entry = map.remove_entry("hello");
         assert_eq!(entry, Some(("hello".to_string(), 7)));
     }
 

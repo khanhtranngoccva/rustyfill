@@ -23,8 +23,8 @@ pub use crate::declare_concurrent_hash_map;
 pub use entry::{Entry, OccupiedEntry, VacantEntry};
 pub use iter::{Iter, IterError, IterMut};
 pub use map::{
-    ConcurrentHashMap, ConcurrentHashMapError, ConcurrentHashMapNonblockError,
-    TryConcurrentHashMapInsertUniqueError,
+    ConcurrentHashMap, ConcurrentHashMapConstructionError, ConcurrentHashMapError,
+    ConcurrentHashMapNonblockError, TryConcurrentHashMapInsertUniqueError,
 };
 pub use refs::{Ref, RefMulti, RefMut, RefMutMulti};
 pub use shard::Shard;

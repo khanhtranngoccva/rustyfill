@@ -174,7 +174,7 @@ impl<E> TryBTreeMapEntryWithError<E> {
 /// Slice extension clones each element before inserting, so there are two
 /// distinct failure modes: the clone itself can fail, or the subsequent
 /// insertion can hit OOM.
-pub enum TryBTreeMapExtendFromSliceError {
+pub enum TryBTreeWithCloneError {
     /// An element clone failed during a method that requires
     /// [`TryClone`](crate::try_clone::TryClone).
     Clone(crate::try_clone::TryCloneError),
@@ -182,52 +182,52 @@ pub enum TryBTreeMapExtendFromSliceError {
     Alloc(AllocError),
 }
 
-impl fmt::Debug for TryBTreeMapExtendFromSliceError {
+impl fmt::Debug for TryBTreeWithCloneError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         TryDebug::try_fmt(self, f)
     }
 }
 
-impl TryDebug for TryBTreeMapExtendFromSliceError {
+impl TryDebug for TryBTreeWithCloneError {
     fn try_fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Clone(e) => f
-                .try_debug_tuple("TryBTreeMapExtendFromSliceError::Clone")
+                .try_debug_tuple("TryBTreeWithCloneError::Clone")
                 .field(e)
                 .finish(),
             Self::Alloc(e) => f
-                .try_debug_tuple("TryBTreeMapExtendFromSliceError::Alloc")
+                .try_debug_tuple("TryBTreeWithCloneError::Alloc")
                 .field(e)
                 .finish(),
         }
     }
 }
 
-impl TryDisplay for TryBTreeMapExtendFromSliceError {
+impl TryDisplay for TryBTreeWithCloneError {
     fn try_fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::Clone(e) => write!(f, "B-tree map extend-from-slice failed: {}", e),
+            Self::Clone(e) => write!(f, "B-tree extend-from-slice failed: {}", e),
             Self::Alloc(_) => write!(
                 f,
-                "B-tree map extend-from-slice failed: heap allocation error"
+                "B-tree extend-from-slice failed: heap allocation error"
             ),
         }
     }
 }
 
-impl fmt::Display for TryBTreeMapExtendFromSliceError {
+impl fmt::Display for TryBTreeWithCloneError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         TryDisplay::try_fmt(self, f)
     }
 }
 
-impl From<crate::try_clone::TryCloneError> for TryBTreeMapExtendFromSliceError {
+impl From<crate::try_clone::TryCloneError> for TryBTreeWithCloneError {
     fn from(e: crate::try_clone::TryCloneError) -> Self {
         Self::Clone(e)
     }
 }
 
-impl From<AllocError> for TryBTreeMapExtendFromSliceError {
+impl From<AllocError> for TryBTreeWithCloneError {
     fn from(e: AllocError) -> Self {
         Self::Alloc(e)
     }

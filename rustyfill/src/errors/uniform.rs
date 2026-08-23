@@ -13,7 +13,7 @@
 //! helpers themselves are covered by the tests below (which construct real error
 //! variants directly). The std `Display` / `Debug` impls delegate to these traits.
 
-use crate::try_fmt::{TryDebug, helpers::FormatterExt};
+use crate::try_fmt::{TryDebug, TryDisplay, helpers::FormatterExt};
 use lang_core::fmt;
 
 /// Renders a fixed-message `TryDisplay` arm: `"{prefix} operation failed: {msg}"`.
@@ -28,10 +28,11 @@ pub(crate) fn display_fixed(f: &mut fmt::Formatter<'_>, prefix: &str, msg: &str)
 /// Renders a delegated `TryDisplay` arm: `"{prefix} operation failed: {e}"`, where the
 /// detail comes from the wrapped value's own `Display`.
 ///
-/// Used for the `Reserve`, `Clone`, and `Other` variants.
-// FIXME: use TryDisplay
+/// Used for the `Reserve`, `Clone`, and `Other` variants. The bound is `TryDisplay`
+/// (which implies `fmt::Display`) to semantically guarantee that the wrapped type's
+/// display formatting never implicitly allocates.
 #[inline]
-pub(crate) fn display_delegated<T: fmt::Display>(
+pub(crate) fn display_delegated<T: TryDisplay>(
     f: &mut fmt::Formatter<'_>,
     prefix: &str,
     e: &T,

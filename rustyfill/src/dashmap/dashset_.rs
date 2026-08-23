@@ -3,7 +3,7 @@
 //! To be implemented in a subsequent chunk, following the same pattern as
 //! [`TryDashMap`](super::dashmap_::TryDashMap).
 
-use crate::alloc::{AllocError, TryReserveError, TryReserveErrorExt};
+use crate::alloc::{TryReserveError, TryReserveErrorExt};
 use crate::dashmap::TryDashMap;
 use crate::prelude::{TryClone, TryDefault};
 use crate::try_clone::TryCloneError;
@@ -90,6 +90,63 @@ impl From<dashmap::TryReserveError> for TryDashSetError {
         // Record a minimal placeholder layout; the important signal (that an
         // allocation, not a capacity overflow, failed) is preserved.
         Self::Reserve(TryReserveErrorExt::new_alloc(Layout::new::<u8>()))
+    }
+}
+
+/// Error for fallible DashSet operations whose failure modes are limited to a
+/// capacity reservation ([`TryReserveError`]) or an element clone failure
+/// ([`TryCloneError`]).
+///
+/// Covers [`TryExtendFromSlice`](crate::try_extend::TryExtendFromSlice) and
+/// other slice-based operations that clone elements before inserting.
+pub enum TryDashSetWithCloneError {
+    /// A capacity reservation on the DashSet failed (overflow or OOM).
+    Reserve(TryReserveError),
+    /// An element clone failed during a method that requires [`TryClone`].
+    Clone(TryCloneError),
+}
+
+impl fmt::Debug for TryDashSetWithCloneError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        TryDebug::try_fmt(self, f)
+    }
+}
+
+impl fmt::Display for TryDashSetWithCloneError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        TryDisplay::try_fmt(self, f)
+    }
+}
+
+impl From<TryReserveError> for TryDashSetWithCloneError {
+    fn from(err: TryReserveError) -> Self {
+        Self::Reserve(err)
+    }
+}
+
+impl From<TryCloneError> for TryDashSetWithCloneError {
+    fn from(err: TryCloneError) -> Self {
+        Self::Clone(err)
+    }
+}
+
+impl TryDebug for TryDashSetWithCloneError {
+    fn try_fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        use crate::errors::uniform as u;
+        match self {
+            Self::Reserve(e) => u::debug_field(f, "TryDashSetWithCloneError::Reserve", e),
+            Self::Clone(e) => u::debug_field(f, "TryDashSetWithCloneError::Clone", e),
+        }
+    }
+}
+
+impl TryDisplay for TryDashSetWithCloneError {
+    fn try_fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        use crate::errors::uniform as u;
+        match self {
+            Self::Reserve(e) => u::display_delegated(f, "dash set", e),
+            Self::Clone(e) => u::display_delegated(f, "dash set", e),
+        }
     }
 }
 
@@ -413,16 +470,6 @@ impl<T: Eq + Hash, S: BuildHasher + TryClone> TryDashSet<T, S> for DashSet<T, S>
             Self::try_insert(&set, value)?;
         }
         Ok(set)
-    }
-}
-
-// ── Helpers ───────────────────────────────────────────────────────────────────
-
-/// Convert a [`crate::dashmap::TryDashMapError`] into a [`TryDashSetError`].
-fn map_error_to_set(e: crate::dashmap::TryDashMapError) -> TryDashSetError {
-    match e {        crate::dashmap::TryDashMapError::Reserve(r) => TryDashSetError::Reserve(r),
-        crate::dashmap::TryDashMapError::Clone(c) => TryDashSetError::Clone(c),
-        crate::dashmap::TryDashMapError::Other(m) => TryDashSetError::Other(m),
     }
 }
 

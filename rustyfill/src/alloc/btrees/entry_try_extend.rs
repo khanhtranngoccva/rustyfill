@@ -2,7 +2,7 @@
 //! and `BTreeSet<T>`.
 
 use crate::alloc::AllocError;
-use crate::alloc::btrees::entry::{TryBTreeMap, TryBTreeMapExtendFromSliceError, TryBTreeSet};
+use crate::alloc::btrees::entry::{TryBTreeMap, TryBTreeWithCloneError, TryBTreeSet};
 use crate::recovery::Resumable;
 use crate::try_clone::TryClone;
 use crate::try_extend::{TryExtend, TryExtendFromSlice};
@@ -11,12 +11,12 @@ use lang_core::cmp::Ord;
 impl<'s, K: Ord + TryClone, V: TryClone> TryExtendFromSlice<'s, (K, V)>
     for lang_alloc::collections::BTreeMap<K, V>
 {
-    type Error = TryBTreeMapExtendFromSliceError;
+    type Error = TryBTreeWithCloneError;
 
     fn try_extend_from_slice(
         &mut self,
         other: &'s [(K, V)],
-    ) -> Result<(), (&'s [(K, V)], TryBTreeMapExtendFromSliceError)> {
+    ) -> Result<(), (&'s [(K, V)], TryBTreeWithCloneError)> {
         for (i, (key, value)) in other.iter().enumerate() {
             match (key.try_clone(), value.try_clone()) {
                 (Ok(k), Ok(v)) => {
@@ -25,11 +25,11 @@ impl<'s, K: Ord + TryClone, V: TryClone> TryExtendFromSlice<'s, (K, V)>
                     if let Err((_, _, e)) =
                         <Self as TryBTreeMap<K, V>>::try_insert_give_back(self, k, v)
                     {
-                        return Err((&other[i..], TryBTreeMapExtendFromSliceError::Alloc(e)));
+                        return Err((&other[i..], TryBTreeWithCloneError::Alloc(e)));
                     }
                 }
                 (Err(e), _) | (_, Err(e)) => {
-                    return Err((&other[i..], TryBTreeMapExtendFromSliceError::Clone(e)));
+                    return Err((&other[i..], TryBTreeWithCloneError::Clone(e)));
                 }
             }
         }
@@ -65,12 +65,12 @@ impl<K: Ord, V> TryExtend<(K, V)> for lang_alloc::collections::BTreeMap<K, V> {
 }
 
 impl<'s, T: Ord + TryClone> TryExtendFromSlice<'s, T> for lang_alloc::collections::BTreeSet<T> {
-    type Error = TryBTreeMapExtendFromSliceError;
+    type Error = TryBTreeWithCloneError;
 
     fn try_extend_from_slice(
         &mut self,
         other: &'s [T],
-    ) -> Result<(), (&'s [T], TryBTreeMapExtendFromSliceError)> {
+    ) -> Result<(), (&'s [T], TryBTreeWithCloneError)> {
         for (i, elem) in other.iter().enumerate() {
             match elem.try_clone() {
                 Ok(v) => {
@@ -78,11 +78,11 @@ impl<'s, T: Ord + TryClone> TryExtendFromSlice<'s, T> for lang_alloc::collection
                     // dropped here) rather than silently consumed inside
                     // try_insert.
                     if let Err((_, e)) = <Self as TryBTreeSet<T>>::try_insert_give_back(self, v) {
-                        return Err((&other[i..], TryBTreeMapExtendFromSliceError::Alloc(e)));
+                        return Err((&other[i..], TryBTreeWithCloneError::Alloc(e)));
                     }
                 }
                 Err(e) => {
-                    return Err((&other[i..], TryBTreeMapExtendFromSliceError::Clone(e)));
+                    return Err((&other[i..], TryBTreeWithCloneError::Clone(e)));
                 }
             }
         }

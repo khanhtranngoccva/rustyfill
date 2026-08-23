@@ -1,7 +1,8 @@
 //! [`TryExtend`] / [`TryExtendFromSlice`] implementations for `HashMap<K, V, S>`.
 
+use crate::alloc::TryReserveError;
 use crate::recovery::Resumable;
-use crate::std::hashmap::TryHashMapError;
+use crate::std::hashmap::TryHashMapWithCloneError;
 use crate::try_clone::TryClone;
 use crate::try_extend::{TryExtend, TryExtendFromSlice};
 use lang_core::cmp::Eq;
@@ -14,17 +15,17 @@ where
     V: TryClone,
     S: BuildHasher,
 {
-    type Error = TryHashMapError;
+    type Error = TryHashMapWithCloneError;
 
     fn try_extend_from_slice(
         &mut self,
         other: &'s [(K, V)],
-    ) -> Result<(), (&'s [(K, V)], TryHashMapError)> {
+    ) -> Result<(), (&'s [(K, V)], TryHashMapWithCloneError)> {
         if other.is_empty() {
             return Ok(());
         }
         self.try_reserve(other.len())
-            .map_err(|e| (other, TryHashMapError::Reserve(e)))?;
+            .map_err(|e| (other, TryHashMapWithCloneError::Reserve(e)))?;
         for (i, (key, value)) in other.iter().enumerate() {
             match (key.try_clone(), value.try_clone()) {
                 (Ok(k), Ok(v)) => {
@@ -35,7 +36,7 @@ where
                     // entries in `other`, so draining would resurrect stale
                     // values. Return the remaining subslice starting at the
                     // failing index so the caller can retry with just that tail.
-                    return Err((&other[i..], TryHashMapError::Clone(e)));
+                    return Err((&other[i..], TryHashMapWithCloneError::Clone(e)));
                 }
             }
         }
@@ -48,12 +49,12 @@ where
     K: Eq + Hash,
     S: BuildHasher,
 {
-    type Error = TryHashMapError;
+    type Error = TryReserveError;
 
     fn try_extend<Src>(
         &mut self,
         source: Src,
-    ) -> Result<(), (Resumable<Src::Inner>, TryHashMapError)>
+    ) -> Result<(), (Resumable<Src::Inner>, TryReserveError)>
     where
         Src: crate::recovery::ResumableSource<Item = (K, V)>,
     {
@@ -63,7 +64,7 @@ where
             if self.len() == self.capacity()
                 && let Err(e) = self.try_reserve(1)
             {
-                return Err((Resumable::new(pair, iter), TryHashMapError::from(e)));
+                return Err((Resumable::new(pair, iter), e));
             }
             self.insert(pair.0, pair.1);
         }
@@ -72,13 +73,13 @@ where
         if lower > 0
             && let Err(e) = self.try_reserve(lower)
         {
-            return Err((Resumable::from_remainder(iter), TryHashMapError::from(e)));
+            return Err((Resumable::from_remainder(iter), e));
         }
         while let Some(pair) = iter.next() {
             if self.len() == self.capacity()
                 && let Err(e) = self.try_reserve(1)
             {
-                return Err((Resumable::new(pair, iter), TryHashMapError::from(e)));
+                return Err((Resumable::new(pair, iter), e));
             }
             self.insert(pair.0, pair.1);
         }

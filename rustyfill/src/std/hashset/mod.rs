@@ -7,4 +7,4 @@
 mod hashset_;
 mod try_extend;
 
-pub use hashset_::{TryHashSet, TryHashSetError};
+pub use hashset_::{TryHashSet, TryHashSetError, TryHashSetWithCloneError};

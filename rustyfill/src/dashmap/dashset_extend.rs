@@ -1,6 +1,7 @@
 //! [`TryExtend`] / [`TryExtendFromSlice`] implementations for `dashmap::DashSet`.
 
-use crate::dashmap::{TryDashSet, TryDashSetError};
+use crate::alloc::TryReserveError;
+use crate::dashmap::{TryDashSet, TryDashSetWithCloneError};
 use crate::recovery::Resumable;
 use crate::try_clone::TryClone;
 use crate::try_extend::{TryExtend, TryExtendFromSlice};
@@ -13,15 +14,22 @@ where
     T: Eq + Hash + TryClone,
     S: BuildHasher + TryClone,
 {
-    type Error = TryDashSetError;
+    type Error = TryDashSetWithCloneError;
 
-    fn try_extend_from_slice(&mut self, other: &'s [T]) -> Result<(), (&'s [T], TryDashSetError)> {
+    fn try_extend_from_slice(&mut self, other: &'s [T]) -> Result<(), (&'s [T], TryDashSetWithCloneError)> {
         let this: &Self = self;
         for (i, elem) in other.iter().enumerate() {
-            if let Err((_, e)) =
-                <Self as TryDashSet<T, S>>::try_insert_give_back(this, elem.clone())
-            {
-                return Err((&other[i..], TryDashSetError::Reserve(e)));
+            match elem.try_clone() {
+                Ok(cloned) => {
+                    if let Err((_, e)) =
+                        <Self as TryDashSet<T, S>>::try_insert_give_back(this, cloned)
+                    {
+                        return Err((&other[i..], TryDashSetWithCloneError::Reserve(e)));
+                    }
+                }
+                Err(e) => {
+                    return Err((&other[i..], TryDashSetWithCloneError::Clone(e)));
+                }
             }
         }
         Ok(())
@@ -33,12 +41,12 @@ where
     T: Eq + Hash,
     S: BuildHasher + TryClone,
 {
-    type Error = TryDashSetError;
+    type Error = TryReserveError;
 
     fn try_extend<Src>(
         &mut self,
         source: Src,
-    ) -> Result<(), (Resumable<Src::Inner>, TryDashSetError)>
+    ) -> Result<(), (Resumable<Src::Inner>, TryReserveError)>
     where
         Src: crate::recovery::ResumableSource<Item = T>,
     {
@@ -48,14 +56,14 @@ where
         if let Some(value) = head
             && let Err((v, e)) = Self::try_insert_give_back(this, value)
         {
-            return Err((Resumable::new(v, iter), TryDashSetError::Reserve(e)));
+            return Err((Resumable::new(v, iter), e));
         }
 
         while let Some(value) = iter.next() {
             match Self::try_insert_give_back(this, value) {
                 Ok(_) => {}
                 Err((v, e)) => {
-                    return Err((Resumable::new(v, iter), TryDashSetError::Reserve(e)));
+                    return Err((Resumable::new(v, iter), e));
                 }
             }
         }

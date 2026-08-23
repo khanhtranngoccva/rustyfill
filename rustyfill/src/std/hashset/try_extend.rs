@@ -1,7 +1,8 @@
 //! [`TryExtend`] / [`TryExtendFromSlice`] implementations for `HashSet<T, S>`.
 
+use crate::alloc::TryReserveError;
 use crate::recovery::Resumable;
-use crate::std::hashset::TryHashSetError;
+use crate::std::hashset::TryHashSetWithCloneError;
 use crate::try_clone::TryClone;
 use crate::try_extend::{TryExtend, TryExtendFromSlice};
 use lang_core::cmp::Eq;
@@ -13,15 +14,14 @@ where
     T: Eq + Hash + TryClone,
     S: BuildHasher,
 {
-    type Error = TryHashSetError;
+    type Error = TryHashSetWithCloneError;
 
-    // FIXME: no "Other" variant here, make it narrower (use TryHashSetWithCloneError or something)
-    fn try_extend_from_slice(&mut self, other: &'s [T]) -> Result<(), (&'s [T], TryHashSetError)> {
+    fn try_extend_from_slice(&mut self, other: &'s [T]) -> Result<(), (&'s [T], TryHashSetWithCloneError)> {
         if other.is_empty() {
             return Ok(());
         }
         self.try_reserve(other.len())
-            .map_err(|e| (other, TryHashSetError::Reserve(e)))?;
+            .map_err(|e| (other, TryHashSetWithCloneError::Reserve(e)))?;
         for (i, elem) in other.iter().enumerate() {
             match elem.try_clone() {
                 Ok(cloned) => {
@@ -31,7 +31,7 @@ where
                     // No rollback: return the remaining subslice starting at
                     // the failing index so the caller can retry with just that
                     // tail. Already-inserted elements are left in place.
-                    return Err((&other[i..], TryHashSetError::Clone(e)));
+                    return Err((&other[i..], TryHashSetWithCloneError::Clone(e)));
                 }
             }
         }
@@ -44,12 +44,12 @@ where
     T: Eq + Hash,
     S: BuildHasher,
 {
-    type Error = TryHashSetError;
+    type Error = TryReserveError;
 
     fn try_extend<Src>(
         &mut self,
         source: Src,
-    ) -> Result<(), (Resumable<Src::Inner>, TryHashSetError)>
+    ) -> Result<(), (Resumable<Src::Inner>, TryReserveError)>
     where
         Src: crate::recovery::ResumableSource<Item = T>,
     {
@@ -59,7 +59,7 @@ where
             if self.len() == self.capacity()
                 && let Err(e) = self.try_reserve(1)
             {
-                return Err((Resumable::new(value, iter), TryHashSetError::from(e)));
+                return Err((Resumable::new(value, iter), e));
             }
             self.insert(value);
         }
@@ -68,13 +68,13 @@ where
         if lower > 0
             && let Err(e) = self.try_reserve(lower)
         {
-            return Err((Resumable::from_remainder(iter), TryHashSetError::from(e)));
+            return Err((Resumable::from_remainder(iter), e));
         }
         while let Some(value) = iter.next() {
             if self.len() == self.capacity()
                 && let Err(e) = self.try_reserve(1)
             {
-                return Err((Resumable::new(value, iter), TryHashSetError::from(e)));
+                return Err((Resumable::new(value, iter), e));
             }
             self.insert(value);
         }
