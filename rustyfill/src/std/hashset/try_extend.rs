@@ -15,6 +15,7 @@ where
 {
     type Error = TryHashSetError;
 
+    // FIXME: no "Other" variant here, make it narrower (use TryHashSetWithCloneError or something)
     fn try_extend_from_slice(&mut self, other: &'s [T]) -> Result<(), (&'s [T], TryHashSetError)> {
         if other.is_empty() {
             return Ok(());
@@ -48,7 +49,7 @@ where
     fn try_extend<Src>(
         &mut self,
         source: Src,
-    ) -> Result<(), (TryHashSetError, Resumable<Src::Inner>)>
+    ) -> Result<(), (Resumable<Src::Inner>, TryHashSetError)>
     where
         Src: crate::recovery::ResumableSource<Item = T>,
     {
@@ -58,7 +59,7 @@ where
             if self.len() == self.capacity()
                 && let Err(e) = self.try_reserve(1)
             {
-                return Err((TryHashSetError::from(e), Resumable::new(value, iter)));
+                return Err((Resumable::new(value, iter), TryHashSetError::from(e)));
             }
             self.insert(value);
         }
@@ -67,13 +68,13 @@ where
         if lower > 0
             && let Err(e) = self.try_reserve(lower)
         {
-            return Err((TryHashSetError::from(e), Resumable::from_remainder(iter)));
+            return Err((Resumable::from_remainder(iter), TryHashSetError::from(e)));
         }
         while let Some(value) = iter.next() {
             if self.len() == self.capacity()
                 && let Err(e) = self.try_reserve(1)
             {
-                return Err((TryHashSetError::from(e), Resumable::new(value, iter)));
+                return Err((Resumable::new(value, iter), TryHashSetError::from(e)));
             }
             self.insert(value);
         }

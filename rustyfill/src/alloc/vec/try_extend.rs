@@ -1,19 +1,19 @@
 //! [`TryExtend`] / [`TryExtendFromSlice`] implementations for `Vec<T>`.
 
-use crate::alloc::vec::TryVecError;
+use crate::alloc::vec::TryVecWithCloneError;
 use crate::recovery::Resumable;
 use crate::try_clone::TryClone;
 use crate::try_extend::{TryExtend, TryExtendFromSlice};
 
 impl<'s, T: TryClone> TryExtendFromSlice<'s, T> for lang_alloc::vec::Vec<T> {
-    type Error = TryVecError;
+    type Error = TryVecWithCloneError;
 
-    fn try_extend_from_slice(&mut self, other: &'s [T]) -> Result<(), (&'s [T], TryVecError)> {
+    fn try_extend_from_slice(&mut self, other: &'s [T]) -> Result<(), (&'s [T], TryVecWithCloneError)> {
         if other.is_empty() {
             return Ok(());
         }
         self.try_reserve(other.len())
-            .map_err(|e| (other, TryVecError::Reserve(e)))?;
+            .map_err(|e| (other, TryVecWithCloneError::Reserve(e)))?;
         for (i, item) in other.iter().enumerate() {
             match item.try_clone() {
                 Ok(cloned) => {
@@ -22,7 +22,7 @@ impl<'s, T: TryClone> TryExtendFromSlice<'s, T> for lang_alloc::vec::Vec<T> {
                 Err(e) => {
                     // No rollback: elements pushed before the failure are kept.
                     // Return the unprocessed tail so the caller can retry.
-                    return Err((&other[i..], TryVecError::Clone(e)));
+                    return Err((&other[i..], TryVecWithCloneError::Clone(e)));
                 }
             }
         }
@@ -31,9 +31,9 @@ impl<'s, T: TryClone> TryExtendFromSlice<'s, T> for lang_alloc::vec::Vec<T> {
 }
 
 impl<T> TryExtend<T> for lang_alloc::vec::Vec<T> {
-    type Error = TryVecError;
+    type Error = TryVecWithCloneError;
 
-    fn try_extend<S>(&mut self, source: S) -> Result<(), (TryVecError, Resumable<S::Inner>)>
+    fn try_extend<S>(&mut self, source: S) -> Result<(), (Resumable<S::Inner>, TryVecWithCloneError)>
     where
         S: crate::recovery::ResumableSource<Item = T>,
     {
@@ -43,7 +43,7 @@ impl<T> TryExtend<T> for lang_alloc::vec::Vec<T> {
             if self.len() == self.capacity()
                 && let Err(e) = self.try_reserve(1)
             {
-                return Err((TryVecError::from(e), Resumable::new(h, iter)));
+                return Err((Resumable::new(h, iter), TryVecWithCloneError::from(e)));
             }
             self.push(h);
         }
@@ -52,13 +52,13 @@ impl<T> TryExtend<T> for lang_alloc::vec::Vec<T> {
         if lower > 0
             && let Err(e) = self.try_reserve(lower)
         {
-            return Err((TryVecError::from(e), Resumable::from_remainder(iter)));
+            return Err((Resumable::from_remainder(iter), TryVecWithCloneError::from(e)));
         }
         while let Some(item) = iter.next() {
             if self.len() == self.capacity()
                 && let Err(e) = self.try_reserve(1)
             {
-                return Err((TryVecError::from(e), Resumable::new(item, iter)));
+                return Err((Resumable::new(item, iter), TryVecWithCloneError::from(e)));
             }
             self.push(item);
         }

@@ -15,7 +15,7 @@
 //! variant returns the original buffer on any failure so no data is lost.
 
 use crate::alloc::TryReserveError;
-use crate::alloc::vec::{TrySlice, TryVecError};
+use crate::alloc::vec::{TrySlice, TryVecWithCloneError};
 use crate::try_clone::{TryClone, TryCloneError};
 use crate::try_default::{TryDefault, TryDefaultError};
 use crate::try_fmt::{TryDebug, TryDisplay, helpers::FormatterExt};
@@ -157,9 +157,8 @@ impl TryClone for CString {
         // as_bytes_with_nul always returns at least one byte (the nul), so it's
         // never empty. An empty CString is b"\0".
         let buf = bytes.try_to_vec().map_err(|e| match e {
-            TryVecError::Reserve(r) => TryCloneError::Reserve(r),
-            TryVecError::Clone(c) => c,
-            TryVecError::Other(m) => TryCloneError::Other(m),
+            TryVecWithCloneError::Reserve(r) => TryCloneError::Reserve(r),
+            TryVecWithCloneError::Clone(c) => c,
         })?;
 
         // SAFETY: buf was cloned from a valid CString's as_bytes_with_nul(),

@@ -11,4 +11,6 @@ mod vec_;
 #[cfg_attr(not(feature = "std"), expect(unused))]
 pub(crate) use slice_::SliceInitGuard;
 pub use slice_::TrySlice;
-pub use vec_::{TryVec, TryVecError};
+pub use vec_::{
+    TryVec, TryVecExtendFromWithinError, TryVecInsertError, TryVecWithCloneError,
+};

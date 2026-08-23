@@ -18,10 +18,10 @@ where
     fn try_extend_from_slice(&mut self, other: &'s [T]) -> Result<(), (&'s [T], TryDashSetError)> {
         let this: &Self = self;
         for (i, elem) in other.iter().enumerate() {
-            if let Err((_, err)) =
+            if let Err((_, e)) =
                 <Self as TryDashSet<T, S>>::try_insert_give_back(this, elem.clone())
             {
-                return Err((&other[i..], err));
+                return Err((&other[i..], TryDashSetError::Reserve(e)));
             }
         }
         Ok(())
@@ -38,7 +38,7 @@ where
     fn try_extend<Src>(
         &mut self,
         source: Src,
-    ) -> Result<(), (TryDashSetError, Resumable<Src::Inner>)>
+    ) -> Result<(), (Resumable<Src::Inner>, TryDashSetError)>
     where
         Src: crate::recovery::ResumableSource<Item = T>,
     {
@@ -48,14 +48,14 @@ where
         if let Some(value) = head
             && let Err((v, e)) = Self::try_insert_give_back(this, value)
         {
-            return Err((e, Resumable::new(v, iter)));
+            return Err((Resumable::new(v, iter), TryDashSetError::Reserve(e)));
         }
 
         while let Some(value) = iter.next() {
             match Self::try_insert_give_back(this, value) {
                 Ok(_) => {}
                 Err((v, e)) => {
-                    return Err((e, Resumable::new(v, iter)));
+                    return Err((Resumable::new(v, iter), TryDashSetError::Reserve(e)));
                 }
             }
         }

@@ -97,6 +97,59 @@ impl From<TryDefaultError> for TryHashMapError {
     }
 }
 
+/// Error for fallible hash map insertion when the key already exists or a
+/// capacity reservation fails.
+///
+/// Used by [`TryHashMap::try_insert_unique`]. The given-back key and value
+/// travel alongside this error as a tuple: `Result<(), (K, V, TryHashMapInsertUniqueError)>`.
+pub enum TryHashMapInsertUniqueError {
+    /// A capacity reservation failed.
+    Reserve(TryReserveError),
+    /// The key was already present in the map.
+    KeyAlreadyExists,
+}
+
+impl fmt::Debug for TryHashMapInsertUniqueError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        TryDebug::try_fmt(self, f)
+    }
+}
+
+impl fmt::Display for TryHashMapInsertUniqueError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        TryDisplay::try_fmt(self, f)
+    }
+}
+
+impl From<TryHashMapInsertUniqueError> for TryHashMapError {
+    fn from(e: TryHashMapInsertUniqueError) -> Self {
+        match e {
+            TryHashMapInsertUniqueError::Reserve(r) => Self::Reserve(r),
+            TryHashMapInsertUniqueError::KeyAlreadyExists => Self::Other("key already exists"),
+        }
+    }
+}
+
+impl TryDebug for TryHashMapInsertUniqueError {
+    fn try_fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        use crate::errors::uniform as u;
+        match self {
+            Self::Reserve(e) => u::debug_field(f, "TryHashMapInsertUniqueError::Reserve", e),
+            Self::KeyAlreadyExists => u::debug_unit(f, "TryHashMapInsertUniqueError::KeyAlreadyExists"),
+        }
+    }
+}
+
+impl TryDisplay for TryHashMapInsertUniqueError {
+    fn try_fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        use crate::errors::uniform as u;
+        match self {
+            Self::Reserve(e) => u::display_delegated(f, "hash map", e),
+            Self::KeyAlreadyExists => u::display_fixed(f, "hash map", "key already exists"),
+        }
+    }
+}
+
 // ── Trait ─────────────────────────────────────────────────────────────────────
 
 /// A trait for fallible hash map operations.
@@ -174,7 +227,7 @@ pub trait TryHashMap<K, V, S = RandomState>: Sized {
         since = "0.1.0",
         note = "conflicts with inherent HashMap::try_insert; use fallible_insert"
     )]
-    fn try_insert(&mut self, key: K, value: V) -> Result<Option<V>, TryHashMapError>
+    fn try_insert(&mut self, key: K, value: V) -> Result<Option<V>, TryReserveError>
     where
         K: Eq + Hash;
 
@@ -185,7 +238,7 @@ pub trait TryHashMap<K, V, S = RandomState>: Sized {
         &mut self,
         key: K,
         value: V,
-    ) -> Result<Option<V>, (K, V, TryHashMapError)>
+    ) -> Result<Option<V>, (K, V, TryReserveError)>
     where
         K: Eq + Hash;
 
@@ -195,11 +248,15 @@ pub trait TryHashMap<K, V, S = RandomState>: Sized {
     /// method never panics on out-of-memory.
     ///
     /// Returns `Ok(())` if the key was newly inserted. Returns
-    /// `Err((key, value, error))` if the insertion failed, giving ownership of
+    /// `Err((key, value, TryHashMapInsertUniqueError))` if the insertion failed, giving ownership of
     /// both `key` and `value` back to the caller. The error is
     /// [`TryHashMapError::Reserve`] on allocation failure or
     /// [`TryHashMapError::Other`] if the key already exists.
-    fn try_insert_unique(&mut self, key: K, value: V) -> Result<(), (K, V, TryHashMapError)>
+    fn try_insert_unique(
+        &mut self,
+        key: K,
+        value: V,
+    ) -> Result<(), (K, V, TryHashMapInsertUniqueError)>
     where
         K: Eq + Hash;
 
@@ -261,7 +318,7 @@ pub trait TryHashMap<K, V, S = RandomState>: Sized {
     /// This method replaces the deprecated [`Self::try_insert`] which shares its
     /// name with the inherent [`HashMap::try_insert`].
     #[allow(deprecated)]
-    fn fallible_insert(&mut self, key: K, value: V) -> Result<Option<V>, TryHashMapError>
+    fn fallible_insert(&mut self, key: K, value: V) -> Result<Option<V>, TryReserveError>
     where
         K: Eq + Hash,
     {
@@ -276,7 +333,7 @@ pub trait TryHashMap<K, V, S = RandomState>: Sized {
         &mut self,
         key: K,
         value: V,
-    ) -> Result<Option<V>, (K, V, TryHashMapError)>
+    ) -> Result<Option<V>, (K, V, TryReserveError)>
     where
         K: Eq + Hash,
     {
@@ -284,7 +341,11 @@ pub trait TryHashMap<K, V, S = RandomState>: Sized {
     }
 
     /// Alias for [`Self::try_insert_unique`].
-    fn fallible_insert_unique(&mut self, key: K, value: V) -> Result<(), (K, V, TryHashMapError)>
+    fn fallible_insert_unique(
+        &mut self,
+        key: K,
+        value: V,
+    ) -> Result<(), (K, V, TryHashMapInsertUniqueError)>
     where
         K: Eq + Hash,
     {
@@ -424,11 +485,12 @@ impl<K: Eq + Hash, V, S: BuildHasher> TryHashMap<K, V, S> for HashMap<K, V, S> {
 
     // ── Insertion ───────────────────────────────────────────────────────────
 
-    fn try_insert(&mut self, key: K, value: V) -> Result<Option<V>, TryHashMapError>
+    // FIXME: why not use try_entry?
+    fn try_insert(&mut self, key: K, value: V) -> Result<Option<V>, TryReserveError>
     where
         K: Eq + Hash,
     {
-        self.try_reserve(1).map_err(TryHashMapError::Reserve)?;
+        self.try_reserve(1)?;
         Ok(self.insert(key, value))
     }
 
@@ -436,29 +498,33 @@ impl<K: Eq + Hash, V, S: BuildHasher> TryHashMap<K, V, S> for HashMap<K, V, S> {
         &mut self,
         key: K,
         value: V,
-    ) -> Result<Option<V>, (K, V, TryHashMapError)>
+    ) -> Result<Option<V>, (K, V, TryReserveError)>
     where
         K: Eq + Hash,
     {
         match self.try_reserve(1) {
             Ok(()) => Ok(self.insert(key, value)),
-            Err(e) => Err((key, value, TryHashMapError::Reserve(e))),
+            Err(e) => Err((key, value, e)),
         }
     }
 
-    fn try_insert_unique(&mut self, key: K, value: V) -> Result<(), (K, V, TryHashMapError)>
+    fn try_insert_unique(
+        &mut self,
+        key: K,
+        value: V,
+    ) -> Result<(), (K, V, TryHashMapInsertUniqueError)>
     where
         K: Eq + Hash,
     {
         match self.try_reserve(1) {
             Ok(()) => {
                 if self.contains_key(&key) {
-                    return Err((key, value, TryHashMapError::Other("key already exists")));
+                    return Err((key, value, TryHashMapInsertUniqueError::KeyAlreadyExists));
                 }
                 self.insert(key, value);
                 Ok(())
             }
-            Err(e) => Err((key, value, TryHashMapError::Reserve(e))),
+            Err(e) => Err((key, value, TryHashMapInsertUniqueError::Reserve(e))),
         }
     }
 
@@ -752,10 +818,10 @@ mod tests {
         let mut map: HashMap<i32, &str> = HashMap::new();
         map.try_insert_unique(1, "one").unwrap();
         let result = map.try_insert_unique(1, "TWO");
-        let (returned_key, returned_val, err) = result.unwrap_err();
+        let (returned_key, returned_val, base_err) = result.unwrap_err();
         assert_eq!(returned_key, 1);
         assert_eq!(returned_val, "TWO");
-        matches!(err, TryHashMapError::Other(_));
+        assert!(matches!(base_err, TryHashMapInsertUniqueError::KeyAlreadyExists));
         assert_eq!(map.get(&1), Some(&"one"));
         assert_eq!(map.len(), 1);
     }
@@ -932,7 +998,7 @@ mod tests {
     #[test]
     fn fallible_insert_give_back_error_type_shape() {
         let mut map: HashMap<i32, i32> = HashMap::new();
-        let result: Result<Option<i32>, (i32, i32, TryHashMapError)> =
+        let result: Result<Option<i32>, (i32, i32, TryReserveError)> =
             map.fallible_insert_give_back(1, 2);
         assert!(result.is_ok());
     }

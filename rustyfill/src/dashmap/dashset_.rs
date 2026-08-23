@@ -39,6 +39,12 @@ impl fmt::Display for TryDashSetError {
     }
 }
 
+impl From<TryReserveError> for TryDashSetError {
+    fn from(err: TryReserveError) -> Self {
+        Self::Reserve(err)
+    }
+}
+
 impl From<TryCloneError> for TryDashSetError {
     fn from(err: TryCloneError) -> Self {
         Self::Clone(err)
@@ -86,6 +92,8 @@ impl From<dashmap::TryReserveError> for TryDashSetError {
         Self::Reserve(TryReserveErrorExt::new_alloc(Layout::new::<u8>()))
     }
 }
+
+
 
 // ── Trait ─────────────────────────────────────────────────────────────────────
 
@@ -136,13 +144,13 @@ pub trait TryDashSet<T, S = RandomState>: Sized {
     /// Fallibly insert the value into the set.
     ///
     /// Returns `true` if the value was not already present, `false` otherwise.
-    fn try_insert(&self, value: T) -> Result<bool, TryDashSetError>
+    fn try_insert(&self, value: T) -> Result<bool, TryReserveError>
     where
         T: Eq + Hash;
 
     /// Like [`Self::try_insert`] but returns ownership of `value` back on
     /// allocation failure.
-    fn try_insert_give_back(&self, value: T) -> Result<bool, (T, TryDashSetError)>
+    fn try_insert_give_back(&self, value: T) -> Result<bool, (T, TryReserveError)>
     where
         T: Eq + Hash;
 
@@ -173,7 +181,7 @@ pub trait TryDashSet<T, S = RandomState>: Sized {
     }
 
     /// Alias for [`Self::try_insert`].
-    fn fallible_insert(&self, value: T) -> Result<bool, TryDashSetError>
+    fn fallible_insert(&self, value: T) -> Result<bool, TryReserveError>
     where
         T: Eq + Hash,
     {
@@ -181,7 +189,7 @@ pub trait TryDashSet<T, S = RandomState>: Sized {
     }
 
     /// Alias for [`Self::try_insert_give_back`].
-    fn fallible_insert_give_back(&self, value: T) -> Result<bool, (T, TryDashSetError)>
+    fn fallible_insert_give_back(&self, value: T) -> Result<bool, (T, TryReserveError)>
     where
         T: Eq + Hash,
     {
@@ -201,7 +209,7 @@ pub trait TryDashSet<T, S = RandomState>: Sized {
     fn try_extend<Src>(
         &self,
         source: Src,
-    ) -> Result<(), (TryDashSetError, crate::recovery::Resumable<Src::Inner>)>
+    ) -> Result<(), (crate::recovery::Resumable<Src::Inner>, TryDashSetError)>
     where
         Src: crate::recovery::ResumableSource<Item = T>;
 
@@ -209,7 +217,7 @@ pub trait TryDashSet<T, S = RandomState>: Sized {
     fn fallible_extend<Src>(
         &self,
         source: Src,
-    ) -> Result<(), (TryDashSetError, crate::recovery::Resumable<Src::Inner>)>
+    ) -> Result<(), (crate::recovery::Resumable<Src::Inner>, TryDashSetError)>
     where
         Src: crate::recovery::ResumableSource<Item = T>,
     {
@@ -305,7 +313,7 @@ impl<T: Eq + Hash, S: BuildHasher + TryClone> TryDashSet<T, S> for DashSet<T, S>
     {
         let mut set = Self::try_new()?;
         if capacity > 0 {
-            convert_mut(&mut set).try_reserve(capacity).map_err(TryDashSetError::Reserve)?;
+            convert_mut(&mut set).try_reserve(capacity).map_err(TryDashSetError::from)?;
         }
         Ok(set)
     }
@@ -316,30 +324,30 @@ impl<T: Eq + Hash, S: BuildHasher + TryClone> TryDashSet<T, S> for DashSet<T, S>
     ) -> Result<DashSet<T, S>, TryDashSetError> {
         let mut set = DashSet::with_hasher(hasher);
         if capacity > 0 {
-            convert_mut(&mut set).try_reserve(capacity).map_err(TryDashSetError::Reserve)?;
+            convert_mut(&mut set).try_reserve(capacity).map_err(TryDashSetError::from)?;
         }
         Ok(set)
     }
 
     // ── Insertion ───────────────────────────────────────────────────────────
 
-    fn try_insert(&self, value: T) -> Result<bool, TryDashSetError>
+    fn try_insert(&self, value: T) -> Result<bool, TryReserveError>
     where
         T: Eq + Hash,
     {
         let map = convert_ref(self);
-        let had_old = map.try_insert(value, ()).map_err(map_error_to_set)?;
+        let had_old = map.try_insert(value, ())?;
         Ok(had_old.is_none())
     }
 
-    fn try_insert_give_back(&self, value: T) -> Result<bool, (T, TryDashSetError)>
+    fn try_insert_give_back(&self, value: T) -> Result<bool, (T, TryReserveError)>
     where
         T: Eq + Hash,
     {
         let map = convert_ref(self);
         match map.try_insert_give_back(value, ()) {
             Ok(had_old) => Ok(had_old.is_none()),
-            Err((k, _, e)) => Err((k, map_error_to_set(e))),
+            Err((k, _unit, reserve_err)) => Err((k, reserve_err)),
         }
     }
 
@@ -348,7 +356,7 @@ impl<T: Eq + Hash, S: BuildHasher + TryClone> TryDashSet<T, S> for DashSet<T, S>
     fn try_extend<Src>(
         &self,
         source: Src,
-    ) -> Result<(), (TryDashSetError, crate::recovery::Resumable<Src::Inner>)>
+    ) -> Result<(), (crate::recovery::Resumable<Src::Inner>, TryDashSetError)>
     where
         Src: crate::recovery::ResumableSource<Item = T>,
         T: Eq + Hash,
@@ -360,14 +368,14 @@ impl<T: Eq + Hash, S: BuildHasher + TryClone> TryDashSet<T, S> for DashSet<T, S>
         if let Some(value) = head
             && let Err((v, e)) = Self::try_insert_give_back(self, value)
         {
-            return Err((e, Resumable::new(v, iter)));
+            return Err((Resumable::new(v, iter), TryDashSetError::Reserve(e)));
         }
 
         while let Some(value) = iter.next() {
             match Self::try_insert_give_back(self, value) {
                 Ok(_) => {}
                 Err((v, e)) => {
-                    return Err((e, Resumable::new(v, iter)));
+                    return Err((Resumable::new(v, iter), TryDashSetError::Reserve(e)));
                 }
             }
         }
@@ -583,7 +591,7 @@ mod tests {
     #[test]
     fn try_insert_give_back_error_type_shape() {
         let set: DashSet<i32> = DashSet::new();
-        let result: Result<bool, (i32, TryDashSetError)> = set.try_insert_give_back(1);
+        let result: Result<bool, (i32, TryReserveError)> = set.try_insert_give_back(1);
         assert!(result.is_ok());
     }
 

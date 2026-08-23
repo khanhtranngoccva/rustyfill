@@ -22,12 +22,12 @@ where
     ) -> Result<(), (&'s [(K, V)], TryDashMapError)> {
         let this: &Self = self;
         for (i, (key, value)) in other.iter().enumerate() {
-            if let Err((_, _, err)) = <Self as TryDashMap<K, V, S>>::try_insert_give_back(
+            if let Err((_, _, e)) = <Self as TryDashMap<K, V, S>>::try_insert_give_back(
                 this,
                 key.clone(),
                 value.clone(),
             ) {
-                return Err((&other[i..], err));
+                return Err((&other[i..], TryDashMapError::Reserve(e)));
             }
         }
         Ok(())
@@ -44,7 +44,7 @@ where
     fn try_extend<Src>(
         &mut self,
         source: Src,
-    ) -> Result<(), (TryDashMapError, Resumable<Src::Inner>)>
+    ) -> Result<(), (Resumable<Src::Inner>, TryDashMapError)>
     where
         Src: crate::recovery::ResumableSource<Item = (K, V)>,
     {
@@ -54,14 +54,14 @@ where
         if let Some(pair) = head
             && let Err((k, v, e)) = Self::try_insert_give_back(this, pair.0, pair.1)
         {
-            return Err((e, Resumable::new((k, v), iter)));
+            return Err((Resumable::new((k, v), iter), TryDashMapError::Reserve(e)));
         }
 
         while let Some(pair) = iter.next() {
             match Self::try_insert_give_back(this, pair.0, pair.1) {
                 Ok(_) => {}
                 Err((k, v, e)) => {
-                    return Err((e, Resumable::new((k, v), iter)));
+                    return Err((Resumable::new((k, v), iter), TryDashMapError::Reserve(e)));
                 }
             }
         }

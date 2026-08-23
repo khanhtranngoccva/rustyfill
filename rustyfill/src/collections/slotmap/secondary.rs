@@ -139,6 +139,8 @@ impl From<TryReserveError> for SecondaryMapError {
     }
 }
 
+
+
 // ── SecondaryMap ────────────────────────────────────────────────────────────────
 
 /// Secondary map that associates extra data with keys from a [`SlotMap`](crate::collections::slotmap::SlotMap).
@@ -241,19 +243,19 @@ impl<K: Key, V> SecondaryMap<K, V> {
     /// removed from the originating slot map and its slot has been reused with a
     /// newer version—in that case `value` is dropped as the insert was logically
     /// successful (a no-op).
-    pub fn try_insert(&mut self, key: K, value: V) -> Result<Option<V>, SecondaryMapError> {
+    pub fn try_insert(&mut self, key: K, value: V) -> Result<Option<V>, TryReserveError> {
         match self.try_insert_give_back(key, value) {
             Ok(v) => Ok(v),
-            Err((_, e)) => Err(e),
+            Err((_v, reserve_err)) => Err(reserve_err),
         }
     }
 
     /// Like [`Self::try_insert`] but returns ownership of `value` back on failure.
     ///
-    /// Returns `Err((value, error))` if the underlying allocation fails or the
-    /// index exceeds the storage limit, giving the unconsumed `value` back to the
-    /// caller. Returns `Ok(None)` if this is a new entry, `Ok(Some(old_value))`
-    /// if the key was already present.
+    /// Returns `Err((V, TryReserveError))` if the underlying allocation
+    /// fails or the index exceeds the storage limit, giving the unconsumed
+    /// `value` back to the caller. Returns `Ok(None)` if this is a new entry,
+    /// `Ok(Some(old_value))` if the key was already present.
     ///
     /// Silently returns `Ok(None)` if the key was removed from the originating
     /// slot map and its slot has been reused with a newer version. In this case
@@ -262,7 +264,7 @@ impl<K: Key, V> SecondaryMap<K, V> {
         &mut self,
         key: K,
         value: V,
-    ) -> Result<Option<V>, (V, SecondaryMapError)> {
+    ) -> Result<Option<V>, (V, TryReserveError)> {
         match self.try_entry(key) {
             Ok(None) => {
                 // Key was removed from the primary map and its slot reused.
@@ -274,7 +276,7 @@ impl<K: Key, V> SecondaryMap<K, V> {
                 entry.insert(value);
                 Ok(None)
             }
-            Err(e) => Err((value, e)),
+            Err(SecondaryMapError::Reserve(source)) => Err((value, source)),
         }
     }
 
@@ -432,7 +434,7 @@ impl<K: Key, V> SecondaryMap<K, V> {
     }
 
     /// Alias for [`Self::try_insert`].
-    pub fn fallible_insert(&mut self, key: K, value: V) -> Result<Option<V>, SecondaryMapError> {
+    pub fn fallible_insert(&mut self, key: K, value: V) -> Result<Option<V>, TryReserveError> {
         Self::try_insert(self, key, value)
     }
 
@@ -441,7 +443,7 @@ impl<K: Key, V> SecondaryMap<K, V> {
         &mut self,
         key: K,
         value: V,
-    ) -> Result<Option<V>, (V, SecondaryMapError)> {
+    ) -> Result<Option<V>, (V, TryReserveError)> {
         Self::try_insert_give_back(self, key, value)
     }
 

@@ -38,13 +38,13 @@
 //! // First attempt — fails on OOM.
 //! let remaining = match v.try_extend(items) {
 //!     Ok(()) => return,
-//!     Err((_err, resumable)) => resumable.into_remainder(),
+//!     Err((resumable, _err)) => resumable.into_remainder(),
 //! };
 //!
 //! // Retry with the remainder wrapped in a Resumable.
 //! let remaining = match v.try_extend(Resumable::from_remainder(remaining)) {
 //!     Ok(()) => return,
-//!     Err((_err, resumable)) => resumable.into_remainder(),
+//!     Err((resumable, _err)) => resumable.into_remainder(),
 //! };
 //! ```
 //!
@@ -62,8 +62,8 @@
 //!
 //! | Collection          | Item        | Error                    | Remainder               | Feature     |
 //! |---------------------|-------------|--------------------------|-------------------------|-------------|
-//! | `Vec<T>`           | `T`         | `TryVecError`            | `&'s [T]`                | (always)    |
-//! | `VecDeque<T>`      | `T`         | `TryVecDequeError`       | `&'s [T]`                | (always)    |
+//! | `Vec<T>`           | `T`         | `TryVecWithCloneError`            | `&'s [T]`                | (always)    |
+//! | `VecDeque<T>`      | `T`         | `TryVecDequeWithCloneError`       | `&'s [T]`                | (always)    |
 //! | `HashMap<K,V,S>`   | `(K, V)`    | `TryHashMapError`        | `&'s [(K, V)]`           | `std`       |
 //! | `HashSet<T, S>`    | `T`         | `TryHashSetError`        | `&'s [T]`                | `std`       |
 //! | `BTreeMap<K,V>`    | `(K, V)`    | `AllocError` / `TryBTreeMapExtendFromSliceError`¹ | `&'s [(K, V)]` | `std`         |
@@ -99,12 +99,12 @@ pub trait TryExtend<Item>: Sized {
     type Error;
 
     /// Fallibly extend `self` with all items produced by `source`.
-    fn try_extend<S>(&mut self, source: S) -> Result<(), (Self::Error, Resumable<S::Inner>)>
+    fn try_extend<S>(&mut self, source: S) -> Result<(), (Resumable<S::Inner>, Self::Error)>
     where
         S: crate::recovery::ResumableSource<Item = Item>;
 
     /// Alias for [`Self::try_extend`].
-    fn fallible_extend<S>(&mut self, source: S) -> Result<(), (Self::Error, Resumable<S::Inner>)>
+    fn fallible_extend<S>(&mut self, source: S) -> Result<(), (Resumable<S::Inner>, Self::Error)>
     where
         S: crate::recovery::ResumableSource<Item = Item>,
     {

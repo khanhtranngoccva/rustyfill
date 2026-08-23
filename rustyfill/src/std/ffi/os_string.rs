@@ -17,7 +17,7 @@
 //! [`TryDefault`](crate::try_default::TryDefault) for `OsString`.
 
 use crate::alloc::TryReserveError;
-use crate::alloc::vec::{TryVec, TryVecError};
+use crate::alloc::vec::{TryVec, TryVecWithCloneError};
 use crate::try_clone::{TryClone, TryCloneError};
 use crate::try_default::{TryDefault, TryDefaultError};
 use crate::try_fmt::{TryDebug, TryDisplay, helpers::FormatterExt};
@@ -250,9 +250,8 @@ impl TryOsString for OsString {
         // SAFETY: the bytes originated from a valid OsString via into_encoded_bytes.
         *self = unsafe { OsString::from_encoded_bytes_unchecked(v) };
         result.map_err(|e| match e {
-            TryVecError::Reserve(e) => TryOsStringError::Reserve(e),
-            TryVecError::Clone(_) => unreachable!("shrink does not clone"),
-            TryVecError::Other(msg) => TryOsStringError::Other(msg),
+            TryVecWithCloneError::Reserve(e) => TryOsStringError::Reserve(e),
+            TryVecWithCloneError::Clone(_) => unreachable!("shrink does not clone"),
         })
     }
 

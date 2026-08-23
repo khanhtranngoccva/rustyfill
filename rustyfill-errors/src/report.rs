@@ -339,14 +339,14 @@ impl<C> Report<C> {
 
         let sf = frame.into();
 
-        if let Err((sf, _)) = TryVecDeque::try_push_front_give_back(&mut self.peers, sf) {
+        if let Err((recovered_sf, _)) = TryVecDeque::try_push_front_give_back(&mut self.peers, sf) {
             self.peers.pop_back();
             // Saturates at usize::MAX; a lost-item counter degrading
             // gracefully is preferable to panicking on overflow.
             self.lost_peers = self.lost_peers.saturating_add(1);
             self.peers
-                .try_push_front_give_back(sf)
-                .map_err(|(_, e)| e)
+                .try_push_front_give_back(recovered_sf)
+                .map_err(|(_v, e)| e)
                 .expect("pop_back followed by push_front should succeed");
         }
 
@@ -526,7 +526,7 @@ where
                             new_head_sf
                                 .children
                                 .try_push_front_give_back(dropped_df)
-                                .map_err(|(_, e)| e)
+                                .map_err(|(_v, e)| e)
                                 .expect("eviction guarantees space");
                         }
                         return;
@@ -676,7 +676,7 @@ where
             };
             // Cannot fail — capacity was reserved above.
             TryVec::try_push_give_back(&mut intermediates, inter)
-                .map_err(|(_, e)| e)
+                .map_err(|(_v, e)| e)
                 .expect("capacity was reserved");
         }
 
@@ -718,7 +718,7 @@ where
         };
         // Cannot fail — capacity was reserved above.
         TryVec::try_push_give_back(&mut intermediates, inter)
-            .map_err(|(_, e)| e)
+            .map_err(|(_v, e)| e)
             .expect("capacity was reserved");
 
         // ── Demotion ────────────────────────────────────────────────────────
@@ -729,7 +729,7 @@ where
         for inter in intermediates.into_iter().rev() {
             let df = inter.into_dynamic();
             TryVecDeque::try_push_front_give_back(&mut new_head_sf.children, df)
-                .map_err(|(_, e)| e)
+                .map_err(|(_v, e)| e)
                 .expect("children capacity was reserved");
         }
 
@@ -1043,7 +1043,7 @@ where
             };
             if !children.is_empty() {
                 let child_iter = children.iter();
-                if let Err((_, e)) = TryVec::try_push_give_back(
+                if let Err((_entry, reserve_err)) = TryVec::try_push_give_back(
                     &mut self.stack,
                     StackEntry {
                         iter: child_iter,
@@ -1052,11 +1052,11 @@ where
                 ) {
                     if self.auto_unstall {
                         // Discard the pending frame and emit the error once.
-                        return Some((Err(e), self.stack.len()));
+                        return Some((Err(reserve_err), self.stack.len()));
                     }
                     self.pending_frame = Some(frame);
                     self.stalled = true;
-                    return Some((Err(e), self.stack.len()));
+                    return Some((Err(reserve_err), self.stack.len()));
                 }
             }
             // Push succeeded — fall through to normal iteration.
@@ -1173,7 +1173,7 @@ where
             };
             if !children.is_empty() {
                 let child_iter = children.iter();
-                if let Err((_, e)) = TryVec::try_push_give_back(
+                if let Err((_entry, reserve_err)) = TryVec::try_push_give_back(
                     &mut self.stack,
                     StackEntry {
                         iter: child_iter,
@@ -1182,11 +1182,11 @@ where
                 ) {
                     if self.auto_unstall {
                         // Discard the pending frame and emit the error once.
-                        return Some((Err(e), self.stack.len()));
+                        return Some((Err(reserve_err), self.stack.len()));
                     }
                     self.pending_frame = Some(frame);
                     self.stalled = true;
-                    return Some((Err(e), self.stack.len()));
+                    return Some((Err(reserve_err), self.stack.len()));
                 }
             }
             // Push succeeded — fall through to normal iteration.
@@ -1378,8 +1378,8 @@ fn seed_stack_from_deque(
             >(deque.iter_mut())
         };
         let entry = DfsMutEntry { iter };
-        if let Err((_, e)) = TryVec::try_push_give_back(stack, entry) {
-            return Err(e);
+        if let Err((_entry, reserve_err)) = TryVec::try_push_give_back(stack, entry) {
+            return Err(reserve_err);
         }
     }
     Ok(())

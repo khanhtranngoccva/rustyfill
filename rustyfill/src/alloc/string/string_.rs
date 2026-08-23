@@ -14,7 +14,7 @@
 //! The trait also implements [`TryClone`](crate::try_clone::TryClone) and
 //! [`TryDefault`](crate::try_default::TryDefault) for `String`.
 
-use crate::alloc::vec::{TryVec, TryVecError};
+use crate::alloc::vec::{TryVec, TryVecWithCloneError};
 use crate::alloc::{TryReserveError, TryReserveErrorExt};
 use crate::try_clone::{TryClone, TryCloneError};
 use crate::try_default::{TryDefault, TryDefaultError};
@@ -312,9 +312,8 @@ impl TryString for String {
         // The bytes originated from a valid String, so they remain valid UTF-8.
         *self = String::from_utf8(v).unwrap();
         result.map_err(|e| match e {
-            TryVecError::Reserve(e) => TryStringError::Reserve(e),
-            TryVecError::Clone(_) => unreachable!("shrink does not clone"),
-            TryVecError::Other(msg) => TryStringError::Other(msg),
+            TryVecWithCloneError::Reserve(e) => TryStringError::Reserve(e),
+            TryVecWithCloneError::Clone(_) => unreachable!("shrink does not clone"),
         })
     }
 }

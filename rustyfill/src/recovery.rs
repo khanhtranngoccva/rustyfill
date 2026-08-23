@@ -127,7 +127,7 @@ impl<I: IntoIterator> ResumableSource for I {
 /// // First call — `remaining` is Range<i32>.
 /// let remaining = match vec.try_extend(items) {
 ///     Ok(()) => return,
-///     Err((_err, resumable)) => {
+///     Err((resumable, _err)) => {
 ///         // Back off...
 ///         resumable.into_remainder()
 ///     }
@@ -136,7 +136,7 @@ impl<I: IntoIterator> ResumableSource for I {
 /// // Retry — construct a Resumable from whatever we have left.
 /// let remaining = match vec.try_extend(Resumable::from_remainder(remaining)) {
 ///     Ok(()) => return,
-///     Err((_err, resumable)) => resumable.into_remainder(),
+///     Err((resumable, _err)) => resumable.into_remainder(),
 /// };
 /// ```
 ///

@@ -3,7 +3,7 @@
 //! Provides the [`TryToOwned`] implementation for `CStr`, enabling fallible
 //! conversion of a `&CStr` into an owned [`CString`].
 
-use crate::alloc::vec::{TrySlice, TryVecError};
+use crate::alloc::vec::{TrySlice, TryVecWithCloneError};
 use crate::try_to_owned::{TryToOwned, TryToOwnedError};
 use lang_alloc::ffi::CString;
 use lang_core::ffi::CStr;
@@ -17,9 +17,8 @@ impl TryToOwned for CStr {
         // to_bytes_with_nul always returns at least one byte (the nul), so it's
         // never empty. An empty CStr is b"\0".
         let buf = bytes.try_to_vec().map_err(|e| match e {
-            TryVecError::Reserve(r) => TryToOwnedError::Reserve(r),
-            TryVecError::Clone(c) => c.into(),
-            TryVecError::Other(m) => TryToOwnedError::Other(m),
+            TryVecWithCloneError::Reserve(r) => TryToOwnedError::Reserve(r),
+            TryVecWithCloneError::Clone(c) => c.into(),
         })?;
 
         // SAFETY: The bytes came from a valid CStr so there are no interior

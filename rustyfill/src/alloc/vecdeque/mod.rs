@@ -7,4 +7,7 @@
 mod try_extend;
 mod vecdeque_;
 
-pub use vecdeque_::{TryVecDeque, TryVecDequeError};
+pub use vecdeque_::{
+    TryVecDeque, TryVecDequeExtendFromWithinError, TryVecDequeInsertError,
+    TryVecDequeRemoveError, TryVecDequeWithCloneError,
+};

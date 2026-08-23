@@ -7,4 +7,4 @@
 mod hashmap_;
 mod try_extend;
 
-pub use hashmap_::{TryHashMap, TryHashMapError};
+pub use hashmap_::{TryHashMap, TryHashMapError, TryHashMapInsertUniqueError};

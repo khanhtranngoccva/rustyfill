@@ -96,6 +96,8 @@ impl From<TryDefaultError> for TryHashSetError {
     }
 }
 
+
+
 // ── Trait ─────────────────────────────────────────────────────────────────────
 
 /// A trait for fallible hash set operations.
@@ -149,18 +151,18 @@ pub trait TryHashSet<T, S = RandomState>: Sized {
     /// Fallibly insert the value into the set.
     ///
     /// Reserves capacity for one additional element before inserting, so this
-    /// method never panics on out-of-memory. Returns [`TryHashSetError::Reserve`]
+    /// method never panics on out-of-memory. Returns [`TryReserveError`]
     /// if the capacity reservation fails.
     ///
     /// Returns `true` if the value was not already present in the set, `false`
     /// otherwise (in which case it is not modified).
-    fn try_insert(&mut self, value: T) -> Result<bool, TryHashSetError>
+    fn try_insert(&mut self, value: T) -> Result<bool, TryReserveError>
     where
         T: Eq + Hash;
 
     /// Like [`Self::try_insert`] but returns ownership of `value` back on
     /// allocation failure.
-    fn try_insert_give_back(&mut self, value: T) -> Result<bool, (T, TryHashSetError)>
+    fn try_insert_give_back(&mut self, value: T) -> Result<bool, (T, TryReserveError)>
     where
         T: Eq + Hash;
 
@@ -191,7 +193,7 @@ pub trait TryHashSet<T, S = RandomState>: Sized {
     }
 
     /// Alias for [`Self::try_insert`].
-    fn fallible_insert(&mut self, value: T) -> Result<bool, TryHashSetError>
+    fn fallible_insert(&mut self, value: T) -> Result<bool, TryReserveError>
     where
         T: Eq + Hash,
     {
@@ -199,7 +201,7 @@ pub trait TryHashSet<T, S = RandomState>: Sized {
     }
 
     /// Alias for [`Self::try_insert_give_back`].
-    fn fallible_insert_give_back(&mut self, value: T) -> Result<bool, (T, TryHashSetError)>
+    fn fallible_insert_give_back(&mut self, value: T) -> Result<bool, (T, TryReserveError)>
     where
         T: Eq + Hash,
     {
@@ -214,10 +216,11 @@ pub trait TryHashSet<T, S = RandomState>: Sized {
     /// On reserve failure, returns a [`Resumable`](crate::recovery::Resumable)
     /// containing any consumed-but-uncommitted element and the remainder of the
     /// iterator, which the caller can pass right back in.
+    // FIXME: trait implementation file already exists
     fn try_extend<Src>(
         &mut self,
         source: Src,
-    ) -> Result<(), (TryReserveError, crate::recovery::Resumable<Src::Inner>)>
+    ) -> Result<(), (crate::recovery::Resumable<Src::Inner>, TryReserveError)>
     where
         Src: crate::recovery::ResumableSource<Item = T>;
 
@@ -225,6 +228,7 @@ pub trait TryHashSet<T, S = RandomState>: Sized {
     ///
     /// Returns [`TryHashSetError::Reserve`] on capacity failure or
     /// [`TryHashSetError::Clone`] if an element clone fails.
+    // FIXME: trait implementation file already exists
     fn try_extend_from_slice(&mut self, other: &[T]) -> Result<(), TryHashSetError>
     where
         T: Eq + Hash + TryClone;
@@ -233,7 +237,7 @@ pub trait TryHashSet<T, S = RandomState>: Sized {
     fn fallible_extend<Src>(
         &mut self,
         source: Src,
-    ) -> Result<(), (TryReserveError, crate::recovery::Resumable<Src::Inner>)>
+    ) -> Result<(), (crate::recovery::Resumable<Src::Inner>, TryReserveError)>
     where
         Src: crate::recovery::ResumableSource<Item = T>,
     {
@@ -378,21 +382,21 @@ impl<T: Eq + Hash, S: BuildHasher> TryHashSet<T, S> for HashSet<T, S> {
 
     // ── Insertion ───────────────────────────────────────────────────────────
 
-    fn try_insert(&mut self, value: T) -> Result<bool, TryHashSetError>
+    fn try_insert(&mut self, value: T) -> Result<bool, TryReserveError>
     where
         T: Eq + Hash,
     {
-        self.try_reserve(1).map_err(TryHashSetError::Reserve)?;
+        self.try_reserve(1)?;
         Ok(self.insert(value))
     }
 
-    fn try_insert_give_back(&mut self, value: T) -> Result<bool, (T, TryHashSetError)>
+    fn try_insert_give_back(&mut self, value: T) -> Result<bool, (T, TryReserveError)>
     where
         T: Eq + Hash,
     {
         match self.try_reserve(1) {
             Ok(()) => Ok(self.insert(value)),
-            Err(e) => Err((value, TryHashSetError::Reserve(e))),
+            Err(e) => Err((value, e)),
         }
     }
 
@@ -401,7 +405,7 @@ impl<T: Eq + Hash, S: BuildHasher> TryHashSet<T, S> for HashSet<T, S> {
     fn try_extend<Src>(
         &mut self,
         source: Src,
-    ) -> Result<(), (TryReserveError, crate::recovery::Resumable<Src::Inner>)>
+    ) -> Result<(), (crate::recovery::Resumable<Src::Inner>, TryReserveError)>
     where
         Src: crate::recovery::ResumableSource<Item = T>,
     {
@@ -413,7 +417,7 @@ impl<T: Eq + Hash, S: BuildHasher> TryHashSet<T, S> for HashSet<T, S> {
             if self.len() == self.capacity()
                 && let Err(e) = self.try_reserve(1)
             {
-                return Err((e, Resumable::new(value, iter)));
+                return Err((Resumable::new(value, iter), e));
             }
             self.insert(value);
         }
@@ -422,13 +426,13 @@ impl<T: Eq + Hash, S: BuildHasher> TryHashSet<T, S> for HashSet<T, S> {
         if lower > 0
             && let Err(e) = self.try_reserve(lower)
         {
-            return Err((e, Resumable::from_remainder(iter)));
+            return Err((Resumable::from_remainder(iter), e));
         }
         while let Some(value) = iter.next() {
             if self.len() == self.capacity()
                 && let Err(e) = self.try_reserve(1)
             {
-                return Err((e, Resumable::new(value, iter)));
+                return Err((Resumable::new(value, iter), e));
             }
             self.insert(value);
         }
@@ -748,7 +752,8 @@ mod tests {
     #[test]
     fn fallible_insert_give_back_error_type_shape() {
         let mut set: HashSet<i32> = HashSet::new();
-        let result: Result<bool, (i32, TryHashSetError)> = set.fallible_insert_give_back(1);
+        let result: Result<bool, (i32, TryReserveError)> =
+            set.fallible_insert_give_back(1);
         assert!(result.is_ok());
     }
 

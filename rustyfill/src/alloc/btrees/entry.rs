@@ -97,90 +97,15 @@ fn alloc_error() -> AllocError {
 
 // ── Error types ───────────────────────────────────────────────────────────────
 
-/// Error returned by the give-back fallible-closure entry methods
-/// (`or_try_insert_with_give_back`, `or_try_insert_with_key_give_back`, and
-/// their `or_fallible_*_give_back` counterparts).
+/// Error returned by the fallible-closure entry methods
+/// (`or_fallible_insert_with`, `or_fallible_insert_with_key`, and their
+/// `_give_back` counterparts).
 ///
-/// Each variant carries exactly the data relevant to that failure mode:
-///
-/// - [`Self::Alloc`] — the closure succeeded but the tree insertion hit OOM;
-///   both the key and the computed value are handed back alongside the
-///   [`AllocError`].
-/// - [`Self::Closure`] — the closure itself failed before any insertion; only
-///   the key is handed back (there is no computed value to return).
-pub enum TryBTreeMapEntryWithGiveBackError<K, V, E> {
-    /// Heap allocation failed while inserting the successfully computed value.
-    /// Contains the key, the value, and the underlying [`AllocError`].
-    Alloc(K, V, AllocError),
-    /// The fallible default-value closure returned an error; nothing was
-    /// inserted. Contains the key and the closure's own error `E`.
-    Closure(K, E),
-}
-
-impl<K: TryDebug, V: TryDebug, E: TryDebug> fmt::Debug for TryBTreeMapEntryWithGiveBackError<K, V, E> {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        TryDebug::try_fmt(self, f)
-    }
-}
-
-impl<K: TryDebug, V: TryDebug, E: TryDebug> TryDebug for TryBTreeMapEntryWithGiveBackError<K, V, E> {
-    fn try_fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::Alloc(k, v, e) => f
-                .try_debug_tuple("TryBTreeMapEntryWithGiveBackError::Alloc")
-                .field(k)
-                .field(v)
-                .field(e)
-                .finish(),
-            Self::Closure(k, e) => f
-                .try_debug_tuple("TryBTreeMapEntryWithGiveBackError::Closure")
-                .field(k)
-                .field(e)
-                .finish(),
-        }
-    }
-}
-
-impl<K, V, E> TryDisplay for TryBTreeMapEntryWithGiveBackError<K, V, E> {
-    fn try_fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::Alloc(_, _, _) => write!(
-                f,
-                "B-tree map entry operation failed: heap allocation error"
-            ),
-            Self::Closure(_, _) => write!(
-                f,
-                "B-tree map entry operation failed: default-value closure returned an error"
-            ),
-        }
-    }
-}
-
-impl<K, V, E> fmt::Display for TryBTreeMapEntryWithGiveBackError<K, V, E> {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        TryDisplay::try_fmt(self, f)
-    }
-}
-
-impl<K, V, E> TryBTreeMapEntryWithGiveBackError<K, V, E> {
-    /// Returns `true` if this is an allocation failure.
-    pub fn is_alloc(&self) -> bool {
-        matches!(self, Self::Alloc(..))
-    }
-
-    /// Returns `true` if this is a closure failure.
-    pub fn is_closure(&self) -> bool {
-        matches!(self, Self::Closure(..))
-    }
-}
-
-/// Error returned by the non-give-back fallible-closure entry methods
-/// (`or_fallible_insert_with`, `or_fallible_insert_with_key`).
-///
-/// These methods discard the key and any computed value on failure, returning
-/// only the error. Because the fallible-closure methods can fail in two ways —
-/// the closure itself errored, or the subsequent insertion hit OOM — this error
-/// keeps just those two modes without the discarded data.
+/// Because the fallible-closure methods can fail in two ways — the closure
+/// itself errored, or the subsequent insertion hit OOM — this error keeps just
+/// those two modes. The give-back variants additionally return the key (and
+/// optionally the computed value) as separate tuple elements alongside this
+/// error type, keeping it composable in error stacks.
 pub enum TryBTreeMapEntryWithError<E> {
     /// Heap allocation failed while inserting the successfully computed value.
     Alloc(AllocError),
@@ -759,30 +684,21 @@ pub trait TryBTreeMapEntry<'a, K, V>: Sized {
     {
         match self.or_try_insert_with_give_back(default) {
             Ok(r) => Ok(r),
-            Err(e) => Err(match e {
-                TryBTreeMapEntryWithGiveBackError::Alloc(_, _, a) => {
-                    TryBTreeMapEntryWithError::Alloc(a)
-                }
-                TryBTreeMapEntryWithGiveBackError::Closure(_, c) => {
-                    TryBTreeMapEntryWithError::Closure(c)
-                }
-            }),
+            Err((_, _, e)) => Err(e),
         }
     }
 
-    /// Like [`Self::or_fallible_insert_with`] but hands the key and value back to
-    /// the caller on failure.
+    /// Like [`Self::or_fallible_insert_with`] but hands the key (and the
+    /// computed value, if one was produced) back to the caller on failure.
     ///
-    /// On closure failure returns
-    /// `Err(TryBTreeMapEntryWithError::Closure(key, e))` — only the key is handed
-    /// back, since no value was computed. On OOM during insertion of a
-    /// successfully computed value, returns
-    /// `Err(TryBTreeMapEntryWithError::Alloc(key, value, alloc_error))` handing
-    /// back both the key and the value.
+    /// The error tuple is `(K, Option<V>, TryBTreeMapEntryWithError<E>)`:
+    /// - On `Closure` failure: `(key, None, err)` — no value was computed.
+    /// - On `Alloc` failure: `(key, Some(value), err)` — the value was computed
+    ///   but insertion hit OOM.
     fn or_try_insert_with_give_back<E, F: FnOnce() -> Result<V, E>>(
         self,
         default: F,
-    ) -> Result<&'a mut V, TryBTreeMapEntryWithGiveBackError<K, V, E>>
+    ) -> Result<&'a mut V, (K, Option<V>, TryBTreeMapEntryWithError<E>)>
     where
         K: Ord;
 
@@ -801,12 +717,12 @@ pub trait TryBTreeMapEntry<'a, K, V>: Sized {
         self.or_try_insert_with(default)
     }
 
-    /// Mirror of [`Self::or_try_insert_with_give_back`]: hands the key and value
+    /// Mirror of [`Self::or_try_insert_with_give_back`]: hands the key and optional value
     /// back on failure.
     fn or_fallible_insert_with_give_back<E, F: FnOnce() -> Result<V, E>>(
         self,
         default: F,
-    ) -> Result<&'a mut V, TryBTreeMapEntryWithGiveBackError<K, V, E>>
+    ) -> Result<&'a mut V, (K, Option<V>, TryBTreeMapEntryWithError<E>)>
     where
         K: Ord,
     {
@@ -826,30 +742,21 @@ pub trait TryBTreeMapEntry<'a, K, V>: Sized {
     {
         match self.or_try_insert_with_key_give_back(default) {
             Ok(r) => Ok(r),
-            Err(e) => Err(match e {
-                TryBTreeMapEntryWithGiveBackError::Alloc(_, _, a) => {
-                    TryBTreeMapEntryWithError::Alloc(a)
-                }
-                TryBTreeMapEntryWithGiveBackError::Closure(_, c) => {
-                    TryBTreeMapEntryWithError::Closure(c)
-                }
-            }),
+            Err((_, _, e)) => Err(e),
         }
     }
 
-    /// Like [`Self::or_fallible_insert_with_key`] but hands the key and value
-    /// back to the caller on failure.
+    /// Like [`Self::or_fallible_insert_with_key`] but hands the key (and the
+    /// computed value, if one was produced) back to the caller on failure.
     ///
-    /// On closure failure returns
-    /// `Err(TryBTreeMapEntryWithError::Closure(key, e))` — only the key is handed
-    /// back, since no value was computed. On OOM during insertion of a
-    /// successfully computed value, returns
-    /// `Err(TryBTreeMapEntryWithError::Alloc(key, value, alloc_error))` handing
-    /// back both the key and the value.
+    /// The error tuple is `(K, Option<V>, TryBTreeMapEntryWithError<E>)`:
+    /// - On `Closure` failure: `(key, None, err)` — no value was computed.
+    /// - On `Alloc` failure: `(key, Some(value), err)` — the value was computed
+    ///   but insertion hit OOM.
     fn or_try_insert_with_key_give_back<E, F: FnOnce(&K) -> Result<V, E>>(
         self,
         default: F,
-    ) -> Result<&'a mut V, TryBTreeMapEntryWithGiveBackError<K, V, E>>
+    ) -> Result<&'a mut V, (K, Option<V>, TryBTreeMapEntryWithError<E>)>
     where
         K: Ord;
 
@@ -873,7 +780,7 @@ pub trait TryBTreeMapEntry<'a, K, V>: Sized {
     fn or_fallible_insert_with_key_give_back<E, F: FnOnce(&K) -> Result<V, E>>(
         self,
         default: F,
-    ) -> Result<&'a mut V, TryBTreeMapEntryWithGiveBackError<K, V, E>>
+    ) -> Result<&'a mut V, (K, Option<V>, TryBTreeMapEntryWithError<E>)>
     where
         K: Ord,
     {
@@ -895,24 +802,21 @@ impl<'a, K: Ord, V> TryBTreeMapEntry<'a, K, V> for Entry<'a, K, V> {
     fn or_try_insert_with_give_back<E, F: FnOnce() -> Result<V, E>>(
         self,
         default: F,
-    ) -> Result<&'a mut V, TryBTreeMapEntryWithGiveBackError<K, V, E>> {
+    ) -> Result<&'a mut V, (K, Option<V>, TryBTreeMapEntryWithError<E>)> {
         match self {
             Entry::Occupied(entry) => Ok(entry.into_mut()),
             Entry::Vacant(vacant) => {
                 // The closure runs first and may fail; on failure nothing has
-                // been allocated or inserted, so only the key is handed back.
+                // been allocated or inserted, so no value is handed back.
                 let value = match default() {
                     Ok(v) => v,
                     Err(e) => {
-                        return Err(TryBTreeMapEntryWithGiveBackError::Closure(
-                            vacant.into_key(),
-                            e,
-                        ));
+                        return Err((vacant.into_key(), None, TryBTreeMapEntryWithError::Closure(e)));
                     }
                 };
                 match vacant.try_insert_give_back(value) {
                     Ok(occupied) => Ok(occupied.into_mut()),
-                    Err((k, v, e)) => Err(TryBTreeMapEntryWithGiveBackError::Alloc(k, v, e)),
+                    Err((k, v, e)) => Err((k, Some(v), TryBTreeMapEntryWithError::Alloc(e))),
                 }
             }
         }
@@ -921,24 +825,21 @@ impl<'a, K: Ord, V> TryBTreeMapEntry<'a, K, V> for Entry<'a, K, V> {
     fn or_try_insert_with_key_give_back<E, F: FnOnce(&K) -> Result<V, E>>(
         self,
         default: F,
-    ) -> Result<&'a mut V, TryBTreeMapEntryWithGiveBackError<K, V, E>> {
+    ) -> Result<&'a mut V, (K, Option<V>, TryBTreeMapEntryWithError<E>)> {
         match self {
             Entry::Occupied(entry) => Ok(entry.into_mut()),
             Entry::Vacant(vacant) => {
                 // The closure runs first and may fail; on failure nothing has
-                // been allocated or inserted, so only the key is handed back.
+                // been allocated or inserted, so no value is handed back.
                 let value = match default(vacant.key()) {
                     Ok(v) => v,
                     Err(e) => {
-                        return Err(TryBTreeMapEntryWithGiveBackError::Closure(
-                            vacant.into_key(),
-                            e,
-                        ));
+                        return Err((vacant.into_key(), None, TryBTreeMapEntryWithError::Closure(e)));
                     }
                 };
                 match vacant.try_insert_give_back(value) {
                     Ok(occupied) => Ok(occupied.into_mut()),
-                    Err((k, v, e)) => Err(TryBTreeMapEntryWithGiveBackError::Alloc(k, v, e)),
+                    Err((k, v, e)) => Err((k, Some(v), TryBTreeMapEntryWithError::Alloc(e))),
                 }
             }
         }
@@ -1730,14 +1631,11 @@ mod tests {
             .entry(1)
             .or_try_insert_with_give_back(|| Err::<i32, i32>(7));
         assert!(r.is_err());
-        let err = r.unwrap_err();
+        let (key, val_opt, err) = r.unwrap_err();
         assert!(err.is_closure());
-        let (key, e) = match err {
-            TryBTreeMapEntryWithGiveBackError::Closure(k, e) => (k, e),
-            _ => unreachable!(),
-        };
+        assert!(val_opt.is_none());
         assert_eq!(key, 1);
-        assert_eq!(e, 7);
+        assert!(matches!(err, TryBTreeMapEntryWithError::Closure(e) if e == 7));
         assert!(map.is_empty());
     }
 
@@ -1748,14 +1646,11 @@ mod tests {
             .entry(1)
             .or_try_insert_with_key_give_back(|_k| Err::<i32, i32>(9));
         assert!(r.is_err());
-        let err = r.unwrap_err();
+        let (key, val_opt, err) = r.unwrap_err();
         assert!(err.is_closure());
-        let (key, e) = match err {
-            TryBTreeMapEntryWithGiveBackError::Closure(k, e) => (k, e),
-            _ => unreachable!(),
-        };
+        assert!(val_opt.is_none());
         assert_eq!(key, 1);
-        assert_eq!(e, 9);
+        assert!(matches!(err, TryBTreeMapEntryWithError::Closure(e) if e == 9));
         assert!(map.is_empty());
     }
 
@@ -1774,42 +1669,35 @@ mod tests {
     #[test]
     fn or_try_insert_with_closure_failure_beats_alloc_failure() {
         // Even under a failing allocator, a closure error is reported as
-        // Closure (not Insertion), because the closure runs before any insertion.
+        // Closure (not Alloc), because the closure runs before any insertion.
         let mut map: BTreeMap<u32, u32> = BTreeMap::new();
         let r = with_policy(FailPolicy::fail_next_alloc(), || {
             map.entry(1)
                 .or_try_insert_with_give_back(|| Err::<u32, i32>(5))
         });
         assert!(r.is_err());
-        let err = r.unwrap_err();
+        let (key, val_opt, err) = r.unwrap_err();
         assert!(err.is_closure());
-        let (key, e) = match err {
-            TryBTreeMapEntryWithGiveBackError::Closure(k, e) => (k, e),
-            _ => unreachable!(),
-        };
+        assert!(val_opt.is_none());
         assert_eq!(key, 1);
-        assert_eq!(e, 5);
+        assert!(matches!(err, TryBTreeMapEntryWithError::Closure(e) if e == 5));
         assert!(map.is_empty());
     }
 
     #[test]
     fn or_try_insert_with_oom_reports_alloc_variant() {
         // A successful closure followed by an OOM must surface the
-        // Alloc variant carrying the key, value, and the raw AllocError.
+        // Alloc variant with the key and computed value handed back.
         let mut map: BTreeMap<u32, u32> = BTreeMap::new();
         let r = with_policy(FailPolicy::fail_next_alloc(), || {
             map.entry(1)
                 .or_try_insert_with_give_back(|| Ok::<u32, i32>(10))
         });
         assert!(r.is_err());
-        let err = r.unwrap_err();
+        let (key, val_opt, err) = r.unwrap_err();
         assert!(err.is_alloc());
-        let (key, val, _alloc_err) = match err {
-            TryBTreeMapEntryWithGiveBackError::Alloc(k, v, e) => (k, v, e),
-            _ => unreachable!(),
-        };
         assert_eq!(key, 1);
-        assert_eq!(val, 10);
+        assert_eq!(val_opt, Some(10));
         assert!(map.is_empty());
     }
 
@@ -1952,13 +1840,10 @@ mod tests {
                 .or_try_insert_with_give_back(|| Ok::<_, ()>([7u8, 8, 9]))
         });
         assert!(r.is_err());
-        let err = r.unwrap_err();
-        let (returned_key, returned_val, _) = match err {
-            TryBTreeMapEntryWithGiveBackError::Alloc(k, v, _) => (k, v, ()),
-            _ => unreachable!(),
-        };
+        let (returned_key, returned_val, err) = r.unwrap_err();
+        assert!(err.is_alloc());
         assert_eq!(returned_key, key);
-        assert_eq!(returned_val, [7u8, 8, 9]);
+        assert_eq!(returned_val, Some([7u8, 8, 9]));
     }
 
     #[test]
@@ -1981,13 +1866,10 @@ mod tests {
                 .or_try_insert_with_key_give_back(|_k| Ok::<_, ()>([1u8, 2, 3]))
         });
         assert!(r.is_err());
-        let err = r.unwrap_err();
-        let (returned_key, returned_val, _) = match err {
-            TryBTreeMapEntryWithGiveBackError::Alloc(k, v, _) => (k, v, ()),
-            _ => unreachable!(),
-        };
+        let (returned_key, returned_val, err) = r.unwrap_err();
+        assert!(err.is_alloc());
         assert_eq!(returned_key, key);
-        assert_eq!(returned_val, [1u8, 2, 3]);
+        assert_eq!(returned_val, Some([1u8, 2, 3]));
     }
 
     #[test]
@@ -2425,11 +2307,11 @@ mod tests {
                     oracle.insert(key, expected);
                     assert_eq!(*inserted_ref, expected, "seed {seed}: op {op}");
                 }
-                Err(err) => {
+                Err((k, v_opt, err)) => {
                     // Allocation failure is not expected here (normal allocator);
                     // if it somehow happens, abort loudly.
-                    if let TryBTreeMapEntryWithGiveBackError::Alloc(k, v, _) = err {
-                        panic!("seed {seed}: op {op}: unexpected OOM for key {k}, val {v}");
+                    if err.is_alloc() {
+                        panic!("seed {seed}: op {op}: unexpected OOM for key {k:?}, val {v_opt:?}");
                     } else {
                         panic!("seed {seed}: op {op}: unexpected closure error in fuzz");
                     }
@@ -2557,10 +2439,11 @@ mod tests {
                         "seed {seed}: op {op}: value tag corrupted (key {key})"
                     );
                 }
-                Err(err) => {
-                    // The returned value is dropped here as part of dropping `err`;
-                    // that accounts for the one construction we just did.
-                    if let TryBTreeMapEntryWithGiveBackError::Alloc(k, _, _) = err {
+                Err((k, _v_opt, err)) => {
+                    // The returned value (if any) is dropped here as part of
+                    // dropping the tuple; that accounts for the one construction
+                    // we just did.
+                    if err.is_alloc() {
                         panic!("seed {seed}: op {op}: unexpected OOM for key {k}");
                     } else {
                         panic!("seed {seed}: op {op}: unexpected closure error in fuzz");
@@ -2794,7 +2677,7 @@ mod tests {
             <_ as TryExtend<(i32, i32)>>::try_extend(&mut map, [(1, 10), (2, 20)])
         });
         match result {
-            Err((_e, resumable)) => {
+            Err((resumable, _e)) => {
                 // The first pair should be preserved as the head.
                 assert!(resumable.has_head());
                 let (head, remainder) = resumable.into_parts();
@@ -2817,7 +2700,7 @@ mod tests {
             <_ as TryExtend<i32>>::try_extend(&mut set, [5, 6, 7])
         });
         match result {
-            Err((_e, resumable)) => {
+            Err((resumable, _e)) => {
                 assert!(resumable.has_head());
                 let (head, remainder) = resumable.into_parts();
                 assert_eq!(head, Some(5));

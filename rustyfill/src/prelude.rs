@@ -94,7 +94,7 @@ pub use crate::dashmap::{TryDashMap, TryDashSet};
 
 #[cfg(feature = "std")]
 pub use crate::alloc::btrees::entry::{
-    TryBTreeMap, TryBTreeMapEntry, TryBTreeMapEntryWithError, TryBTreeMapEntryWithGiveBackError,
+    TryBTreeMap, TryBTreeMapEntry, TryBTreeMapEntryWithError,
     TryBTreeMapExtendFromSliceError, TryBTreeMapVacantEntry,
 };
 

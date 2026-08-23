@@ -40,10 +40,12 @@ use crate::dashmap::mapref::{Entry, OccupiedEntry, VacantEntry};
 /// Wraps the ways a DashMap operation can fail: a reserve failure from
 /// [`DashMap::try_reserve`](dashmap::DashMap::try_reserve) or a clone failure
 /// when an element's `try_clone` cannot allocate its internal buffers.
-pub enum TryDashMapError {    /// A capacity reservation on the DashMap failed (overflow or OOM).
+pub enum TryDashMapError {
+    /// A capacity reservation on the DashMap failed (overflow or OOM).
     Reserve(TryReserveError),
     /// An element clone failed during a method that requires [`TryClone`].
-    Clone(TryCloneError),    /// A logic-level failure with a static diagnostic message.
+    Clone(TryCloneError),
+    /// A logic-level failure with a static diagnostic message.
     Other(&'static str),
 }
 
@@ -66,6 +68,12 @@ impl From<dashmap::TryReserveError> for TryDashMapError {
         // Record a minimal placeholder layout; the important signal (that an
         // allocation, not a capacity overflow, failed) is preserved.
         Self::Reserve(TryReserveErrorExt::new_alloc(Layout::new::<u8>()))
+    }
+}
+
+impl From<TryReserveError> for TryDashMapError {
+    fn from(err: TryReserveError) -> Self {
+        Self::Reserve(err)
     }
 }
 
@@ -164,6 +172,162 @@ impl TryDisplay for TryDashMapNonblockError {
     }
 }
 
+/// Error for non-blocking DashMap give-back operations that can fail due to
+/// either a capacity reservation failure or shard contention.
+// FIXME: the "give back" should no longer exist probably because the give back is free-standing
+pub enum TryDashMapNonblockGiveBackError {
+    /// A capacity reservation failed.
+    Reserve(TryReserveError),
+    /// The target shard is currently locked by another reader or writer.
+    Locked,
+}
+
+impl fmt::Debug for TryDashMapNonblockGiveBackError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        TryDebug::try_fmt(self, f)
+    }
+}
+
+impl fmt::Display for TryDashMapNonblockGiveBackError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        TryDisplay::try_fmt(self, f)
+    }
+}
+
+impl From<TryDashMapNonblockGiveBackError> for TryDashMapError {
+    fn from(e: TryDashMapNonblockGiveBackError) -> Self {
+        match e {
+            TryDashMapNonblockGiveBackError::Reserve(r) => Self::Reserve(r),
+            TryDashMapNonblockGiveBackError::Locked => Self::Other("shard locked"),
+        }
+    }
+}
+
+impl TryDebug for TryDashMapNonblockGiveBackError {
+    fn try_fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        use crate::errors::uniform as u;
+        match self {
+            Self::Reserve(e) => u::debug_field(f, "TryDashMapNonblockGiveBackError::Reserve", e),
+            Self::Locked => u::debug_unit(f, "TryDashMapNonblockGiveBackError::Locked"),
+        }
+    }
+}
+
+impl TryDisplay for TryDashMapNonblockGiveBackError {
+    fn try_fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        use crate::errors::uniform as u;
+        match self {
+            Self::Reserve(e) => u::display_delegated(f, "dash map", e),
+            Self::Locked => u::display_fixed(f, "dash map", "shard locked"),
+        }
+    }
+}
+
+/// Error for blocking DashMap unique-insert operations that can fail due to
+/// either a capacity reservation failure or a duplicate key.
+pub enum TryDashMapInsertUniqueError {
+    /// A capacity reservation failed.
+    Reserve(TryReserveError),
+    /// The key was already present in the map.
+    KeyAlreadyExists,
+}
+
+impl fmt::Debug for TryDashMapInsertUniqueError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        TryDebug::try_fmt(self, f)
+    }
+}
+
+impl fmt::Display for TryDashMapInsertUniqueError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        TryDisplay::try_fmt(self, f)
+    }
+}
+
+impl From<TryDashMapInsertUniqueError> for TryDashMapError {
+    fn from(e: TryDashMapInsertUniqueError) -> Self {
+        match e {
+            TryDashMapInsertUniqueError::Reserve(r) => Self::Reserve(r),
+            TryDashMapInsertUniqueError::KeyAlreadyExists => Self::Other("key already exists"),
+        }
+    }
+}
+
+impl TryDebug for TryDashMapInsertUniqueError {
+    fn try_fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        use crate::errors::uniform as u;
+        match self {
+            Self::Reserve(e) => u::debug_field(f, "TryDashMapInsertUniqueError::Reserve", e),
+            Self::KeyAlreadyExists => u::debug_unit(f, "TryDashMapInsertUniqueError::KeyAlreadyExists"),
+        }
+    }
+}
+
+impl TryDisplay for TryDashMapInsertUniqueError {
+    fn try_fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        use crate::errors::uniform as u;
+        match self {
+            Self::Reserve(e) => u::display_delegated(f, "dash map", e),
+            Self::KeyAlreadyExists => u::display_fixed(f, "dash map", "key already exists"),
+        }
+    }
+}
+
+/// Error for non-blocking DashMap unique-insert operations that can fail due
+/// to a capacity reservation failure, a duplicate key, or shard contention.
+pub enum TryDashMapInsertUniqueNonblockError {
+    /// A capacity reservation failed.
+    Reserve(TryReserveError),
+    /// The key was already present in the map.
+    KeyAlreadyExists,
+    /// The target shard is currently locked by another reader or writer.
+    Locked,
+}
+
+impl fmt::Debug for TryDashMapInsertUniqueNonblockError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        TryDebug::try_fmt(self, f)
+    }
+}
+
+impl fmt::Display for TryDashMapInsertUniqueNonblockError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        TryDisplay::try_fmt(self, f)
+    }
+}
+
+impl From<TryDashMapInsertUniqueNonblockError> for TryDashMapError {
+    fn from(e: TryDashMapInsertUniqueNonblockError) -> Self {
+        match e {
+            TryDashMapInsertUniqueNonblockError::Reserve(r) => Self::Reserve(r),
+            TryDashMapInsertUniqueNonblockError::KeyAlreadyExists => Self::Other("key already exists"),
+            TryDashMapInsertUniqueNonblockError::Locked => Self::Other("shard locked"),
+        }
+    }
+}
+
+impl TryDebug for TryDashMapInsertUniqueNonblockError {
+    fn try_fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        use crate::errors::uniform as u;
+        match self {
+            Self::Reserve(e) => u::debug_field(f, "TryDashMapInsertUniqueNonblockError::Reserve", e),
+            Self::KeyAlreadyExists => u::debug_unit(f, "TryDashMapInsertUniqueNonblockError::KeyAlreadyExists"),
+            Self::Locked => u::debug_unit(f, "TryDashMapInsertUniqueNonblockError::Locked"),
+        }
+    }
+}
+
+impl TryDisplay for TryDashMapInsertUniqueNonblockError {
+    fn try_fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        use crate::errors::uniform as u;
+        match self {
+            Self::Reserve(e) => u::display_delegated(f, "dash map", e),
+            Self::KeyAlreadyExists => u::display_fixed(f, "dash map", "key already exists"),
+            Self::Locked => u::display_fixed(f, "dash map", "shard locked"),
+        }
+    }
+}
+
 // ── Trait ─────────────────────────────────────────────────────────────────────
 
 /// A trait for fallible DashMap operations.
@@ -189,6 +353,7 @@ pub trait TryDashMap<K, V, S = RandomState>: Sized {
     ///
     /// Requires `S: [`TryDefault`]` so that hasher creation is safe even when
     /// it involves runtime allocation or thread-local state.
+    // FIXME: construction invokes TryDefault and reserves, current is too broad
     fn try_new() -> Result<DashMap<K, V, S>, TryDashMapError>
     where
         S: TryDefault;
@@ -224,40 +389,48 @@ pub trait TryDashMap<K, V, S = RandomState>: Sized {
     /// existing value for the same key.
     ///
     /// Reserves capacity before inserting so this method never panics on
-    /// out-of-memory. Returns [`TryDashMapError::Reserve`] if the capacity
+    /// out-of-memory. Returns [`TryReserveError`] if the capacity
     /// reservation fails.
     ///
     /// Returns `None` if the key was not previously present, or
     /// `Some(old_value)` if the key existed and was replaced.
-    fn try_insert(&self, key: K, value: V) -> Result<Option<V>, TryDashMapError>
+    fn try_insert(&self, key: K, value: V) -> Result<Option<V>, TryReserveError>
     where
         K: Eq + Hash;
 
     /// Like [`Self::try_insert`] but returns ownership of `key` and `value`
     /// back on allocation failure.
-    fn try_insert_give_back(&self, key: K, value: V) -> Result<Option<V>, (K, V, TryDashMapError)>
+    fn try_insert_give_back(
+        &self,
+        key: K,
+        value: V,
+    ) -> Result<Option<V>, (K, V, TryReserveError)>
     where
         K: Eq + Hash;
 
     /// Fallibly insert a key-value pair only if the key is not already present.
     ///
     /// Returns `Ok(())` if the key was newly inserted. Returns
-    /// `Err((key, value, error))` if the insertion failed, giving ownership of
-    /// both `key` and `value` back to the caller. The error is
-    /// [`TryDashMapError::Reserve`] on allocation failure or
-    /// [`TryDashMapError::Other`] if the key already exists.
-    fn try_insert_unique(&self, key: K, value: V) -> Result<(), (K, V, TryDashMapError)>
+    /// `Err((key, value, TryDashMapInsertUniqueError))` if the insertion failed,
+    /// giving ownership of both `key` and `value` back to the caller.
+    fn try_insert_unique(
+        &self,
+        key: K,
+        value: V,
+    ) -> Result<(), (K, V, TryDashMapInsertUniqueError)>
     where
         K: Eq + Hash;
 
     /// Non-blocking variant of [`Self::try_insert`].
     ///
-    /// Returns `Ok(Some(result))` on success, `Ok(None)` if the shard is locked.
+    /// Returns `Err(TryDashMapNonblockGiveBackError::Locked)` if the shard is
+    /// currently locked by another writer.
+    // FIXME: give back is already encoded in return types, should probably not have an extra variant.
     fn try_insert_nonblock(
         &self,
         key: K,
         value: V,
-    ) -> Result<Option<Option<V>>, TryDashMapNonblockError>
+    ) -> Result<Option<V>, TryDashMapNonblockGiveBackError>
     where
         K: Eq + Hash;
 
@@ -266,7 +439,7 @@ pub trait TryDashMap<K, V, S = RandomState>: Sized {
         &self,
         key: K,
         value: V,
-    ) -> Result<Option<V>, (K, V, TryDashMapNonblockError)>
+    ) -> Result<Option<V>, (K, V, TryDashMapNonblockGiveBackError)>
     where
         K: Eq + Hash;
 
@@ -275,7 +448,7 @@ pub trait TryDashMap<K, V, S = RandomState>: Sized {
         &self,
         key: K,
         value: V,
-    ) -> Result<(), (K, V, TryDashMapNonblockError)>
+    ) -> Result<(), (K, V, TryDashMapInsertUniqueNonblockError)>
     where
         K: Eq + Hash;
 
@@ -286,22 +459,20 @@ pub trait TryDashMap<K, V, S = RandomState>: Sized {
     /// single lock acquisition. This guarantees that subsequent insertion into
     /// the returned entry cannot panic on out-of-memory.
     ///
-    /// Blocks waiting for the shard lock. Returns
-    /// [`TryDashMapError::Reserve`] if the shard cannot grow.
-    fn try_entry<'a>(&'a self, key: K) -> Result<Entry<'a, K, V>, TryDashMapError>
+    /// Blocks waiting for the shard lock. Returns [`TryReserveError`] if the
+    /// shard cannot grow.
+    fn try_entry<'a>(&'a self, key: K) -> Result<Entry<'a, K, V>, TryReserveError>
     where
         K: Eq + Hash;
 
-    /// Like [`Self::try_entry`] but returns `None` instead of blocking if the
-    /// shard is currently locked by another writer.
+    /// Non-blocking variant of [`Self::try_entry`].
     ///
-    /// Returns `Ok(Some(entry))` on success, `Ok(None)` if the shard was
-    /// contended, or `Err(TryDashMapNonblockError::Locked)` if the shard could not
-    /// be acquired.
+    /// Returns `Err(TryDashMapNonblockGiveBackError::Locked)` if the shard is
+    /// currently locked by another writer.
     fn try_entry_nonblock<'a>(
         &'a self,
         key: K,
-    ) -> Result<Option<Entry<'a, K, V>>, TryDashMapNonblockError>
+    ) -> Result<Entry<'a, K, V>, TryDashMapNonblockGiveBackError>
     where
         K: Eq + Hash;
 
@@ -309,7 +480,10 @@ pub trait TryDashMap<K, V, S = RandomState>: Sized {
     ///
     /// Use this when you need the key available in the error path (e.g. for
     /// give-back insertion variants) so as to not require `K: Clone`.
-    fn try_entry_give_back<'a>(&'a self, key: K) -> Result<Entry<'a, K, V>, (K, TryDashMapError)>
+    fn try_entry_give_back<'a>(
+        &'a self,
+        key: K,
+    ) -> Result<Entry<'a, K, V>, (K, TryReserveError)>
     where
         K: Eq + Hash;
 
@@ -317,7 +491,7 @@ pub trait TryDashMap<K, V, S = RandomState>: Sized {
     fn try_entry_give_back_nonblock<'a>(
         &'a self,
         key: K,
-    ) -> Result<Entry<'a, K, V>, (K, TryDashMapNonblockError)>
+    ) -> Result<Entry<'a, K, V>, (K, TryDashMapNonblockGiveBackError)>
     where
         K: Eq + Hash;
 
@@ -366,7 +540,7 @@ pub trait TryDashMap<K, V, S = RandomState>: Sized {
     }
 
     /// Alias for [`Self::try_insert`].
-    fn fallible_insert(&self, key: K, value: V) -> Result<Option<V>, TryDashMapError>
+    fn fallible_insert(&self, key: K, value: V) -> Result<Option<V>, TryReserveError>
     where
         K: Eq + Hash,
     {
@@ -378,7 +552,7 @@ pub trait TryDashMap<K, V, S = RandomState>: Sized {
         &self,
         key: K,
         value: V,
-    ) -> Result<Option<V>, (K, V, TryDashMapError)>
+    ) -> Result<Option<V>, (K, V, TryReserveError)>
     where
         K: Eq + Hash,
     {
@@ -386,7 +560,11 @@ pub trait TryDashMap<K, V, S = RandomState>: Sized {
     }
 
     /// Alias for [`Self::try_insert_unique`].
-    fn fallible_insert_unique(&self, key: K, value: V) -> Result<(), (K, V, TryDashMapError)>
+    fn fallible_insert_unique(
+        &self,
+        key: K,
+        value: V,
+    ) -> Result<(), (K, V, TryDashMapInsertUniqueError)>
     where
         K: Eq + Hash,
     {
@@ -398,7 +576,7 @@ pub trait TryDashMap<K, V, S = RandomState>: Sized {
         &self,
         key: K,
         value: V,
-    ) -> Result<Option<Option<V>>, TryDashMapNonblockError>
+    ) -> Result<Option<V>, TryDashMapNonblockGiveBackError>
     where
         K: Eq + Hash,
     {
@@ -410,7 +588,7 @@ pub trait TryDashMap<K, V, S = RandomState>: Sized {
         &self,
         key: K,
         value: V,
-    ) -> Result<Option<V>, (K, V, TryDashMapNonblockError)>
+    ) -> Result<Option<V>, (K, V, TryDashMapNonblockGiveBackError)>
     where
         K: Eq + Hash,
     {
@@ -422,7 +600,7 @@ pub trait TryDashMap<K, V, S = RandomState>: Sized {
         &self,
         key: K,
         value: V,
-    ) -> Result<(), (K, V, TryDashMapNonblockError)>
+    ) -> Result<(), (K, V, TryDashMapInsertUniqueNonblockError)>
     where
         K: Eq + Hash,
     {
@@ -430,7 +608,7 @@ pub trait TryDashMap<K, V, S = RandomState>: Sized {
     }
 
     /// Alias for [`Self::try_entry`].
-    fn fallible_entry<'a>(&'a self, key: K) -> Result<Entry<'a, K, V>, TryDashMapError>
+    fn fallible_entry<'a>(&'a self, key: K) -> Result<Entry<'a, K, V>, TryReserveError>
     where
         K: Eq + Hash,
     {
@@ -441,7 +619,7 @@ pub trait TryDashMap<K, V, S = RandomState>: Sized {
     fn fallible_entry_nonblock<'a>(
         &'a self,
         key: K,
-    ) -> Result<Option<Entry<'a, K, V>>, TryDashMapNonblockError>
+    ) -> Result<Entry<'a, K, V>, TryDashMapNonblockGiveBackError>
     where
         K: Eq + Hash,
     {
@@ -452,7 +630,7 @@ pub trait TryDashMap<K, V, S = RandomState>: Sized {
     fn fallible_entry_give_back<'a>(
         &'a self,
         key: K,
-    ) -> Result<Entry<'a, K, V>, (K, TryDashMapError)>
+    ) -> Result<Entry<'a, K, V>, (K, TryReserveError)>
     where
         K: Eq + Hash,
     {
@@ -463,7 +641,7 @@ pub trait TryDashMap<K, V, S = RandomState>: Sized {
     fn fallible_entry_give_back_nonblock<'a>(
         &'a self,
         key: K,
-    ) -> Result<Entry<'a, K, V>, (K, TryDashMapNonblockError)>
+    ) -> Result<Entry<'a, K, V>, (K, TryDashMapNonblockGiveBackError)>
     where
         K: Eq + Hash,
     {
@@ -543,7 +721,7 @@ impl<K: Eq + Hash, V, S: BuildHasher + TryClone> TryDashMap<K, V, S> for DashMap
     {
         let mut map = Self::try_new()?;
         if capacity > 0 {
-            map.try_reserve(capacity).map_err(TryDashMapError::Reserve)?;
+            map.try_reserve(capacity).map_err(TryDashMapError::from)?;
         }
         Ok(map)
     }
@@ -554,14 +732,14 @@ impl<K: Eq + Hash, V, S: BuildHasher + TryClone> TryDashMap<K, V, S> for DashMap
     ) -> Result<DashMap<K, V, S>, TryDashMapError> {
         let mut map = DashMap::with_hasher(hasher);
         if capacity > 0 {
-            map.try_reserve(capacity).map_err(TryDashMapError::Reserve)?;
+            map.try_reserve(capacity).map_err(TryDashMapError::from)?;
         }
         Ok(map)
     }
 
     // ── Insertion ───────────────────────────────────────────────────────────
 
-    fn try_insert(&self, key: K, value: V) -> Result<Option<V>, TryDashMapError>
+    fn try_insert(&self, key: K, value: V) -> Result<Option<V>, TryReserveError>
     where
         K: Eq + Hash,
     {
@@ -578,13 +756,17 @@ impl<K: Eq + Hash, V, S: BuildHasher + TryClone> TryDashMap<K, V, S> for DashMap
         }
     }
 
-    fn try_insert_give_back(&self, key: K, value: V) -> Result<Option<V>, (K, V, TryDashMapError)>
+    fn try_insert_give_back(
+        &self,
+        key: K,
+        value: V,
+    ) -> Result<Option<V>, (K, V, TryReserveError)>
     where
         K: Eq + Hash,
     {
         let entry = match TryDashMap::try_entry_give_back(self, key) {
             Ok(e) => e,
-            Err((k, err)) => return Err((k, value, err)),
+            Err((k, reserve_err)) => return Err((k, value, reserve_err)),
         };
         match entry {
             Entry::Occupied(mut e) => {
@@ -598,22 +780,24 @@ impl<K: Eq + Hash, V, S: BuildHasher + TryClone> TryDashMap<K, V, S> for DashMap
         }
     }
 
-    fn try_insert_unique(&self, key: K, value: V) -> Result<(), (K, V, TryDashMapError)>
+    fn try_insert_unique(
+        &self,
+        key: K,
+        value: V,
+    ) -> Result<(), (K, V, TryDashMapInsertUniqueError)>
     where
         K: Eq + Hash,
     {
         let entry = match TryDashMap::try_entry_give_back(self, key) {
             Ok(e) => e,
-            Err((k, err)) => return Err((k, value, err)),
+            Err((k, reserve_err)) => {
+                return Err((k, value, TryDashMapInsertUniqueError::Reserve(reserve_err)));
+            }
         };
         match entry {
             Entry::Occupied(e) => {
                 let returned_key = e.into_key();
-                Err((
-                    returned_key,
-                    value,
-                    TryDashMapError::Other("key already exists"),
-                ))
+                Err((returned_key, value, TryDashMapInsertUniqueError::KeyAlreadyExists))
             }
             Entry::Vacant(e) => {
                 e.insert(value);
@@ -626,22 +810,19 @@ impl<K: Eq + Hash, V, S: BuildHasher + TryClone> TryDashMap<K, V, S> for DashMap
         &self,
         key: K,
         value: V,
-    ) -> Result<Option<Option<V>>, TryDashMapNonblockError>
+    ) -> Result<Option<V>, TryDashMapNonblockGiveBackError>
     where
         K: Eq + Hash,
     {
-        let entry = match TryDashMap::try_entry_nonblock(self, key)? {
-            Some(e) => e,
-            None => return Ok(None),
-        };
+        let entry = TryDashMap::try_entry_nonblock(self, key)?;
         match entry {
             Entry::Occupied(mut e) => {
                 let old = e.insert(value);
-                Ok(Some(Some(old)))
+                Ok(Some(old))
             }
             Entry::Vacant(e) => {
                 e.insert(value);
-                Ok(Some(None))
+                Ok(None)
             }
         }
     }
@@ -650,13 +831,13 @@ impl<K: Eq + Hash, V, S: BuildHasher + TryClone> TryDashMap<K, V, S> for DashMap
         &self,
         key: K,
         value: V,
-    ) -> Result<Option<V>, (K, V, TryDashMapNonblockError)>
+    ) -> Result<Option<V>, (K, V, TryDashMapNonblockGiveBackError)>
     where
         K: Eq + Hash,
     {
         let entry = match TryDashMap::try_entry_give_back_nonblock(self, key) {
             Ok(e) => e,
-            Err((k, err)) => return Err((k, value, err)),
+            Err((k, nb_err)) => return Err((k, value, nb_err)),
         };
         match entry {
             Entry::Occupied(mut e) => {
@@ -674,22 +855,21 @@ impl<K: Eq + Hash, V, S: BuildHasher + TryClone> TryDashMap<K, V, S> for DashMap
         &self,
         key: K,
         value: V,
-    ) -> Result<(), (K, V, TryDashMapNonblockError)>
+    ) -> Result<(), (K, V, TryDashMapInsertUniqueNonblockError)>
     where
         K: Eq + Hash,
     {
         let entry = match TryDashMap::try_entry_give_back_nonblock(self, key) {
             Ok(e) => e,
-            Err((k, err)) => return Err((k, value, err)),
+            Err((k, nb_err)) => {
+                let mapped = map_nb_to_unique(nb_err);
+                return Err((k, value, mapped));
+            }
         };
         match entry {
             Entry::Occupied(e) => {
                 let returned_key = e.into_key();
-                Err((
-                    returned_key,
-                    value,
-                    TryDashMapNonblockError::Other("key already exists"),
-                ))
+                Err((returned_key, value, TryDashMapInsertUniqueNonblockError::KeyAlreadyExists))
             }
             Entry::Vacant(e) => {
                 e.insert(value);
@@ -698,7 +878,7 @@ impl<K: Eq + Hash, V, S: BuildHasher + TryClone> TryDashMap<K, V, S> for DashMap
         }
     }
 
-    fn try_entry<'a>(&'a self, key: K) -> Result<Entry<'a, K, V>, TryDashMapError>
+    fn try_entry<'a>(&'a self, key: K) -> Result<Entry<'a, K, V>, TryReserveError>
     where
         K: Eq + Hash,
     {
@@ -711,7 +891,7 @@ impl<K: Eq + Hash, V, S: BuildHasher + TryClone> TryDashMap<K, V, S> for DashMap
         // Reserve one slot first so that find_or_find_insert_slot cannot panic.
         shard
             .try_reserve(1, |(k, _v): &ShardEntry<K, V>| hf.hash_one(k))
-            .map_err(|e| TryDashMapError::Reserve(crate::alloc::try_reserve_error_from_hashbrown(e)))?;
+            .map_err(crate::alloc::try_reserve_error_from_hashbrown)?;
 
         // Build the entry while still holding the lock — no re-acquisition needed.
         match shard.find_or_find_insert_slot(
@@ -728,7 +908,10 @@ impl<K: Eq + Hash, V, S: BuildHasher + TryClone> TryDashMap<K, V, S> for DashMap
         }
     }
 
-    fn try_entry_give_back<'a>(&'a self, key: K) -> Result<Entry<'a, K, V>, (K, TryDashMapError)>
+    fn try_entry_give_back<'a>(
+        &'a self,
+        key: K,
+    ) -> Result<Entry<'a, K, V>, (K, TryReserveError)>
     where
         K: Eq + Hash,
     {
@@ -738,7 +921,7 @@ impl<K: Eq + Hash, V, S: BuildHasher + TryClone> TryDashMap<K, V, S> for DashMap
 
         let mut shard = self.shards()[shard_idx].write();
         if let Err(e) = shard.try_reserve(1, |(k, _v): &ShardEntry<K, V>| hf.hash_one(k)) {
-            return Err((key, TryDashMapError::Reserve(crate::alloc::try_reserve_error_from_hashbrown(e))));
+            return Err((key, crate::alloc::try_reserve_error_from_hashbrown(e)));
         }
 
         match shard.find_or_find_insert_slot(
@@ -758,7 +941,7 @@ impl<K: Eq + Hash, V, S: BuildHasher + TryClone> TryDashMap<K, V, S> for DashMap
     fn try_entry_nonblock<'a>(
         &'a self,
         key: K,
-    ) -> Result<Option<Entry<'a, K, V>>, TryDashMapNonblockError>
+    ) -> Result<Entry<'a, K, V>, TryDashMapNonblockGiveBackError>
     where
         K: Eq + Hash,
     {
@@ -767,32 +950,34 @@ impl<K: Eq + Hash, V, S: BuildHasher + TryClone> TryDashMap<K, V, S> for DashMap
         let hf = self.hasher().clone();
 
         let Some(mut shard) = self.shards()[shard_idx].try_write() else {
-            return Err(TryDashMapNonblockError::Locked);
+            return Err(TryDashMapNonblockGiveBackError::Locked);
         };
 
         // Reserve one slot so insertion cannot panic.
         shard
             .try_reserve(1, |(k, _v): &ShardEntry<K, V>| hf.hash_one(k))
-            .map_err(|e| TryDashMapNonblockError::Reserve(crate::alloc::try_reserve_error_from_hashbrown(e)))?;
+            .map_err(|e| {
+                TryDashMapNonblockGiveBackError::Reserve(crate::alloc::try_reserve_error_from_hashbrown(e))
+            })?;
 
         match shard.find_or_find_insert_slot(
             hash,
             |(k, _v): &ShardEntry<K, V>| k == &key,
             |(k, _v): &ShardEntry<K, V>| hf.hash_one(k),
         ) {
-            Ok(bucket) => Ok(Some(Entry::Occupied(unsafe {
+            Ok(bucket) => Ok(Entry::Occupied(unsafe {
                 OccupiedEntry::new(shard, key, bucket)
-            }))),
-            Err(slot) => Ok(Some(Entry::Vacant(unsafe {
+            })),
+            Err(slot) => Ok(Entry::Vacant(unsafe {
                 VacantEntry::new(shard, key, hash, slot)
-            }))),
+            })),
         }
     }
 
     fn try_entry_give_back_nonblock<'a>(
         &'a self,
         key: K,
-    ) -> Result<Entry<'a, K, V>, (K, TryDashMapNonblockError)>
+    ) -> Result<Entry<'a, K, V>, (K, TryDashMapNonblockGiveBackError)>
     where
         K: Eq + Hash,
     {
@@ -801,11 +986,14 @@ impl<K: Eq + Hash, V, S: BuildHasher + TryClone> TryDashMap<K, V, S> for DashMap
         let hf = self.hasher().clone();
 
         let Some(mut shard) = self.shards()[shard_idx].try_write() else {
-            return Err((key, TryDashMapNonblockError::Locked));
+            return Err((key, TryDashMapNonblockGiveBackError::Locked));
         };
 
         if let Err(e) = shard.try_reserve(1, |(k, _v): &ShardEntry<K, V>| hf.hash_one(k)) {
-            return Err((key, TryDashMapNonblockError::Reserve(crate::alloc::try_reserve_error_from_hashbrown(e))));
+            return Err((
+                key,
+                TryDashMapNonblockGiveBackError::Reserve(crate::alloc::try_reserve_error_from_hashbrown(e)),
+            ));
         }
 
         match shard.find_or_find_insert_slot(
@@ -930,7 +1118,7 @@ impl<K: Eq + Hash, V, S: BuildHasher + TryClone> TryDashMap<K, V, S> for DashMap
         let capacity = upper.unwrap_or(lower);
         let mut map = Self::try_new()?;
         if capacity > 0 {
-            map.try_reserve(capacity).map_err(TryDashMapError::Reserve)?;
+            map.try_reserve(capacity).map_err(TryDashMapError::from)?;
         }
         for (key, value) in iter {
             <DashMap<K, V, S> as TryDashMap<K, V, S>>::try_insert(&map, key, value)?;
@@ -947,7 +1135,7 @@ impl<K: Eq + Hash, V, S: BuildHasher + TryClone> TryDashMap<K, V, S> for DashMap
         let capacity = upper.unwrap_or(lower);
         let mut map = DashMap::with_hasher(hasher);
         if capacity > 0 {
-            map.try_reserve(capacity).map_err(TryDashMapError::Reserve)?;
+            map.try_reserve(capacity).map_err(TryDashMapError::from)?;
         }
         for (key, value) in iter {
             Self::try_insert(&map, key, value)?;
@@ -957,6 +1145,14 @@ impl<K: Eq + Hash, V, S: BuildHasher + TryClone> TryDashMap<K, V, S> for DashMap
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
+
+#[inline]
+fn map_nb_to_unique(err: TryDashMapNonblockGiveBackError) -> TryDashMapInsertUniqueNonblockError {
+    match err {
+        TryDashMapNonblockGiveBackError::Reserve(r) => TryDashMapInsertUniqueNonblockError::Reserve(r),
+        TryDashMapNonblockGiveBackError::Locked => TryDashMapInsertUniqueNonblockError::Locked,
+    }
+}
 
 type ShardEntry<K, V> = (K, dashmap::SharedValue<V>);
 
@@ -1197,7 +1393,7 @@ mod tests {
     #[test]
     fn try_insert_give_back_error_type_shape() {
         let map: DashMap<i32, i32> = DashMap::new();
-        let result: Result<Option<i32>, (i32, i32, TryDashMapError)> =
+        let result: Result<Option<i32>, (i32, i32, TryReserveError)> =
             map.try_insert_give_back(1, 2);
         assert!(result.is_ok());
     }
@@ -1219,7 +1415,7 @@ mod tests {
         let (returned_key, returned_val, err) = result.unwrap_err();
         assert_eq!(returned_key, 1);
         assert_eq!(returned_val, "TWO");
-        matches!(err, TryDashMapError::Other(_));
+        assert!(matches!(err, crate::dashmap::TryDashMapInsertUniqueError::KeyAlreadyExists));
         assert_eq!(*map.get(&1).unwrap(), "one");
         assert_eq!(map.len(), 1);
     }
@@ -1232,7 +1428,7 @@ mod tests {
     fn __try_entry<'a, K, V, S>(
         m: &'a DashMap<K, V, S>,
         key: K,
-    ) -> Result<Entry<'a, K, V>, TryDashMapError>
+    ) -> Result<Entry<'a, K, V>, TryReserveError>
     where
         K: Eq + Hash,
         S: BuildHasher + TryClone,
@@ -1244,7 +1440,7 @@ mod tests {
     fn __try_entry_nonblock<'a, K, V, S>(
         m: &'a DashMap<K, V, S>,
         key: K,
-    ) -> Result<Option<Entry<'a, K, V>>, TryDashMapNonblockError>
+    ) -> Result<Entry<'a, K, V>, TryDashMapNonblockGiveBackError>
     where
         K: Eq + Hash,
         S: BuildHasher + TryClone,
@@ -1588,11 +1784,10 @@ mod tests {
     // ── Non-blocking entry ───────────────────────────────────────────────────
 
     #[test]
-    fn try_entry_nonblock_returns_some() {
+    fn try_entry_nonblock_returns_entry() {
         let map: DashMap<String, i32> = DashMap::new();
         let entry = __try_entry_nonblock(&map, "a".to_string()).unwrap();
-        assert!(entry.is_some());
-        entry.unwrap().or_insert(7);
+        entry.or_insert(7);
         assert_eq!(*map.get("a").unwrap(), 7);
     }
 
@@ -1601,8 +1796,7 @@ mod tests {
         let map: DashMap<String, i32> = DashMap::new();
         map.try_insert("b".to_string(), 1).unwrap();
         let entry = __try_entry_nonblock(&map, "b".to_string()).unwrap();
-        assert!(entry.is_some());
-        entry.unwrap().and_modify(|v| *v += 1);
+        entry.and_modify(|v| *v += 1);
         assert_eq!(*map.get("b").unwrap(), 2);
     }
 
@@ -1617,22 +1811,21 @@ mod tests {
     fn fallible_entry_nonblock_alias_works() {
         let map: DashMap<String, i32> = DashMap::new();
         let entry = map.fallible_entry_nonblock("c".to_string()).unwrap();
-        assert!(entry.is_some());
-        entry.unwrap().or_insert(42);
+        entry.or_insert(42);
         assert_eq!(*map.get("c").unwrap(), 42);
     }
 
     /// Drives the vacant + occupied arms of `try_insert_nonblock` (the shard is
-    /// unlocked so it always resolves to `Some`).
+    /// unlocked so it never hits `Locked`).
     #[test]
     fn try_insert_nonblock_vacant_and_occupied() {
         let map: DashMap<&str, i32> = DashMap::new();
         // Vacant arm.
         let r = map.try_insert_nonblock("a", 1).unwrap();
-        assert_eq!(r, Some(None));
+        assert_eq!(r, None);
         // Occupied arm (replaces existing value).
         let r = map.try_insert_nonblock("a", 2).unwrap();
-        assert_eq!(r, Some(Some(1)));
+        assert_eq!(r, Some(1));
     }
 
     /// Drives the vacant + occupied arms of `try_insert_give_back_nonblock`.
@@ -1658,7 +1851,7 @@ mod tests {
         assert_eq!(err.1, 2);
         assert!(matches!(
             err.2,
-            TryDashMapNonblockError::Other("key already exists")
+            crate::dashmap::TryDashMapInsertUniqueNonblockError::KeyAlreadyExists
         ));
     }
 

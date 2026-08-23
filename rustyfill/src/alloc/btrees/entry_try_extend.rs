@@ -40,7 +40,7 @@ impl<'s, K: Ord + TryClone, V: TryClone> TryExtendFromSlice<'s, (K, V)>
 impl<K: Ord, V> TryExtend<(K, V)> for lang_alloc::collections::BTreeMap<K, V> {
     type Error = AllocError;
 
-    fn try_extend<Src>(&mut self, source: Src) -> Result<(), (AllocError, Resumable<Src::Inner>)>
+    fn try_extend<Src>(&mut self, source: Src) -> Result<(), (Resumable<Src::Inner>, AllocError)>
     where
         Src: crate::recovery::ResumableSource<Item = (K, V)>,
     {
@@ -50,14 +50,14 @@ impl<K: Ord, V> TryExtend<(K, V)> for lang_alloc::collections::BTreeMap<K, V> {
             && let Err((k, v, e)) =
                 <Self as TryBTreeMap<K, V>>::try_insert_give_back(self, key, value)
         {
-            return Err((e, Resumable::new((k, v), iter)));
+            return Err((Resumable::new((k, v), iter), e));
         }
 
         while let Some((key, value)) = iter.next() {
             if let Err((k, v, e)) =
                 <Self as TryBTreeMap<K, V>>::try_insert_give_back(self, key, value)
             {
-                return Err((e, Resumable::new((k, v), iter)));
+                return Err((Resumable::new((k, v), iter), e));
             }
         }
         Ok(())
@@ -93,7 +93,7 @@ impl<'s, T: Ord + TryClone> TryExtendFromSlice<'s, T> for lang_alloc::collection
 impl<T: Ord> TryExtend<T> for lang_alloc::collections::BTreeSet<T> {
     type Error = AllocError;
 
-    fn try_extend<Src>(&mut self, source: Src) -> Result<(), (AllocError, Resumable<Src::Inner>)>
+    fn try_extend<Src>(&mut self, source: Src) -> Result<(), (Resumable<Src::Inner>, AllocError)>
     where
         Src: crate::recovery::ResumableSource<Item = T>,
     {
@@ -102,12 +102,12 @@ impl<T: Ord> TryExtend<T> for lang_alloc::collections::BTreeSet<T> {
         if let Some(value) = head
             && let Err((v, e)) = <Self as TryBTreeSet<T>>::try_insert_give_back(self, value)
         {
-            return Err((e, Resumable::new(v, iter)));
+            return Err((Resumable::new(v, iter), e));
         }
 
         while let Some(value) = iter.next() {
             if let Err((v, e)) = <Self as TryBTreeSet<T>>::try_insert_give_back(self, value) {
-                return Err((e, Resumable::new(v, iter)));
+                return Err((Resumable::new(v, iter), e));
             }
         }
         Ok(())

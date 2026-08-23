@@ -29,6 +29,7 @@ pub(crate) fn display_fixed(f: &mut fmt::Formatter<'_>, prefix: &str, msg: &str)
 /// detail comes from the wrapped value's own `Display`.
 ///
 /// Used for the `Reserve`, `Clone`, and `Other` variants.
+// FIXME: use TryDisplay
 #[inline]
 pub(crate) fn display_delegated<T: fmt::Display>(
     f: &mut fmt::Formatter<'_>,
@@ -100,25 +101,25 @@ mod tests {
 
     #[test]
     fn display_fixed_renders_prefix_and_message() {
-        let err = crate::alloc::vec::TryVecError::Other("capacity calculation overflowed");
+        let err = crate::alloc::vec::TryVecExtendFromWithinError::OutOfBounds;
         assert_eq!(
             render_display(&err),
-            "vector operation failed: capacity calculation overflowed"
+            "vector operation failed: range out of bounds"
         );
     }
 
     #[test]
     fn display_delegated_renders_wrapped_value() {
-        let err = crate::alloc::vec::TryVecError::Other("boom");
-        assert_eq!(render_display(&err), "vector operation failed: boom");
+        let err = crate::alloc::vec::TryVecWithCloneError::Reserve(reserve_err());
+        assert!(render_display(&err).starts_with("vector operation failed:"));
     }
 
     #[test]
     fn debug_field_renders_single_field_struct() {
-        let err = crate::alloc::vec::TryVecError::Reserve(reserve_err());
+        let err = crate::alloc::vec::TryVecWithCloneError::Reserve(reserve_err());
         let got = render_trydebug(&err);
         assert!(
-            got.contains("TryVecError::Reserve"),
+            got.contains("TryVecWithCloneError::Reserve"),
             "missing tag in {got:?}"
         );
     }

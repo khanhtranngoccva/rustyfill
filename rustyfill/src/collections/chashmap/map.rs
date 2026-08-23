@@ -167,6 +167,60 @@ impl TryDisplay for ConcurrentHashMapNonblockError {
     }
 }
 
+// ── Narrow insert-unique error ─────────────────────────────────────────────────
+
+/// Error for [`ConcurrentHashMap::try_insert_unique`] when the insertion fails.
+#[derive(Clone)]
+pub enum TryConcurrentHashMapInsertUniqueError {
+    /// A capacity reservation failed.
+    Reserve(TryReserveError),
+    /// The key already existed in the map.
+    KeyAlreadyExists,
+}
+
+impl fmt::Debug for TryConcurrentHashMapInsertUniqueError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        TryDebug::try_fmt(self, f)
+    }
+}
+
+impl fmt::Display for TryConcurrentHashMapInsertUniqueError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        TryDisplay::try_fmt(self, f)
+    }
+}
+
+impl TryDebug for TryConcurrentHashMapInsertUniqueError {
+    fn try_fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        use crate::errors::uniform as u;
+        match self {
+            Self::Reserve(e) => u::debug_field(f, "TryConcurrentHashMapInsertUniqueError::Reserve", e),
+            Self::KeyAlreadyExists => u::debug_unit(f, "TryConcurrentHashMapInsertUniqueError::KeyAlreadyExists"),
+        }
+    }
+}
+
+impl TryDisplay for TryConcurrentHashMapInsertUniqueError {
+    fn try_fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        use crate::errors::uniform as u;
+        match self {
+            Self::Reserve(e) => u::display_delegated(f, "concurrent hash map", e),
+            Self::KeyAlreadyExists => u::display_fixed(f, "concurrent hash map", "key already exists"),
+        }
+    }
+}
+
+impl From<TryConcurrentHashMapInsertUniqueError> for ConcurrentHashMapError {
+    fn from(err: TryConcurrentHashMapInsertUniqueError) -> Self {
+        match err {
+            TryConcurrentHashMapInsertUniqueError::Reserve(r) => Self::Reserve(r),
+            TryConcurrentHashMapInsertUniqueError::KeyAlreadyExists => {
+                Self::Other("key already exists")
+            }
+        }
+    }
+}
+
 // ── ConcurrentHashMap ─────────────────────────────────────────────────────────
 
 /// A concurrent hash map backed by sharded `RwLock<RawTable>` instances.
@@ -423,7 +477,7 @@ impl<K: Eq + Hash, V, S: BuildHasher> ConcurrentHashMap<K, V, S> {
     // ── Insertion ─────────────────────────────────────────────────────────
 
     /// Fallibly insert a key-value pair.
-    pub fn try_insert(&self, key: K, value: V) -> Result<Option<V>, ConcurrentHashMapError>
+    pub fn try_insert(&self, key: K, value: V) -> Result<Option<V>, TryReserveError>
     where
         K: Eq + Hash,
     {
@@ -442,13 +496,13 @@ impl<K: Eq + Hash, V, S: BuildHasher> ConcurrentHashMap<K, V, S> {
         &self,
         key: K,
         value: V,
-    ) -> Result<Option<V>, (K, V, ConcurrentHashMapError)>
+    ) -> Result<Option<V>, (K, V, TryReserveError)>
     where
         K: Eq + Hash,
     {
         let entry = match self.try_entry_give_back(key) {
             Ok(e) => e,
-            Err((k, err)) => return Err((k, value, err)),
+            Err((k, reserve_err)) => return Err((k, value, reserve_err)),
         };
         match entry {
             Entry::Occupied(mut e) => Ok(Some(e.insert(value))),
@@ -460,22 +514,24 @@ impl<K: Eq + Hash, V, S: BuildHasher> ConcurrentHashMap<K, V, S> {
     }
 
     /// Fallibly insert only if the key doesn't exist.
-    pub fn try_insert_unique(&self, key: K, value: V) -> Result<(), (K, V, ConcurrentHashMapError)>
+    pub fn try_insert_unique(
+        &self,
+        key: K,
+        value: V,
+    ) -> Result<(), (K, V, TryConcurrentHashMapInsertUniqueError)>
     where
         K: Eq + Hash + Clone,
     {
         let entry = match self.try_entry_give_back(key) {
             Ok(e) => e,
-            Err((k, err)) => return Err((k, value, err)),
+            Err((k, reserve_err)) => {
+                return Err((k, value, TryConcurrentHashMapInsertUniqueError::Reserve(reserve_err)));
+            }
         };
         match entry {
             Entry::Occupied(e) => {
                 let k = e.key().clone();
-                Err((
-                    k,
-                    value,
-                    ConcurrentHashMapError::Other("key already exists"),
-                ))
+                Err((k, value, TryConcurrentHashMapInsertUniqueError::KeyAlreadyExists))
             }
             Entry::Vacant(e) => {
                 let _val = e.insert(value);
@@ -531,6 +587,7 @@ impl<K: Eq + Hash, V, S: BuildHasher> ConcurrentHashMap<K, V, S> {
     // ── Removal ───────────────────────────────────────────────────────────
 
     /// Remove and return the value for the given key, if present.
+    // FIXME: should use borrowed key and should make the operation infallible?
     pub fn try_remove(&self, key: K) -> Result<Option<V>, ConcurrentHashMapError>
     where
         K: Eq + Hash,
@@ -571,7 +628,7 @@ impl<K: Eq + Hash, V, S: BuildHasher> ConcurrentHashMap<K, V, S> {
     // ── Entry API ─────────────────────────────────────────────────────────
 
     /// Fallibly obtain an entry for the given key.
-    pub fn try_entry(&self, key: K) -> Result<Entry<'_, K, V>, ConcurrentHashMapError>
+    pub fn try_entry(&self, key: K) -> Result<Entry<'_, K, V>, TryReserveError>
     where
         K: Eq + Hash,
     {
@@ -593,7 +650,7 @@ impl<K: Eq + Hash, V, S: BuildHasher> ConcurrentHashMap<K, V, S> {
     pub fn try_entry_give_back(
         &self,
         key: K,
-    ) -> Result<Entry<'_, K, V>, (K, ConcurrentHashMapError)>
+    ) -> Result<Entry<'_, K, V>, (K, TryReserveError)>
     where
         K: Eq + Hash,
     {
@@ -670,7 +727,7 @@ impl<K: Eq + Hash, V, S: BuildHasher> ConcurrentHashMap<K, V, S> {
     }
 
     /// Alias for [`Self::try_insert`].
-    pub fn fallible_insert(&self, key: K, value: V) -> Result<Option<V>, ConcurrentHashMapError>
+    pub fn fallible_insert(&self, key: K, value: V) -> Result<Option<V>, TryReserveError>
     where
         K: Eq + Hash,
     {
@@ -682,7 +739,7 @@ impl<K: Eq + Hash, V, S: BuildHasher> ConcurrentHashMap<K, V, S> {
         &self,
         key: K,
         value: V,
-    ) -> Result<Option<V>, (K, V, ConcurrentHashMapError)>
+    ) -> Result<Option<V>, (K, V, TryReserveError)>
     where
         K: Eq + Hash,
     {
@@ -694,7 +751,7 @@ impl<K: Eq + Hash, V, S: BuildHasher> ConcurrentHashMap<K, V, S> {
         &self,
         key: K,
         value: V,
-    ) -> Result<(), (K, V, ConcurrentHashMapError)>
+    ) -> Result<(), (K, V, TryConcurrentHashMapInsertUniqueError)>
     where
         K: Eq + Hash + Clone,
     {
@@ -718,7 +775,7 @@ impl<K: Eq + Hash, V, S: BuildHasher> ConcurrentHashMap<K, V, S> {
     }
 
     /// Alias for [`Self::try_entry`].
-    pub fn fallible_entry(&self, key: K) -> Result<Entry<'_, K, V>, ConcurrentHashMapError>
+    pub fn fallible_entry(&self, key: K) -> Result<Entry<'_, K, V>, TryReserveError>
     where
         K: Eq + Hash,
     {
@@ -740,7 +797,7 @@ impl<K: Eq + Hash, V, S: BuildHasher> ConcurrentHashMap<K, V, S> {
     pub fn fallible_entry_give_back(
         &self,
         key: K,
-    ) -> Result<Entry<'_, K, V>, (K, ConcurrentHashMapError)>
+    ) -> Result<Entry<'_, K, V>, (K, TryReserveError)>
     where
         K: Eq + Hash,
     {
@@ -818,7 +875,7 @@ impl<K: Eq + Hash, V, S: BuildHasher> ConcurrentHashMap<K, V, S> {
 
     // ── Private entry implementations ─────────────────────────────────────
 
-    fn do_entry(&self, key: K) -> Result<Entry<'_, K, V>, ConcurrentHashMapError>
+    fn do_entry(&self, key: K) -> Result<Entry<'_, K, V>, TryReserveError>
     where
         K: Eq + Hash,
     {
@@ -828,7 +885,7 @@ impl<K: Eq + Hash, V, S: BuildHasher> ConcurrentHashMap<K, V, S> {
         let mut guard = shard.write_table();
         guard
             .try_reserve(1, |(k, _v): &(K, V)| self.hasher.hash_one(k))
-            .map_err(|e| ConcurrentHashMapError::Reserve(crate::alloc::try_reserve_error_from_hashbrown(e)))?;
+            .map_err(crate::alloc::try_reserve_error_from_hashbrown)?;
 
         match guard.find_or_find_insert_slot(
             hash,
@@ -877,7 +934,10 @@ impl<K: Eq + Hash, V, S: BuildHasher> ConcurrentHashMap<K, V, S> {
         }
     }
 
-    fn do_entry_give_back(&self, key: K) -> Result<Entry<'_, K, V>, (K, ConcurrentHashMapError)>
+    fn do_entry_give_back(
+        &self,
+        key: K,
+    ) -> Result<Entry<'_, K, V>, (K, TryReserveError)>
     where
         K: Eq + Hash,
     {
@@ -886,7 +946,7 @@ impl<K: Eq + Hash, V, S: BuildHasher> ConcurrentHashMap<K, V, S> {
         let shard = self.shards.get_shard(idx);
         let mut guard = shard.write_table();
         if let Err(e) = guard.try_reserve(1, |(k, _v): &(K, V)| self.hasher.hash_one(k)) {
-            return Err((key, ConcurrentHashMapError::Reserve(crate::alloc::try_reserve_error_from_hashbrown(e))));
+            return Err((key, crate::alloc::try_reserve_error_from_hashbrown(e)));
         }
 
         match guard.find_or_find_insert_slot(
@@ -995,9 +1055,7 @@ where
                 let kv = unsafe { bucket.as_ref() };
                 let k = kv.0.try_clone()?;
                 let v = kv.1.try_clone()?;
-                out.try_insert(k, v).map_err(|e| match e {                    ConcurrentHashMapError::Reserve(r) => TryCloneError::Reserve(r),
-                    ConcurrentHashMapError::Clone(c) => c,                    ConcurrentHashMapError::Other(m) => TryCloneError::Other(m),
-                })?;
+                out.try_insert(k, v).map_err(TryCloneError::Reserve)?;
             }
         }
         Ok(out)

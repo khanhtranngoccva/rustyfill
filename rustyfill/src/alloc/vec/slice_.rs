@@ -5,7 +5,7 @@
 //! gracefully. Uses [`TryClone`](crate::try_clone::TryClone) for each element
 //! copy so that clone-time allocation failures are also caught.
 
-use super::vec_::TryVecError;
+use super::vec_::TryVecWithCloneError;
 use crate::alloc::{TryReserveErrorExt};
 use crate::try_clone::{TryClone, TryCloneError};
 use crate::try_default::{TryDefault, TryDefaultError};
@@ -20,7 +20,7 @@ use lang_core::ptr::{self, NonNull};
 /// A trait for fallibly converting a slice into a [`Vec`].
 ///
 /// Implemented for `[T]`. Methods reserve capacity upfront and use
-/// [`TryClone`] for each element, returning [`TryVecError`] on failure.
+/// [`TryClone`] for each element, returning [`TryVecWithCloneError`] on failure.
 pub trait TrySlice<T> {
     /// Fallibly copy this slice into a new [`Vec`].
     ///
@@ -29,9 +29,9 @@ pub trait TrySlice<T> {
     /// clone fails midway the vector is truncated back to its original state
     /// (empty in this case, since it was just created).
     ///
-    /// Returns [`TryVecError::Reserve`] on allocation failure or
-    /// [`TryVecError::Clone`] if an element's [`TryClone::try_clone`] fails.
-    fn try_to_vec(&self) -> Result<Vec<T>, TryVecError>
+    /// Returns [`TryVecWithCloneError::Reserve`] on allocation failure or
+    /// [`TryVecWithCloneError::Clone`] if an element's [`TryClone::try_clone`] fails.
+    fn try_to_vec(&self) -> Result<Vec<T>, TryVecWithCloneError>
     where
         T: TryClone;
 
@@ -46,18 +46,18 @@ pub trait TrySlice<T> {
     /// Reserves capacity upfront for the total length (`self.len() * n`).
     /// Returns an empty `Vec` when `n == 0` or the slice is empty.
     ///
-    /// Returns [`TryVecError::Reserve`] on allocation failure,
-    /// [`TryVecError::Reserve`] if `self.len() * n` overflows, or
-    /// [`TryVecError::Clone`] if an element's [`TryClone::try_clone`] fails.
+    /// Returns [`TryVecWithCloneError::Reserve`] on allocation failure,
+    /// [`TryVecWithCloneError::Reserve`] if `self.len() * n` overflows, or
+    /// [`TryVecWithCloneError::Clone`] if an element's [`TryClone::try_clone`] fails.
     /// On clone failure midway, the partial vector is discarded.
-    fn try_repeat_clone(&self, n: usize) -> Result<Vec<T>, TryVecError>
+    fn try_repeat_clone(&self, n: usize) -> Result<Vec<T>, TryVecWithCloneError>
     where
         T: TryClone;
 
     // ── Aliases with `fallible_` prefix ─────────────────────────────────────
 
     /// Alias for [`Self::try_to_vec`].
-    fn fallible_to_vec(&self) -> Result<Vec<T>, TryVecError>
+    fn fallible_to_vec(&self) -> Result<Vec<T>, TryVecWithCloneError>
     where
         T: TryClone,
     {
@@ -65,7 +65,7 @@ pub trait TrySlice<T> {
     }
 
     /// Alias for [`Self::try_repeat_clone`].
-    fn fallible_repeat_clone(&self, n: usize) -> Result<Vec<T>, TryVecError>
+    fn fallible_repeat_clone(&self, n: usize) -> Result<Vec<T>, TryVecWithCloneError>
     where
         T: TryClone,
     {
@@ -74,21 +74,21 @@ pub trait TrySlice<T> {
 }
 
 impl<T> TrySlice<T> for [T] {
-    fn try_to_vec(&self) -> Result<Vec<T>, TryVecError>
+    fn try_to_vec(&self) -> Result<Vec<T>, TryVecWithCloneError>
     where
         T: TryClone,
     {
         let mut out = Vec::<T>::new();
         if !self.is_empty() {
-            out.try_reserve(self.len()).map_err(TryVecError::Reserve)?;
+            out.try_reserve(self.len()).map_err(TryVecWithCloneError::Reserve)?;
         }
         for elem in self.iter() {
-            out.push(elem.try_clone().map_err(TryVecError::Clone)?);
+            out.push(elem.try_clone().map_err(TryVecWithCloneError::Clone)?);
         }
         Ok(out)
     }
 
-    fn try_repeat_clone(&self, n: usize) -> Result<Vec<T>, TryVecError>
+    fn try_repeat_clone(&self, n: usize) -> Result<Vec<T>, TryVecWithCloneError>
     where
         T: TryClone,
     {
@@ -96,12 +96,12 @@ impl<T> TrySlice<T> for [T] {
         if len == 0 || n == 0 {
             return Ok(Vec::new());
         }
-        let total_len = len.checked_mul(n).ok_or_else(|| TryVecError::Reserve(TryReserveErrorExt::new_capacity_overflow()))?;
+        let total_len = len.checked_mul(n).ok_or_else(|| TryVecWithCloneError::Reserve(TryReserveErrorExt::new_capacity_overflow()))?;
         let mut out = Vec::<T>::new();
-        out.try_reserve(total_len).map_err(TryVecError::Reserve)?;
+        out.try_reserve(total_len).map_err(TryVecWithCloneError::Reserve)?;
         for _ in 0..n {
             for elem in self.iter() {
-                out.push(elem.try_clone().map_err(TryVecError::Clone)?);
+                out.push(elem.try_clone().map_err(TryVecWithCloneError::Clone)?);
             }
         }
         Ok(out)
@@ -356,9 +356,9 @@ mod tests {
     #[test]
     fn try_repeat_clone_overflow() {
         let s: &[u8] = &[1, 2];
-        let result: Result<Vec<u8>, TryVecError> = s.try_repeat_clone(usize::MAX);
+        let result: Result<Vec<u8>, TryVecWithCloneError> = s.try_repeat_clone(usize::MAX);
         match result {
-            Err(TryVecError::Reserve(e)) => assert!(e.is_capacity_overflow()),
+            Err(TryVecWithCloneError::Reserve(e)) => assert!(e.is_capacity_overflow()),
             other => panic!("expected Reserve(capacity overflow), got {other:?}"),
         }
     }
@@ -428,7 +428,7 @@ mod tests {
     #[test]
     fn slice_try_to_vec_fails_on_oom() {
         let s: &[u32] = &[1, 2, 3];
-        let r: Result<Vec<u32>, TryVecError> =
+        let r: Result<Vec<u32>, TryVecWithCloneError> =
             with_policy(FailPolicy::fail_next_alloc(), || s.try_to_vec());
         assert!(r.is_err());
     }
@@ -436,7 +436,7 @@ mod tests {
     #[test]
     fn slice_try_to_vec_empty_succeeds_under_oom() {
         let s: &[u32] = &[];
-        let r: Result<Vec<u32>, TryVecError> =
+        let r: Result<Vec<u32>, TryVecWithCloneError> =
             with_policy(FailPolicy::fail_next_alloc(), || s.try_to_vec());
         assert!(r.is_ok());
     }
@@ -460,7 +460,7 @@ mod tests {
     #[test]
     fn slice_try_repeat_clone_fails_on_oom() {
         let s: &[u8] = &[1, 2];
-        let r: Result<Vec<u8>, TryVecError> =
+        let r: Result<Vec<u8>, TryVecWithCloneError> =
             with_policy(FailPolicy::fail_next_alloc(), || s.try_repeat_clone(3));
         assert!(r.is_err());
     }
@@ -468,7 +468,7 @@ mod tests {
     #[test]
     fn slice_try_repeat_clone_zero_times_succeeds_under_oom() {
         let s: &[u8] = &[1, 2];
-        let r: Result<Vec<u8>, TryVecError> =
+        let r: Result<Vec<u8>, TryVecWithCloneError> =
             with_policy(FailPolicy::fail_next_alloc(), || s.try_repeat_clone(0));
         assert!(r.is_ok());
     }
@@ -477,9 +477,9 @@ mod tests {
     fn slice_nth_alloc_fail_targets_correct_call() {
         let s: &[u8] = &[42];
         let (r1_ok, r2_err, r3_ok) = with_policy(FailPolicy::fail_nth_alloc(2), || {
-            let r1: Result<Vec<u8>, TryVecError> = s.try_to_vec();
-            let r2: Result<Vec<u8>, TryVecError> = s.try_to_vec();
-            let r3: Result<Vec<u8>, TryVecError> = s.try_to_vec();
+            let r1: Result<Vec<u8>, TryVecWithCloneError> = s.try_to_vec();
+            let r2: Result<Vec<u8>, TryVecWithCloneError> = s.try_to_vec();
+            let r3: Result<Vec<u8>, TryVecWithCloneError> = s.try_to_vec();
             (r1.is_ok(), r2.is_err(), r3.is_ok())
         });
         assert!(r1_ok, "first alloc should succeed");
