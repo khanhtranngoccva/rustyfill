@@ -10,4 +10,4 @@ pub mod interner;
 pub mod slotmap;
 
 #[cfg(feature = "std")]
-pub use chashmap::{ConcurrentHashMap, ConcurrentHashMapError, ConcurrentHashMapNonblockError};
+pub use chashmap::{ConcurrentHashMap, ConcurrentHashMapNonblockError};
