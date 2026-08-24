@@ -1473,7 +1473,6 @@ mod tests {
     use lang_alloc::string::String;
     use lang_alloc::string::ToString;
     use lang_alloc::vec;
-    use lang_alloc::vec::Vec;
 
     #[test]
     fn try_or_insert_new_key_empty_map() {
@@ -1671,127 +1670,6 @@ mod tests {
         assert_eq!(*val, 42);
     }
 
-    #[test]
-    fn or_try_insert_with_closure_failure_beats_alloc_failure() {
-        // Even under a failing allocator, a closure error is reported as
-        // Closure (not Alloc), because the closure runs before any insertion.
-        let mut map: BTreeMap<u32, u32> = BTreeMap::new();
-        let r = with_policy(FailPolicy::fail_next_alloc(), || {
-            map.entry(1)
-                .or_try_insert_with_give_back(|| Err::<u32, i32>(5))
-        });
-        assert!(r.is_err());
-        let (key, val_opt, err) = r.unwrap_err();
-        assert!(err.is_closure());
-        assert!(val_opt.is_none());
-        assert_eq!(key, 1);
-        assert!(matches!(err, TryBTreeMapEntryWithError::Closure(e) if e == 5));
-        assert!(map.is_empty());
-    }
-
-    #[test]
-    fn or_try_insert_with_oom_reports_alloc_variant() {
-        // A successful closure followed by an OOM must surface the
-        // Alloc variant with the key and computed value handed back.
-        let mut map: BTreeMap<u32, u32> = BTreeMap::new();
-        let r = with_policy(FailPolicy::fail_next_alloc(), || {
-            map.entry(1)
-                .or_try_insert_with_give_back(|| Ok::<u32, i32>(10))
-        });
-        assert!(r.is_err());
-        let (key, val_opt, err) = r.unwrap_err();
-        assert!(err.is_alloc());
-        assert_eq!(key, 1);
-        assert_eq!(val_opt, Some(10));
-        assert!(map.is_empty());
-    }
-
-    // ── OOM tests ───────────────────────────────────────────────────────────
-    use rustyfill_test_allocator::{FailPolicy, with_policy};
-
-    #[test]
-    fn try_or_insert_empty_map_fails_on_oom() {
-        let mut map: BTreeMap<u32, u32> = BTreeMap::new();
-        let r = with_policy(FailPolicy::fail_next_alloc(), || {
-            map.entry(1).or_try_insert_give_back(2)
-        });
-        assert!(r.is_err(), "insertion should fail on OOM");
-        let (returned_key, returned_val, _err) = r.unwrap_err();
-        assert_eq!(returned_key, 1);
-        assert_eq!(returned_val, 2);
-        assert!(map.is_empty());
-    }
-
-    #[test]
-    fn try_or_insert_leaf_split_fails_on_oom() {
-        let mut map: BTreeMap<u32, u32> = BTreeMap::new();
-        for i in 0..11 {
-            map.entry(i).or_try_insert_give_back(i * 10).unwrap();
-        }
-        assert_eq!(map.len(), 11);
-        let r = with_policy(FailPolicy::fail_next_alloc(), || {
-            map.entry(11).or_try_insert_give_back(110)
-        });
-        assert!(r.is_err(), "split allocation should fail on OOM");
-        let (returned_key, returned_val, _err) = r.unwrap_err();
-        assert_eq!(returned_key, 11);
-        assert_eq!(returned_val, 110);
-        assert_eq!(map.len(), 11);
-        for i in 0..11 {
-            assert_eq!(map[&i], i * 10);
-        }
-    }
-
-    #[test]
-    fn try_or_insert_cascading_split_fails_on_oom() {
-        let mut map: BTreeMap<u32, u32> = BTreeMap::new();
-        for i in 0..30 {
-            map.entry(i).or_try_insert_give_back(i * 10).unwrap();
-        }
-        assert_eq!(map.len(), 30);
-        let r = with_policy(FailPolicy::fail_next_alloc(), || {
-            map.entry(31).or_try_insert_give_back(310)
-        });
-        match r {
-            Err((k, v, _err)) => {
-                assert_eq!(k, 31);
-                assert_eq!(v, 310);
-                assert_eq!(map.len(), 30);
-                for i in 0..30 {
-                    assert_eq!(map[&i], i * 10);
-                }
-            }
-            Ok(_) => {
-                assert_eq!(map.len(), 31);
-            }
-        }
-    }
-
-    #[test]
-    fn try_or_insert_oom_returns_key_and_value() {
-        let mut map: BTreeMap<[u8; 9], [u8; 3]> = BTreeMap::new();
-        let key = *b"important";
-        let val = [1u8, 2, 3];
-        let r = with_policy(FailPolicy::fail_next_alloc(), || {
-            map.entry(key).or_try_insert_give_back(val)
-        });
-        assert!(r.is_err(), "first insert should fail on OOM");
-        let (returned_key, returned_val, _) = r.unwrap_err();
-        assert_eq!(returned_key, key);
-        assert_eq!(returned_val, val);
-    }
-
-    #[test]
-    fn try_or_insert_nth_alloc_fail_survives() {
-        let results = with_policy(FailPolicy::fail_all_alloc(), || {
-            let mut map: BTreeMap<u32, u32> = BTreeMap::new();
-            let r1 = { map.entry(1).or_try_insert_give_back(10).is_ok() };
-            let r2 = { map.entry(2).or_try_insert_give_back(20).is_ok() };
-            (r1, r2)
-        });
-        let (_r1_ok, _r2_ok) = results;
-    }
-
     // ── Entry-level give_back variants ───────────────────────────────────────
 
     #[test]
@@ -1812,20 +1690,6 @@ mod tests {
     }
 
     #[test]
-    fn entry_try_or_insert_give_back_returns_kv_on_oom() {
-        let mut map: BTreeMap<[u8; 9], [u8; 3]> = BTreeMap::new();
-        let key = *b"important";
-        let val = [1u8, 2, 3];
-        let r = with_policy(FailPolicy::fail_next_alloc(), || {
-            map.entry(key).or_try_insert_give_back(val)
-        });
-        assert!(r.is_err());
-        let (returned_key, returned_val, _) = r.unwrap_err();
-        assert_eq!(returned_key, key);
-        assert_eq!(returned_val, val);
-    }
-
-    #[test]
     fn entry_try_or_insert_with_give_back_success() {
         let mut map: BTreeMap<i32, i32> = BTreeMap::new();
         let val = map
@@ -1834,21 +1698,6 @@ mod tests {
             .unwrap();
         assert_eq!(*val, 42);
         assert_eq!(map[&5], 42);
-    }
-
-    #[test]
-    fn entry_try_or_insert_with_give_back_returns_kv_on_oom() {
-        let mut map: BTreeMap<[u8; 9], [u8; 3]> = BTreeMap::new();
-        let key = *b"important";
-        let r = with_policy(FailPolicy::fail_next_alloc(), || {
-            map.entry(key)
-                .or_try_insert_with_give_back(|| Ok::<_, ()>([7u8, 8, 9]))
-        });
-        assert!(r.is_err());
-        let (returned_key, returned_val, err) = r.unwrap_err();
-        assert!(err.is_alloc());
-        assert_eq!(returned_key, key);
-        assert_eq!(returned_val, Some([7u8, 8, 9]));
     }
 
     #[test]
@@ -1863,21 +1712,6 @@ mod tests {
     }
 
     #[test]
-    fn entry_try_or_insert_with_key_give_back_returns_kv_on_oom() {
-        let mut map: BTreeMap<[u8; 9], [u8; 3]> = BTreeMap::new();
-        let key = *b"important";
-        let r = with_policy(FailPolicy::fail_next_alloc(), || {
-            map.entry(key)
-                .or_try_insert_with_key_give_back(|_k| Ok::<_, ()>([1u8, 2, 3]))
-        });
-        assert!(r.is_err());
-        let (returned_key, returned_val, err) = r.unwrap_err();
-        assert!(err.is_alloc());
-        assert_eq!(returned_key, key);
-        assert_eq!(returned_val, Some([1u8, 2, 3]));
-    }
-
-    #[test]
     fn vacant_entry_try_insert_give_back_success() {
         let mut map: BTreeMap<i32, &str> = BTreeMap::new();
         let _occupied = match map.entry(1) {
@@ -1885,61 +1719,6 @@ mod tests {
             Entry::Occupied(_) => unreachable!(),
         };
         assert_eq!(map[&1], "one");
-    }
-
-    #[test]
-    fn vacant_entry_try_insert_give_back_returns_kv_on_oom() {
-        let mut map: BTreeMap<[u8; 9], [u8; 3]> = BTreeMap::new();
-        let key = *b"important";
-        let val = [1u8, 2, 3];
-        let r = with_policy(FailPolicy::fail_next_alloc(), || match map.entry(key) {
-            Entry::Vacant(v) => v.try_insert_give_back(val),
-            Entry::Occupied(_) => unreachable!(),
-        });
-        assert!(r.is_err());
-        let (returned_key, returned_val, _) = r.unwrap_err();
-        assert_eq!(returned_key, key);
-        assert_eq!(returned_val, val);
-    }
-
-    /// The probe's backing vector is reserved up front via `try_with_capacity`.
-    /// This test forces *that* allocation to fail (the very first heap allocation
-    /// of the split insert) and verifies the tree is left intact. It isolates the
-    /// fallible-probe path from the node-allocation paths covered by the other
-    /// OOM tests.
-    #[test]
-    fn try_or_insert_probe_buffer_reservation_fails_on_oom() {
-        let mut map: BTreeMap<u32, u32> = BTreeMap::new();
-        // Fill past the leaf capacity so the next insert takes the split path.
-        for i in 0..11 {
-            map.entry(i).or_try_insert_give_back(i * 10).unwrap();
-        }
-        assert_eq!(map.len(), 11);
-        // Fail the first allocation inside try_insert_with_split — which is the
-        // probe buffer's `try_with_capacity` reservation.
-        let r = with_policy(FailPolicy::fail_next_alloc(), || {
-            map.entry(11).or_try_insert_give_back(110)
-        });
-        assert!(r.is_err(), "probe buffer reservation should fail on OOM");
-        let (returned_key, returned_val, _err) = r.unwrap_err();
-        assert_eq!(returned_key, 11);
-        assert_eq!(returned_val, 110);
-        // Tree untouched: still 11 entries, all values preserved.
-        assert_eq!(map.len(), 11);
-        for i in 0..11 {
-            assert_eq!(map[&i], i * 10);
-        }
-    }
-
-    #[test]
-    fn oom_guard_restores_allocation_afterwards() {
-        let mut map: BTreeMap<u32, u32> = BTreeMap::new();
-        let _r = with_policy(FailPolicy::fail_next_alloc(), || {
-            map.entry(1).or_try_insert_give_back(2)
-        });
-        let post_r = map.entry(99).or_try_insert_give_back(100);
-        assert!(post_r.is_ok());
-        assert_eq!(map[&99], 100);
     }
 
     // ── TryBTreeMap::try_insert (by-value on BTreeMap) ─────────────────────────
@@ -2007,67 +1786,21 @@ mod tests {
     }
 
     #[test]
-    fn try_btreemap_insert_empty_map_fails_on_oom() {
-        let mut map: BTreeMap<u32, u32> = BTreeMap::new();
-        let r = with_policy(FailPolicy::fail_next_alloc(), || {
-            TryBTreeMap::try_insert(&mut map, 1, 2)
-        });
-        assert!(r.is_err(), "first insert should fail on OOM");
-        assert!(map.is_empty());
+    fn btreeset_try_insert_give_back_success() {
+        use lang_alloc::collections::BTreeSet;
+        let mut set: BTreeSet<i32> = BTreeSet::new();
+        let inserted = <_ as TryBTreeSet<i32>>::try_insert_give_back(&mut set, 42).unwrap();
+        assert!(inserted);
+        assert!(set.contains(&42));
     }
 
     #[test]
-    fn try_btreemap_insert_leaf_split_fails_on_oom() {
-        let mut map: BTreeMap<u32, u32> = BTreeMap::new();
-        for i in 0..11 {
-            TryBTreeMap::try_insert(&mut map, i, i * 10).unwrap();
-        }
-        assert_eq!(map.len(), 11);
-        let r = with_policy(FailPolicy::fail_next_alloc(), || {
-            TryBTreeMap::try_insert(&mut map, 11, 110)
-        });
-        assert!(r.is_err(), "split allocation should fail on OOM");
-        // Tree untouched: still 11 entries, all values preserved.
-        assert_eq!(map.len(), 11);
-        for i in 0..11 {
-            assert_eq!(map[&i], i * 10);
-        }
-    }
-
-    #[test]
-    fn try_btreemap_insert_cascading_split_fails_on_oom() {
-        let mut map: BTreeMap<u32, u32> = BTreeMap::new();
-        for i in 0..30 {
-            TryBTreeMap::try_insert(&mut map, i, i * 10).unwrap();
-        }
-        assert_eq!(map.len(), 30);
-        let r = with_policy(FailPolicy::fail_next_alloc(), || {
-            TryBTreeMap::try_insert(&mut map, 31, 310)
-        });
-        match r {
-            Err(_e) => {
-                assert_eq!(map.len(), 30);
-                for i in 0..30 {
-                    assert_eq!(map[&i], i * 10);
-                }
-            }
-            Ok(_) => {
-                assert_eq!(map.len(), 31);
-            }
-        }
-    }
-
-    #[test]
-    fn try_btreemap_insert_oom_then_recovers() {
-        let mut map: BTreeMap<u32, u32> = BTreeMap::new();
-        let _r = with_policy(FailPolicy::fail_next_alloc(), || {
-            TryBTreeMap::try_insert(&mut map, 1, 10)
-        });
-        assert!(map.is_empty());
-        // After the failing policy is released, insertion works again.
-        let prev = TryBTreeMap::try_insert(&mut map, 1, 10).unwrap();
-        assert_eq!(prev, None);
-        assert_eq!(map[&1], 10);
+    fn btreeset_try_insert_give_back_existing_returns_false() {
+        use lang_alloc::collections::BTreeSet;
+        let mut set: BTreeSet<i32> = BTreeSet::new();
+        set.insert(7);
+        let inserted = <_ as TryBTreeSet<i32>>::try_insert_give_back(&mut set, 7).unwrap();
+        assert!(!inserted);
     }
 
     // ── Edge cases and stress tests ─────────────────────────────────────────
@@ -2543,294 +2276,501 @@ mod tests {
         for (_k, _v) in ours.into_iter().rev() {}
     }
 
-    // ── Regression guard: BTreeMap::entry()'s search must stay allocation-free ─
-    //
-    // `TryBTreeMap::try_insert` routes its key lookup through std's
-    // `BTreeMap::entry()`. That is only sound under an intermittently failing
-    // allocator if the *search* itself never touches the heap. This test pins
-    // that invariant: it builds a multi-level tree, then runs a batch of lookups
-    // (hits and misses alike) under `fail_all_alloc`, which makes every heap
-    // allocation return null. If `entry()` ever started allocating during its
-    // descent, the OOM handler would fire and this test would abort. Verified
-    // against single-level, multi-level, and deep trees.
+    // ── OOM tests ───────────────────────────────────────────────────────────
 
-    fn assert_entry_lookup_is_allocation_free(n_build: usize, n_lookups: usize) {
-        let mut map: BTreeMap<u32, u32> = BTreeMap::new();
-        for i in 0..n_build as u32 {
-            map.insert(i, i.wrapping_mul(7));
+    #[cfg(feature = "std")]
+    mod oom {
+        use super::*;
+        use lang_alloc::vec::Vec;
+        use rustyfill_test_allocator::{FailPolicy, with_policy};
+
+        #[test]
+        fn try_or_insert_empty_map_fails_on_oom() {
+            let mut map: BTreeMap<u32, u32> = BTreeMap::new();
+            let r = with_policy(FailPolicy::fail_next_alloc(), || {
+                map.entry(1).or_try_insert_give_back(2)
+            });
+            assert!(r.is_err(), "insertion should fail on OOM");
+            let (returned_key, returned_val, _err) = r.unwrap_err();
+            assert_eq!(returned_key, 1);
+            assert_eq!(returned_val, 2);
+            assert!(map.is_empty());
         }
-        assert_eq!(map.len(), n_build);
 
-        let done = with_policy(FailPolicy::fail_all_alloc(), || {
-            let mut count = 0usize;
-            for j in 0..n_lookups {
-                // Alternate between keys that exist (into the built range) and
-                // keys guaranteed absent (far above the max), exercising both
-                // the Occupied and Vacant branches across many tree depths.
-                let key = if j % 2 == 0 {
-                    (j as u32 / 2) % n_build as u32
-                } else {
-                    n_build as u32 + 1_000_000 + j as u32
-                };
-                match map.entry(key) {
-                    Entry::Occupied(_) | Entry::Vacant(_) => {}
+        #[test]
+        fn try_or_insert_leaf_split_fails_on_oom() {
+            let mut map: BTreeMap<u32, u32> = BTreeMap::new();
+            for i in 0..11 {
+                map.entry(i).or_try_insert_give_back(i * 10).unwrap();
+            }
+            assert_eq!(map.len(), 11);
+            let r = with_policy(FailPolicy::fail_next_alloc(), || {
+                map.entry(11).or_try_insert_give_back(110)
+            });
+            assert!(r.is_err(), "split allocation should fail on OOM");
+            let (returned_key, returned_val, _err) = r.unwrap_err();
+            assert_eq!(returned_key, 11);
+            assert_eq!(returned_val, 110);
+            assert_eq!(map.len(), 11);
+            for i in 0..11 {
+                assert_eq!(map[&i], i * 10);
+            }
+        }
+
+        #[test]
+        fn try_or_insert_cascading_split_fails_on_oom() {
+            let mut map: BTreeMap<u32, u32> = BTreeMap::new();
+            for i in 0..30 {
+                map.entry(i).or_try_insert_give_back(i * 10).unwrap();
+            }
+            assert_eq!(map.len(), 30);
+            let r = with_policy(FailPolicy::fail_next_alloc(), || {
+                map.entry(31).or_try_insert_give_back(310)
+            });
+            match r {
+                Err((k, v, _err)) => {
+                    assert_eq!(k, 31);
+                    assert_eq!(v, 310);
+                    assert_eq!(map.len(), 30);
+                    for i in 0..30 {
+                        assert_eq!(map[&i], i * 10);
+                    }
                 }
-                count += 1;
+                Ok(_) => {
+                    assert_eq!(map.len(), 31);
+                }
             }
-            count
-        });
-        assert_eq!(done, n_lookups);
-    }
-
-    #[cfg_attr(miri, ignore = "too large for Miri")]
-    #[test]
-    fn entry_search_is_allocation_free_multi_level() {
-        // ~5000 keys → several internal levels deep.
-        assert_entry_lookup_is_allocation_free(5000, 5000);
-    }
-
-    #[cfg_attr(miri, ignore = "too large for Miri")]
-    #[test]
-    fn entry_search_is_allocation_free_deep_tree() {
-        // ~200k keys → many levels, long descent chains.
-        assert_entry_lookup_is_allocation_free(200_000, 20_000);
-    }
-
-    // ── try_insert_give_back ─────────────────────────────────────────────────
-
-    #[test]
-    fn btreemap_try_insert_give_back_success_new_key() {
-        let mut map: BTreeMap<i32, &str> = BTreeMap::new();
-        let prev = <_ as TryBTreeMap<i32, &str>>::try_insert_give_back(&mut map, 1, "one").unwrap();
-        assert_eq!(prev, None);
-        assert_eq!(map[&1], "one");
-    }
-
-    #[test]
-    fn btreemap_try_insert_give_back_success_replace() {
-        let mut map: BTreeMap<i32, &str> = BTreeMap::new();
-        map.insert(1, "one");
-        let prev = <_ as TryBTreeMap<i32, &str>>::try_insert_give_back(&mut map, 1, "ONE").unwrap();
-        assert_eq!(prev, Some("one"));
-        assert_eq!(map[&1], "ONE");
-    }
-
-    #[test]
-    fn btreemap_try_insert_give_back_returns_kv_on_failure() {
-        use rustyfill_test_allocator::{FailPolicy, with_policy};
-        // Build the strings OUTSIDE the fail-policy scope so the first
-        // allocation inside the closure is the B-tree leaf node itself.
-        let key = "key".to_string();
-        let value = "value".to_string();
-        let mut map: BTreeMap<String, String> = BTreeMap::new();
-        let result = with_policy(FailPolicy::fail_next_alloc(), || {
-            <_ as TryBTreeMap<String, String>>::try_insert_give_back(&mut map, key, value)
-        });
-        match result {
-            Err((k, v, _e)) => {
-                assert_eq!(k, "key");
-                assert_eq!(v, "value");
-            }
-            Ok(_) => panic!("expected allocation failure"),
         }
-    }
 
-    #[test]
-    fn btreeset_try_insert_give_back_success() {
-        use lang_alloc::collections::BTreeSet;
-        let mut set: BTreeSet<i32> = BTreeSet::new();
-        let inserted = <_ as TryBTreeSet<i32>>::try_insert_give_back(&mut set, 42).unwrap();
-        assert!(inserted);
-        assert!(set.contains(&42));
-    }
-
-    #[test]
-    fn btreeset_try_insert_give_back_existing_returns_false() {
-        use lang_alloc::collections::BTreeSet;
-        let mut set: BTreeSet<i32> = BTreeSet::new();
-        set.insert(7);
-        let inserted = <_ as TryBTreeSet<i32>>::try_insert_give_back(&mut set, 7).unwrap();
-        assert!(!inserted);
-    }
-
-    #[test]
-    fn btreeset_try_insert_give_back_returns_value_on_failure() {
-        use lang_alloc::collections::BTreeSet;
-        use rustyfill_test_allocator::{FailPolicy, with_policy};
-        // Build the string OUTSIDE the fail-policy scope.
-        let val = "hello".to_string();
-        let mut set: BTreeSet<String> = BTreeSet::new();
-        let result = with_policy(FailPolicy::fail_next_alloc(), || {
-            <_ as TryBTreeSet<String>>::try_insert_give_back(&mut set, val)
-        });
-        match result {
-            Err((v, _e)) => {
-                assert_eq!(v, "hello");
-            }
-            Ok(_) => panic!("expected allocation failure"),
+        #[test]
+        fn try_or_insert_oom_returns_key_and_value() {
+            let mut map: BTreeMap<[u8; 9], [u8; 3]> = BTreeMap::new();
+            let key = *b"important";
+            let val = [1u8, 2, 3];
+            let r = with_policy(FailPolicy::fail_next_alloc(), || {
+                map.entry(key).or_try_insert_give_back(val)
+            });
+            assert!(r.is_err(), "first insert should fail on OOM");
+            let (returned_key, returned_val, _) = r.unwrap_err();
+            assert_eq!(returned_key, key);
+            assert_eq!(returned_val, val);
         }
-    }
 
-    // ── try_extend (BTree) ───────────────────────────────────────────────────
-
-    #[test]
-    fn btreemap_try_extend_preserves_failed_pair_in_resumable() {
-        use crate::try_extend::TryExtend;
-        use rustyfill_test_allocator::{FailPolicy, with_policy};
-        let mut map: BTreeMap<i32, i32> = BTreeMap::new();
-        let result = with_policy(FailPolicy::fail_next_alloc(), || {
-            <_ as TryExtend<(i32, i32)>>::try_extend(&mut map, [(1, 10), (2, 20)])
-        });
-        match result {
-            Err((resumable, _e)) => {
-                // The first pair should be preserved as the head.
-                assert!(resumable.has_head());
-                let (head, remainder) = resumable.into_parts();
-                assert_eq!(head, Some((1, 10)));
-                // The remainder should still yield (2, 20).
-                let collected: Vec<(i32, i32)> = remainder.collect();
-                assert_eq!(collected, vec![(2, 20)]);
-            }
-            Ok(()) => panic!("expected allocation failure"),
+        #[test]
+        fn try_or_insert_nth_alloc_fail_survives() {
+            let results = with_policy(FailPolicy::fail_all_alloc(), || {
+                let mut map: BTreeMap<u32, u32> = BTreeMap::new();
+                let r1 = { map.entry(1).or_try_insert_give_back(10).is_ok() };
+                let r2 = { map.entry(2).or_try_insert_give_back(20).is_ok() };
+                (r1, r2)
+            });
+            let (_r1_ok, _r2_ok) = results;
         }
-    }
 
-    #[test]
-    fn btreeset_try_extend_preserves_failed_elem_in_resumable() {
-        use crate::try_extend::TryExtend;
-        use lang_alloc::collections::BTreeSet;
-        use rustyfill_test_allocator::{FailPolicy, with_policy};
-        let mut set: BTreeSet<i32> = BTreeSet::new();
-        let result = with_policy(FailPolicy::fail_next_alloc(), || {
-            <_ as TryExtend<i32>>::try_extend(&mut set, [5, 6, 7])
-        });
-        match result {
-            Err((resumable, _e)) => {
-                assert!(resumable.has_head());
-                let (head, remainder) = resumable.into_parts();
-                assert_eq!(head, Some(5));
-                let collected: Vec<i32> = remainder.collect();
-                assert_eq!(collected, vec![6, 7]);
-            }
-            Ok(()) => panic!("expected allocation failure"),
+        #[test]
+        fn or_try_insert_with_closure_failure_beats_alloc_failure() {
+            // Even under a failing allocator, a closure error is reported as
+            // Closure (not Alloc), because the closure runs before any insertion.
+            let mut map: BTreeMap<u32, u32> = BTreeMap::new();
+            let r = with_policy(FailPolicy::fail_next_alloc(), || {
+                map.entry(1)
+                    .or_try_insert_with_give_back(|| Err::<u32, i32>(5))
+            });
+            assert!(r.is_err());
+            let (key, val_opt, err) = r.unwrap_err();
+            assert!(err.is_closure());
+            assert!(val_opt.is_none());
+            assert_eq!(key, 1);
+            assert!(matches!(err, TryBTreeMapEntryWithError::Closure(e) if e == 5));
+            assert!(map.is_empty());
         }
-    }
 
-    // ── fallible_* alias verification ────────────────────────────────────────
-
-    #[test]
-    fn fallible_insert_matches_try_insert() {
-        let mut map: BTreeMap<i32, &str> = BTreeMap::new();
-        let a = TryBTreeMap::try_insert(&mut map, 1, "one").unwrap();
-        assert_eq!(a, None);
-        let b = TryBTreeMap::fallible_insert(&mut map, 1, "ONE").unwrap();
-        assert_eq!(b, Some("one"));
-        assert_eq!(map[&1], "ONE");
-    }
-
-    #[test]
-    fn fallible_insert_give_back_matches_try_insert_give_back() {
-        let mut map: BTreeMap<i32, &str> = BTreeMap::new();
-        let a = <_ as TryBTreeMap<i32, &str>>::try_insert_give_back(&mut map, 1, "one").unwrap();
-        assert_eq!(a, None);
-        let b =
-            <_ as TryBTreeMap<i32, &str>>::fallible_insert_give_back(&mut map, 1, "ONE").unwrap();
-        assert_eq!(b, Some("one"));
-        assert_eq!(map[&1], "ONE");
-    }
-
-    #[test]
-    fn fallible_insert_oom_returns_kv_on_failure() {
-        let key = "key".to_string();
-        let value = "value".to_string();
-        let mut map: BTreeMap<String, String> = BTreeMap::new();
-        let result = with_policy(FailPolicy::fail_next_alloc(), || {
-            <_ as TryBTreeMap<String, String>>::fallible_insert_give_back(&mut map, key, value)
-        });
-        match result {
-            Err((k, v, _e)) => {
-                assert_eq!(k, "key");
-                assert_eq!(v, "value");
-            }
-            Ok(_) => panic!("expected allocation failure"),
+        #[test]
+        fn or_try_insert_with_oom_reports_alloc_variant() {
+            // A successful closure followed by an OOM must surface the
+            // Alloc variant with the key and computed value handed back.
+            let mut map: BTreeMap<u32, u32> = BTreeMap::new();
+            let r = with_policy(FailPolicy::fail_next_alloc(), || {
+                map.entry(1)
+                    .or_try_insert_with_give_back(|| Ok::<u32, i32>(10))
+            });
+            assert!(r.is_err());
+            let (key, val_opt, err) = r.unwrap_err();
+            assert!(err.is_alloc());
+            assert_eq!(key, 1);
+            assert_eq!(val_opt, Some(10));
+            assert!(map.is_empty());
         }
-    }
 
-    #[test]
-    fn btreeset_fallible_insert_matches_try_insert() {
-        use lang_alloc::collections::BTreeSet;
-        let mut set: BTreeSet<i32> = BTreeSet::new();
-        let a = <_ as TryBTreeSet<i32>>::try_insert(&mut set, 42).unwrap();
-        assert!(a);
-        let b = <_ as TryBTreeSet<i32>>::fallible_insert(&mut set, 42).unwrap();
-        assert!(!b);
-        let c = <_ as TryBTreeSet<i32>>::fallible_insert(&mut set, 99).unwrap();
-        assert!(c);
-        assert_eq!(set.len(), 2);
-    }
-
-    #[test]
-    fn btreeset_fallible_insert_give_back_matches_try_insert_give_back() {
-        use lang_alloc::collections::BTreeSet;
-        let val = "hello".to_string();
-        let mut set: BTreeSet<String> = BTreeSet::new();
-        let result = with_policy(FailPolicy::fail_next_alloc(), || {
-            <_ as TryBTreeSet<String>>::fallible_insert_give_back(&mut set, val)
-        });
-        match result {
-            Err((v, _e)) => {
-                assert_eq!(v, "hello");
-            }
-            Ok(_) => panic!("expected allocation failure"),
+        #[test]
+        fn entry_try_or_insert_with_give_back_returns_kv_on_oom() {
+            let mut map: BTreeMap<[u8; 9], [u8; 3]> = BTreeMap::new();
+            let key = *b"important";
+            let r = with_policy(FailPolicy::fail_next_alloc(), || {
+                map.entry(key)
+                    .or_try_insert_with_give_back(|| Ok::<_, ()>([7u8, 8, 9]))
+            });
+            assert!(r.is_err());
+            let (returned_key, returned_val, err) = r.unwrap_err();
+            assert!(err.is_alloc());
+            assert_eq!(returned_key, key);
+            assert_eq!(returned_val, Some([7u8, 8, 9]));
         }
-    }
 
-    #[test]
-    fn vacant_entry_fallible_insert_matches_try_insert() {
-        let mut map: BTreeMap<i32, &str> = BTreeMap::new();
-        let occupied = match map.entry(1) {
-            Entry::Vacant(v) => v.fallible_insert("one").unwrap(),
-            Entry::Occupied(_) => unreachable!(),
-        };
-        assert_eq!(occupied.get(), &"one");
-        assert_eq!(map[&1], "one");
-    }
+        // ── Regression guard: BTreeMap::entry()'s search must stay allocation-free ─
+        //
+        // `TryBTreeMap::try_insert` routes its key lookup through std's
+        // `BTreeMap::entry()`. That is only sound under an intermittently failing
+        // allocator if the *search* itself never touches the heap. This test pins
+        // that invariant: it builds a multi-level tree, then runs a batch of lookups
+        // (hits and misses alike) under `fail_all_alloc`, which makes every heap
+        // allocation return null. If `entry()` ever started allocating during its
+        // descent, the OOM handler would fire and this test would abort. Verified
+        // against single-level, multi-level, and deep trees.
 
-    #[test]
-    fn vacant_entry_fallible_insert_give_back_matches_try_insert_give_back() {
-        let mut map: BTreeMap<i32, &str> = BTreeMap::new();
-        let occupied = match map.entry(1) {
-            Entry::Vacant(v) => v.fallible_insert_give_back("one").unwrap(),
-            Entry::Occupied(_) => unreachable!(),
-        };
-        assert_eq!(occupied.get(), &"one");
-        assert_eq!(map[&1], "one");
-    }
+        fn assert_entry_lookup_is_allocation_free(n_build: usize, n_lookups: usize) {
+            let mut map: BTreeMap<u32, u32> = BTreeMap::new();
+            for i in 0..n_build as u32 {
+                map.insert(i, i.wrapping_mul(7));
+            }
+            assert_eq!(map.len(), n_build);
 
-    #[test]
-    fn vacant_entry_fallible_insert_oom_drops_kv() {
-        // fallible_insert (non-give-back) returns only AllocError on OOM.
-        let mut map: BTreeMap<i32, i32> = BTreeMap::new();
-        let r = with_policy(FailPolicy::fail_next_alloc(), || match map.entry(1) {
-            Entry::Vacant(v) => v.fallible_insert(42),
-            Entry::Occupied(_) => unreachable!(),
-        });
-        assert!(r.is_err());
-        assert!(map.is_empty());
-    }
+            let done = with_policy(FailPolicy::fail_all_alloc(), || {
+                let mut count = 0usize;
+                for j in 0..n_lookups {
+                    // Alternate between keys that exist (into the built range) and
+                    // keys guaranteed absent (far above the max), exercising both
+                    // the Occupied and Vacant branches across many tree depths.
+                    let key = if j % 2 == 0 {
+                        (j as u32 / 2) % n_build as u32
+                    } else {
+                        n_build as u32 + 1_000_000 + j as u32
+                    };
+                    match map.entry(key) {
+                        Entry::Occupied(_) | Entry::Vacant(_) => {}
+                    }
+                    count += 1;
+                }
+                count
+            });
+            assert_eq!(done, n_lookups);
+        }
 
-    #[test]
-    fn vacant_entry_fallible_insert_give_back_oom_returns_kv_on_failure() {
-        let key = *b"important";
-        let val = [1u8, 2, 3];
-        let mut map: BTreeMap<[u8; 9], [u8; 3]> = BTreeMap::new();
-        let r = with_policy(FailPolicy::fail_next_alloc(), || match map.entry(key) {
-            Entry::Vacant(v) => v.fallible_insert_give_back(val),
-            Entry::Occupied(_) => unreachable!(),
-        });
-        assert!(r.is_err());
-        let (returned_key, returned_val, _) = r.unwrap_err();
-        assert_eq!(returned_key, key);
-        assert_eq!(returned_val, val);
+        #[cfg_attr(miri, ignore = "too large for Miri")]
+        #[test]
+        fn entry_search_is_allocation_free_multi_level() {
+            // ~5000 keys → several internal levels deep.
+            assert_entry_lookup_is_allocation_free(5000, 5000);
+        }
+
+        #[cfg_attr(miri, ignore = "too large for Miri")]
+        #[test]
+        fn entry_search_is_allocation_free_deep_tree() {
+            // ~200k keys → many levels, long descent chains.
+            assert_entry_lookup_is_allocation_free(200_000, 20_000);
+        }
+
+        // ── try_insert_give_back ─────────────────────────────────────────────────
+
+        #[test]
+        fn btreemap_try_insert_give_back_success_new_key() {
+            let mut map: BTreeMap<i32, &str> = BTreeMap::new();
+            let prev =
+                <_ as TryBTreeMap<i32, &str>>::try_insert_give_back(&mut map, 1, "one").unwrap();
+            assert_eq!(prev, None);
+            assert_eq!(map[&1], "one");
+        }
+
+        #[test]
+        fn btreemap_try_insert_give_back_success_replace() {
+            let mut map: BTreeMap<i32, &str> = BTreeMap::new();
+            map.insert(1, "one");
+            let prev =
+                <_ as TryBTreeMap<i32, &str>>::try_insert_give_back(&mut map, 1, "ONE").unwrap();
+            assert_eq!(prev, Some("one"));
+            assert_eq!(map[&1], "ONE");
+        }
+
+        #[test]
+        fn btreemap_try_insert_give_back_returns_kv_on_failure() {
+            // Build the strings OUTSIDE the fail-policy scope so the first
+            // allocation inside the closure is the B-tree leaf node itself.
+            let key = "key".to_string();
+            let value = "value".to_string();
+            let mut map: BTreeMap<String, String> = BTreeMap::new();
+            let result = with_policy(FailPolicy::fail_next_alloc(), || {
+                <_ as TryBTreeMap<String, String>>::try_insert_give_back(&mut map, key, value)
+            });
+            match result {
+                Err((k, v, _e)) => {
+                    assert_eq!(k, "key");
+                    assert_eq!(v, "value");
+                }
+                Ok(_) => panic!("expected allocation failure"),
+            }
+        }
+
+        #[test]
+        fn btreeset_try_insert_give_back_returns_value_on_failure() {
+            use lang_alloc::collections::BTreeSet;
+            // Build the string OUTSIDE the fail-policy scope.
+            let val = "hello".to_string();
+            let mut set: BTreeSet<String> = BTreeSet::new();
+            let result = with_policy(FailPolicy::fail_next_alloc(), || {
+                <_ as TryBTreeSet<String>>::try_insert_give_back(&mut set, val)
+            });
+            match result {
+                Err((v, _e)) => {
+                    assert_eq!(v, "hello");
+                }
+                Ok(_) => panic!("expected allocation failure"),
+            }
+        }
+
+        // ── try_extend (BTree) ───────────────────────────────────────────────────
+
+        #[test]
+        fn btreemap_try_extend_preserves_failed_pair_in_resumable() {
+            use crate::try_extend::TryExtend;
+            let mut map: BTreeMap<i32, i32> = BTreeMap::new();
+            let result = with_policy(FailPolicy::fail_next_alloc(), || {
+                <_ as TryExtend<(i32, i32)>>::try_extend(&mut map, [(1, 10), (2, 20)])
+            });
+            match result {
+                Err((resumable, _e)) => {
+                    // The first pair should be preserved as the head.
+                    assert!(resumable.has_head());
+                    let (head, remainder) = resumable.into_parts();
+                    assert_eq!(head, Some((1, 10)));
+                    // The remainder should still yield (2, 20).
+                    let collected: Vec<(i32, i32)> = remainder.collect();
+                    assert_eq!(collected, vec![(2, 20)]);
+                }
+                Ok(()) => panic!("expected allocation failure"),
+            }
+        }
+
+        #[test]
+        fn btreeset_try_extend_preserves_failed_elem_in_resumable() {
+            use crate::try_extend::TryExtend;
+            use lang_alloc::collections::BTreeSet;
+            let mut set: BTreeSet<i32> = BTreeSet::new();
+            let result = with_policy(FailPolicy::fail_next_alloc(), || {
+                <_ as TryExtend<i32>>::try_extend(&mut set, [5, 6, 7])
+            });
+            match result {
+                Err((resumable, _e)) => {
+                    assert!(resumable.has_head());
+                    let (head, remainder) = resumable.into_parts();
+                    assert_eq!(head, Some(5));
+                    let collected: Vec<i32> = remainder.collect();
+                    assert_eq!(collected, vec![6, 7]);
+                }
+                Ok(()) => panic!("expected allocation failure"),
+            }
+        }
+
+        #[test]
+        fn entry_try_or_insert_give_back_returns_kv_on_oom() {
+            let mut map: BTreeMap<[u8; 9], [u8; 3]> = BTreeMap::new();
+            let key = *b"important";
+            let val = [1u8, 2, 3];
+            let r = with_policy(FailPolicy::fail_next_alloc(), || {
+                map.entry(key).or_try_insert_give_back(val)
+            });
+            assert!(r.is_err());
+            let (returned_key, returned_val, _) = r.unwrap_err();
+            assert_eq!(returned_key, key);
+            assert_eq!(returned_val, val);
+        }
+
+        /// The probe's backing vector is reserved up front via `try_with_capacity`.
+        /// This test forces *that* allocation to fail (the very first heap allocation
+        /// of the split insert) and verifies the tree is left intact. It isolates the
+        /// fallible-probe path from the node-allocation paths covered by the other
+        /// OOM tests.
+        #[test]
+        fn try_or_insert_probe_buffer_reservation_fails_on_oom() {
+            let mut map: BTreeMap<u32, u32> = BTreeMap::new();
+            // Fill past the leaf capacity so the next insert takes the split path.
+            for i in 0..11 {
+                map.entry(i).or_try_insert_give_back(i * 10).unwrap();
+            }
+            assert_eq!(map.len(), 11);
+            // Fail the first allocation inside try_insert_with_split — which is the
+            // probe buffer's `try_with_capacity` reservation.
+            let r = with_policy(FailPolicy::fail_next_alloc(), || {
+                map.entry(11).or_try_insert_give_back(110)
+            });
+            assert!(r.is_err(), "probe buffer reservation should fail on OOM");
+            let (returned_key, returned_val, _err) = r.unwrap_err();
+            assert_eq!(returned_key, 11);
+            assert_eq!(returned_val, 110);
+            // Tree untouched: still 11 entries, all values preserved.
+            assert_eq!(map.len(), 11);
+            for i in 0..11 {
+                assert_eq!(map[&i], i * 10);
+            }
+        }
+
+        #[test]
+        fn oom_guard_restores_allocation_afterwards() {
+            let mut map: BTreeMap<u32, u32> = BTreeMap::new();
+            let _r = with_policy(FailPolicy::fail_next_alloc(), || {
+                map.entry(1).or_try_insert_give_back(2)
+            });
+            let post_r = map.entry(99).or_try_insert_give_back(100);
+            assert!(post_r.is_ok());
+            assert_eq!(map[&99], 100);
+        }
+
+        // ── fallible_* alias verification ────────────────────────────────────────
+
+        #[test]
+        fn fallible_insert_matches_try_insert() {
+            let mut map: BTreeMap<i32, &str> = BTreeMap::new();
+            let a = TryBTreeMap::try_insert(&mut map, 1, "one").unwrap();
+            assert_eq!(a, None);
+            let b = TryBTreeMap::fallible_insert(&mut map, 1, "ONE").unwrap();
+            assert_eq!(b, Some("one"));
+            assert_eq!(map[&1], "ONE");
+        }
+
+        #[test]
+        fn fallible_insert_give_back_matches_try_insert_give_back() {
+            let mut map: BTreeMap<i32, &str> = BTreeMap::new();
+            let a =
+                <_ as TryBTreeMap<i32, &str>>::try_insert_give_back(&mut map, 1, "one").unwrap();
+            assert_eq!(a, None);
+            let b = <_ as TryBTreeMap<i32, &str>>::fallible_insert_give_back(&mut map, 1, "ONE")
+                .unwrap();
+            assert_eq!(b, Some("one"));
+            assert_eq!(map[&1], "ONE");
+        }
+
+        #[test]
+        fn entry_try_or_insert_with_key_give_back_returns_kv_on_oom() {
+            let mut map: BTreeMap<[u8; 9], [u8; 3]> = BTreeMap::new();
+            let key = *b"important";
+            let r = with_policy(FailPolicy::fail_next_alloc(), || {
+                map.entry(key)
+                    .or_try_insert_with_key_give_back(|_k| Ok::<_, ()>([1u8, 2, 3]))
+            });
+            assert!(r.is_err());
+            let (returned_key, returned_val, err) = r.unwrap_err();
+            assert!(err.is_alloc());
+            assert_eq!(returned_key, key);
+            assert_eq!(returned_val, Some([1u8, 2, 3]));
+        }
+
+        #[test]
+        fn fallible_insert_oom_returns_kv_on_failure() {
+            let key = "key".to_string();
+            let value = "value".to_string();
+            let mut map: BTreeMap<String, String> = BTreeMap::new();
+            let result = with_policy(FailPolicy::fail_next_alloc(), || {
+                <_ as TryBTreeMap<String, String>>::fallible_insert_give_back(&mut map, key, value)
+            });
+            match result {
+                Err((k, v, _e)) => {
+                    assert_eq!(k, "key");
+                    assert_eq!(v, "value");
+                }
+                Ok(_) => panic!("expected allocation failure"),
+            }
+        }
+
+        #[test]
+        fn btreeset_fallible_insert_matches_try_insert() {
+            use lang_alloc::collections::BTreeSet;
+            let mut set: BTreeSet<i32> = BTreeSet::new();
+            let a = <_ as TryBTreeSet<i32>>::try_insert(&mut set, 42).unwrap();
+            assert!(a);
+            let b = <_ as TryBTreeSet<i32>>::fallible_insert(&mut set, 42).unwrap();
+            assert!(!b);
+            let c = <_ as TryBTreeSet<i32>>::fallible_insert(&mut set, 99).unwrap();
+            assert!(c);
+            assert_eq!(set.len(), 2);
+        }
+
+        #[test]
+        fn btreeset_fallible_insert_give_back_matches_try_insert_give_back() {
+            use lang_alloc::collections::BTreeSet;
+            let val = "hello".to_string();
+            let mut set: BTreeSet<String> = BTreeSet::new();
+            let result = with_policy(FailPolicy::fail_next_alloc(), || {
+                <_ as TryBTreeSet<String>>::fallible_insert_give_back(&mut set, val)
+            });
+            match result {
+                Err((v, _e)) => {
+                    assert_eq!(v, "hello");
+                }
+                Ok(_) => panic!("expected allocation failure"),
+            }
+        }
+
+        #[test]
+        fn vacant_entry_fallible_insert_matches_try_insert() {
+            let mut map: BTreeMap<i32, &str> = BTreeMap::new();
+            let occupied = match map.entry(1) {
+                Entry::Vacant(v) => v.fallible_insert("one").unwrap(),
+                Entry::Occupied(_) => unreachable!(),
+            };
+            assert_eq!(occupied.get(), &"one");
+            assert_eq!(map[&1], "one");
+        }
+
+        #[test]
+        fn vacant_entry_fallible_insert_give_back_matches_try_insert_give_back() {
+            let mut map: BTreeMap<i32, &str> = BTreeMap::new();
+            let occupied = match map.entry(1) {
+                Entry::Vacant(v) => v.fallible_insert_give_back("one").unwrap(),
+                Entry::Occupied(_) => unreachable!(),
+            };
+            assert_eq!(occupied.get(), &"one");
+            assert_eq!(map[&1], "one");
+        }
+
+        #[test]
+        fn vacant_entry_fallible_insert_oom_drops_kv() {
+            // fallible_insert (non-give-back) returns only AllocError on OOM.
+            let mut map: BTreeMap<i32, i32> = BTreeMap::new();
+            let r = with_policy(FailPolicy::fail_next_alloc(), || match map.entry(1) {
+                Entry::Vacant(v) => v.fallible_insert(42),
+                Entry::Occupied(_) => unreachable!(),
+            });
+            assert!(r.is_err());
+            assert!(map.is_empty());
+        }
+
+        #[test]
+        fn vacant_entry_try_insert_give_back_returns_kv_on_oom() {
+            let mut map: BTreeMap<[u8; 9], [u8; 3]> = BTreeMap::new();
+            let key = *b"important";
+            let val = [1u8, 2, 3];
+            let r = with_policy(FailPolicy::fail_next_alloc(), || match map.entry(key) {
+                Entry::Vacant(v) => v.try_insert_give_back(val),
+                Entry::Occupied(_) => unreachable!(),
+            });
+            assert!(r.is_err());
+            let (returned_key, returned_val, _) = r.unwrap_err();
+            assert_eq!(returned_key, key);
+            assert_eq!(returned_val, val);
+        }
+
+        #[test]
+        fn vacant_entry_fallible_insert_give_back_oom_returns_kv_on_failure() {
+            let key = *b"important";
+            let val = [1u8, 2, 3];
+            let mut map: BTreeMap<[u8; 9], [u8; 3]> = BTreeMap::new();
+            let r = with_policy(FailPolicy::fail_next_alloc(), || match map.entry(key) {
+                Entry::Vacant(v) => v.fallible_insert_give_back(val),
+                Entry::Occupied(_) => unreachable!(),
+            });
+            assert!(r.is_err());
+            let (returned_key, returned_val, _) = r.unwrap_err();
+            assert_eq!(returned_key, key);
+            assert_eq!(returned_val, val);
+        }
     }
 }

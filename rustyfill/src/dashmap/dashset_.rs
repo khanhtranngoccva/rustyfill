@@ -755,20 +755,24 @@ mod tests {
     }
 
     // ── OOM tests ─────────────────────────────────────────────────────
-    use rustyfill_test_allocator::{FailPolicy, with_policy};
+    #[cfg(feature = "std")]
+    mod oom {
+        use super::*;
+        use rustyfill_test_allocator::{FailPolicy, with_policy};
 
-    #[test]
-    fn dashset_try_insert_fails_on_oom() {
-        let set: DashSet<u32> = DashSet::new();
-        let r = with_policy(FailPolicy::fail_next_alloc(), || set.try_insert(1));
-        assert!(r.is_err());
-    }
+        #[test]
+        fn dashset_try_insert_fails_on_oom() {
+            let set: DashSet<u32> = DashSet::new();
+            let r = with_policy(FailPolicy::fail_next_alloc(), || set.try_insert(1));
+            assert!(r.is_err());
+        }
 
-    #[test]
-    fn dashset_oom_restores_allocation_afterwards() {
-        let set: DashSet<u32> = DashSet::new();
-        let r = with_policy(FailPolicy::fail_next_alloc(), || set.try_insert(1));
-        assert!(r.is_err());
-        assert!(set.try_insert(1).is_ok());
+        #[test]
+        fn dashset_oom_restores_allocation_afterwards() {
+            let set: DashSet<u32> = DashSet::new();
+            let r = with_policy(FailPolicy::fail_next_alloc(), || set.try_insert(1));
+            assert!(r.is_err());
+            assert!(set.try_insert(1).is_ok());
+        }
     }
 }

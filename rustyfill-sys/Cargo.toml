@@ -7,7 +7,7 @@ edition = "2024"
 path = "src/lib.rs"
 
 [dependencies]
-libc = "0.2"
+libc = { workspace = true }
 
 [features]
 nightly = []
@@ -15,5 +15,5 @@ std = []
 drop-annotations = []
 
 [build-dependencies]
-rustyfill-sys-bindings = { path = "../rustyfill-sys-bindings" }
-syn = { version = "2", features = ["full"] }
+rustyfill-sys-bindings = { workspace = true }
+syn = { workspace = true }

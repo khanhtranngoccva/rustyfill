@@ -774,73 +774,77 @@ mod tests {
 
     // ── OOM tests ─────────────────────────────────────────────────────────────
 
-    use rustyfill_test_allocator::{FailPolicy, with_policy};
+    #[cfg(feature = "std")]
+    mod oom {
+        use super::*;
+        use rustyfill_test_allocator::{FailPolicy, with_policy};
 
-    #[test]
-    fn string_try_clone_fails_on_oom() {
-        let orig = String::from("test data");
-        let r: Result<String, TryCloneError> =
-            with_policy(FailPolicy::fail_next_alloc(), || orig.try_clone());
-        assert!(r.is_err());
-    }
+        #[test]
+        fn string_try_clone_fails_on_oom() {
+            let orig = String::from("test data");
+            let r: Result<String, TryCloneError> =
+                with_policy(FailPolicy::fail_next_alloc(), || orig.try_clone());
+            assert!(r.is_err());
+        }
 
-    #[test]
-    fn string_try_clone_empty_succeeds_under_oom() {
-        let orig = String::new();
-        let r: Result<String, TryCloneError> =
-            with_policy(FailPolicy::fail_next_alloc(), || orig.try_clone());
-        assert!(r.is_ok());
-        assert!(r.as_ref().unwrap().is_empty());
-    }
+        #[test]
+        fn string_try_clone_empty_succeeds_under_oom() {
+            let orig = String::new();
+            let r: Result<String, TryCloneError> =
+                with_policy(FailPolicy::fail_next_alloc(), || orig.try_clone());
+            assert!(r.is_ok());
+            assert!(r.as_ref().unwrap().is_empty());
+        }
 
-    #[test]
-    fn string_oom_restores_allocation_afterwards() {
-        let orig = String::from("data");
-        let r: Result<String, TryCloneError> =
-            with_policy(FailPolicy::fail_next_alloc(), || orig.try_clone());
-        assert!(r.is_err());
-        // Allocation works again after guard scope ends.
-        let r = orig.try_clone();
-        assert!(r.is_ok());
-    }
+        #[test]
+        fn string_oom_restores_allocation_afterwards() {
+            let orig = String::from("data");
+            let r: Result<String, TryCloneError> =
+                with_policy(FailPolicy::fail_next_alloc(), || orig.try_clone());
+            assert!(r.is_err());
+            // Allocation works again after guard scope ends.
+            let r = orig.try_clone();
+            assert!(r.is_ok());
+        }
 
-    #[test]
-    fn string_nth_alloc_fail_targets_correct_call() {
-        let a = String::from("first");
-        let b = String::from("second");
-        let (r1_ok, r2_err) = with_policy(FailPolicy::fail_nth_alloc(2), || {
-            let r1: Result<String, TryCloneError> = a.try_clone();
-            let r2: Result<String, TryCloneError> = b.try_clone();
-            (r1.is_ok(), r2.is_err())
-        });
-        assert!(r1_ok, "first clone should succeed");
-        assert!(r2_err, "second clone should fail");
-    }
+        #[test]
+        fn string_nth_alloc_fail_targets_correct_call() {
+            let a = String::from("first");
+            let b = String::from("second");
+            let (r1_ok, r2_err) = with_policy(FailPolicy::fail_nth_alloc(2), || {
+                let r1: Result<String, TryCloneError> = a.try_clone();
+                let r2: Result<String, TryCloneError> = b.try_clone();
+                (r1.is_ok(), r2.is_err())
+            });
+            assert!(r1_ok, "first clone should succeed");
+            assert!(r2_err, "second clone should fail");
+        }
 
-    // ── Box<str> OOM tests ────────────────────────────────────────────────────
+        // ── Box<str> OOM tests ────────────────────────────────────────────────────
 
-    #[test]
-    fn box_str_try_clone_fails_on_oom() {
-        let bs: Box<str> = "clone me".into();
-        let r: Result<Box<str>, TryCloneError> =
-            with_policy(FailPolicy::fail_next_alloc(), || bs.try_clone());
-        assert!(r.is_err());
-    }
+        #[test]
+        fn box_str_try_clone_fails_on_oom() {
+            let bs: Box<str> = "clone me".into();
+            let r: Result<Box<str>, TryCloneError> =
+                with_policy(FailPolicy::fail_next_alloc(), || bs.try_clone());
+            assert!(r.is_err());
+        }
 
-    #[test]
-    fn box_str_try_clone_empty_succeeds_under_oom() {
-        let bs: Box<str> = "".into();
-        let r: Result<Box<str>, TryCloneError> =
-            with_policy(FailPolicy::fail_next_alloc(), || bs.try_clone());
-        assert!(r.is_ok());
-        assert!(r.as_ref().unwrap().is_empty());
-    }
+        #[test]
+        fn box_str_try_clone_empty_succeeds_under_oom() {
+            let bs: Box<str> = "".into();
+            let r: Result<Box<str>, TryCloneError> =
+                with_policy(FailPolicy::fail_next_alloc(), || bs.try_clone());
+            assert!(r.is_ok());
+            assert!(r.as_ref().unwrap().is_empty());
+        }
 
-    #[test]
-    fn box_str_try_clone_unicode_fails_on_oom() {
-        let bs: Box<str> = "こんにちは 🦀".into();
-        let r: Result<Box<str>, TryCloneError> =
-            with_policy(FailPolicy::fail_next_alloc(), || bs.try_clone());
-        assert!(r.is_err());
+        #[test]
+        fn box_str_try_clone_unicode_fails_on_oom() {
+            let bs: Box<str> = "こんにちは 🦀".into();
+            let r: Result<Box<str>, TryCloneError> =
+                with_policy(FailPolicy::fail_next_alloc(), || bs.try_clone());
+            assert!(r.is_err());
+        }
     }
 }

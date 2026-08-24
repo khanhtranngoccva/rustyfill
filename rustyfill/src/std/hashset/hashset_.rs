@@ -900,89 +900,91 @@ mod tests {
     }
 
     // ── OOM tests ─────────────────────────────────────────────────────────────
-    use rustyfill_test_allocator::{FailPolicy, with_policy};
+    #[cfg(feature = "std")]
+    mod oom {
+        use super::*;
+        use rustyfill_test_allocator::{FailPolicy, with_policy};
 
-    #[test]
-    fn hashset_try_with_capacity_fails_on_oom() {
-        let r: Result<HashSet<u32>, TryHashSetConstructionError> =
-            with_policy(FailPolicy::fail_next_alloc(), || {
-                <HashSet<u32> as TryHashSet<u32, RandomState>>::try_with_capacity(10)
+        #[test]
+        fn hashset_try_with_capacity_fails_on_oom() {
+            let r: Result<HashSet<u32>, TryHashSetConstructionError> =
+                with_policy(FailPolicy::fail_next_alloc(), || {
+                    <HashSet<u32> as TryHashSet<u32, RandomState>>::try_with_capacity(10)
+                });
+            assert!(r.is_err());
+        }
+
+        #[test]
+        fn hashset_try_with_capacity_zero_succeeds_under_oom() {
+            let r: Result<HashSet<u32>, TryHashSetConstructionError> =
+                with_policy(FailPolicy::fail_next_alloc(), || {
+                    <HashSet<u32> as TryHashSet<u32, RandomState>>::try_with_capacity(0)
+                });
+            assert!(r.is_ok());
+        }
+
+        #[test]
+        fn hashset_try_insert_fails_on_oom() {
+            let mut set: HashSet<u32> = HashSet::new();
+            set.try_shrink_to_fit().unwrap();
+            let r = with_policy(FailPolicy::fail_next_alloc(), || set.try_insert(42));
+            assert!(r.is_err());
+        }
+
+        #[test]
+        fn hashset_try_clone_fails_on_oom() {
+            let orig: HashSet<u32> = HashSet::from([1, 2, 3]);
+            let r: Result<HashSet<u32>, TryCloneError> =
+                with_policy(FailPolicy::fail_next_alloc(), || orig.try_clone());
+            assert!(r.is_err());
+        }
+
+        #[test]
+        fn hashset_try_clone_empty_succeeds_under_oom() {
+            let orig: HashSet<u32> = HashSet::new();
+            let r: Result<HashSet<u32>, TryCloneError> =
+                with_policy(FailPolicy::fail_next_alloc(), || orig.try_clone());
+            assert!(r.is_ok());
+        }
+
+        #[test]
+        fn hashset_try_collect_fails_on_oom() {
+            let items = [1u32, 2u32, 3u32];
+            let r: Result<HashSet<u32>, TryHashSetConstructionError> =
+                with_policy(FailPolicy::fail_next_alloc(), || {
+                    HashSet::try_collect(items.iter().copied())
+                });
+            assert!(r.is_err());
+        }
+
+        #[test]
+        fn hashset_oom_restores_allocation_afterwards() {
+            let r: Result<HashSet<u32>, TryHashSetConstructionError> =
+                with_policy(FailPolicy::fail_next_alloc(), || {
+                    <HashSet<u32> as TryHashSet<u32, RandomState>>::try_with_capacity(10)
+                });
+            assert!(r.is_err());
+            // Allocation works again after guard scope ends.
+            let r: Result<HashSet<u32>, TryHashSetConstructionError> =
+                <HashSet<u32> as TryHashSet<u32, RandomState>>::try_with_capacity(10);
+            assert!(r.is_ok());
+        }
+
+        #[test]
+        fn hashset_nth_alloc_fail_targets_correct_call() {
+            type HS = HashSet<u32, RandomState>;
+            let (r1_ok, r2_err, r3_ok) = with_policy(FailPolicy::fail_nth_alloc(2), || {
+                let r1: Result<HS, TryHashSetConstructionError> =
+                    <HS as TryHashSet<u32, RandomState>>::try_with_capacity(1);
+                let r2: Result<HS, TryHashSetConstructionError> =
+                    <HS as TryHashSet<u32, RandomState>>::try_with_capacity(1);
+                let r3: Result<HS, TryHashSetConstructionError> =
+                    <HS as TryHashSet<u32, RandomState>>::try_with_capacity(1);
+                (r1.is_ok(), r2.is_err(), r3.is_ok())
             });
-        assert!(r.is_err());
+            assert!(r1_ok, "first alloc should succeed");
+            assert!(r2_err, "second alloc should fail");
+            assert!(r3_ok, "third alloc should succeed");
+        }
     }
-
-    #[test]
-    fn hashset_try_with_capacity_zero_succeeds_under_oom() {
-        let r: Result<HashSet<u32>, TryHashSetConstructionError> =
-            with_policy(FailPolicy::fail_next_alloc(), || {
-                <HashSet<u32> as TryHashSet<u32, RandomState>>::try_with_capacity(0)
-            });
-        assert!(r.is_ok());
-    }
-
-    #[test]
-    fn hashset_try_insert_fails_on_oom() {
-        let mut set: HashSet<u32> = HashSet::new();
-        set.try_shrink_to_fit().unwrap();
-        let r = with_policy(FailPolicy::fail_next_alloc(), || set.try_insert(42));
-        assert!(r.is_err());
-    }
-
-    #[test]
-    fn hashset_try_clone_fails_on_oom() {
-        let orig: HashSet<u32> = HashSet::from([1, 2, 3]);
-        let r: Result<HashSet<u32>, TryCloneError> =
-            with_policy(FailPolicy::fail_next_alloc(), || orig.try_clone());
-        assert!(r.is_err());
-    }
-
-    #[test]
-    fn hashset_try_clone_empty_succeeds_under_oom() {
-        let orig: HashSet<u32> = HashSet::new();
-        let r: Result<HashSet<u32>, TryCloneError> =
-            with_policy(FailPolicy::fail_next_alloc(), || orig.try_clone());
-        assert!(r.is_ok());
-    }
-
-    #[test]
-    fn hashset_try_collect_fails_on_oom() {
-        let items = [1u32, 2u32, 3u32];
-        let r: Result<HashSet<u32>, TryHashSetConstructionError> =
-            with_policy(FailPolicy::fail_next_alloc(), || {
-                HashSet::try_collect(items.iter().copied())
-            });
-        assert!(r.is_err());
-    }
-
-    #[test]
-    fn hashset_oom_restores_allocation_afterwards() {
-        let r: Result<HashSet<u32>, TryHashSetConstructionError> =
-            with_policy(FailPolicy::fail_next_alloc(), || {
-                <HashSet<u32> as TryHashSet<u32, RandomState>>::try_with_capacity(10)
-            });
-        assert!(r.is_err());
-        // Allocation works again after guard scope ends.
-        let r: Result<HashSet<u32>, TryHashSetConstructionError> =
-            <HashSet<u32> as TryHashSet<u32, RandomState>>::try_with_capacity(10);
-        assert!(r.is_ok());
-    }
-
-    #[test]
-    fn hashset_nth_alloc_fail_targets_correct_call() {
-        type HS = HashSet<u32, RandomState>;
-        let (r1_ok, r2_err, r3_ok) = with_policy(FailPolicy::fail_nth_alloc(2), || {
-            let r1: Result<HS, TryHashSetConstructionError> =
-                <HS as TryHashSet<u32, RandomState>>::try_with_capacity(1);
-            let r2: Result<HS, TryHashSetConstructionError> =
-                <HS as TryHashSet<u32, RandomState>>::try_with_capacity(1);
-            let r3: Result<HS, TryHashSetConstructionError> =
-                <HS as TryHashSet<u32, RandomState>>::try_with_capacity(1);
-            (r1.is_ok(), r2.is_err(), r3.is_ok())
-        });
-        assert!(r1_ok, "first alloc should succeed");
-        assert!(r2_err, "second alloc should fail");
-        assert!(r3_ok, "third alloc should succeed");
-    }
-
-    // ── Explicit rollback tests (mid-operation clone failure) ───────────────
 }

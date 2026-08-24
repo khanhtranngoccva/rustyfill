@@ -2033,20 +2033,24 @@ mod tests {
     }
 
     // ── OOM tests ─────────────────────────────────────────────────────
-    use rustyfill_test_allocator::{FailPolicy, with_policy};
+    #[cfg(feature = "std")]
+    mod oom {
+        use super::*;
+        use rustyfill_test_allocator::{FailPolicy, with_policy};
 
-    #[test]
-    fn dashmap_try_insert_fails_on_oom() {
-        let map: DashMap<u32, u32> = DashMap::new();
-        let r = with_policy(FailPolicy::fail_next_alloc(), || map.try_insert(1, 10));
-        assert!(r.is_err());
-    }
+        #[test]
+        fn dashmap_try_insert_fails_on_oom() {
+            let map: DashMap<u32, u32> = DashMap::new();
+            let r = with_policy(FailPolicy::fail_next_alloc(), || map.try_insert(1, 10));
+            assert!(r.is_err());
+        }
 
-    #[test]
-    fn dashmap_oom_restores_allocation_afterwards() {
-        let map: DashMap<u32, u32> = DashMap::new();
-        let r = with_policy(FailPolicy::fail_next_alloc(), || map.try_insert(1, 10));
-        assert!(r.is_err());
-        assert!(map.try_insert(1, 10).is_ok());
+        #[test]
+        fn dashmap_oom_restores_allocation_afterwards() {
+            let map: DashMap<u32, u32> = DashMap::new();
+            let r = with_policy(FailPolicy::fail_next_alloc(), || map.try_insert(1, 10));
+            assert!(r.is_err());
+            assert!(map.try_insert(1, 10).is_ok());
+        }
     }
 }

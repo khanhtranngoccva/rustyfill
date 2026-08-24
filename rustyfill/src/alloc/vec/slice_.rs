@@ -430,67 +430,71 @@ mod tests {
     }
 
     // ── OOM tests ─────────────────────────────────────────────────────
-    use rustyfill_test_allocator::{FailPolicy, with_policy};
+    #[cfg(feature = "std")]
+    mod oom {
+        use super::*;
+        use rustyfill_test_allocator::{FailPolicy, with_policy};
 
-    #[test]
-    fn slice_try_to_vec_fails_on_oom() {
-        let s: &[u32] = &[1, 2, 3];
-        let r: Result<Vec<u32>, TryVecWithCloneError> =
-            with_policy(FailPolicy::fail_next_alloc(), || s.try_to_vec());
-        assert!(r.is_err());
-    }
+        #[test]
+        fn slice_try_to_vec_fails_on_oom() {
+            let s: &[u32] = &[1, 2, 3];
+            let r: Result<Vec<u32>, TryVecWithCloneError> =
+                with_policy(FailPolicy::fail_next_alloc(), || s.try_to_vec());
+            assert!(r.is_err());
+        }
 
-    #[test]
-    fn slice_try_to_vec_empty_succeeds_under_oom() {
-        let s: &[u32] = &[];
-        let r: Result<Vec<u32>, TryVecWithCloneError> =
-            with_policy(FailPolicy::fail_next_alloc(), || s.try_to_vec());
-        assert!(r.is_ok());
-    }
+        #[test]
+        fn slice_try_to_vec_empty_succeeds_under_oom() {
+            let s: &[u32] = &[];
+            let r: Result<Vec<u32>, TryVecWithCloneError> =
+                with_policy(FailPolicy::fail_next_alloc(), || s.try_to_vec());
+            assert!(r.is_ok());
+        }
 
-    #[test]
-    fn slice_try_to_owned_fails_on_oom() {
-        let s: &[u32] = &[1, 2];
-        let r: Result<Vec<u32>, TryToOwnedError> =
-            with_policy(FailPolicy::fail_next_alloc(), || s.try_to_owned());
-        assert!(r.is_err());
-    }
+        #[test]
+        fn slice_try_to_owned_fails_on_oom() {
+            let s: &[u32] = &[1, 2];
+            let r: Result<Vec<u32>, TryToOwnedError> =
+                with_policy(FailPolicy::fail_next_alloc(), || s.try_to_owned());
+            assert!(r.is_err());
+        }
 
-    #[test]
-    fn slice_try_to_owned_empty_succeeds_under_oom() {
-        let s: &[u32] = &[];
-        let r: Result<Vec<u32>, TryToOwnedError> =
-            with_policy(FailPolicy::fail_next_alloc(), || s.try_to_owned());
-        assert!(r.is_ok());
-    }
+        #[test]
+        fn slice_try_to_owned_empty_succeeds_under_oom() {
+            let s: &[u32] = &[];
+            let r: Result<Vec<u32>, TryToOwnedError> =
+                with_policy(FailPolicy::fail_next_alloc(), || s.try_to_owned());
+            assert!(r.is_ok());
+        }
 
-    #[test]
-    fn slice_try_repeat_clone_fails_on_oom() {
-        let s: &[u8] = &[1, 2];
-        let r: Result<Vec<u8>, TryVecWithCloneError> =
-            with_policy(FailPolicy::fail_next_alloc(), || s.try_repeat_clone(3));
-        assert!(r.is_err());
-    }
+        #[test]
+        fn slice_try_repeat_clone_fails_on_oom() {
+            let s: &[u8] = &[1, 2];
+            let r: Result<Vec<u8>, TryVecWithCloneError> =
+                with_policy(FailPolicy::fail_next_alloc(), || s.try_repeat_clone(3));
+            assert!(r.is_err());
+        }
 
-    #[test]
-    fn slice_try_repeat_clone_zero_times_succeeds_under_oom() {
-        let s: &[u8] = &[1, 2];
-        let r: Result<Vec<u8>, TryVecWithCloneError> =
-            with_policy(FailPolicy::fail_next_alloc(), || s.try_repeat_clone(0));
-        assert!(r.is_ok());
-    }
+        #[test]
+        fn slice_try_repeat_clone_zero_times_succeeds_under_oom() {
+            let s: &[u8] = &[1, 2];
+            let r: Result<Vec<u8>, TryVecWithCloneError> =
+                with_policy(FailPolicy::fail_next_alloc(), || s.try_repeat_clone(0));
+            assert!(r.is_ok());
+        }
 
-    #[test]
-    fn slice_nth_alloc_fail_targets_correct_call() {
-        let s: &[u8] = &[42];
-        let (r1_ok, r2_err, r3_ok) = with_policy(FailPolicy::fail_nth_alloc(2), || {
-            let r1: Result<Vec<u8>, TryVecWithCloneError> = s.try_to_vec();
-            let r2: Result<Vec<u8>, TryVecWithCloneError> = s.try_to_vec();
-            let r3: Result<Vec<u8>, TryVecWithCloneError> = s.try_to_vec();
-            (r1.is_ok(), r2.is_err(), r3.is_ok())
-        });
-        assert!(r1_ok, "first alloc should succeed");
-        assert!(r2_err, "second alloc should fail");
-        assert!(r3_ok, "third alloc should succeed");
+        #[test]
+        fn slice_nth_alloc_fail_targets_correct_call() {
+            let s: &[u8] = &[42];
+            let (r1_ok, r2_err, r3_ok) = with_policy(FailPolicy::fail_nth_alloc(2), || {
+                let r1: Result<Vec<u8>, TryVecWithCloneError> = s.try_to_vec();
+                let r2: Result<Vec<u8>, TryVecWithCloneError> = s.try_to_vec();
+                let r3: Result<Vec<u8>, TryVecWithCloneError> = s.try_to_vec();
+                (r1.is_ok(), r2.is_err(), r3.is_ok())
+            });
+            assert!(r1_ok, "first alloc should succeed");
+            assert!(r2_err, "second alloc should fail");
+            assert!(r3_ok, "third alloc should succeed");
+        }
     }
 }

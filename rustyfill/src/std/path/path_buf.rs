@@ -971,265 +971,272 @@ mod tests {
     }
 
     // ── OOM tests ─────────────────────────────────────────────────────
-    use rustyfill_test_allocator::{FailPolicy, with_policy};
+    #[cfg(feature = "std")]
+    mod oom {
+        use super::*;
+        use rustyfill_test_allocator::{FailPolicy, with_policy};
 
-    #[test]
-    fn pathbuf_try_from_path_fails_on_oom() {
-        let r: Result<PathBuf, TryReserveError> =
-            with_policy(FailPolicy::fail_next_alloc(), || {
-                <PathBuf as TryPathBuf>::try_from_path("/some/path")
+        #[test]
+        fn pathbuf_try_from_path_fails_on_oom() {
+            let r: Result<PathBuf, TryReserveError> =
+                with_policy(FailPolicy::fail_next_alloc(), || {
+                    <PathBuf as TryPathBuf>::try_from_path("/some/path")
+                });
+            assert!(r.is_err());
+        }
+
+        #[test]
+        fn pathbuf_try_push_fails_on_oom() {
+            // Pushing onto an existing PathBuf triggers realloc (not alloc) when
+            // growing the underlying buffer. Use fail_next_realloc to target this.
+            let long = format!("/base/{}", "x".repeat(256));
+            let mut p = PathBuf::try_from_path(long).unwrap();
+            p.as_mut_os_string().try_shrink_to_fit().unwrap();
+            let extra = format!("child_{}", "y".repeat(256));
+            let r = with_policy(FailPolicy::fail_next_realloc(), || p.fallible_push(extra));
+            assert!(r.is_err());
+        }
+
+        #[test]
+        fn pathbuf_try_clone_fails_on_oom() {
+            let orig = PathBuf::try_from_path("/data/files").unwrap();
+            let r: Result<PathBuf, TryCloneError> =
+                with_policy(FailPolicy::fail_next_alloc(), || orig.try_clone());
+            assert!(r.is_err());
+        }
+
+        #[test]
+        fn pathbuf_try_clone_empty_succeeds_under_oom() {
+            let orig: PathBuf = PathBuf::new();
+            let r: Result<PathBuf, TryCloneError> =
+                with_policy(FailPolicy::fail_next_alloc(), || orig.try_clone());
+            assert!(r.is_ok());
+        }
+
+        #[test]
+        fn pathbuf_nth_alloc_fail_targets_correct_call() {
+            let orig = PathBuf::try_from_path("/data/files").unwrap();
+            let (r1_ok, r2_err, r3_ok) = with_policy(FailPolicy::fail_nth_alloc(2), || {
+                let r1: Result<PathBuf, TryCloneError> = orig.try_clone();
+                let r2: Result<PathBuf, TryCloneError> = orig.try_clone();
+                let r3: Result<PathBuf, TryCloneError> = orig.try_clone();
+                (r1.is_ok(), r2.is_err(), r3.is_ok())
             });
-        assert!(r.is_err());
-    }
+            assert!(r1_ok, "first clone should succeed");
+            assert!(r2_err, "second clone should fail");
+            assert!(r3_ok, "third clone should succeed");
+        }
 
-    #[test]
-    fn pathbuf_try_push_fails_on_oom() {
-        // Pushing onto an existing PathBuf triggers realloc (not alloc) when
-        // growing the underlying buffer. Use fail_next_realloc to target this.
-        let long = format!("/base/{}", "x".repeat(256));
-        let mut p = PathBuf::try_from_path(long).unwrap();
-        p.as_mut_os_string().try_shrink_to_fit().unwrap();
-        let extra = format!("child_{}", "y".repeat(256));
-        let r = with_policy(FailPolicy::fail_next_realloc(), || p.fallible_push(extra));
-        assert!(r.is_err());
-    }
+        #[test]
+        fn pathbuf_oom_restores_allocation_afterwards() {
+            let r: Result<PathBuf, TryReserveError> =
+                with_policy(FailPolicy::fail_next_alloc(), || {
+                    <PathBuf as TryPathBuf>::try_from_path("/x")
+                });
+            assert!(r.is_err());
+            // Allocation works again after guard scope ends.
+            let r: Result<PathBuf, TryReserveError> = <PathBuf as TryPathBuf>::try_from_path("/y");
+            assert!(r.is_ok());
+        }
 
-    #[test]
-    fn pathbuf_try_clone_fails_on_oom() {
-        let orig = PathBuf::try_from_path("/data/files").unwrap();
-        let r: Result<PathBuf, TryCloneError> =
-            with_policy(FailPolicy::fail_next_alloc(), || orig.try_clone());
-        assert!(r.is_err());
-    }
+        // ── Verbatim-normalization OOM tests (Windows-only paths) ───────────────
+        //
+        // On Windows these exercise `push_verbatim_normalized`, which allocates a
+        // component buffer and rebuilds the target string. On other platforms the
+        // same inputs take the plain relative-append branch, so we only assert on
+        // allocation behavior there.
 
-    #[test]
-    fn pathbuf_try_clone_empty_succeeds_under_oom() {
-        let orig: PathBuf = PathBuf::new();
-        let r: Result<PathBuf, TryCloneError> =
-            with_policy(FailPolicy::fail_next_alloc(), || orig.try_clone());
-        assert!(r.is_ok());
-    }
+        #[cfg(windows)]
+        #[test]
+        fn push_verbatim_fails_on_oom() {
+            let mut p = PathBuf::try_from_path(r"\\?\C:\a\b").unwrap();
+            let r = with_policy(FailPolicy::fail_next_alloc(), || p.fallible_push(r"c\d"));
+            assert!(r.is_err());
+            // Target is left unchanged on failure.
+            assert_eq!(p, Path::new(r"\\?\C:\a\b"));
+        }
 
-    #[test]
-    fn pathbuf_nth_alloc_fail_targets_correct_call() {
-        let orig = PathBuf::try_from_path("/data/files").unwrap();
-        let (r1_ok, r2_err, r3_ok) = with_policy(FailPolicy::fail_nth_alloc(2), || {
-            let r1: Result<PathBuf, TryCloneError> = orig.try_clone();
-            let r2: Result<PathBuf, TryCloneError> = orig.try_clone();
-            let r3: Result<PathBuf, TryCloneError> = orig.try_clone();
-            (r1.is_ok(), r2.is_err(), r3.is_ok())
-        });
-        assert!(r1_ok, "first clone should succeed");
-        assert!(r2_err, "second clone should fail");
-        assert!(r3_ok, "third clone should succeed");
-    }
+        #[cfg(windows)]
+        #[test]
+        fn push_verbatim_parent_dir_normalizes() {
+            let mut p = PathBuf::try_from_path(r"\\?\C:\a\b").unwrap();
+            p.fallible_push(r"..\c").unwrap();
+            assert_eq!(p, Path::new(r"\\?\C:\a\c"));
+        }
 
-    #[test]
-    fn pathbuf_oom_restores_allocation_afterwards() {
-        let r: Result<PathBuf, TryReserveError> =
-            with_policy(FailPolicy::fail_next_alloc(), || {
-                <PathBuf as TryPathBuf>::try_from_path("/x")
-            });
-        assert!(r.is_err());
-        // Allocation works again after guard scope ends.
-        let r: Result<PathBuf, TryReserveError> = <PathBuf as TryPathBuf>::try_from_path("/y");
-        assert!(r.is_ok());
-    }
+        #[cfg(windows)]
+        #[test]
+        fn push_verbatim_root_resets() {
+            let mut p = PathBuf::try_from_path(r"\\?\C:\a\b").unwrap();
+            p.fallible_push(r"\d\e").unwrap();
+            assert_eq!(p, Path::new(r"\\?\C:\d\e"));
+        }
 
-    // ── Verbatim-normalization OOM tests (Windows-only paths) ───────────────
-    //
-    // On Windows these exercise `push_verbatim_normalized`, which allocates a
-    // component buffer and rebuilds the target string. On other platforms the
-    // same inputs take the plain relative-append branch, so we only assert on
-    // allocation behavior there.
+        #[cfg(not(windows))]
+        #[test]
+        fn push_relative_long_child_grows_buffer() {
+            // Non-Windows stand-in: exercises the relative-append + realloc path.
+            let long = format!("/base/{}", "x".repeat(128));
+            let mut p = PathBuf::try_from_path(&long).unwrap();
+            let extra = format!("child/{}", "y".repeat(128));
+            p.fallible_push(extra.clone()).unwrap();
+            let expected_len = long.len() + 1 + extra.len();
+            assert_eq!(p.as_os_str().len(), expected_len);
+        }
 
-    #[cfg(windows)]
-    #[test]
-    fn push_verbatim_fails_on_oom() {
-        let mut p = PathBuf::try_from_path(r"\\?\C:\a\b").unwrap();
-        let r = with_policy(FailPolicy::fail_next_alloc(), || p.fallible_push(r"c\d"));
-        assert!(r.is_err());
-        // Target is left unchanged on failure.
-        assert_eq!(p, Path::new(r"\\?\C:\a\b"));
-    }
+        // ── Pure normalization/rendering core (platform-independent) ─────────────
+        //
+        // `append_normalized` and `render_components` are the verbatim-push logic
+        // with allocation stripped out, so they can be exercised on any platform —
+        // including Linux, where the full `push_verbatim_normalized` is unreachable.
 
-    #[cfg(windows)]
-    #[test]
-    fn push_verbatim_parent_dir_normalizes() {
-        let mut p = PathBuf::try_from_path(r"\\?\C:\a\b").unwrap();
-        p.fallible_push(r"..\c").unwrap();
-        assert_eq!(p, Path::new(r"\\?\C:\a\c"));
-    }
+        /// Helper: parse a base and child into component vectors for direct testing.
+        fn comps_of(p: &str) -> Vec<Component<'_>> {
+            Path::new(p).components().collect()
+        }
 
-    #[cfg(windows)]
-    #[test]
-    fn push_verbatim_root_resets() {
-        let mut p = PathBuf::try_from_path(r"\\?\C:\a\b").unwrap();
-        p.fallible_push(r"\d\e").unwrap();
-        assert_eq!(p, Path::new(r"\\?\C:\d\e"));
-    }
+        #[test]
+        fn append_normalized_drops_curdir() {
+            let mut buf = comps_of("a/b");
+            append_normalized(&mut buf, Path::new(".")).unwrap();
+            assert_eq!(buf, comps_of("a/b"));
+        }
 
-    #[cfg(not(windows))]
-    #[test]
-    fn push_relative_long_child_grows_buffer() {
-        // Non-Windows stand-in: exercises the relative-append + realloc path.
-        let long = format!("/base/{}", "x".repeat(128));
-        let mut p = PathBuf::try_from_path(&long).unwrap();
-        let extra = format!("child/{}", "y".repeat(128));
-        p.fallible_push(extra.clone()).unwrap();
-        let expected_len = long.len() + 1 + extra.len();
-        assert_eq!(p.as_os_str().len(), expected_len);
-    }
+        #[test]
+        fn append_normalized_resolves_parentdir() {
+            let mut buf = comps_of("a/b/c");
+            append_normalized(&mut buf, Path::new("../d")).unwrap();
+            assert_eq!(buf, comps_of("a/b/d"));
+        }
 
-    // ── Pure normalization/rendering core (platform-independent) ─────────────
-    //
-    // `append_normalized` and `render_components` are the verbatim-push logic
-    // with allocation stripped out, so they can be exercised on any platform —
-    // including Linux, where the full `push_verbatim_normalized` is unreachable.
+        #[test]
+        fn append_normalized_parentdir_at_root_is_noop() {
+            // `..` at the root has nothing to pop; std keeps it as a no-op.
+            let mut buf = comps_of("");
+            append_normalized(&mut buf, Path::new("..")).unwrap();
+            assert!(buf.is_empty());
+        }
 
-    /// Helper: parse a base and child into component vectors for direct testing.
-    fn comps_of(p: &str) -> Vec<Component<'_>> {
-        Path::new(p).components().collect()
-    }
+        #[test]
+        fn append_normalized_root_on_relative_base_appends() {
+            // A relative base has no prefix, so an absolute child does NOT reset —
+            // the root dir is appended after the existing components. (The
+            // truncate-to-1 reset only applies once a prefix is present, i.e. the
+            // Windows verbatim case.)
+            let mut buf = comps_of("a/b");
+            append_normalized(&mut buf, Path::new("/c/d")).unwrap();
+            assert_eq!(
+                buf,
+                lang_alloc::vec![
+                    Component::Normal(OsStr::new("a")),
+                    Component::RootDir,
+                    Component::Normal(OsStr::new("c")),
+                    Component::Normal(OsStr::new("d")),
+                ]
+            );
+        }
 
-    #[test]
-    fn append_normalized_drops_curdir() {
-        let mut buf = comps_of("a/b");
-        append_normalized(&mut buf, Path::new(".")).unwrap();
-        assert_eq!(buf, comps_of("a/b"));
-    }
+        // FIXME: needs to account for non-Linux path separators
+        #[test]
+        fn append_normalized_plain_append() {
+            let mut buf = comps_of("a");
+            append_normalized(&mut buf, Path::new("b/c")).unwrap();
+            assert_eq!(buf, comps_of("a/b/c"));
+        }
 
-    #[test]
-    fn append_normalized_resolves_parentdir() {
-        let mut buf = comps_of("a/b/c");
-        append_normalized(&mut buf, Path::new("../d")).unwrap();
-        assert_eq!(buf, comps_of("a/b/d"));
-    }
+        // FIXME: needs to account for non-Linux path separators
+        #[test]
+        fn render_components_inserts_separators() {
+            let rendered = render_components(comps_of("a/b/c")).unwrap();
+            assert_eq!(rendered.as_encoded_bytes(), b"a/b/c");
+        }
 
-    #[test]
-    fn append_normalized_parentdir_at_root_is_noop() {
-        // `..` at the root has nothing to pop; std keeps it as a no-op.
-        let mut buf = comps_of("");
-        append_normalized(&mut buf, Path::new("..")).unwrap();
-        assert!(buf.is_empty());
-    }
+        // FIXME: needs to account for non-Linux path separators
+        #[test]
+        fn render_components_leading_root_has_no_double_sep() {
+            let rendered = render_components(comps_of("/a/b")).unwrap();
+            assert_eq!(rendered.as_encoded_bytes(), b"/a/b");
+        }
 
-    #[test]
-    fn append_normalized_root_on_relative_base_appends() {
-        // A relative base has no prefix, so an absolute child does NOT reset —
-        // the root dir is appended after the existing components. (The
-        // truncate-to-1 reset only applies once a prefix is present, i.e. the
-        // Windows verbatim case.)
-        let mut buf = comps_of("a/b");
-        append_normalized(&mut buf, Path::new("/c/d")).unwrap();
-        assert_eq!(
-            buf,
-            lang_alloc::vec![
-                Component::Normal(OsStr::new("a")),
-                Component::RootDir,
-                Component::Normal(OsStr::new("c")),
-                Component::Normal(OsStr::new("d")),
-            ]
-        );
-    }
+        #[test]
+        fn render_components_roundtrips_normalized() {
+            // Normalize then render. Leading `..` at a relative root is dropped,
+            // so `a/b + ../../c/../d` reduces to just `d`.
+            let mut buf = comps_of("a/b");
+            append_normalized(&mut buf, Path::new("../../c/../d")).unwrap();
+            let rendered = render_components(buf).unwrap();
+            assert_eq!(rendered.as_encoded_bytes(), b"d");
+        }
 
-    #[test]
-    fn append_normalized_plain_append() {
-        let mut buf = comps_of("a");
-        append_normalized(&mut buf, Path::new("b/c")).unwrap();
-        assert_eq!(buf, comps_of("a/b/c"));
-    }
+        #[test]
+        fn render_components_interior_parentdir_collapses() {
+            // Interior `..` pops the preceding normal component: a/b/c + ../d => a/b/d.
+            let mut buf = comps_of("a/b/c");
+            append_normalized(&mut buf, Path::new("../d")).unwrap();
+            let rendered = render_components(buf).unwrap();
+            assert_eq!(rendered.as_encoded_bytes(), b"a/b/d");
+        }
 
-    #[test]
-    fn render_components_inserts_separators() {
-        let rendered = render_components(comps_of("a/b/c")).unwrap();
-        assert_eq!(rendered.as_encoded_bytes(), b"a/b/c");
-    }
+        #[test]
+        fn render_components_empty() {
+            let rendered = render_components(Vec::new()).unwrap();
+            assert!(rendered.is_empty());
+        }
 
-    #[test]
-    fn render_components_leading_root_has_no_double_sep() {
-        let rendered = render_components(comps_of("/a/b")).unwrap();
-        assert_eq!(rendered.as_encoded_bytes(), b"/a/b");
-    }
+        // ── prefix_len (pure data — all variants constructible on any platform) ──
+        //
+        // `Prefix` variants carry plain fields, so we can build each one directly
+        // and assert the byte-length arithmetic without needing Windows to parse
+        // a real path. Expected values mirror the fixed-width header constants:
+        // Disk=2, VerbatimDisk=6, Verbatim/DeviceNS=4+len, UNC=2+s(+1+sh),
+        // VerbatimUNC=8+s(+1+sh).
 
-    #[test]
-    fn render_components_roundtrips_normalized() {
-        // Normalize then render. Leading `..` at a relative root is dropped,
-        // so `a/b + ../../c/../d` reduces to just `d`.
-        let mut buf = comps_of("a/b");
-        append_normalized(&mut buf, Path::new("../../c/../d")).unwrap();
-        let rendered = render_components(buf).unwrap();
-        assert_eq!(rendered.as_encoded_bytes(), b"d");
-    }
+        #[test]
+        fn prefix_len_disk_and_verbatim_disk_are_fixed() {
+            assert_eq!(prefix_len(&Prefix::Disk(b'C')), 2);
+            assert_eq!(prefix_len(&Prefix::VerbatimDisk(b'D')), 6);
+        }
 
-    #[test]
-    fn render_components_interior_parentdir_collapses() {
-        // Interior `..` pops the preceding normal component: a/b/c + ../d => a/b/d.
-        let mut buf = comps_of("a/b/c");
-        append_normalized(&mut buf, Path::new("../d")).unwrap();
-        let rendered = render_components(buf).unwrap();
-        assert_eq!(rendered.as_encoded_bytes(), b"a/b/d");
-    }
+        #[test]
+        fn prefix_len_device_namespace_is_four_plus_name() {
+            // "//./con" -> 4-byte header + "con" (3) = 7
+            assert_eq!(prefix_len(&Prefix::DeviceNS(OsStr::new("con"))), 7);
+            assert_eq!(prefix_len(&Prefix::DeviceNS(OsStr::new(""))), 4);
+        }
 
-    #[test]
-    fn render_components_empty() {
-        let rendered = render_components(Vec::new()).unwrap();
-        assert!(rendered.is_empty());
-    }
+        #[test]
+        fn prefix_len_verbatim_is_four_plus_path() {
+            // "\\?\" (4) + "C:/foo" (6) = 10
+            assert_eq!(prefix_len(&Prefix::Verbatim(OsStr::new("C:/foo"))), 10);
+            assert_eq!(prefix_len(&Prefix::Verbatim(OsStr::new(""))), 4);
+        }
 
-    // ── prefix_len (pure data — all variants constructible on any platform) ──
-    //
-    // `Prefix` variants carry plain fields, so we can build each one directly
-    // and assert the byte-length arithmetic without needing Windows to parse
-    // a real path. Expected values mirror the fixed-width header constants:
-    // Disk=2, VerbatimDisk=6, Verbatim/DeviceNS=4+len, UNC=2+s(+1+sh),
-    // VerbatimUNC=8+s(+1+sh).
+        #[test]
+        fn prefix_len_unc_counts_server_and_share() {
+            // "\\" (2) + "srv" (3) + "\" (1) + "shr" (3) = 9
+            assert_eq!(
+                prefix_len(&Prefix::UNC(OsStr::new("srv"), OsStr::new("shr"))),
+                9
+            );
+            // Empty share omits the trailing separator: 2 + 3 = 5
+            assert_eq!(
+                prefix_len(&Prefix::UNC(OsStr::new("srv"), OsStr::new(""))),
+                5
+            );
+        }
 
-    #[test]
-    fn prefix_len_disk_and_verbatim_disk_are_fixed() {
-        assert_eq!(prefix_len(&Prefix::Disk(b'C')), 2);
-        assert_eq!(prefix_len(&Prefix::VerbatimDisk(b'D')), 6);
-    }
-
-    #[test]
-    fn prefix_len_device_namespace_is_four_plus_name() {
-        // "//./con" -> 4-byte header + "con" (3) = 7
-        assert_eq!(prefix_len(&Prefix::DeviceNS(OsStr::new("con"))), 7);
-        assert_eq!(prefix_len(&Prefix::DeviceNS(OsStr::new(""))), 4);
-    }
-
-    #[test]
-    fn prefix_len_verbatim_is_four_plus_path() {
-        // "\\?\" (4) + "C:/foo" (6) = 10
-        assert_eq!(prefix_len(&Prefix::Verbatim(OsStr::new("C:/foo"))), 10);
-        assert_eq!(prefix_len(&Prefix::Verbatim(OsStr::new(""))), 4);
-    }
-
-    #[test]
-    fn prefix_len_unc_counts_server_and_share() {
-        // "\\" (2) + "srv" (3) + "\" (1) + "shr" (3) = 9
-        assert_eq!(
-            prefix_len(&Prefix::UNC(OsStr::new("srv"), OsStr::new("shr"))),
-            9
-        );
-        // Empty share omits the trailing separator: 2 + 3 = 5
-        assert_eq!(
-            prefix_len(&Prefix::UNC(OsStr::new("srv"), OsStr::new(""))),
-            5
-        );
-    }
-
-    #[test]
-    fn prefix_len_verbatim_unc_uses_eight_byte_header() {
-        // "\\?\UNC\" (8) + "srv" (3) + "\" (1) + "shr" (3) = 15
-        assert_eq!(
-            prefix_len(&Prefix::VerbatimUNC(OsStr::new("srv"), OsStr::new("shr"))),
-            15
-        );
-        // Empty share: 8 + 3 = 11
-        assert_eq!(
-            prefix_len(&Prefix::VerbatimUNC(OsStr::new("srv"), OsStr::new(""))),
-            11
-        );
+        #[test]
+        fn prefix_len_verbatim_unc_uses_eight_byte_header() {
+            // "\\?\UNC\" (8) + "srv" (3) + "\" (1) + "shr" (3) = 15
+            assert_eq!(
+                prefix_len(&Prefix::VerbatimUNC(OsStr::new("srv"), OsStr::new("shr"))),
+                15
+            );
+            // Empty share: 8 + 3 = 11
+            assert_eq!(
+                prefix_len(&Prefix::VerbatimUNC(OsStr::new("srv"), OsStr::new(""))),
+                11
+            );
+        }
     }
 }

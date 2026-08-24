@@ -44,7 +44,6 @@ impl RawVecInnerView {
     /// - `elem_layout`'s size must be a multiple of its alignment
     /// - `cap` must be less than or equal to `self.capacity(elem_layout.size())`
     /// - `cap <= self.cap && cap <= isize::MAX`
-    #[cfg_attr(test, no_panic::no_panic)]
     pub(crate) unsafe fn shrink_unchecked(
         &mut self,
         cap: usize,
@@ -83,7 +82,6 @@ impl RawVecInnerView {
         Ok(())
     }
 
-    #[cfg_attr(test, no_panic::no_panic)]
     pub(crate) fn from_vec<T>(vec: Vec<T>) -> (Self, usize) {
         let (ptr, len, cap) = vec.into_raw_parts();
         (
@@ -95,7 +93,6 @@ impl RawVecInnerView {
         )
     }
 
-    #[cfg_attr(test, no_panic::no_panic)]
     pub(crate) unsafe fn into_vec<T>(self, len: usize) -> Vec<T> {
         unsafe { Vec::from_raw_parts(self.ptr.as_ptr().cast(), len, self.cap) }
     }

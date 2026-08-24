@@ -6,7 +6,7 @@ edition = "2024"
 [dependencies]
 dashmap = { workspace = true, optional = true }
 rustyfill-macros = { workspace = true }
-rustyfill-sys = { path = "../rustyfill-sys" }
+rustyfill-sys = { workspace = true }
 hashbrown = { workspace = true }
 libc = { workspace = true, optional = true }
 once_cell = { workspace = true }
@@ -68,8 +68,10 @@ unstable = ["dep:dashmap", "std"]
 # feature on their `rustyfill` dependency AND add `#![feature(allocator_api)]`.
 allocator-api = []
 
+# OOM tests use `rustyfill-test-allocator`, which requires std (thread-local
+# failure-policy hooks). They therefore only run when the `std` feature is on;
+# see the `#[cfg(feature = "std")]` gates around the OOM test sections below.
 [dev-dependencies]
-no-panic = { workspace = true }
 rustyfill-test-allocator = { workspace = true }
 
 [build-dependencies]

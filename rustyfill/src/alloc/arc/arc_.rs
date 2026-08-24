@@ -1168,113 +1168,119 @@ mod tests {
     }
 
     // ── OOM tests ─────────────────────────────────────────────────────────────
-    use rustyfill_test_allocator::{FailPolicy, with_policy};
+    #[cfg(feature = "std")]
+    mod oom {
+        use super::*;
+        use rustyfill_test_allocator::{FailPolicy, with_policy};
 
-    #[test]
-    fn arc_fallible_new_fails_on_oom() {
-        let r: Result<Arc<i32>, AllocError> = with_policy(FailPolicy::fail_next_alloc(), || {
-            <Arc<i32> as TryArc<i32>>::fallible_new(42)
-        });
-        assert!(r.is_err());
-    }
-
-    #[test]
-    fn arc_fallible_new_give_back_returns_value_on_oom() {
-        let r: Result<Arc<i32>, (i32, AllocError)> =
-            with_policy(FailPolicy::fail_next_alloc(), || {
-                <Arc<i32> as TryArc<i32>>::try_new_give_back(99)
-            });
-        assert!(r.is_err());
-        if let Err((returned, _err)) = r {
-            assert_eq!(returned, 99);
+        #[test]
+        fn arc_fallible_new_fails_on_oom() {
+            let r: Result<Arc<i32>, AllocError> =
+                with_policy(FailPolicy::fail_next_alloc(), || {
+                    <Arc<i32> as TryArc<i32>>::fallible_new(42)
+                });
+            assert!(r.is_err());
         }
-    }
 
-    #[test]
-    fn arc_fallible_new_uninit_fails_on_oom() {
-        let r: Result<Arc<mem::MaybeUninit<i32>>, AllocError> = with_policy(
-            FailPolicy::fail_next_alloc(),
-            <Arc<i32> as TryArc<i32>>::fallible_new_uninit,
-        );
-        assert!(r.is_err());
-    }
-
-    #[test]
-    fn arc_fallible_new_zeroed_fails_on_oom() {
-        let r: Result<Arc<mem::MaybeUninit<[u8; 16]>>, AllocError> = with_policy(
-            FailPolicy::fail_next_alloc(),
-            <Arc<[u8; 16]> as TryArc<[u8; 16]>>::fallible_new_zeroed,
-        );
-        assert!(r.is_err());
-    }
-
-    #[test]
-    fn arc_fallible_pin_fails_on_oom() {
-        let r: Result<Pin<Arc<i32>>, AllocError> =
-            with_policy(FailPolicy::fail_next_alloc(), || {
-                <Arc<i32> as TryArc<i32>>::fallible_pin(42)
-            });
-        assert!(r.is_err());
-    }
-
-    #[test]
-    fn arc_fallible_pin_give_back_returns_value_on_oom() {
-        let r: Result<Pin<Arc<i64>>, (i64, AllocError)> =
-            with_policy(FailPolicy::fail_next_alloc(), || {
-                <Arc<i64> as TryArc<i64>>::try_pin_give_back(99)
-            });
-        assert!(r.is_err());
-        if let Err((returned, _err)) = r {
-            assert_eq!(returned, 99);
+        #[test]
+        fn arc_fallible_new_give_back_returns_value_on_oom() {
+            let r: Result<Arc<i32>, (i32, AllocError)> =
+                with_policy(FailPolicy::fail_next_alloc(), || {
+                    <Arc<i32> as TryArc<i32>>::try_new_give_back(99)
+                });
+            assert!(r.is_err());
+            if let Err((returned, _err)) = r {
+                assert_eq!(returned, 99);
+            }
         }
-    }
 
-    #[test]
-    fn arc_try_default_fails_on_oom() {
-        let r: Result<Arc<i32>, TryDefaultError> = with_policy(
-            FailPolicy::fail_next_alloc(),
-            <Arc<i32> as TryDefault>::try_default,
-        );
-        assert!(r.is_err());
-    }
+        #[test]
+        fn arc_fallible_new_uninit_fails_on_oom() {
+            let r: Result<Arc<mem::MaybeUninit<i32>>, AllocError> = with_policy(
+                FailPolicy::fail_next_alloc(),
+                <Arc<i32> as TryArc<i32>>::fallible_new_uninit,
+            );
+            assert!(r.is_err());
+        }
 
-    #[test]
-    fn arc_try_clone_succeeds_under_oom() {
-        // Arc::try_clone only increments atomic refcounts, no heap allocation.
-        let arc = Arc::<i32>::new(42);
-        let r: Result<Arc<i32>, TryCloneError> =
-            with_policy(FailPolicy::fail_next_alloc(), || arc.try_clone());
-        assert!(r.is_ok());
-    }
+        #[test]
+        fn arc_fallible_new_zeroed_fails_on_oom() {
+            let r: Result<Arc<mem::MaybeUninit<[u8; 16]>>, AllocError> = with_policy(
+                FailPolicy::fail_next_alloc(),
+                <Arc<[u8; 16]> as TryArc<[u8; 16]>>::fallible_new_zeroed,
+            );
+            assert!(r.is_err());
+        }
 
-    #[test]
-    fn arc_nth_alloc_fail_targets_correct_call() {
-        let (r1_ok, r2_err, r3_ok) = with_policy(FailPolicy::fail_nth_alloc(2), || {
-            let r1: Result<Arc<u8>, AllocError> = <Arc<u8> as TryArc<u8>>::fallible_new(1);
-            let r2: Result<Arc<u8>, AllocError> = <Arc<u8> as TryArc<u8>>::fallible_new(2);
-            let r3: Result<Arc<u8>, AllocError> = <Arc<u8> as TryArc<u8>>::fallible_new(3);
-            (r1.is_ok(), r2.is_err(), r3.is_ok())
-        });
-        assert!(r1_ok, "first alloc should succeed");
-        assert!(r2_err, "second alloc should fail");
-        assert!(r3_ok, "third alloc should succeed");
-    }
+        #[test]
+        fn arc_fallible_pin_fails_on_oom() {
+            let r: Result<Pin<Arc<i32>>, AllocError> =
+                with_policy(FailPolicy::fail_next_alloc(), || {
+                    <Arc<i32> as TryArc<i32>>::fallible_pin(42)
+                });
+            assert!(r.is_err());
+        }
 
-    #[test]
-    fn arc_oom_restores_allocation_afterwards() {
-        let r: Result<Arc<i32>, AllocError> = with_policy(FailPolicy::fail_next_alloc(), || {
-            <Arc<i32> as TryArc<i32>>::fallible_new(42)
-        });
-        assert!(r.is_err());
-        let r: Result<Arc<i32>, AllocError> = <Arc<i32> as TryArc<i32>>::fallible_new(42);
-        assert!(r.is_ok());
-    }
+        #[test]
+        fn arc_fallible_pin_give_back_returns_value_on_oom() {
+            let r: Result<Pin<Arc<i64>>, (i64, AllocError)> =
+                with_policy(FailPolicy::fail_next_alloc(), || {
+                    <Arc<i64> as TryArc<i64>>::try_pin_give_back(99)
+                });
+            assert!(r.is_err());
+            if let Err((returned, _err)) = r {
+                assert_eq!(returned, 99);
+            }
+        }
 
-    #[test]
-    fn weak_try_upgrade_dangling_no_alloc_needed() {
-        // Weak::try_upgrade on a dangling pointer doesn't allocate.
-        let weak: Weak<i32> = Weak::new();
-        let result = with_policy(FailPolicy::fail_next_alloc(), || weak.try_upgrade());
-        assert!(result.is_none());
+        #[test]
+        fn arc_try_default_fails_on_oom() {
+            let r: Result<Arc<i32>, TryDefaultError> = with_policy(
+                FailPolicy::fail_next_alloc(),
+                <Arc<i32> as TryDefault>::try_default,
+            );
+            assert!(r.is_err());
+        }
+
+        #[test]
+        fn arc_try_clone_succeeds_under_oom() {
+            // Arc::try_clone only increments atomic refcounts, no heap allocation.
+            let arc = Arc::<i32>::new(42);
+            let r: Result<Arc<i32>, TryCloneError> =
+                with_policy(FailPolicy::fail_next_alloc(), || arc.try_clone());
+            assert!(r.is_ok());
+        }
+
+        #[test]
+        fn arc_nth_alloc_fail_targets_correct_call() {
+            let (r1_ok, r2_err, r3_ok) = with_policy(FailPolicy::fail_nth_alloc(2), || {
+                let r1: Result<Arc<u8>, AllocError> = <Arc<u8> as TryArc<u8>>::fallible_new(1);
+                let r2: Result<Arc<u8>, AllocError> = <Arc<u8> as TryArc<u8>>::fallible_new(2);
+                let r3: Result<Arc<u8>, AllocError> = <Arc<u8> as TryArc<u8>>::fallible_new(3);
+                (r1.is_ok(), r2.is_err(), r3.is_ok())
+            });
+            assert!(r1_ok, "first alloc should succeed");
+            assert!(r2_err, "second alloc should fail");
+            assert!(r3_ok, "third alloc should succeed");
+        }
+
+        #[test]
+        fn arc_oom_restores_allocation_afterwards() {
+            let r: Result<Arc<i32>, AllocError> =
+                with_policy(FailPolicy::fail_next_alloc(), || {
+                    <Arc<i32> as TryArc<i32>>::fallible_new(42)
+                });
+            assert!(r.is_err());
+            let r: Result<Arc<i32>, AllocError> = <Arc<i32> as TryArc<i32>>::fallible_new(42);
+            assert!(r.is_ok());
+        }
+
+        #[test]
+        fn weak_try_upgrade_dangling_no_alloc_needed() {
+            // Weak::try_upgrade on a dangling pointer doesn't allocate.
+            let weak: Weak<i32> = Weak::new();
+            let result = with_policy(FailPolicy::fail_next_alloc(), || weak.try_upgrade());
+            assert!(result.is_none());
+        }
     }
 }

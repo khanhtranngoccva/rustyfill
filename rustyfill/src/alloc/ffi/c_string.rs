@@ -359,47 +359,51 @@ mod tests {
     }
 
     // ── OOM tests ─────────────────────────────────────────────────────
-    use rustyfill_test_allocator::{FailPolicy, with_policy};
+    #[cfg(feature = "std")]
+    mod oom {
+        use super::*;
+        use rustyfill_test_allocator::{FailPolicy, with_policy};
 
-    #[test]
-    fn cstring_try_clone_fails_on_oom() {
-        let c = CString::try_new(b"hello".to_vec()).unwrap();
-        let r: Result<CString, TryCloneError> =
-            with_policy(FailPolicy::fail_next_alloc(), || c.try_clone());
-        assert!(r.is_err());
-    }
+        #[test]
+        fn cstring_try_clone_fails_on_oom() {
+            let c = CString::try_new(b"hello".to_vec()).unwrap();
+            let r: Result<CString, TryCloneError> =
+                with_policy(FailPolicy::fail_next_alloc(), || c.try_clone());
+            assert!(r.is_err());
+        }
 
-    #[test]
-    fn cstring_try_clone_always_allocates() {
-        // Even an empty CString contains a trailing nul byte, so try_to_vec()
-        // always allocates at least 1 byte. No zero-allocation path exists.
-        let c = CString::try_new(Vec::new()).unwrap();
-        let r: Result<CString, TryCloneError> =
-            with_policy(FailPolicy::fail_next_alloc(), || c.try_clone());
-        assert!(r.is_err());
-    }
+        #[test]
+        fn cstring_try_clone_always_allocates() {
+            // Even an empty CString contains a trailing nul byte, so try_to_vec()
+            // always allocates at least 1 byte. No zero-allocation path exists.
+            let c = CString::try_new(Vec::new()).unwrap();
+            let r: Result<CString, TryCloneError> =
+                with_policy(FailPolicy::fail_next_alloc(), || c.try_clone());
+            assert!(r.is_err());
+        }
 
-    #[test]
-    fn cstring_nth_alloc_fail_targets_correct_call() {
-        let c = CString::try_new(b"hello".to_vec()).unwrap();
-        let (r1_ok, r2_err, r3_ok) = with_policy(FailPolicy::fail_nth_alloc(2), || {
-            let r1: Result<CString, TryCloneError> = c.try_clone();
-            let r2: Result<CString, TryCloneError> = c.try_clone();
-            let r3: Result<CString, TryCloneError> = c.try_clone();
-            (r1.is_ok(), r2.is_err(), r3.is_ok())
-        });
-        assert!(r1_ok, "first clone should succeed");
-        assert!(r2_err, "second clone should fail");
-        assert!(r3_ok, "third clone should succeed");
-    }
+        #[test]
+        fn cstring_nth_alloc_fail_targets_correct_call() {
+            let c = CString::try_new(b"hello".to_vec()).unwrap();
+            let (r1_ok, r2_err, r3_ok) = with_policy(FailPolicy::fail_nth_alloc(2), || {
+                let r1: Result<CString, TryCloneError> = c.try_clone();
+                let r2: Result<CString, TryCloneError> = c.try_clone();
+                let r3: Result<CString, TryCloneError> = c.try_clone();
+                (r1.is_ok(), r2.is_err(), r3.is_ok())
+            });
+            assert!(r1_ok, "first clone should succeed");
+            assert!(r2_err, "second clone should fail");
+            assert!(r3_ok, "third clone should succeed");
+        }
 
-    #[test]
-    fn cstring_oom_restores_allocation_afterwards() {
-        let c = CString::try_new(b"hello".to_vec()).unwrap();
-        let r: Result<CString, TryCloneError> =
-            with_policy(FailPolicy::fail_next_alloc(), || c.try_clone());
-        assert!(r.is_err());
-        let r: Result<CString, TryCloneError> = c.try_clone();
-        assert!(r.is_ok());
+        #[test]
+        fn cstring_oom_restores_allocation_afterwards() {
+            let c = CString::try_new(b"hello".to_vec()).unwrap();
+            let r: Result<CString, TryCloneError> =
+                with_policy(FailPolicy::fail_next_alloc(), || c.try_clone());
+            assert!(r.is_err());
+            let r: Result<CString, TryCloneError> = c.try_clone();
+            assert!(r.is_ok());
+        }
     }
 }

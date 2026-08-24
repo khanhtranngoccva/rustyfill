@@ -16,6 +16,3 @@ rustyfill = { workspace = true }
 
 [build-dependencies]
 cargo-build = { workspace = true }
-
-[dev-dependencies]
-rustyfill-test-allocator = { workspace = true }

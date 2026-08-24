@@ -90,7 +90,11 @@ jobs:
       - uses: dtolnay/rust-toolchain@nightly
         with:
           components: miri,rust-src
-      - run: cargo +nightly miri test --workspace
+      # Isolation is disabled because some tests invoke real filesystem
+      # syscalls (open/read/write), which Miri's isolated shim rejects.
+      - env:
+          MIRIFLAGS: "-Zmiri-disable-isolation"
+        run: cargo +nightly miri test --workspace
 
   # ── no_std checks ───────────────────────────────────────────────────────
   no-std:

@@ -1224,203 +1224,213 @@ mod tests {
     }
 
     // ── OOM tests ─────────────────────────────────────────────────────────────
-    use rustyfill_test_allocator::{FailPolicy, with_policy};
+    #[cfg(feature = "std")]
+    mod oom {
+        use super::*;
+        use rustyfill_test_allocator::{FailPolicy, with_policy};
 
-    #[test]
-    fn hashmap_try_with_capacity_fails_on_oom() {
-        let r: Result<HashMap<u32, u32>, TryHashMapConstructionError> =
-            with_policy(FailPolicy::fail_next_alloc(), || {
-                <HashMap<u32, u32> as TryHashMap<u32, u32, RandomState>>::try_with_capacity(10)
+        #[test]
+        fn hashmap_try_with_capacity_fails_on_oom() {
+            let r: Result<HashMap<u32, u32>, TryHashMapConstructionError> =
+                with_policy(FailPolicy::fail_next_alloc(), || {
+                    <HashMap<u32, u32> as TryHashMap<u32, u32, RandomState>>::try_with_capacity(10)
+                });
+            assert!(r.is_err());
+        }
+
+        #[test]
+        fn hashmap_try_with_capacity_zero_succeeds_under_oom() {
+            let r: Result<HashMap<u32, u32>, TryHashMapConstructionError> =
+                with_policy(FailPolicy::fail_next_alloc(), || {
+                    <HashMap<u32, u32> as TryHashMap<u32, u32, RandomState>>::try_with_capacity(0)
+                });
+            assert!(r.is_ok());
+        }
+
+        #[test]
+        fn hashmap_try_insert_fails_on_oom() {
+            let mut map: HashMap<u32, u32> = HashMap::new();
+            map.try_shrink_to_fit().unwrap();
+            let r = with_policy(FailPolicy::fail_next_alloc(), || map.fallible_insert(1, 2));
+            assert!(r.is_err());
+        }
+
+        #[test]
+        fn hashmap_try_clone_fails_on_oom() {
+            let orig: HashMap<u32, u32> = HashMap::from([(1, 2), (3, 4)]);
+            let r: Result<HashMap<u32, u32>, TryCloneError> =
+                with_policy(FailPolicy::fail_next_alloc(), || orig.try_clone());
+            assert!(r.is_err());
+        }
+
+        #[test]
+        fn hashmap_try_clone_empty_succeeds_under_oom() {
+            let orig: HashMap<u32, u32> = HashMap::new();
+            let r: Result<HashMap<u32, u32>, TryCloneError> =
+                with_policy(FailPolicy::fail_next_alloc(), || orig.try_clone());
+            assert!(r.is_ok());
+        }
+
+        #[test]
+        fn hashmap_try_collect_fails_on_oom() {
+            let pairs = [(1u32, 2u32), (3u32, 4u32)];
+            let r: Result<HashMap<u32, u32>, TryHashMapConstructionError> =
+                with_policy(FailPolicy::fail_next_alloc(), || {
+                    HashMap::try_collect(pairs.iter().copied())
+                });
+            assert!(r.is_err());
+        }
+
+        #[test]
+        fn hashmap_oom_restores_allocation_afterwards() {
+            let r: Result<HashMap<u32, u32>, TryHashMapConstructionError> =
+                with_policy(FailPolicy::fail_next_alloc(), || {
+                    <HashMap<u32, u32> as TryHashMap<u32, u32, RandomState>>::try_with_capacity(10)
+                });
+            assert!(r.is_err());
+            // Allocation works again after guard scope ends.
+            let r: Result<HashMap<u32, u32>, TryHashMapConstructionError> =
+                <HashMap<u32, u32> as TryHashMap<u32, u32, RandomState>>::try_with_capacity(10);
+            assert!(r.is_ok());
+        }
+
+        #[test]
+        fn hashmap_nth_alloc_fail_targets_correct_call() {
+            type HM = HashMap<u32, u32, RandomState>;
+            let (r1_ok, r2_err, r3_ok) = with_policy(FailPolicy::fail_nth_alloc(2), || {
+                let r1: Result<HM, TryHashMapConstructionError> =
+                    <HM as TryHashMap<u32, u32, RandomState>>::try_with_capacity(1);
+                let r2: Result<HM, TryHashMapConstructionError> =
+                    <HM as TryHashMap<u32, u32, RandomState>>::try_with_capacity(1);
+                let r3: Result<HM, TryHashMapConstructionError> =
+                    <HM as TryHashMap<u32, u32, RandomState>>::try_with_capacity(1);
+                (r1.is_ok(), r2.is_err(), r3.is_ok())
             });
-        assert!(r.is_err());
-    }
+            assert!(r1_ok, "first alloc should succeed");
+            assert!(r2_err, "second alloc should fail");
+            assert!(r3_ok, "third alloc should succeed");
+        }
 
-    #[test]
-    fn hashmap_try_with_capacity_zero_succeeds_under_oom() {
-        let r: Result<HashMap<u32, u32>, TryHashMapConstructionError> =
-            with_policy(FailPolicy::fail_next_alloc(), || {
-                <HashMap<u32, u32> as TryHashMap<u32, u32, RandomState>>::try_with_capacity(0)
-            });
-        assert!(r.is_ok());
-    }
+        // ── Mid-operation clone failure: no rollback, remainder returned ─────────
 
-    #[test]
-    fn hashmap_try_insert_fails_on_oom() {
-        let mut map: HashMap<u32, u32> = HashMap::new();
-        map.try_shrink_to_fit().unwrap();
-        let r = with_policy(FailPolicy::fail_next_alloc(), || map.fallible_insert(1, 2));
-        assert!(r.is_err());
-    }
+        #[test]
+        fn extend_from_slice_returns_remaining_subslice_on_clone_failure() {
+            // A mid-way clone failure must NOT roll back already-inserted entries
+            // (keys may have been overwritten by later source entries, so removing
+            // them would resurrect stale values). Instead, it returns the
+            // unprocessed tail of the slice alongside the error.
+            use lang_alloc::string::String;
 
-    #[test]
-    fn hashmap_try_clone_fails_on_oom() {
-        let orig: HashMap<u32, u32> = HashMap::from([(1, 2), (3, 4)]);
-        let r: Result<HashMap<u32, u32>, TryCloneError> =
-            with_policy(FailPolicy::fail_next_alloc(), || orig.try_clone());
-        assert!(r.is_err());
-    }
+            let source: Vec<(String, String)> = vec![
+                ("key0".into(), "val0".into()),
+                ("key1".into(), "val1".into()),
+                ("key2".into(), "val2".into()),
+                ("key3".into(), "val3".into()),
+                ("key4".into(), "val4".into()),
+                ("key5".into(), "val5".into()),
+                ("key6".into(), "val6".into()),
+                ("key7".into(), "val7".into()),
+                ("key8".into(), "val8".into()),
+                ("key9".into(), "val9".into()),
+            ];
 
-    #[test]
-    fn hashmap_try_clone_empty_succeeds_under_oom() {
-        let orig: HashMap<u32, u32> = HashMap::new();
-        let r: Result<HashMap<u32, u32>, TryCloneError> =
-            with_policy(FailPolicy::fail_next_alloc(), || orig.try_clone());
-        assert!(r.is_ok());
-    }
+            let mut map: HashMap<String, String> = HashMap::new();
 
-    #[test]
-    fn hashmap_try_collect_fails_on_oom() {
-        let pairs = [(1u32, 2u32), (3u32, 4u32)];
-        let r: Result<HashMap<u32, u32>, TryHashMapConstructionError> =
-            with_policy(FailPolicy::fail_next_alloc(), || {
-                HashMap::try_collect(pairs.iter().copied())
-            });
-        assert!(r.is_err());
-    }
+            use crate::try_extend::TryExtendFromSlice;
+            let r: ExtendErr<'_, String, String> = with_policy(
+                FailPolicy::fail_nth_alloc(2),
+                || {
+                    <HashMap<String, String> as TryExtendFromSlice<'_, (String, String)>>::try_extend_from_slice(&mut map, &source)
+                },
+            );
 
-    #[test]
-    fn hashmap_oom_restores_allocation_afterwards() {
-        let r: Result<HashMap<u32, u32>, TryHashMapConstructionError> =
-            with_policy(FailPolicy::fail_next_alloc(), || {
-                <HashMap<u32, u32> as TryHashMap<u32, u32, RandomState>>::try_with_capacity(10)
-            });
-        assert!(r.is_err());
-        // Allocation works again after guard scope ends.
-        let r: Result<HashMap<u32, u32>, TryHashMapConstructionError> =
-            <HashMap<u32, u32> as TryHashMap<u32, u32, RandomState>>::try_with_capacity(10);
-        assert!(r.is_ok());
-    }
-
-    #[test]
-    fn hashmap_nth_alloc_fail_targets_correct_call() {
-        type HM = HashMap<u32, u32, RandomState>;
-        let (r1_ok, r2_err, r3_ok) = with_policy(FailPolicy::fail_nth_alloc(2), || {
-            let r1: Result<HM, TryHashMapConstructionError> =
-                <HM as TryHashMap<u32, u32, RandomState>>::try_with_capacity(1);
-            let r2: Result<HM, TryHashMapConstructionError> =
-                <HM as TryHashMap<u32, u32, RandomState>>::try_with_capacity(1);
-            let r3: Result<HM, TryHashMapConstructionError> =
-                <HM as TryHashMap<u32, u32, RandomState>>::try_with_capacity(1);
-            (r1.is_ok(), r2.is_err(), r3.is_ok())
-        });
-        assert!(r1_ok, "first alloc should succeed");
-        assert!(r2_err, "second alloc should fail");
-        assert!(r3_ok, "third alloc should succeed");
-    }
-
-    // ── Mid-operation clone failure: no rollback, remainder returned ─────────
-
-    #[test]
-    fn extend_from_slice_returns_remaining_subslice_on_clone_failure() {
-        // A mid-way clone failure must NOT roll back already-inserted entries
-        // (keys may have been overwritten by later source entries, so removing
-        // them would resurrect stale values). Instead, it returns the
-        // unprocessed tail of the slice alongside the error.
-        use lang_alloc::string::String;
-
-        let source: Vec<(String, String)> = vec![
-            ("key0".into(), "val0".into()),
-            ("key1".into(), "val1".into()),
-            ("key2".into(), "val2".into()),
-            ("key3".into(), "val3".into()),
-            ("key4".into(), "val4".into()),
-            ("key5".into(), "val5".into()),
-            ("key6".into(), "val6".into()),
-            ("key7".into(), "val7".into()),
-            ("key8".into(), "val8".into()),
-            ("key9".into(), "val9".into()),
-        ];
-
-        let mut map: HashMap<String, String> = HashMap::new();
-
-        use crate::try_extend::TryExtendFromSlice;
-        let r: ExtendErr<'_, String, String> = with_policy(FailPolicy::fail_nth_alloc(2), || {
-            <HashMap<String, String> as TryExtendFromSlice<'_, (String, String)>>::try_extend_from_slice(&mut map, &source)
-        });
-
-        match r {
-            Err((remaining, err)) => {
-                matches!(err, TryHashMapWithCloneError::Clone(_));
-                // The returned subslice must be a contiguous tail of `source`.
-                assert!(!remaining.is_empty());
-                let fail_idx = source.len() - remaining.len();
-                assert_eq!(remaining, &source[fail_idx..]);
-                // Every entry before the failing index was inserted (no rollback).
-                for i in 0..fail_idx {
-                    assert_eq!(map[&source[i].0], source[i].1);
+            match r {
+                Err((remaining, err)) => {
+                    matches!(err, TryHashMapWithCloneError::Clone(_));
+                    // The returned subslice must be a contiguous tail of `source`.
+                    assert!(!remaining.is_empty());
+                    let fail_idx = source.len() - remaining.len();
+                    assert_eq!(remaining, &source[fail_idx..]);
+                    // Every entry before the failing index was inserted (no rollback).
+                    for i in 0..fail_idx {
+                        assert_eq!(map[&source[i].0], source[i].1);
+                    }
+                    // Entries at or after the failing index were never inserted.
+                    for source in source.iter().skip(fail_idx) {
+                        assert!(
+                            !map.contains_key(&source.0),
+                            "entry at failing index or beyond should not be present"
+                        );
+                    }
                 }
-                // Entries at or after the failing index were never inserted.
-                for source in source.iter().skip(fail_idx) {
-                    assert!(
-                        !map.contains_key(&source.0),
-                        "entry at failing index or beyond should not be present"
-                    );
+                Ok(()) => {
+                    // If no allocation failed, everything landed.
+                    assert_eq!(map.len(), source.len());
                 }
-            }
-            Ok(()) => {
-                // If no allocation failed, everything landed.
-                assert_eq!(map.len(), source.len());
             }
         }
-    }
 
-    #[test]
-    fn extend_from_slice_no_rollback_preserves_overwritten_keys() {
-        // The critical scenario motivating "no rollback": the source contains
-        // duplicate keys where a LATER entry overwrites an EARLIER one. Both
-        // "dup" entries are placed at the front so they are always processed
-        // before any mid-slice clone failure can occur. If we had drained
-        // already-inserted entries on that later failure, "dup" would have been
-        // removed entirely (resurrecting nothing, but losing the valid last
-        // value). With no-rollback, "dup" must retain its LAST value "second".
-        use lang_alloc::string::String;
+        #[test]
+        fn extend_from_slice_no_rollback_preserves_overwritten_keys() {
+            // The critical scenario motivating "no rollback": the source contains
+            // duplicate keys where a LATER entry overwrites an EARLIER one. Both
+            // "dup" entries are placed at the front so they are always processed
+            // before any mid-slice clone failure can occur. If we had drained
+            // already-inserted entries on that later failure, "dup" would have been
+            // removed entirely (resurrecting nothing, but losing the valid last
+            // value). With no-rollback, "dup" must retain its LAST value "second".
+            use lang_alloc::string::String;
 
-        let source: Vec<(String, String)> = vec![
-            ("dup".into(), "first".into()),  // index 0: dup -> "first"
-            ("dup".into(), "second".into()), // index 1: dup -> "second" (overwrite)
-            ("a".into(), "va".into()),
-            ("b".into(), "vb".into()),
-            ("c".into(), "vc".into()),
-            ("d".into(), "vd".into()),
-            ("e".into(), "ve".into()),
-            ("f".into(), "vf".into()),
-            ("g".into(), "vg".into()),
-            ("h".into(), "vh".into()),
-            ("i".into(), "vi".into()),
-            ("j".into(), "vj".into()),
-        ];
+            let source: Vec<(String, String)> = vec![
+                ("dup".into(), "first".into()),  // index 0: dup -> "first"
+                ("dup".into(), "second".into()), // index 1: dup -> "second" (overwrite)
+                ("a".into(), "va".into()),
+                ("b".into(), "vb".into()),
+                ("c".into(), "vc".into()),
+                ("d".into(), "vd".into()),
+                ("e".into(), "ve".into()),
+                ("f".into(), "vf".into()),
+                ("g".into(), "vg".into()),
+                ("h".into(), "vh".into()),
+                ("i".into(), "vi".into()),
+                ("j".into(), "vj".into()),
+            ];
 
-        let mut map: HashMap<String, String> = HashMap::new();
+            let mut map: HashMap<String, String> = HashMap::new();
 
-        use crate::try_extend::TryExtendFromSlice;
-        // Fail a clone well past indices 0..2 so both "dup" entries are
-        // guaranteed to be committed before the failure fires.
-        let r: ExtendErr<'_, String, String> = with_policy(FailPolicy::fail_nth_alloc(8), || {
-            <HashMap<String, String> as TryExtendFromSlice<'_, (String, String)>>::try_extend_from_slice(&mut map, &source)
-        });
+            use crate::try_extend::TryExtendFromSlice;
+            // Fail a clone well past indices 0..2 so both "dup" entries are
+            // guaranteed to be committed before the failure fires.
+            let r: ExtendErr<'_, String, String> = with_policy(
+                FailPolicy::fail_nth_alloc(8),
+                || {
+                    <HashMap<String, String> as TryExtendFromSlice<'_, (String, String)>>::try_extend_from_slice(&mut map, &source)
+                },
+            );
 
-        match r {
-            Err((remaining, err)) => {
-                matches!(err, TryHashMapWithCloneError::Clone(_));
-                // The failure must have occurred strictly after both "dup"
-                // entries were processed, i.e. the remaining tail starts at
-                // some index >= 2.
-                let fail_idx = source.len() - remaining.len();
-                assert!(
-                    fail_idx >= 2,
-                    "failure should land past the two 'dup' entries, got index {}",
-                    fail_idx
-                );
-                // No-rollback: "dup" survived with its LAST (overwriting) value.
-                assert_eq!(
-                    map.get("dup"),
-                    Some(&"second".to_string()),
-                    "overwritten key must keep its LAST value, not the earlier stale one"
-                );
-            }
-            Ok(()) => {
-                // No allocation failed — everything landed, including the overwrite.
-                assert_eq!(map.get("dup"), Some(&"second".to_string()));
+            match r {
+                Err((remaining, err)) => {
+                    matches!(err, TryHashMapWithCloneError::Clone(_));
+                    // The failure must have occurred strictly after both "dup"
+                    // entries were processed, i.e. the remaining tail starts at
+                    // some index >= 2.
+                    let fail_idx = source.len() - remaining.len();
+                    assert!(
+                        fail_idx >= 2,
+                        "failure should land past the two 'dup' entries, got index {}",
+                        fail_idx
+                    );
+                    // No-rollback: "dup" survived with its LAST (overwriting) value.
+                    assert_eq!(
+                        map.get("dup"),
+                        Some(&"second".to_string()),
+                        "overwritten key must keep its LAST value, not the earlier stale one"
+                    );
+                }
+                Ok(()) => {
+                    // No allocation failed — everything landed, including the overwrite.
+                    assert_eq!(map.get("dup"), Some(&"second".to_string()));
+                }
             }
         }
     }

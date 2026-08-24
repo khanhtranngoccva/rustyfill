@@ -426,4 +426,6 @@ mod tests {
     fn fallible_pin_give_back_works() {
         let _pinned: Pin<Box<i32>> = Box::<i32>::fallible_pin_give_back(42).unwrap();
     }
+
+    // FIXME: missing OOM tests
 }
