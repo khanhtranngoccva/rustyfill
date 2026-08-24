@@ -18,7 +18,7 @@
 
 use crate::alloc::TryReserveError;
 use crate::alloc::TryReserveErrorExt;
-use crate::alloc::vec::{TryVec, TryVecWithCloneError};
+use crate::alloc::vec::TryVec;
 use crate::try_clone::{TryClone, TryCloneError};
 use crate::try_default::{TryDefault, TryDefaultError};
 use crate::try_fmt::{TryDebug, TryDisplay};
@@ -370,20 +370,24 @@ pub trait TryVecDeque<T>: Sized {
     /// Converts the deque into a contiguous [`Vec`], shrinks the vector's buffer,
     /// and converts back. This is necessary because `VecDeque`'s internal ring
     /// buffer layout is opaque — we cannot directly reallocate its storage.
-    fn try_shrink_to_fit(&mut self) -> Result<(), TryVecDequeWithCloneError>;
+    /// Shrink never clones elements, so the only failure mode is a failed
+    /// re-allocation ([`TryReserveError`]).
+    fn try_shrink_to_fit(&mut self) -> Result<(), TryReserveError>;
 
     /// Fallibly shrink the capacity of this deque to at least `min_capacity`.
     ///
     /// Converts the deque into a contiguous [`Vec`], shrinks the vector's buffer,
     /// and converts back. The effective minimum capacity is `max(len, min_capacity)`.
-    fn try_shrink_to(&mut self, min_capacity: usize) -> Result<(), TryVecDequeWithCloneError>;
+    /// Shrink never clones elements, so the only failure mode is a failed
+    /// re-allocation ([`TryReserveError`]).
+    fn try_shrink_to(&mut self, min_capacity: usize) -> Result<(), TryReserveError>;
 
     /// Fallibly shrink the capacity of this deque to match its length.
     ///
     /// Converts the deque into a contiguous [`Vec`], shrinks the vector's buffer,
     /// and converts back. This is necessary because `VecDeque`'s internal ring
     /// buffer layout is opaque — we cannot directly reallocate its storage.
-    fn fallible_shrink_to_fit(&mut self) -> Result<(), TryVecDequeWithCloneError> {
+    fn fallible_shrink_to_fit(&mut self) -> Result<(), TryReserveError> {
         Self::try_shrink_to_fit(self)
     }
 
@@ -391,7 +395,7 @@ pub trait TryVecDeque<T>: Sized {
     ///
     /// Converts the deque into a contiguous [`Vec`], shrinks the vector's buffer,
     /// and converts back. The effective minimum capacity is `max(len, min_capacity)`.
-    fn fallible_shrink_to(&mut self, min_capacity: usize) -> Result<(), TryVecDequeWithCloneError> {
+    fn fallible_shrink_to(&mut self, min_capacity: usize) -> Result<(), TryReserveError> {
         Self::try_shrink_to(self, min_capacity)
     }
 
@@ -799,11 +803,11 @@ impl<T> TryVecDeque<T> for VecDeque<T> {
         Ok(())
     }
 
-    fn try_shrink_to_fit(&mut self) -> Result<(), TryVecDequeWithCloneError> {
+    fn try_shrink_to_fit(&mut self) -> Result<(), TryReserveError> {
         <Self as TryVecDeque<T>>::try_shrink_to(self, self.len())
     }
 
-    fn try_shrink_to(&mut self, min_capacity: usize) -> Result<(), TryVecDequeWithCloneError> {
+    fn try_shrink_to(&mut self, min_capacity: usize) -> Result<(), TryReserveError> {
         let target = cmp::max(self.len(), min_capacity);
         if self.capacity() <= target {
             return Ok(());
@@ -816,10 +820,7 @@ impl<T> TryVecDeque<T> for VecDeque<T> {
         // Recover the deque before error handling so that a shrink failure
         // does not silently discard the original data.
         *self = vec.into();
-        result.map_err(|e| match e {
-            TryVecWithCloneError::Reserve(e) => TryVecDequeWithCloneError::Reserve(e),
-            TryVecWithCloneError::Clone(_) => unreachable!("shrink does not clone"),
-        })
+        result
     }
 
     fn try_clear(&mut self) {

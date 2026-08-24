@@ -21,6 +21,7 @@ use crate::std::ffi::TryOsString;
 use crate::try_clone::{TryClone, TryCloneError};
 use crate::try_default::{TryDefault, TryDefaultError};
 use crate::try_fmt::{TryDebug, TryDisplay, helpers::FormatterExt};
+use lang_alloc::boxed::Box;
 use lang_alloc::vec::Vec;
 use lang_core::fmt;
 use lang_core::mem;
@@ -188,6 +189,27 @@ pub trait TryPathBuf: Sized {
         ext: E,
     ) -> Result<bool, TryPathBufAddExtensionError>;
 
+    // ── Conversion to boxed types ─────────────────────────────────────────────
+
+    /// Fallibly convert this path buffer into a `Box<Path>`.
+    ///
+    /// This is the fallible analogue of [`PathBuf::into_boxed_path`]. The
+    /// resulting box has exactly the path's length and no excess capacity. No
+    /// bytes are ever copied: when the inner buffer has spare capacity it is
+    /// shrunk in place via `realloc`, and on success the buffer is handed
+    /// straight to the box.
+    ///
+    /// Returns [`TryReserveError`] if the shrink reallocation fails. Note that
+    /// unlike the give-back variant, the path buffer is consumed either way —
+    /// on failure the caller does not get the data back.
+    ///
+    /// For empty paths, this returns an empty boxed path without allocating.
+    fn try_into_boxed_path(self) -> Result<Box<Path>, TryReserveError>;
+
+    /// Like [`Self::try_into_boxed_path`] but returns ownership of the path
+    /// buffer back on failure so the caller is not left empty-handed.
+    fn try_into_boxed_path_give_back(self) -> Result<Box<Path>, (PathBuf, TryReserveError)>;
+
     // ── Aliases with `fallible_` prefix ────────────────────────────────────
 
     /// Alias for [`Self::try_new`].
@@ -219,6 +241,16 @@ pub trait TryPathBuf: Sized {
         ext: E,
     ) -> Result<bool, TryPathBufAddExtensionError> {
         Self::try_add_extension(self, ext)
+    }
+
+    /// Alias for [`Self::try_into_boxed_path`].
+    fn fallible_into_boxed_path(self) -> Result<Box<Path>, TryReserveError> {
+        Self::try_into_boxed_path(self)
+    }
+
+    /// Alias for [`Self::try_into_boxed_path_give_back`].
+    fn fallible_into_boxed_path_give_back(self) -> Result<Box<Path>, (PathBuf, TryReserveError)> {
+        Self::try_into_boxed_path_give_back(self)
     }
 }
 
@@ -528,6 +560,41 @@ impl TryPathBuf for PathBuf {
         os.push(ext);
         Ok(true)
     }
+
+    fn try_into_boxed_path(self) -> Result<Box<Path>, TryReserveError> {
+        // Shrink first so the inner buffer has exactly len() capacity; this is
+        // a no-op when there's no spare capacity. On failure the path buffer is
+        // consumed — use try_into_boxed_path_give_back to recover it instead.
+        let mut p = self;
+        <OsString as TryOsString>::try_shrink_to_fit(p.as_mut_os_string())?;
+        // SAFETY: Path is #[repr(transparent)] over OsStr and the bytes came
+        // from a valid PathBuf.
+        Ok(unsafe { from_boxed_osstr_to_boxed_path(p.into_os_string().into_boxed_os_str()) })
+    }
+
+    fn try_into_boxed_path_give_back(self) -> Result<Box<Path>, (PathBuf, TryReserveError)> {
+        // Shrink first. If the shrink fails, return the original path buffer so
+        // no data is lost.
+        let mut p = self;
+        match <OsString as TryOsString>::try_shrink_to_fit(p.as_mut_os_string()) {
+            Ok(()) => {
+                // SAFETY: Path is #[repr(transparent)] over OsStr and the bytes
+                // came from a valid PathBuf.
+                Ok(unsafe { from_boxed_osstr_to_boxed_path(p.into_os_string().into_boxed_os_str()) })
+            }
+            Err(e) => Err((p, e)),
+        }
+    }
+}
+
+/// # Safety
+///
+/// `boxed` must be a valid `Box<OsStr>` whose bytes came from an existing
+/// `OsString`.
+unsafe fn from_boxed_osstr_to_boxed_path(boxed: Box<OsStr>) -> Box<Path> {
+    // Path is #[repr(transparent)] over OsStr, so this cast mirrors std's own
+    // layout-based conversions between the two types.
+    unsafe { Box::from_raw(Box::into_raw(boxed) as *mut Path) }
 }
 
 // ── TryClone for PathBuf ────────────────────────────────────────────────────
@@ -906,6 +973,53 @@ mod tests {
             result,
             Err(TryPathBufSetExtensionError::SeparatorInPath)
         ));
+    }
+
+    // ── Conversion to boxed types ─────────────────────────────────────────────
+
+    #[test]
+    fn try_into_boxed_path_empty() {
+        let p = PathBuf::new();
+        let boxed: Box<Path> = p.try_into_boxed_path().unwrap();
+        assert!(boxed.as_os_str().is_empty());
+    }
+
+    #[test]
+    fn try_into_boxed_path_simple() {
+        let p = PathBuf::from("/usr/local/bin");
+        let boxed: Box<Path> = p.try_into_boxed_path().unwrap();
+        assert_eq!(&*boxed, Path::new("/usr/local/bin"));
+    }
+
+    #[test]
+    fn try_into_boxed_path_with_spare_capacity() {
+        let mut p = PathBuf::try_from_path("short").unwrap();
+        // Grow capacity so the conversion must shrink.
+        p.as_mut_os_string().try_reserve(1024).unwrap();
+        let boxed: Box<Path> = p.try_into_boxed_path().unwrap();
+        assert_eq!(&*boxed, Path::new("short"));
+    }
+
+    #[test]
+    fn try_into_boxed_path_unicode() {
+        let p = PathBuf::from("/home/ユーザー/docs/ファイル.txt");
+        let boxed: Box<Path> = p.try_into_boxed_path().unwrap();
+        assert_eq!(&*boxed, Path::new("/home/ユーザー/docs/ファイル.txt"));
+    }
+
+    #[test]
+    fn try_into_boxed_path_give_back_success() {
+        let mut p = PathBuf::try_from_path("data").unwrap();
+        p.as_mut_os_string().try_reserve(64).unwrap();
+        let boxed: Box<Path> = p.try_into_boxed_path_give_back().unwrap();
+        assert_eq!(&*boxed, Path::new("data"));
+    }
+
+    #[test]
+    fn try_into_boxed_path_give_back_empty() {
+        let p = PathBuf::new();
+        let boxed: Box<Path> = p.try_into_boxed_path_give_back().unwrap();
+        assert!(boxed.as_os_str().is_empty());
     }
 
     // ── TryClone ─────────────────────────────────────────────────────────────

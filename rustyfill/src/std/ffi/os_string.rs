@@ -17,9 +17,10 @@
 //! [`TryDefault`](crate::try_default::TryDefault) for `OsString`.
 
 use crate::alloc::TryReserveError;
-use crate::alloc::vec::{TryVec, TryVecWithCloneError};
+use crate::alloc::vec::TryVec;
 use crate::try_clone::{TryClone, TryCloneError};
 use crate::try_default::{TryDefault, TryDefaultError};
+use lang_alloc::boxed::Box;
 use lang_alloc::string::String;
 use lang_alloc::vec::Vec;
 use lang_core::fmt;
@@ -90,6 +91,25 @@ pub trait TryOsString: Sized {
     /// Equivalent to `OsString::into_string()`.
     fn try_into_string(self) -> Result<String, OsString>;
 
+    // ── Conversion to boxed types ─────────────────────────────────────────────
+
+    /// Fallibly convert this `OsString` into a `Box<OsStr>`.
+    ///
+    /// The resulting box contains the OS string data. No bytes are ever copied:
+    /// when the current allocation has spare capacity it is shrunk in place via
+    /// `realloc`, and on success the buffer is handed straight to the box.
+    ///
+    /// Returns [`TryReserveError`] if the shrink reallocation fails. Note that
+    /// unlike the give-back variant, the `OsString` is consumed either way — on
+    /// failure the caller does not get the data back.
+    ///
+    /// For empty strings, this returns an empty boxed `OsStr` without allocating.
+    fn try_into_boxed_osstr(self) -> Result<Box<OsStr>, TryReserveError>;
+
+    /// Like [`Self::try_into_boxed_osstr`] but returns ownership of the
+    /// `OsString` back on failure so the caller is not left empty-handed.
+    fn try_into_boxed_osstr_give_back(self) -> Result<Box<OsStr>, (OsString, TryReserveError)>;
+
     // ── Aliases with `fallible_` prefix ────────────────────────────────────
 
     /// Alias for [`Self::try_with_capacity`].
@@ -135,6 +155,16 @@ pub trait TryOsString: Sized {
     /// Alias for [`Self::try_into_string`].
     fn fallible_into_string(self) -> Result<String, OsString> {
         Self::try_into_string(self)
+    }
+
+    /// Alias for [`Self::try_into_boxed_osstr`].
+    fn fallible_into_boxed_osstr(self) -> Result<Box<OsStr>, TryReserveError> {
+        Self::try_into_boxed_osstr(self)
+    }
+
+    /// Alias for [`Self::try_into_boxed_osstr_give_back`].
+    fn fallible_into_boxed_osstr_give_back(self) -> Result<Box<OsStr>, (OsString, TryReserveError)> {
+        Self::try_into_boxed_osstr_give_back(self)
     }
 }
 
@@ -196,14 +226,86 @@ impl TryOsString for OsString {
         let result = <Vec<u8> as TryVec<u8>>::fallible_shrink_to(&mut v, min_capacity);
         // SAFETY: the bytes originated from a valid OsString via into_encoded_bytes.
         *self = unsafe { OsString::from_encoded_bytes_unchecked(v) };
-        result.map_err(|e| match e {
-            TryVecWithCloneError::Reserve(e) => e,
-            TryVecWithCloneError::Clone(_) => unreachable!("shrink does not clone"),
-        })
+        result
     }
 
     fn try_into_string(self) -> Result<String, OsString> {
         self.into_string()
+    }
+
+    fn try_into_boxed_osstr(self) -> Result<Box<OsStr>, TryReserveError> {
+        // Take ownership of the encoded byte buffer.
+        let mut v = self.into_encoded_bytes();
+
+        // Empty strings don't need any allocation.
+        if v.is_empty() {
+            return Ok(Box::<OsStr>::default());
+        }
+
+        // If there's no spare capacity, hand the buffer straight to the box —
+        // no reallocation needed.
+        if v.capacity() == v.len() {
+            return Ok(unsafe { from_boxed_osstr_unchecked(v.into_boxed_slice()) });
+        }
+
+        // Otherwise shrink in place via realloc. On failure the bytes are
+        // dropped along with `v` — use try_into_boxed_osstr_give_back to
+        // recover them instead.
+        <Vec<u8> as TryVec<u8>>::fallible_shrink_to_fit(&mut v)?;
+        // SAFETY: the bytes originated from a valid OsString via into_encoded_bytes.
+        Ok(unsafe { from_boxed_osstr_unchecked(v.into_boxed_slice()) })
+    }
+
+    fn try_into_boxed_osstr_give_back(self) -> Result<Box<OsStr>, (OsString, TryReserveError)> {
+        // Take ownership of the encoded byte buffer.
+        let mut v = self.into_encoded_bytes();
+
+        // Empty strings don't need any allocation.
+        if v.is_empty() {
+            return Ok(Box::<OsStr>::default());
+        }
+
+        // If there's no spare capacity, hand the buffer straight to the box.
+        if v.capacity() == v.len() {
+            return Ok(unsafe { from_boxed_osstr_unchecked(v.into_boxed_slice()) });
+        }
+
+        // Otherwise, shrink first. If the shrink fails, reconstruct the
+        // OsString and return it so no data is lost.
+        match <Vec<u8> as TryVec<u8>>::fallible_shrink_to_fit(&mut v) {
+            Ok(()) => {
+                // SAFETY: the bytes originated from a valid OsString.
+                Ok(unsafe { from_boxed_osstr_unchecked(v.into_boxed_slice()) })
+            }
+            Err(e) => {
+                // SAFETY: the bytes are unchanged from the original OsString.
+                let osstring = unsafe { OsString::from_encoded_bytes_unchecked(v) };
+                Err((osstring, e))
+            }
+        }
+    }
+}
+
+/// # Safety
+///
+/// `bytes` must be a valid OS string encoding (i.e., they must have come from
+/// an existing `OsString`).
+unsafe fn from_boxed_osstr_unchecked(bytes: Box<[u8]>) -> Box<OsStr> {
+    // On Unix-like platforms, OsStr is #[repr(transparent)] over [u8], so the
+    // cast mirrors std's own internal layout-based conversions.
+    //
+    // On Windows, OsStr is #[repr(transparent)] over [u16] and the byte
+    // representation differs — this fast path would be unsound there, so it
+    // is restricted to unix-family targets. Other platforms fall back to
+    // constructing through the reference API (which copies).
+    if cfg!(unix) || cfg!(target_os = "wasi") {
+        unsafe { Box::from_raw(Box::into_raw(bytes) as *mut OsStr) }
+    } else {
+        // Non-unix platforms (e.g. Windows): reconstruct through the public
+        // API, which copies the bytes into a properly-encoded OsString, then
+        // convert that owned string into a Box<OsStr>.
+        let owned = unsafe { OsString::from_encoded_bytes_unchecked(bytes.into_vec()) };
+        owned.into_boxed_os_str()
     }
 }
 
@@ -383,6 +485,52 @@ mod tests {
             let result = s.try_into_string();
             assert!(result.is_err());
         }
+    }
+
+    // ── Conversion to boxed types ─────────────────────────────────────────────
+
+    #[test]
+    fn try_into_boxed_osstr_empty() {
+        let s = OsString::new();
+        let boxed: Box<OsStr> = s.try_into_boxed_osstr().unwrap();
+        assert!(boxed.is_empty());
+    }
+
+    #[test]
+    fn try_into_boxed_osstr_ascii() {
+        let s = OsString::try_from_str("hello").unwrap();
+        let boxed: Box<OsStr> = s.try_into_boxed_osstr().unwrap();
+        assert_eq!(*boxed, *OsStr::new("hello"));
+    }
+
+    #[test]
+    fn try_into_boxed_osstr_unicode() {
+        let s = OsString::try_from_str("こんにちは 🦀").unwrap();
+        let boxed: Box<OsStr> = s.try_into_boxed_osstr().unwrap();
+        assert_eq!(*boxed, *OsStr::new("こんにちは 🦀"));
+    }
+
+    #[test]
+    fn try_into_boxed_osstr_with_spare_capacity() {
+        let mut s = OsString::try_with_capacity(1024).unwrap();
+        s.try_push_str("small").unwrap();
+        let boxed: Box<OsStr> = s.try_into_boxed_osstr().unwrap();
+        assert_eq!(*boxed, *OsStr::new("small"));
+    }
+
+    #[test]
+    fn try_into_boxed_osstr_give_back_success() {
+        let mut s = OsString::try_with_capacity(256).unwrap();
+        s.try_push_str("hi").unwrap();
+        let boxed: Box<OsStr> = s.try_into_boxed_osstr_give_back().unwrap();
+        assert_eq!(*boxed, *OsStr::new("hi"));
+    }
+
+    #[test]
+    fn try_into_boxed_osstr_give_back_empty() {
+        let s = OsString::new();
+        let boxed: Box<OsStr> = s.try_into_boxed_osstr_give_back().unwrap();
+        assert!(boxed.is_empty());
     }
 
     // ── TryClone ─────────────────────────────────────────────────────────────

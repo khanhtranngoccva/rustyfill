@@ -15,12 +15,14 @@
 //! variant returns the original buffer on any failure so no data is lost.
 
 use crate::alloc::TryReserveError;
-use crate::alloc::vec::{TrySlice, TryVecWithCloneError};
+use crate::alloc::vec::{TrySlice, TryVec, TryVecWithCloneError};
 use crate::try_clone::{TryClone, TryCloneError};
 use crate::try_default::{TryDefault, TryDefaultError};
 use crate::try_fmt::{TryDebug, TryDisplay, helpers::FormatterExt};
+use lang_alloc::boxed::Box;
 use lang_alloc::ffi::CString;
 use lang_alloc::vec::Vec;
+use lang_core::ffi::CStr;
 use lang_core::fmt;
 
 /// Error returned by [`TryCString`] operations.
@@ -84,7 +86,7 @@ impl TryDisplay for TryCStringError {
 /// Implemented for `CString`. Mirrors the most commonly-used `CString` methods
 /// that can fail due to allocation pressure or invalid input, returning
 /// [`Result`] values instead of panicking.
-pub trait TryCString {
+pub trait TryCString: Sized {
     /// Fallibly construct a `CString` from a `Vec<u8>` buffer.
     ///
     /// The buffer must not contain an interior nul byte (`\0`). The caller should
@@ -102,6 +104,25 @@ pub trait TryCString {
     /// length (from the attempted `try_reserve(1)`).
     fn try_new_give_back(buf: Vec<u8>) -> Result<CString, (Vec<u8>, TryCStringError)>;
 
+    // ── Conversion to boxed types ─────────────────────────────────────────────
+
+    /// Fallibly convert this `CString` into a `Box<CStr>`.
+    ///
+    /// This is the fallible analogue of [`CString::into_boxed_c_str`]. The
+    /// resulting box contains the C string data including the trailing nul
+    /// byte. No bytes are ever copied: when the current allocation has spare
+    /// capacity it is shrunk in place via `realloc`, and on success the buffer
+    /// is handed straight to the box.
+    ///
+    /// Returns [`TryCStringError::Reserve`] if the shrink reallocation fails.
+    /// Note that unlike the give-back variant, the `CString` is consumed either
+    /// way — on failure the caller does not get the data back.
+    fn try_into_boxed_cstr(self) -> Result<Box<CStr>, TryCStringError>;
+
+    /// Like [`Self::try_into_boxed_cstr`] but returns ownership of the
+    /// `CString` back on failure so the caller is not left empty-handed.
+    fn try_into_boxed_cstr_give_back(self) -> Result<Box<CStr>, (CString, TryCStringError)>;
+
     // ── Aliases with `fallible_` prefix ─────────────────────────────────────
 
     /// Alias for [`Self::try_new`].
@@ -112,6 +133,16 @@ pub trait TryCString {
     /// Alias for [`Self::try_new_give_back`].
     fn fallible_new_give_back(buf: Vec<u8>) -> Result<CString, (Vec<u8>, TryCStringError)> {
         Self::try_new_give_back(buf)
+    }
+
+    /// Alias for [`Self::try_into_boxed_cstr`].
+    fn fallible_into_boxed_cstr(self) -> Result<Box<CStr>, TryCStringError> {
+        Self::try_into_boxed_cstr(self)
+    }
+
+    /// Alias for [`Self::try_into_boxed_cstr_give_back`].
+    fn fallible_into_boxed_cstr_give_back(self) -> Result<Box<CStr>, (CString, TryCStringError)> {
+        Self::try_into_boxed_cstr_give_back(self)
     }
 }
 
@@ -147,6 +178,48 @@ impl TryCString for CString {
         // SAFETY: Same reasoning as try_new.
         Ok(unsafe { CString::from_vec_with_nul_unchecked(buf) })
     }
+
+    fn try_into_boxed_cstr(self) -> Result<Box<CStr>, TryCStringError> {
+        // Take ownership of the internal buffer including the trailing nul,
+        // then shrink it in place via realloc. This is a no-op when there's no
+        // spare capacity. On failure the bytes are dropped along with `vec` —
+        // use try_into_boxed_cstr_give_back to recover them instead.
+        let mut vec = self.into_bytes_with_nul();
+        <Vec<u8> as TryVec<u8>>::fallible_shrink_to_fit(&mut vec).map_err(TryCStringError::from)?;
+        // SAFETY: the bytes came from a valid CString, so they contain no
+        // interior nul bytes and end with exactly one trailing nul.
+        Ok(unsafe { from_boxed_cstr_unchecked(vec.into_boxed_slice()) })
+    }
+
+    fn try_into_boxed_cstr_give_back(self) -> Result<Box<CStr>, (CString, TryCStringError)> {
+        // Take ownership of the internal buffer including the trailing nul,
+        // then shrink it in place via realloc. If the shrink fails, reconstruct
+        // the CString and return it so no data is lost.
+        let mut vec = self.into_bytes_with_nul();
+        match <Vec<u8> as TryVec<u8>>::fallible_shrink_to_fit(&mut vec) {
+            Ok(()) => {
+                // SAFETY: the bytes came from a valid CString.
+                Ok(unsafe { from_boxed_cstr_unchecked(vec.into_boxed_slice()) })
+            }
+            Err(e) => {
+                // SAFETY: The vec came from a valid CString via into_bytes_with_nul,
+                // so it has no interior nul bytes and ends with exactly one nul.
+                let cstring = unsafe { CString::from_vec_with_nul_unchecked(vec) };
+                Err((cstring, e.into()))
+            }
+        }
+    }
+}
+
+/// # Safety
+///
+/// `bytes` must not contain any interior nul bytes and must end with exactly
+/// one trailing nul byte.
+unsafe fn from_boxed_cstr_unchecked(bytes: Box<[u8]>) -> Box<CStr> {
+    // CStr is #[repr(transparent)] over [c_char], and u8 and c_char share
+    // layout on all supported platforms, mirroring std's own
+    // CString::into_boxed_c_str implementation.
+    unsafe { Box::from_raw(Box::into_raw(bytes) as *mut CStr) }
 }
 
 // ── TryClone for CString ─────────────────────────────────────────────────────
@@ -356,6 +429,56 @@ mod tests {
     fn try_default_empty_cstring() {
         let c: CString = CString::try_default().unwrap();
         assert_eq!(c.as_bytes(), b"");
+    }
+
+    // ── Conversion to boxed types ─────────────────────────────────────────────
+
+    #[test]
+    fn try_into_boxed_cstr_empty() {
+        let c = CString::new("").unwrap();
+        let boxed: Box<CStr> = c.try_into_boxed_cstr().unwrap();
+        assert_eq!(boxed.to_bytes(), b"");
+        assert_eq!(boxed.to_bytes_with_nul(), b"\0");
+    }
+
+    #[test]
+    fn try_into_boxed_cstr_ascii() {
+        let c = CString::new("hello").unwrap();
+        let boxed: Box<CStr> = c.try_into_boxed_cstr().unwrap();
+        assert_eq!(boxed.to_bytes(), b"hello");
+        assert_eq!(boxed.to_bytes_with_nul(), b"hello\0");
+    }
+
+    #[test]
+    fn try_into_boxed_cstr_unicode_utf8() {
+        let c = CString::new("こんにちは 🦀").unwrap();
+        let boxed: Box<CStr> = c.try_into_boxed_cstr().unwrap();
+        assert_eq!(boxed.to_str().unwrap(), "こんにちは 🦀");
+    }
+
+    #[test]
+    fn try_into_boxed_cstr_preserves_data() {
+        let original = CString::new("test data").unwrap();
+        let expected_bytes = original.to_bytes().to_vec();
+        let boxed: Box<CStr> = original.try_into_boxed_cstr().unwrap();
+        assert_eq!(boxed.to_bytes(), expected_bytes.as_slice());
+    }
+
+    #[test]
+    fn try_into_boxed_cstr_give_back_success() {
+        // Build a CString with spare capacity so the shrink path is exercised.
+        let mut buf = Vec::with_capacity(64);
+        buf.extend_from_slice(b"hi");
+        let c = CString::try_new(buf).unwrap();
+        let boxed: Box<CStr> = c.try_into_boxed_cstr_give_back().unwrap();
+        assert_eq!(boxed.to_bytes(), b"hi");
+    }
+
+    #[test]
+    fn try_into_boxed_cstr_give_back_exact_capacity() {
+        let c = CString::new("abc").unwrap();
+        let boxed: Box<CStr> = c.try_into_boxed_cstr_give_back().unwrap();
+        assert_eq!(boxed.to_bytes(), b"abc");
     }
 
     // ── OOM tests ─────────────────────────────────────────────────────

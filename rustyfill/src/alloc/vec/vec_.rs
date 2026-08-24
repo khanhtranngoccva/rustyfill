@@ -20,6 +20,7 @@ use crate::alloc::TryReserveErrorExt;
 use crate::try_clone::{TryClone, TryCloneError};
 use crate::try_default::{TryDefault, TryDefaultError};
 use crate::try_fmt::{TryDebug, TryDisplay};
+use lang_alloc::boxed::Box;
 use lang_alloc::vec::Vec;
 use lang_core::alloc::Layout;
 use lang_core::cmp;
@@ -332,7 +333,7 @@ pub trait TryVec<T>: Sized {
         since = "0.1.0",
         note = "conflicts with unstable Vec::try_shrink_to_fit; use fallible_shrink_to_fit"
     )]
-    fn try_shrink_to_fit(&mut self) -> Result<(), TryVecWithCloneError>;
+    fn try_shrink_to_fit(&mut self) -> Result<(), TryReserveError>;
 
     /// Fallibly shrink the capacity of this vector to at least `min_capacity`.
     ///
@@ -342,7 +343,7 @@ pub trait TryVec<T>: Sized {
         since = "0.1.0",
         note = "conflicts with unstable Vec::try_shrink_to; use fallible_shrink_to"
     )]
-    fn try_shrink_to(&mut self, min_capacity: usize) -> Result<(), TryVecWithCloneError>;
+    fn try_shrink_to(&mut self, min_capacity: usize) -> Result<(), TryReserveError>;
 
     // ── Aliases with `fallible_` prefix ─────────────────────────────────────
 
@@ -440,13 +441,14 @@ pub trait TryVec<T>: Sized {
     /// Fallibly shrink the capacity of this vector to match its length.
     ///
     /// May reallocate if the current allocation is larger than needed.
-    /// Returns [`TryVecWithCloneError::Reserve`] if the re-allocation fails.
+    /// Shrink never clones elements, so the only failure mode is a failed
+    /// re-allocation ([`TryReserveError`]).
     /// Equivalent to [`Vec::shrink_to_fit`] but fallible.
     ///
     /// This method replaces the deprecated [`Self::try_shrink_to_fit`] which
     /// shares its name with the unstable inherent [`Vec::try_shrink_to_fit`].
     #[allow(deprecated)]
-    fn fallible_shrink_to_fit(&mut self) -> Result<(), TryVecWithCloneError> {
+    fn fallible_shrink_to_fit(&mut self) -> Result<(), TryReserveError> {
         Self::try_shrink_to_fit(self)
     }
 
@@ -454,13 +456,14 @@ pub trait TryVec<T>: Sized {
     ///
     /// If the current capacity is already less than or equal to `min_capacity`,
     /// does nothing and returns `Ok(())`. Otherwise reallocates down.
-    /// Returns [`TryVecWithCloneError::Reserve`] if the re-allocation fails.
+    /// Shrink never clones elements, so the only failure mode is a failed
+    /// re-allocation ([`TryReserveError`]).
     /// Equivalent to [`Vec::shrink_to`] but fallible.
     ///
     /// This method replaces the deprecated [`Self::try_shrink_to`] which shares
     /// its name with the unstable inherent [`Vec::try_shrink_to`].
     #[allow(deprecated)]
-    fn fallible_shrink_to(&mut self, min_capacity: usize) -> Result<(), TryVecWithCloneError> {
+    fn fallible_shrink_to(&mut self, min_capacity: usize) -> Result<(), TryReserveError> {
         Self::try_shrink_to(self, min_capacity)
     }
 
@@ -475,6 +478,18 @@ pub trait TryVec<T>: Sized {
         T: TryClone,
     {
         Self::try_from_slice(slice)
+    }
+
+    /// Alias for [`Self::try_into_boxed_slice`].
+    fn fallible_into_boxed_slice(self) -> Result<Box<[T]>, TryReserveError> {
+        Self::try_into_boxed_slice(self)
+    }
+
+    /// Alias for [`Self::try_into_boxed_slice_give_back`].
+    fn fallible_into_boxed_slice_give_back(
+        self,
+    ) -> Result<Box<[T]>, (Vec<T>, TryReserveError)> {
+        Self::try_into_boxed_slice_give_back(self)
     }
 
     // ── Bulk construction ───────────────────────────────────────────────────
@@ -492,6 +507,29 @@ pub trait TryVec<T>: Sized {
     fn try_from_slice(slice: &[T]) -> Result<Vec<T>, TryVecWithCloneError>
     where
         T: TryClone;
+
+    // ── Conversion to boxed types ─────────────────────────────────────────────
+
+    /// Fallibly convert this vector into a `Box<[T]>`.
+    ///
+    /// This is the fallible analogue of [`Vec::into_boxed_slice`]. The resulting
+    /// box has exactly `len()` elements and no excess capacity. No elements are
+    /// ever cloned: when the current allocation has spare capacity it is
+    /// shrunk in place via `realloc`, and on success the buffer is handed
+    /// straight to the box.
+    ///
+    /// Returns [`TryReserveError`] if the shrink reallocation fails. Note that
+    /// unlike the give-back variant, the vector is consumed either way — on
+    /// failure the caller does not get the elements back.
+    ///
+    /// For empty vectors, this returns an empty boxed slice without allocating.
+    fn try_into_boxed_slice(self) -> Result<Box<[T]>, TryReserveError>;
+
+    /// Like [`Self::try_into_boxed_slice`] but returns ownership of the vector
+    /// back on failure so the caller is not left empty-handed.
+    fn try_into_boxed_slice_give_back(
+        self,
+    ) -> Result<Box<[T]>, (Vec<T>, TryReserveError)>;
 }
 
 #[allow(deprecated)]
@@ -705,11 +743,11 @@ impl<T> TryVec<T> for Vec<T> {
         Ok(())
     }
 
-    fn try_shrink_to_fit(&mut self) -> Result<(), TryVecWithCloneError> {
+    fn try_shrink_to_fit(&mut self) -> Result<(), TryReserveError> {
         <Self as TryVec<T>>::try_shrink_to(self, self.len())
     }
 
-    fn try_shrink_to(&mut self, min_capacity: usize) -> Result<(), TryVecWithCloneError> {
+    fn try_shrink_to(&mut self, min_capacity: usize) -> Result<(), TryReserveError> {
         let target = cmp::max(self.len(), min_capacity);
         if self.capacity() <= target {
             return Ok(());
@@ -733,9 +771,7 @@ impl<T> TryVec<T> for Vec<T> {
                 // SAFETY: pointer, length, and capacity are all still valid from
                 // the original Vec.
                 *self = unsafe { current_raw.into_vec(current_len) };
-                Err(TryVecWithCloneError::Reserve(
-                    TryReserveErrorExt::new_alloc(Layout::new::<T>()),
-                ))
+                Err(TryReserveErrorExt::new_alloc(Layout::new::<T>()))
             }
         }
     }
@@ -769,6 +805,26 @@ impl<T> TryVec<T> for Vec<T> {
             vec.push(item.try_clone().map_err(TryVecWithCloneError::Clone)?);
         }
         Ok(vec)
+    }
+
+    fn try_into_boxed_slice(self) -> Result<Box<[T]>, TryReserveError> {
+        // Shrink first so the buffer has exactly len() capacity; this is a
+        // no-op when there's no spare capacity. On failure the elements are
+        // dropped along with `self` — use try_into_boxed_slice_give_back to
+        // recover them instead.
+        let mut vec = self;
+        <Vec<T> as TryVec<T>>::try_shrink_to_fit(&mut vec)?;
+        Ok(vec.into_boxed_slice())
+    }
+
+    fn try_into_boxed_slice_give_back(self) -> Result<Box<[T]>, (Vec<T>, TryReserveError)> {
+        // Shrink first. If the shrink fails, return the original vec so no
+        // data is lost.
+        let mut vec = self;
+        match <Vec<T> as TryVec<T>>::try_shrink_to_fit(&mut vec) {
+            Ok(()) => Ok(vec.into_boxed_slice()),
+            Err(e) => Err((vec, e)),
+        }
     }
 }
 
@@ -1242,6 +1298,55 @@ mod tests {
     fn try_from_slice_empty() {
         let v: Vec<i32> = Vec::try_from_slice(&[]).unwrap();
         assert!(v.is_empty());
+    }
+
+    // ── Conversion to boxed types ─────────────────────────────────────────────
+
+    #[test]
+    fn try_into_boxed_slice_empty() {
+        let v: Vec<i32> = Vec::new();
+        let boxed: Box<[i32]> = v.try_into_boxed_slice().unwrap();
+        assert!(boxed.is_empty());
+    }
+
+    #[test]
+    fn try_into_boxed_slice_exact_capacity() {
+        let v: Vec<i32> = vec![1, 2, 3];
+        let boxed: Box<[i32]> = v.try_into_boxed_slice().unwrap();
+        assert_eq!(*boxed, [1, 2, 3]);
+    }
+
+    #[test]
+    fn try_into_boxed_slice_with_spare_capacity() {
+        let mut v: Vec<i32> = Vec::new();
+        v.try_reserve(1024).unwrap();
+        v.try_push(1).unwrap();
+        v.try_push(2).unwrap();
+        let boxed: Box<[i32]> = v.try_into_boxed_slice().unwrap();
+        assert_eq!(*boxed, [1, 2]);
+    }
+
+    #[test]
+    fn try_into_boxed_slice_preserves_data() {
+        let v: Vec<String> = vec!["hello".to_string(), "world".to_string()];
+        let boxed: Box<[String]> = v.try_into_boxed_slice().unwrap();
+        assert_eq!(&*boxed, &["hello", "world"][..]);
+    }
+
+    #[test]
+    fn try_into_boxed_slice_give_back_success() {
+        let mut v: Vec<i32> = Vec::new();
+        v.try_reserve(64).unwrap();
+        v.try_push(7).unwrap();
+        let boxed: Box<[i32]> = v.try_into_boxed_slice_give_back().unwrap();
+        assert_eq!(*boxed, [7]);
+    }
+
+    #[test]
+    fn try_into_boxed_slice_give_back_empty() {
+        let v: Vec<i32> = Vec::new();
+        let boxed: Box<[i32]> = v.try_into_boxed_slice_give_back().unwrap();
+        assert!(boxed.is_empty());
     }
 
     // ── TryClone ─────────────────────────────────────────────────────────────

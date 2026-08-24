@@ -14,11 +14,12 @@
 //! The trait also implements [`TryClone`](crate::try_clone::TryClone) and
 //! [`TryDefault`](crate::try_default::TryDefault) for `String`.
 
-use crate::alloc::vec::{TryVec, TryVecWithCloneError};
+use crate::alloc::vec::TryVec;
 use crate::alloc::{TryReserveError, TryReserveErrorExt};
 use crate::try_clone::{TryClone, TryCloneError};
 use crate::try_default::{TryDefault, TryDefaultError};
 use crate::try_fmt::{TryDebug, TryDisplay, helpers::FormatterExt};
+use lang_alloc::boxed::Box;
 use lang_alloc::string::String;
 use lang_alloc::vec::Vec;
 use lang_core::alloc::Layout;
@@ -147,18 +148,41 @@ pub trait TryString: Sized {
 
     /// Fallibly shrink the capacity of this `String` to match its length.
     ///
-    /// May reallocate if the current allocation is larger than needed.
-    /// Returns [`TryStringError::Reserve`] if the re-allocation fails.
+    /// May reallocate if the current allocation is larger than needed. Shrink
+    /// never clones data, so the only failure mode is a failed re-allocation
+    /// ([`TryStringError::Reserve`]).
     /// Equivalent to `String::shrink_to_fit()` but fallible.
-    fn try_shrink_to_fit(&mut self) -> Result<(), TryStringError>;
+    fn try_shrink_to_fit(&mut self) -> Result<(), TryReserveError>;
 
     /// Fallibly shrink the capacity of this `String` to at least `min_capacity`.
     ///
     /// If the current capacity is already less than or equal to `min_capacity`,
-    /// does nothing and returns `Ok(())`. Otherwise reallocates down.
-    /// Returns [`TryStringError::Reserve`] if the re-allocation fails.
+    /// does nothing and returns `Ok(())`. Otherwise reallocates down. Shrink
+    /// never clones data, so the only failure mode is a failed re-allocation
+    /// ([`TryReserveError`]).
     /// Equivalent to `String::shrink_to(min_capacity)` but fallible.
-    fn try_shrink_to(&mut self, min_capacity: usize) -> Result<(), TryStringError>;
+    fn try_shrink_to(&mut self, min_capacity: usize) -> Result<(), TryReserveError>;
+
+    // ── Conversion to boxed types ─────────────────────────────────────────────
+
+    /// Fallibly convert this string into a `Box<str>`.
+    ///
+    /// This is the fallible analogue of [`String::into_boxed_str`]. The resulting
+    /// box has exactly `len()` bytes and no excess capacity. No bytes are ever
+    /// copied: when the current allocation has spare capacity it is shrunk in
+    /// place via `realloc`, and on success the buffer is handed straight to the
+    /// box.
+    ///
+    /// Returns [`TryReserveError`] if the shrink reallocation fails. Note that
+    /// unlike the give-back variant, the string is consumed either way — on
+    /// failure the caller does not get the data back.
+    ///
+    /// For empty strings, this returns an empty boxed str without allocating.
+    fn try_into_boxed_str(self) -> Result<Box<str>, TryReserveError>;
+
+    /// Like [`Self::try_into_boxed_str`] but returns ownership of the string
+    /// back on failure so the caller is not left empty-handed.
+    fn try_into_boxed_str_give_back(self) -> Result<Box<str>, (String, TryReserveError)>;
 
     // ── Aliases with `fallible_` prefix ────────────────────────────────────
 
@@ -203,16 +227,25 @@ pub trait TryString: Sized {
     /// Fallibly shrink the capacity of this `String` to match its length.
     ///
     /// Alias for [`Self::try_shrink_to_fit`].
-    #[allow(deprecated)]
-    fn fallible_shrink_to_fit(&mut self) -> Result<(), TryStringError> {
+    fn fallible_shrink_to_fit(&mut self) -> Result<(), TryReserveError> {
         Self::try_shrink_to_fit(self)
     }
 
     /// Fallibly shrink the capacity of this `String` to at least `min_capacity`.
     ///
     /// Alias for [`Self::try_shrink_to`].
-    fn fallible_shrink_to(&mut self, min_capacity: usize) -> Result<(), TryStringError> {
+    fn fallible_shrink_to(&mut self, min_capacity: usize) -> Result<(), TryReserveError> {
         Self::try_shrink_to(self, min_capacity)
+    }
+
+    /// Alias for [`Self::try_into_boxed_str`].
+    fn fallible_into_boxed_str(self) -> Result<Box<str>, TryReserveError> {
+        Self::try_into_boxed_str(self)
+    }
+
+    /// Alias for [`Self::try_into_boxed_str_give_back`].
+    fn fallible_into_boxed_str_give_back(self) -> Result<Box<str>, (String, TryReserveError)> {
+        Self::try_into_boxed_str_give_back(self)
     }
 }
 
@@ -301,24 +334,51 @@ impl TryString for String {
         Ok(())
     }
 
-    fn try_shrink_to_fit(&mut self) -> Result<(), TryStringError> {
+    fn try_shrink_to_fit(&mut self) -> Result<(), TryReserveError> {
         self.try_shrink_to(self.len())
     }
 
-    #[allow(deprecated)]
-    fn try_shrink_to(&mut self, min_capacity: usize) -> Result<(), TryStringError> {
+    fn try_shrink_to(&mut self, min_capacity: usize) -> Result<(), TryReserveError> {
         // Convert to Vec<u8> (identical layout to String), shrink via TryVec,
         // then convert back. Only the spare capacity portion is reallocated —
         // the UTF-8 data bytes are never copied or revalidated.
         let mut v = mem::take(self).into_bytes();
-        let result = <Vec<u8> as TryVec<u8>>::try_shrink_to(&mut v, min_capacity);
+        let result = <Vec<u8> as TryVec<u8>>::fallible_shrink_to(&mut v, min_capacity);
         // The bytes originated from a valid String, so they remain valid UTF-8.
         *self = String::from_utf8(v).unwrap();
-        result.map_err(|e| match e {
-            TryVecWithCloneError::Reserve(e) => TryStringError::Reserve(e),
-            TryVecWithCloneError::Clone(_) => unreachable!("shrink does not clone"),
-        })
+        result
     }
+
+    fn try_into_boxed_str(self) -> Result<Box<str>, TryReserveError> {
+        // Shrink first so the buffer has exactly len() capacity; this is a
+        // no-op when there's no spare capacity. On failure the bytes are
+        // dropped along with `self` — use try_into_boxed_str_give_back to
+        // recover them instead.
+        let mut s = self;
+        <String as TryString>::try_shrink_to_fit(&mut s)?;
+        // SAFETY: the bytes originated from a valid String, so they are valid UTF-8.
+        Ok(unsafe { from_boxed_utf8_unchecked(s.into_bytes().into_boxed_slice()) })
+    }
+
+    fn try_into_boxed_str_give_back(self) -> Result<Box<str>, (String, TryReserveError)> {
+        // Shrink first. If the shrink fails, return the original string so no
+        // data is lost.
+        let mut s = self;
+        match <String as TryString>::try_shrink_to_fit(&mut s) {
+            Ok(()) => {
+                // SAFETY: the bytes are unchanged from the original String.
+                Ok(unsafe { from_boxed_utf8_unchecked(s.into_bytes().into_boxed_slice()) })
+            }
+            Err(e) => Err((s, e)),
+        }
+    }
+}
+
+/// # Safety
+///
+/// `bytes` must contain only valid UTF-8.
+unsafe fn from_boxed_utf8_unchecked(bytes: Box<[u8]>) -> Box<str> {
+    unsafe { Box::from_raw(Box::into_raw(bytes) as *mut str) }
 }
 
 // ── TryClone for String ──────────────────────────────────────────────────────
@@ -772,12 +832,82 @@ mod tests {
         assert_eq!(s, "x.yz");
     }
 
+    // ── Conversion to boxed types ─────────────────────────────────────────────
+
+    #[test]
+    fn try_into_boxed_str_empty() {
+        let s = String::new();
+        let boxed: Box<str> = s.try_into_boxed_str().unwrap();
+        assert!(boxed.is_empty());
+    }
+
+    #[test]
+    fn try_into_boxed_str_exact_capacity() {
+        let s = String::from("hello");
+        let boxed: Box<str> = s.try_into_boxed_str().unwrap();
+        assert_eq!(&*boxed, "hello");
+    }
+
+    #[test]
+    fn try_into_boxed_str_with_spare_capacity() {
+        let mut s = String::fallible_with_capacity(256).unwrap();
+        s.push_str("short");
+        let boxed: Box<str> = s.try_into_boxed_str().unwrap();
+        assert_eq!(&*boxed, "short");
+    }
+
+    #[test]
+    fn try_into_boxed_str_unicode() {
+        let s = String::from("こんにちは 🦀");
+        let boxed: Box<str> = s.try_into_boxed_str().unwrap();
+        assert_eq!(&*boxed, "こんにちは 🦀");
+    }
+
+    #[test]
+    fn try_into_boxed_str_give_back_success() {
+        let mut s = String::fallible_with_capacity(128).unwrap();
+        s.push_str("data");
+        let boxed: Box<str> = s.try_into_boxed_str_give_back().unwrap();
+        assert_eq!(&*boxed, "data");
+    }
+
+    #[test]
+    fn try_into_boxed_str_give_back_empty() {
+        let s = String::new();
+        let boxed: Box<str> = s.try_into_boxed_str_give_back().unwrap();
+        assert!(boxed.is_empty());
+    }
+
     // ── OOM tests ─────────────────────────────────────────────────────────────
 
     #[cfg(feature = "std")]
     mod oom {
         use super::*;
         use rustyfill_test_allocator::{FailPolicy, with_policy};
+
+        #[test]
+        fn string_try_into_boxed_str_give_back_recovers_data_on_oom() {
+            // Build a string with spare capacity so the conversion must realloc.
+            let mut s = String::fallible_with_capacity(4096).unwrap();
+            s.push_str("recover me");
+            let r: Result<Box<str>, (String, TryReserveError)> =
+                with_policy(FailPolicy::fail_next_realloc(), || s.try_into_boxed_str_give_back());
+            match r {
+                Err((recovered, _)) => assert_eq!(recovered, "recover me"),
+                Ok(_) => panic!("expected shrink reallocation to fail under OOM policy"),
+            }
+        }
+
+        #[test]
+        fn string_try_into_boxed_str_exact_capacity_succeeds_under_oom() {
+            // Exact-capacity strings need no reallocation, so they succeed even
+            // when the next allocation would fail.
+            let s = String::from("tight fit");
+            let r: Result<Box<str>, TryReserveError> =
+                with_policy(FailPolicy::fail_next_alloc(), || s.try_into_boxed_str());
+            assert!(r.is_ok());
+            assert_eq!(&*r.unwrap(), "tight fit");
+        }
 
         #[test]
         fn string_try_clone_fails_on_oom() {
