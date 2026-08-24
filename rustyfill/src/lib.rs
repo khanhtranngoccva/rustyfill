@@ -73,5 +73,4 @@ pub use try_random_state::TryRandomState;
 // Requires `std` because the failure-policy hooks are thread-local (std-only).
 #[cfg(all(test, feature = "std"))]
 #[global_allocator]
-static GLOBAL: rustyfill_test_allocator::TestAllocator =
-    rustyfill_test_allocator::TestAllocator;
+static GLOBAL: rustyfill_test_allocator::TestAllocator = rustyfill_test_allocator::TestAllocator;

@@ -2,14 +2,13 @@
 //!
 //! Every operation that may allocate returns a [`Result`] instead of panicking.
 
-use crate::alloc::TryReserveError;
 use crate::alloc::vec::TryVec;
+use crate::alloc::{TryReserveError, TryReserveErrorExt};
 use crate::collections::slotmap::key::{
     DANGLING_SENTINEL, DefaultKey, Key, KeyData, MAX_SLOTS_LEN,
 };
 use crate::try_clone::{TryClone, TryCloneError};
 use crate::try_default::{TryDefault, TryDefaultError};
-use crate::try_fmt::helpers::FormatterExt;
 use crate::try_fmt::{TryDebug, TryDisplay};
 use lang_alloc::vec::Vec;
 use lang_core::fmt::{self, Debug};
@@ -140,49 +139,69 @@ impl<T: Debug> Debug for Slot<T> {
 
 // ── Error type ──────────────────────────────────────────────────────────────────
 
-/// Error returned by [`SlotMap`] operations.
-pub enum SlotMapError {
-    /// Capacity reservation failed.
+/// Error returned by [`SlotMap::try_insert_with_key`] and its alias
+/// [`SlotMap::fallible_insert_with_key`].
+///
+/// Unlike the other fallible operations, which can only fail on a capacity
+/// reservation, insertion through a closure has two independent failure
+/// sources: the reservation itself ([`SlotMapInsertWithError::Reserve`]) and the
+/// closure's own error value ([`SlotMapInsertWithError::Closure`]).
+#[derive(Clone)]
+pub enum SlotMapInsertWithError<E> {
+    /// The slot count could not be reserved. Carries the underlying
+    /// [`TryReserveError`], whose `CapacityOverflow` kind also covers the
+    /// case where the slot count would exceed the maximum representable
+    /// value (2³² − 2 usable slots).
     Reserve(TryReserveError),
-    /// The slot map has reached its maximum size (2³² − 2 slots).
-    Full,
-    /// A logic-level failure with a static diagnostic message.
-    Other(&'static str),
+    /// The supplied closure returned `Err`.
+    Closure(E),
 }
 
-impl fmt::Debug for SlotMapError {
+impl<E> fmt::Debug for SlotMapInsertWithError<E>
+where
+    E: TryDebug,
+{
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         TryDebug::try_fmt(self, f)
     }
 }
 
-impl fmt::Display for SlotMapError {
+impl<E> fmt::Display for SlotMapInsertWithError<E>
+where
+    E: TryDisplay,
+{
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         TryDisplay::try_fmt(self, f)
     }
 }
 
-impl TryDebug for SlotMapError {
+impl<E> TryDebug for SlotMapInsertWithError<E>
+where
+    E: TryDebug,
+{
     fn try_fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        use crate::errors::uniform as u;
         match self {
-            Self::Reserve(e) => f.try_debug_tuple("SlotMapError::Reserve").field(e).finish(),
-            Self::Full => f.write_str("SlotMapError::Full"),
-            Self::Other(msg) => f.try_debug_tuple("SlotMapError::Other").field(msg).finish(),
+            Self::Reserve(e) => u::debug_field(f, "SlotMapInsertWithError::Reserve", e),
+            Self::Closure(e) => u::debug_field(f, "SlotMapInsertWithError::Closure", e),
         }
     }
 }
 
-impl TryDisplay for SlotMapError {
+impl<E> TryDisplay for SlotMapInsertWithError<E>
+where
+    E: TryDisplay,
+{
     fn try_fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        use crate::errors::uniform as u;
         match self {
-            Self::Reserve(e) => write!(f, "slot map capacity reservation failed: {}", e),
-            Self::Full => f.write_str("slot map is full"),
-            Self::Other(msg) => f.write_str(msg),
+            Self::Reserve(e) => u::display_delegated(f, "slot map", e),
+            Self::Closure(e) => u::display_delegated(f, "slot map insertion closure", e),
         }
     }
 }
 
-impl From<TryReserveError> for SlotMapError {
+impl<E> From<TryReserveError> for SlotMapInsertWithError<E> {
     fn from(e: TryReserveError) -> Self {
         Self::Reserve(e)
     }
@@ -212,24 +231,24 @@ impl<V> SlotMap<DefaultKey, V> {
     /// Constructs a new, empty [`SlotMap`].
     ///
     /// Fallible because even an empty map allocates space for the sentinel slot.
-    pub fn try_new() -> Result<Self, SlotMapError> {
+    pub fn try_new() -> Result<Self, TryReserveError> {
         Self::try_with_capacity_and_key(0)
     }
 
     /// Creates a [`SlotMap`] with the given capacity.
-    pub fn try_with_capacity(capacity: usize) -> Result<Self, SlotMapError> {
+    pub fn try_with_capacity(capacity: usize) -> Result<Self, TryReserveError> {
         Self::try_with_capacity_and_key(capacity)
     }
 
     // ── Aliases with `fallible_` prefix ────────────────────────────────────────
 
     /// Alias for [`Self::try_new`].
-    pub fn fallible_new() -> Result<Self, SlotMapError> {
+    pub fn fallible_new() -> Result<Self, TryReserveError> {
         Self::try_new()
     }
 
     /// Alias for [`Self::try_with_capacity`].
-    pub fn fallible_with_capacity(capacity: usize) -> Result<Self, SlotMapError> {
+    pub fn fallible_with_capacity(capacity: usize) -> Result<Self, TryReserveError> {
         Self::try_with_capacity(capacity)
     }
 }
@@ -238,32 +257,30 @@ impl<K: Key, V> SlotMap<K, V> {
     /// Constructs a new, empty [`SlotMap`] with a custom key type.
     ///
     /// Fallible because even an empty map allocates space for the sentinel slot.
-    pub fn try_with_key() -> Result<Self, SlotMapError> {
+    pub fn try_with_key() -> Result<Self, TryReserveError> {
         Self::try_with_capacity_and_key(0)
     }
 
     /// Creates a [`SlotMap`] with the given capacity and key type.
     ///
-    /// Returns [`SlotMapError::Full`] if `capacity` would exceed the maximum
-    /// number of usable slots (`MAX_SLOTS_LEN` – 1), accounting for the
-    /// sentinel that always occupies index 0.
-    pub fn try_with_capacity_and_key(capacity: usize) -> Result<Self, SlotMapError> {
+    /// Returns a [`TryReserveError`] with the `CapacityOverflow` kind
+    /// if `capacity` would exceed the maximum number of usable slots
+    /// (`MAX_SLOTS_LEN` – 1), accounting for the sentinel that always
+    /// occupies index 0.
+    pub fn try_with_capacity_and_key(capacity: usize) -> Result<Self, TryReserveError> {
         if capacity >= MAX_SLOTS_LEN.saturating_sub(1) {
-            return Err(SlotMapError::Full);
+            return Err(TryReserveError::new_capacity_overflow());
         }
         // Safe: `capacity < MAX_SLOTS_LEN - 1 <= usize::MAX`, so `+1` cannot overflow.
         let mut slots = Vec::fallible_with_capacity(
             capacity
                 .checked_add(1)
                 .expect("capacity below MAX_SLOTS_LEN"),
-        )
-        .map_err(SlotMapError::from)?;
-        slots
-            .try_push(Slot {
-                u: SlotUnion { next_free: 0 },
-                version: 0,
-            })
-            .map_err(SlotMapError::from)?;
+        )?;
+        slots.try_push(Slot {
+            u: SlotUnion { next_free: 0 },
+            version: 0,
+        })?;
         Ok(Self {
             slots,
             free_head: 1,
@@ -291,22 +308,23 @@ impl<K: Key, V> SlotMap<K, V> {
 
     /// Reserves capacity for at least `additional` more elements.
     ///
-    /// Returns [`SlotMapError::Full`] if the resulting size would exceed the
-    /// maximum number of slots (`MAX_SLOTS_LEN` – 1 usable entries), ensuring
-    /// callers can rely on subsequent [`Self::try_insert`] calls succeeding
-    /// (barring allocation failure).
-    pub fn try_reserve(&mut self, additional: usize) -> Result<(), SlotMapError> {
+    /// Returns a [`TryReserveError`] with the `CapacityOverflow` kind
+    /// if the resulting size would exceed the maximum number of slots
+    /// (`MAX_SLOTS_LEN` – 1 usable entries), ensuring callers can rely on
+    /// subsequent [`Self::try_insert`] calls succeeding (barring allocation
+    /// failure).
+    pub fn try_reserve(&mut self, additional: usize) -> Result<(), TryReserveError> {
         let total = self
             .len()
             .checked_add(additional)
-            .ok_or(SlotMapError::Full)?;
+            .ok_or_else(TryReserveError::new_capacity_overflow)?;
         if total >= MAX_SLOTS_LEN.saturating_sub(1) {
-            return Err(SlotMapError::Full);
+            return Err(TryReserveError::new_capacity_overflow());
         }
         // One slot is reserved for the sentinel; the slots vec always holds it,
         // so `slots.len() >= 1` and the subtraction cannot underflow.
         let needed = total.saturating_sub(self.slots.len().saturating_sub(1));
-        self.slots.try_reserve(needed).map_err(SlotMapError::from)?;
+        self.slots.try_reserve(needed)?;
         Ok(())
     }
 
@@ -323,25 +341,41 @@ impl<K: Key, V> SlotMap<K, V> {
     /// Inserts a value into the slot map. Returns a unique key.
     ///
     /// Returns [`Err`] if the underlying allocation fails or the slot map is full.
-    pub fn try_insert(&mut self, value: V) -> Result<K, SlotMapError> {
-        self.try_insert_with_key::<_, SlotMapError>(move |_| Ok(value))
+    pub fn try_insert(&mut self, value: V) -> Result<K, TryReserveError> {
+        self.insert_inner::<_, ()>(move |_| Ok(value))
+            .map_err(|e| match e {
+                SlotMapInsertWithError::Reserve(r) => r,
+                // Unreachable: the infallible closure never produces a `Closure` error.
+                SlotMapInsertWithError::Closure(()) => {
+                    unreachable!("infallible closure reported an error")
+                }
+            })
     }
 
     /// Inserts a value given by `f`, passing the assigned key into `f`.
     ///
     /// Useful for storing values that contain their own key.
     ///
-    /// If `f` returns `Err`, the slot map is untouched.
-    pub fn try_insert_with_key<F, E>(&mut self, f: F) -> Result<K, SlotMapError>
+    /// The returned [`SlotMapInsertWithError`] distinguishes a failed capacity
+    /// reservation ([`SlotMapInsertWithError::Reserve`]) from an error returned by the
+    /// closure itself ([`SlotMapInsertWithError::Closure`]). In either case the slot map
+    /// is left untouched.
+    pub fn try_insert_with_key<F, E>(&mut self, f: F) -> Result<K, SlotMapInsertWithError<E>>
     where
         F: FnOnce(K) -> Result<V, E>,
-        E: Into<SlotMapError>,
+    {
+        self.insert_inner(f)
+    }
+
+    fn insert_inner<F, E>(&mut self, f: F) -> Result<K, SlotMapInsertWithError<E>>
+    where
+        F: FnOnce(K) -> Result<V, E>,
     {
         // Fast path: reuse a free slot from the freelist.
         if let Some(slot) = self.slots.get_mut(self.free_head as usize) {
             let occupied_version = slot.version | 1;
             let kd = KeyData::new(self.free_head, occupied_version);
-            let value = f(kd.into()).map_err(Into::into)?;
+            let value = f(kd.into()).map_err(SlotMapInsertWithError::Closure)?;
             unsafe {
                 self.free_head = slot.u.next_free;
                 slot.u.value = ManuallyDrop::new(value);
@@ -358,7 +392,9 @@ impl<K: Key, V> SlotMap<K, V> {
 
         // No free slot — grow the vector.
         if self.slots.len() >= MAX_SLOTS_LEN {
-            return Err(SlotMapError::Full);
+            return Err(SlotMapInsertWithError::Reserve(
+                TryReserveError::new_capacity_overflow(),
+            ));
         }
 
         let idx = self.slots.len() as u32;
@@ -366,8 +402,10 @@ impl<K: Key, V> SlotMap<K, V> {
         let kd = KeyData::new(idx, version);
 
         // Allocate first, then push.
-        self.slots.try_reserve(1).map_err(SlotMapError::from)?;
-        let value = f(kd.into()).map_err(Into::into)?;
+        self.slots
+            .try_reserve(1)
+            .map_err(SlotMapInsertWithError::Reserve)?;
+        let value = f(kd.into()).map_err(SlotMapInsertWithError::Closure)?;
         self.slots.push(Slot {
             u: SlotUnion {
                 value: ManuallyDrop::new(value),
@@ -392,30 +430,29 @@ impl<K: Key, V> SlotMap<K, V> {
     // ── Aliases with `fallible_` prefix ────────────────────────────────────────
 
     /// Alias for [`Self::try_with_key`].
-    pub fn fallible_with_key() -> Result<Self, SlotMapError> {
+    pub fn fallible_with_key() -> Result<Self, TryReserveError> {
         Self::try_with_key()
     }
 
     /// Alias for [`Self::try_with_capacity_and_key`].
-    pub fn fallible_with_capacity_and_key(capacity: usize) -> Result<Self, SlotMapError> {
+    pub fn fallible_with_capacity_and_key(capacity: usize) -> Result<Self, TryReserveError> {
         Self::try_with_capacity_and_key(capacity)
     }
 
     /// Alias for [`Self::try_reserve`].
-    pub fn fallible_reserve(&mut self, additional: usize) -> Result<(), SlotMapError> {
+    pub fn fallible_reserve(&mut self, additional: usize) -> Result<(), TryReserveError> {
         Self::try_reserve(self, additional)
     }
 
     /// Alias for [`Self::try_insert`].
-    pub fn fallible_insert(&mut self, value: V) -> Result<K, SlotMapError> {
+    pub fn fallible_insert(&mut self, value: V) -> Result<K, TryReserveError> {
         Self::try_insert(self, value)
     }
 
     /// Alias for [`Self::try_insert_with_key`].
-    pub fn fallible_insert_with_key<F, E>(&mut self, f: F) -> Result<K, SlotMapError>
+    pub fn fallible_insert_with_key<F, E>(&mut self, f: F) -> Result<K, SlotMapInsertWithError<E>>
     where
         F: FnOnce(K) -> Result<V, E>,
-        E: Into<SlotMapError>,
     {
         Self::try_insert_with_key(self, f)
     }
@@ -689,11 +726,7 @@ where
 
 impl<K: Key, V> TryDefault for SlotMap<K, V> {
     fn try_default() -> Result<Self, TryDefaultError> {
-        Self::try_with_capacity_and_key(0).map_err(|e| match e {
-            SlotMapError::Reserve(r) => TryDefaultError::Reserve(r),
-            SlotMapError::Full => TryDefaultError::Other("slot map is full"),
-            SlotMapError::Other(m) => TryDefaultError::Other(m),
-        })
+        Self::try_with_capacity_and_key(0).map_err(TryDefaultError::Reserve)
     }
 }
 
@@ -1072,7 +1105,7 @@ mod tests {
     fn insert_with_key_self_referential() {
         let mut sm: SlotMap<DefaultKey, (DefaultKey, i32)> = SlotMap::try_new().unwrap();
         let k = sm
-            .try_insert_with_key::<_, SlotMapError>(|key| Ok((key, 42)))
+            .try_insert_with_key::<_, ()>(|key| Ok((key, 42)))
             .unwrap();
         let (stored_key, val) = *sm.get(k).unwrap();
         assert_eq!(stored_key, k);
@@ -1090,10 +1123,23 @@ mod tests {
     }
 
     #[test]
-    fn error_display_messages() {
-        use lang_alloc::string::ToString;
-        let err_full = SlotMapError::Full;
-        assert!(err_full.to_string().contains("full"));
+    fn error_kinds_are_distinguishable() {
+        use crate::alloc::{TryReserveErrorExt, TryReserveErrorKind};
+
+        // The slot-count overflow condition reports the overflow kind.
+        let err_overflow = TryReserveError::new_capacity_overflow();
+        assert_eq!(
+            err_overflow.error_kind(),
+            TryReserveErrorKind::CapacityOverflow
+        );
+
+        // An allocation failure reports the alloc kind instead.
+        let layout = lang_core::alloc::Layout::new::<u32>();
+        let err_alloc = TryReserveError::new_alloc(layout);
+        assert!(matches!(
+            err_alloc.error_kind(),
+            TryReserveErrorKind::AllocError { .. }
+        ));
     }
 
     #[test]
@@ -1249,6 +1295,196 @@ mod tests {
         assert_eq!(actual.len(), 3);
         for ek in &expected {
             assert!(actual.contains(ek));
+        }
+    }
+
+    #[cfg(feature = "std")]
+    mod oom {
+        // ── OOM tests ──────────────────────────────────────────────────────────────────
+
+        use super::*;
+        use rustyfill_test_allocator::{FailPolicy, with_policy};
+
+        type Sm = SlotMap<DefaultKey, i32>;
+
+        /// `try_new` allocates the sentinel slot, so a failed allocation must
+        /// surface as a `TryReserveError`.
+        #[test]
+        fn try_new_fails_on_oom() {
+            let r = with_policy(FailPolicy::fail_next_alloc(), Sm::try_new);
+            assert!(r.is_err());
+        }
+
+        /// `try_with_capacity` first allocates the vec buffer, then pushes the
+        /// sentinel. Failing the very next allocation hits the buffer allocation.
+        #[test]
+        fn try_with_capacity_fails_on_oom() {
+            let r = with_policy(FailPolicy::fail_next_alloc(), || Sm::try_with_capacity(4));
+            assert!(r.is_err());
+        }
+
+        /// Zero-capacity construction only needs the sentinel push; blocking
+        /// reallocations alone must not prevent it from succeeding.
+        #[test]
+        fn try_with_capacity_zero_succeeds_under_realloc_oom() {
+            let r = with_policy(FailPolicy::fail_all_realloc(), || Sm::try_with_capacity(0));
+            assert!(r.is_ok());
+            assert!(r.unwrap().is_empty());
+        }
+
+        /// `try_reserve` grows the slots vec; a failed reallocation must leave
+        /// the map usable afterwards. The sentinel guarantees the slots vec
+        /// always holds an existing buffer, so growth goes through `realloc`
+        /// rather than a fresh `alloc` — hence `fail_next_realloc`.
+        #[test]
+        fn try_reserve_fails_on_oom_but_stays_usable() {
+            let mut sm = Sm::try_new().unwrap();
+            let r = with_policy(FailPolicy::fail_next_realloc(), || sm.try_reserve(16));
+            assert!(r.is_err(), "reserve error expected, got {:?}", r);
+            // The map remains fully functional after a failed reserve.
+            let k = sm.try_insert(10).unwrap();
+            assert_eq!(*sm.get(k).unwrap(), 10);
+        }
+
+        /// `try_insert` reserves one slot before pushing; on reallocation
+        /// failure the map must stay empty and recover cleanly. The constructor
+        /// overshoots capacity (requesting 1 yields 4), so shrink to fit first
+        /// to force the insert into the realloc path, then fail that realloc.
+        #[test]
+        fn try_insert_fails_on_oom_and_map_stays_empty() {
+            let mut sm = Sm::try_new().unwrap();
+            sm.slots.fallible_shrink_to_fit().unwrap();
+            let r = with_policy(FailPolicy::fail_next_realloc(), || sm.try_insert(10));
+            assert!(r.is_err());
+            assert!(sm.is_empty());
+            // Recovery: insertion works once the policy is gone.
+            let k = sm.try_insert(10).unwrap();
+            assert_eq!(*sm.get(k).unwrap(), 10);
+        }
+
+        /// A successful insert followed by an OOM during a second insert must not
+        /// lose the first entry. Shrink after the first insert so the second
+        /// insert's growth goes through realloc, which we then fail.
+        #[test]
+        fn oom_during_second_insert_preserves_first_entry() {
+            let mut sm = Sm::try_new().unwrap();
+            let k1 = sm.try_insert(1).unwrap();
+            sm.slots.fallible_shrink_to_fit().unwrap();
+            let r = with_policy(FailPolicy::fail_next_realloc(), || sm.try_insert(2));
+            assert!(r.is_err());
+            assert_eq!(sm.len(), 1);
+            assert_eq!(*sm.get(k1).unwrap(), 1);
+        }
+
+        /// Freelist reuse does not allocate, so inserting into a freed slot must
+        /// succeed even when the next allocation is forced to fail.
+        #[test]
+        fn freelist_reuse_does_not_allocate_under_oom() {
+            let mut sm = Sm::try_new().unwrap();
+            let k = sm.try_insert(1).unwrap();
+            sm.remove(k);
+            // The freed slot is reused without any heap growth.
+            let r = with_policy(FailPolicy::fail_next_alloc(), || sm.try_insert(2));
+            assert!(r.is_ok());
+            let k2 = r.unwrap();
+            assert_eq!(*sm.get(k2).unwrap(), 2);
+            assert_eq!(sm.len(), 1);
+        }
+
+        /// `try_insert_with_key` runs the closure *before* reserving; if the
+        /// reallocation fails afterwards, the map must remain untouched. Shrink
+        /// first so the insert actually needs to grow the buffer. The failure
+        /// surfaces as [`SlotMapInsertWithError::Reserve`], not [`SlotMapInsertWithError::Closure`].
+        #[test]
+        fn try_insert_with_key_gives_back_on_reservation_failure() {
+            let mut sm = Sm::try_new().unwrap();
+            sm.slots.fallible_shrink_to_fit().unwrap();
+            let r = with_policy(FailPolicy::fail_next_realloc(), || {
+                sm.try_insert_with_key::<_, ()>(|k| Ok(k.data().idx() as i32))
+            });
+            assert!(matches!(r, Err(SlotMapInsertWithError::Reserve(_))));
+            assert!(sm.is_empty());
+        }
+
+        /// A closure that returns `Err` surfaces as [`SlotMapInsertWithError::Closure`]
+        /// carrying the caller's error value, and leaves the map untouched.
+        #[test]
+        fn try_insert_with_key_closure_error_is_reported_verbatim() {
+            let mut sm = Sm::try_new().unwrap();
+            let r = sm.try_insert_with_key::<_, &str>(|_| Err("rejected"));
+            assert!(matches!(
+                r,
+                Err(SlotMapInsertWithError::Closure("rejected"))
+            ));
+            assert!(sm.is_empty());
+        }
+
+        /// The canonical `TryDebug` / `TryDisplay` impls (which std's
+        /// `Debug` / `Display` delegate to) render both variants with the
+        /// uniform prefix scheme.
+        #[test]
+        fn insert_error_formats_canonically() {
+            use crate::errors::uniform as u;
+            use lang_alloc::format;
+
+            // Reserve variant: delegated display + tuple debug.
+            let reserve =
+                SlotMapInsertWithError::<&str>::Reserve(TryReserveError::new_capacity_overflow());
+            assert_eq!(
+                format!("{reserve}"),
+                "slot map operation failed: memory allocation failed because the computed \
+                 capacity exceeded the collection's maximum"
+            );
+            assert!(format!("{reserve:?}").starts_with("SlotMapInsertWithError::Reserve("));
+
+            // Closure variant: carries the caller's message through Display.
+            let closure = SlotMapInsertWithError::<&str>::Closure("rejected");
+            assert_eq!(
+                format!("{closure}"),
+                "slot map insertion closure operation failed: rejected"
+            );
+            assert!(format!("{closure:?}").starts_with("SlotMapInsertWithError::Closure("));
+
+            // The `From<TryReserveError>` conversion lands in `Reserve`.
+            let from_err: SlotMapInsertWithError<()> =
+                TryReserveError::new_capacity_overflow().into();
+            assert!(matches!(from_err, SlotMapInsertWithError::Reserve(_)));
+        }
+
+        /// `try_clone` copies the slots vec fallibly; a failed allocation must
+        /// leave the source intact.
+        #[test]
+        fn try_clone_fails_on_oom_and_source_survives() {
+            let mut sm = Sm::try_new().unwrap();
+            let k1 = sm.try_insert(1).unwrap();
+            let k2 = sm.try_insert(2).unwrap();
+            let r = with_policy(FailPolicy::fail_next_alloc(), || sm.try_clone());
+            assert!(r.is_err());
+            assert_eq!(sm.len(), 2);
+            assert_eq!(*sm.get(k1).unwrap(), 1);
+            assert_eq!(*sm.get(k2).unwrap(), 2);
+        }
+
+        /// `try_default` routes through `try_with_capacity_and_key(0)` and maps
+        /// the error into `TryDefaultError`.
+        #[test]
+        fn try_default_fails_on_oom() {
+            let r = with_policy(
+                FailPolicy::fail_next_alloc(),
+                <Sm as TryDefault>::try_default,
+            );
+            assert!(r.is_err());
+        }
+
+        /// After any OOM failure, allocations must work normally again — no leaked
+        /// policy state.
+        #[test]
+        fn oom_restores_allocation_afterwards() {
+            let _failed = with_policy(FailPolicy::fail_next_alloc(), Sm::try_new);
+            assert!(_failed.is_err());
+            let mut sm = Sm::try_new().expect("allocation must recover after OOM");
+            let k = sm.try_insert(99).unwrap();
+            assert_eq!(*sm.get(k).unwrap(), 99);
         }
     }
 }

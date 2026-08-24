@@ -5,6 +5,7 @@ use crate::alloc::{TryReserveError, TryReserveErrorExt};
 use crate::try_clone::{TryClone, TryCloneError};
 use crate::try_default::{TryDefault, TryDefaultError};
 use crate::try_fmt::{TryDebug, TryDisplay};
+use hashbrown::raw::RawTable;
 use lang_alloc;
 use lang_alloc::boxed::Box;
 use lang_core::borrow::Borrow;
@@ -729,6 +730,72 @@ impl<K: Eq + Hash, V, S: BuildHasher> ConcurrentHashMap<K, V, S> {
                 .map_err(crate::alloc::try_reserve_error_from_hashbrown)?;
         }
         Ok(())
+    }
+
+    /// Fallibly shrink each shard's backing table to exactly fit its current
+    /// length, releasing surplus capacity.
+    ///
+    /// Mirrors the DashMap variant: each shard is rebuilt into a fresh
+    /// dehydrated `RawTable` reserved to `count`, entries are moved out via raw
+    /// pointer reads, and the new table is hydrated back into the shard slot.
+    /// The old (now empty) table is dropped at the end of the loop iteration.
+    pub fn try_shrink_to_fit(&self) -> Result<(), TryReserveError>
+    where
+        S: Clone,
+    {
+        use lang_core::mem::ManuallyDrop;
+
+        let hf = self.hasher.clone();
+
+        for i in 0..self.shard_count() {
+            let shard = self.shards.get_shard(i);
+            let mut guard = shard.write_table();
+            let count = guard.len();
+
+            // Allocate a new dehydrated table reserved to exactly `count`.
+            let mut new_table: RawTable<ManuallyDrop<(K, V)>> = RawTable::new();
+            new_table
+                .try_reserve(count, |e: &ManuallyDrop<(K, V)>| hf.hash_one(&e.0))
+                .map_err(crate::alloc::try_reserve_error_from_hashbrown)?;
+
+            // Move each entry out of the old table into the new one.
+            let mut copy_ok = true;
+            unsafe {
+                for bucket in guard.iter() {
+                    let ptr = bucket.as_ptr();
+                    // SAFETY: we hold the exclusive write lock, so `ptr` points
+                    // to a live entry that no other thread can observe.
+                    let hash = hf.hash_one(&(*ptr).0);
+                    let entry: ManuallyDrop<(K, V)> = ptr::read(ptr as *mut _);
+                    if new_table.try_insert_no_grow(hash, entry).is_err() {
+                        copy_ok = false;
+                        break;
+                    }
+                }
+            }
+
+            if !copy_ok {
+                panic!("try_insert_no_grow should not fail because we reserved sufficient space");
+            }
+
+            // Hydrate the new table into the shard; drop the vacated old one.
+            let old_table = mem::replace(&mut *guard, unsafe {
+                mem::transmute::<RawTable<ManuallyDrop<(K, V)>>, RawTable<(K, V)>>(new_table)
+            });
+            let _dehydrated_old = unsafe {
+                mem::transmute::<RawTable<(K, V)>, RawTable<ManuallyDrop<(K, V)>>>(old_table)
+            };
+        }
+
+        Ok(())
+    }
+
+    /// Alias for [`Self::try_shrink_to_fit`].
+    pub fn fallible_shrink_to_fit(&self) -> Result<(), TryReserveError>
+    where
+        S: Clone,
+    {
+        Self::try_shrink_to_fit(self)
     }
 
     // ── Aliases with `fallible_` prefix ────────────────────────────────────────
@@ -1667,5 +1734,219 @@ mod tests {
         let map: ConcurrentHashMap<i32, i32> = ConcurrentHashMap::try_new().unwrap();
         assert!(map.iter().next().is_none());
         assert!(map.iter_mut().next().is_none());
+    }
+
+    #[cfg(feature = "std")]
+    mod oom {
+        // ── OOM tests ──────────────────────────────────────────────────────────────────
+        use super::*;
+        use rustyfill_test_allocator::{FailPolicy, with_policy};
+
+        type Map = ConcurrentHashMap<i32, i32>;
+
+        /// `try_new` allocates the shard array, so a failed allocation must surface
+        /// as a construction error rather than panic.
+        #[test]
+        fn try_new_fails_on_oom() {
+            let r = with_policy(FailPolicy::fail_next_alloc(), Map::try_new);
+            assert!(r.is_err());
+        }
+
+        /// Zero-capacity construction still allocates the shard array, but must
+        /// succeed when only reallocations are blocked (no growth is needed).
+        #[test]
+        fn try_with_capacity_zero_succeeds_under_realloc_oom() {
+            let r = with_policy(FailPolicy::fail_all_realloc(), || Map::try_with_capacity(0));
+            assert!(r.is_ok());
+            assert_eq!(r.unwrap().len(), 0);
+        }
+
+        /// `try_with_hasher` routes through the same shard-array allocation and
+        /// returns the narrower hasher-specific error type.
+        #[test]
+        fn try_with_hasher_fails_on_oom() {
+            let r = with_policy(FailPolicy::fail_next_alloc(), || {
+                Map::try_with_hasher(RandomState::new())
+            });
+            assert!(r.is_err());
+        }
+
+        /// Invalid shard counts are rejected before any allocation happens, so the
+        /// error must be `InvalidShards` even under OOM conditions.
+        #[test]
+        fn invalid_shard_count_errors_before_allocating() {
+            let r = with_policy(FailPolicy::fail_next_alloc(), || {
+                Map::try_with_capacity_and_hasher_and_shards(0, RandomState::new(), 3)
+            });
+            assert!(matches!(
+                r,
+                Err(ConcurrentHashMapWithHasherError::InvalidShards)
+            ));
+        }
+
+        /// `try_reserve` grows each shard's table; a failed allocation must leave
+        /// the map usable afterwards.
+        #[test]
+        fn try_reserve_fails_on_oom_but_stays_usable() {
+            let map = Map::try_new().unwrap();
+            let r = with_policy(FailPolicy::fail_next_alloc(), || map.try_reserve(16));
+            assert!(r.is_err());
+            // The map remains fully functional after a failed reserve.
+            map.try_insert(1, 10).unwrap();
+            assert_eq!(*map.get(&1).unwrap(), 10);
+        }
+
+        /// `try_entry` reserves one slot in the target shard before probing, so a
+        /// failed allocation must propagate as a `TryReserveError`.
+        #[test]
+        fn try_entry_fails_on_oom() {
+            let map = Map::try_new().unwrap();
+            let r = with_policy(FailPolicy::fail_next_alloc(), || map.try_entry(1));
+            assert!(r.is_err());
+        }
+
+        /// `try_entry_give_back` hands the key back to the caller on failure.
+        #[test]
+        fn try_entry_give_back_returns_key_on_oom() {
+            let map = Map::try_new().unwrap();
+            let r = with_policy(FailPolicy::fail_next_alloc(), || map.try_entry_give_back(7));
+            // Entry doesn't implement Debug, so destructure via match instead of unwrap_err.
+            let (key_back, _err) = match r {
+                Err(e) => e,
+                Ok(_) => panic!("expected reservation failure under OOM"),
+            };
+            assert_eq!(key_back, 7);
+        }
+
+        /// `try_insert` delegates to `try_entry`, so it fails identically and the
+        /// map stays consistent (no partial insertion).
+        #[test]
+        fn try_insert_fails_on_oom_and_map_stays_empty() {
+            let map = Map::try_new().unwrap();
+            let r = with_policy(FailPolicy::fail_next_alloc(), || map.try_insert(1, 10));
+            assert!(r.is_err());
+            assert!(map.is_empty());
+            // Recovery: allocation works again once the policy is gone.
+            map.try_insert(1, 10).unwrap();
+            assert_eq!(*map.get(&1).unwrap(), 10);
+        }
+
+        /// `try_insert_give_back` returns both the key and the value on failure.
+        #[test]
+        fn try_insert_give_back_returns_key_and_value_on_oom() {
+            let map = Map::try_new().unwrap();
+            let r = with_policy(FailPolicy::fail_next_alloc(), || {
+                map.try_insert_give_back(1, 10)
+            });
+            let (k, v, _err) = r.unwrap_err();
+            assert_eq!(k, 1);
+            assert_eq!(v, 10);
+        }
+
+        /// `try_insert_unique` gives back the key and value when reservation fails.
+        #[test]
+        fn try_insert_unique_gives_back_on_oom() {
+            let map = Map::try_new().unwrap();
+            let r = with_policy(FailPolicy::fail_next_alloc(), || {
+                map.try_insert_unique(1, 10)
+            });
+            let (k, v, err) = r.unwrap_err();
+            assert_eq!(k, 1);
+            assert_eq!(v, 10);
+            assert!(matches!(
+                err,
+                ConcurrentHashMapInsertUniqueError::Reserve(_)
+            ));
+        }
+
+        /// A successful insert followed by an OOM during a second insert must not
+        /// corrupt the first entry.
+        ///
+        /// Both keys hash into the same shard (small default shard count), so the
+        /// first insert already grew that shard's table past one slot; without
+        /// shrinking, the second insert's `try_reserve(1)` finds headroom and never
+        /// allocates, leaving `fail_next_alloc` nothing to fire against. Shrinking
+        /// each shard back to its exact length forces the second insert to grow.
+        #[test]
+        fn oom_during_second_insert_preserves_first_entry() {
+            let map = Map::try_new().unwrap();
+            map.try_insert(1, 10).unwrap();
+            map.try_shrink_to_fit().unwrap();
+            let r = with_policy(FailPolicy::fail_next_alloc(), || map.try_insert(2, 20));
+            assert!(r.is_err());
+            assert_eq!(map.len(), 1);
+            assert_eq!(*map.get(&1).unwrap(), 10);
+            assert!(!map.contains_key(&2));
+        }
+
+        /// `try_shrink_to_fit` releases surplus per-shard capacity while preserving
+        /// every entry, and shrinks a populated-then-drained shard down to zero.
+        #[test]
+        fn try_shrink_to_fit_releases_surplus_capacity_and_keeps_entries() {
+            let map = Map::try_new().unwrap();
+            for i in 0..8 {
+                map.try_insert(i, i * 10).unwrap();
+            }
+            // The constructor / inserts over-allocate; shrink tightens each shard.
+            let before = map.capacity();
+            map.try_shrink_to_fit().unwrap();
+            let after = map.capacity();
+            assert!(after <= before, "shrink should not grow: {before} -> {after}");
+            assert_eq!(map.len(), 8);
+            for i in 0..8 {
+                assert_eq!(*map.get(&i).unwrap(), i * 10);
+            }
+
+            // After draining, every shard shrinks to exactly zero entries.
+            for i in 0..8 {
+                map.remove(&i);
+            }
+            map.try_shrink_to_fit().unwrap();
+            assert_eq!(map.len(), 0);
+            assert_eq!(map.capacity(), 0);
+        }
+
+        /// `try_clone` allocates a fresh shard array plus re-inserts every entry;
+        /// failing the first allocation must yield a `TryCloneError` while leaving
+        /// the source untouched.
+        #[test]
+        fn try_clone_fails_on_oom_and_source_survives() {
+            let map = Map::try_new().unwrap();
+            map.try_insert(1, 10).unwrap();
+            map.try_insert(2, 20).unwrap();
+            let r = with_policy(FailPolicy::fail_next_alloc(), || map.try_clone());
+            assert!(r.is_err());
+            assert_eq!(map.len(), 2);
+            assert_eq!(*map.get(&1).unwrap(), 10);
+            assert_eq!(*map.get(&2).unwrap(), 20);
+        }
+
+        /// Failing the Nth allocation lets construction of the shard array succeed
+        /// while a later per-shard reserve fails — verifying the counter targets
+        /// the right call site inside the constructor.
+        #[test]
+        fn nth_alloc_fail_hits_per_shard_reserve_in_constructor() {
+            // Alloc #1 is the shard array; with capacity > 0 the constructor then
+            // calls try_reserve, whose first per-shard table growth is alloc #2.
+            let r = with_policy(FailPolicy::fail_nth_alloc(2), || Map::try_with_capacity(8));
+            assert!(r.is_err());
+            // Without the mid-construction failure the same call succeeds.
+            let ok = Map::try_with_capacity(8).expect("construction must succeed without OOM");
+            // Capacity is reported as the sum across all shards (each shard rounds
+            // up to its own power-of-two bucket count), so only assert it covers
+            // the requested amount rather than matching it exactly.
+            assert!(ok.capacity() >= 8);
+        }
+
+        /// After any OOM failure, allocations must work normally again — no leaked
+        /// policy state.
+        #[test]
+        fn oom_restores_allocation_afterwards() {
+            let _failed = with_policy(FailPolicy::fail_next_alloc(), Map::try_new);
+            assert!(_failed.is_err());
+            let map = Map::try_new().expect("allocation must recover after OOM");
+            map.try_insert(1, 10).unwrap();
+            assert_eq!(*map.get(&1).unwrap(), 10);
+        }
     }
 }

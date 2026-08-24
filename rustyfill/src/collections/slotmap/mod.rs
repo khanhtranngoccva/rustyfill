@@ -21,7 +21,7 @@ mod basic;
 mod key;
 mod secondary;
 
-pub use basic::{Drain, IntoIter, Iter, IterMut, Keys, SlotMap, SlotMapError, Values, ValuesMut};
+pub use basic::{Drain, SlotMapInsertWithError, IntoIter, Iter, IterMut, Keys, SlotMap, Values, ValuesMut};
 pub use key::{DefaultKey, Key, KeyData};
 pub use secondary::{
     Drain as SecondaryDrain, Entry, IntoIter as SecondaryIntoIter, Iter as SecondaryIter,

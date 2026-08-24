@@ -126,8 +126,14 @@ mod tests {
     }
 
     #[test]
-    fn debug_unit_renders_bare_name() {
-        let err = crate::collections::slotmap::SlotMapError::Full;
-        assert_eq!(render_trydebug(&err), "SlotMapError::Full");
+    fn debug_field_renders_slotmap_capacity_overflow() {
+        // The slot map reports its capacity-exceeded condition as a plain
+        // `TryReserveError` with the `CapacityOverflow` kind.
+        let err = crate::alloc::TryReserveError::new_capacity_overflow();
+        let got = render_trydebug(&err);
+        assert!(
+            got.contains("TryReserveError"),
+            "missing tag in {got:?}"
+        );
     }
 }
