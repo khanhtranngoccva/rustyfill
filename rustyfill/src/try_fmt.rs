@@ -1046,11 +1046,11 @@ mod oom_tests {
         let b: bool = true;
         let ch: char = 'Z';
         let unit = ();
-        assert!(assert_try_debug_no_alloc(&i));
-        assert!(assert_try_debug_no_alloc(&u));
-        assert!(assert_try_debug_no_alloc(&b));
-        assert!(assert_try_debug_no_alloc(&ch));
-        assert!(assert_try_debug_no_alloc(&unit));
+        assert!(assert_try_debug_no_alloc(i));
+        assert!(assert_try_debug_no_alloc(u));
+        assert!(assert_try_debug_no_alloc(b));
+        assert!(assert_try_debug_no_alloc(ch));
+        assert!(assert_try_debug_no_alloc(unit));
     }
 
     // ── Floating-point ───────────────────────────────────────────────────────
@@ -1096,7 +1096,7 @@ mod oom_tests {
     #[test]
     fn try_debug_option_none_no_alloc() {
         let o: Option<i32> = None;
-        assert!(assert_try_debug_no_alloc(&o));
+        assert!(assert_try_debug_no_alloc(o));
     }
 
     #[test]
@@ -1120,14 +1120,14 @@ mod oom_tests {
     #[test]
     fn try_debug_array_no_alloc() {
         let a: [i32; 3] = [1, 2, 3];
-        assert!(assert_try_debug_no_alloc(&a));
+        assert!(assert_try_debug_no_alloc(a));
     }
 
     #[test]
     fn try_debug_slice_no_alloc() {
         let v = vec![10, 20, 30];
         let s: &[i32] = &v;
-        assert!(assert_try_debug_no_alloc(&s));
+        assert!(assert_try_debug_no_alloc(s));
     }
 
     // ── Nested compound types ──────────────────────────────────────────────

@@ -173,9 +173,7 @@ pub trait TryDashSet<T, S = RandomState>: Sized {
     ///
     /// Requires `S: [`TryDefault`]` so that hasher creation is safe even when
     /// it involves runtime allocation or thread-local state.
-    fn try_with_capacity(
-        capacity: usize,
-    ) -> Result<DashSet<T, S>, TryDashSetConstructionError>
+    fn try_with_capacity(capacity: usize) -> Result<DashSet<T, S>, TryDashSetConstructionError>
     where
         S: TryDefault;
 
@@ -216,9 +214,7 @@ pub trait TryDashSet<T, S = RandomState>: Sized {
     }
 
     /// Alias for [`Self::try_with_capacity`].
-    fn fallible_with_capacity(
-        capacity: usize,
-    ) -> Result<DashSet<T, S>, TryDashSetConstructionError>
+    fn fallible_with_capacity(capacity: usize) -> Result<DashSet<T, S>, TryDashSetConstructionError>
     where
         S: TryDefault,
     {
@@ -300,9 +296,7 @@ pub trait TryDashSet<T, S = RandomState>: Sized {
     ///
     /// Constructs the hasher via [`TryDefault`] and uses the iterator's size
     /// hint to pre-allocate when possible.
-    fn try_collect<I: IntoIterator<Item = T>>(
-        iter: I,
-    ) -> Result<DashSet<T, S>, TryReserveError>
+    fn try_collect<I: IntoIterator<Item = T>>(iter: I) -> Result<DashSet<T, S>, TryReserveError>
     where
         S: TryDefault;
 
@@ -362,9 +356,7 @@ impl<T: Eq + Hash, S: BuildHasher + TryClone> TryDashSet<T, S> for DashSet<T, S>
         Ok(DashSet::with_hasher(hasher))
     }
 
-    fn try_with_capacity(
-        capacity: usize,
-    ) -> Result<DashSet<T, S>, TryDashSetConstructionError>
+    fn try_with_capacity(capacity: usize) -> Result<DashSet<T, S>, TryDashSetConstructionError>
     where
         S: TryDefault,
     {
@@ -447,9 +439,7 @@ impl<T: Eq + Hash, S: BuildHasher + TryClone> TryDashSet<T, S> for DashSet<T, S>
 
     // ── Bulk construction ───────────────────────────────────────────────────
 
-    fn try_collect<I: IntoIterator<Item = T>>(
-        iter: I,
-    ) -> Result<DashSet<T, S>, TryReserveError>
+    fn try_collect<I: IntoIterator<Item = T>>(iter: I) -> Result<DashSet<T, S>, TryReserveError>
     where
         S: TryDefault,
     {
@@ -523,12 +513,12 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::alloc::TryReserveErrorExt;
     use crate::try_clone::TryClone as _;
     use crate::try_default::TryDefault as _;
     use lang_alloc::format;
     use lang_alloc::string::String;
     use lang_alloc::string::ToString;
-    use crate::alloc::TryReserveErrorExt;
     use lang_alloc::vec;
     use lang_core::fmt::Write as _;
     use lang_std::iter;
@@ -544,30 +534,6 @@ mod tests {
         // Our error Display impls only call `write!` on literals/wrapped values,
         // so this cannot fail in practice; ignore the infallible-in-practice result.
         let _ = write!(&mut s, "{e}");
-        s
-    }
-
-    /// Captures the `TryDebug` rendering of a value.
-    fn render_trydebug(e: &impl TryDebug) -> String {
-        struct Cap<'a>(&'a dyn TryDebug);
-        impl fmt::Debug for Cap<'_> {
-            fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-                self.0.try_fmt(f)
-            }
-        }
-        format!("{:?}", Cap(e))
-    }
-
-    /// Captures the `TryDisplay` rendering of a value (should match `Display`).
-    fn render_trydisplay(e: &impl TryDisplay) -> String {
-        struct Cap<'a>(&'a dyn TryDisplay);
-        impl fmt::Display for Cap<'_> {
-            fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-                self.0.try_fmt(f)
-            }
-        }
-        let mut s = String::new();
-        let _ = write!(&mut s, "{}", Cap(e));
         s
     }
 
@@ -594,7 +560,9 @@ mod tests {
             crate::try_default::TryDefaultError::Other("hasher unavailable")
         ));
         check!(TryDashSetWithCloneError::Reserve(reserve_err()));
-        check!(TryDashSetWithCloneError::Clone(TryCloneError::Reserve(reserve_err())));
+        check!(TryDashSetWithCloneError::Clone(TryCloneError::Reserve(
+            reserve_err()
+        )));
     }
 
     // ── Construction ─────────────────────────────────────────────────────────
