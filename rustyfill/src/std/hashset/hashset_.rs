@@ -25,75 +25,59 @@ use lang_std::cmp::Eq;
 use lang_std::collections::HashSet;
 use lang_std::hash::{BuildHasher, Hash, RandomState};
 
-// ── Error type ────────────────────────────────────────────────────────────────
+// ── Error types ───────────────────────────────────────────────────────────────
 
-/// Error returned by [`TryHashSet`] operations.
+/// Error returned by [`TryHashSet`] constructors.
 ///
-/// Wraps the ways a hash set operation can fail on stable Rust: a reserve
-/// failure ([`TryReserveError`], returned by the inherent `HashSet::try_reserve`)
-/// or a clone failure ([`TryCloneError`]) when an element's `try_clone` cannot
-/// allocate its internal buffers.
-pub enum TryHashSetError {
+/// Construction can only fail via a capacity reservation or hasher creation;
+/// it never clones elements.
+pub enum TryHashSetConstructionError {
     /// A capacity reservation on the hash set failed (overflow or OOM).
     Reserve(TryReserveError),
-    /// An element clone failed during a method that requires [`TryClone`].
-    Clone(TryCloneError),
-    /// A logic-level failure with a static diagnostic message.
-    Other(&'static str),
+    /// Hasher construction failed via [`TryDefault`].
+    Default(TryDefaultError),
 }
 
-impl fmt::Debug for TryHashSetError {
+impl fmt::Debug for TryHashSetConstructionError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         TryDebug::try_fmt(self, f)
     }
 }
 
-impl fmt::Display for TryHashSetError {
+impl fmt::Display for TryHashSetConstructionError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         TryDisplay::try_fmt(self, f)
     }
 }
 
-impl From<TryReserveError> for TryHashSetError {
+impl From<TryReserveError> for TryHashSetConstructionError {
     fn from(err: TryReserveError) -> Self {
         Self::Reserve(err)
     }
 }
 
-impl From<TryCloneError> for TryHashSetError {
-    fn from(err: TryCloneError) -> Self {
-        Self::Clone(err)
+impl From<TryDefaultError> for TryHashSetConstructionError {
+    fn from(err: TryDefaultError) -> Self {
+        Self::Default(err)
     }
 }
 
-impl TryDebug for TryHashSetError {
+impl TryDebug for TryHashSetConstructionError {
     fn try_fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         use crate::errors::uniform as u;
         match self {
-            Self::Reserve(e) => u::debug_field(f, "TryHashSetError::Reserve", e),
-            Self::Clone(e) => u::debug_field(f, "TryHashSetError::Clone", e),
-            Self::Other(msg) => u::debug_field(f, "TryHashSetError::Other", msg),
+            Self::Reserve(e) => u::debug_field(f, "TryHashSetConstructionError::Reserve", e),
+            Self::Default(e) => u::debug_field(f, "TryHashSetConstructionError::Default", e),
         }
     }
 }
 
-impl TryDisplay for TryHashSetError {
+impl TryDisplay for TryHashSetConstructionError {
     fn try_fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         use crate::errors::uniform as u;
         match self {
             Self::Reserve(e) => u::display_delegated(f, "hash set", e),
-            Self::Clone(e) => u::display_delegated(f, "hash set", e),
-            Self::Other(msg) => u::display_fixed(f, "hash set", msg),
-        }
-    }
-}
-
-impl From<TryDefaultError> for TryHashSetError {
-    fn from(err: TryDefaultError) -> Self {
-        match err {
-            TryDefaultError::Reserve(e) => Self::Reserve(e),
-            TryDefaultError::Alloc(_) => Self::Other("allocation failed"),
-            TryDefaultError::Other(msg) => Self::Other(msg),
+            Self::Default(e) => u::display_delegated(f, "hash set", e),
         }
     }
 }
@@ -106,8 +90,6 @@ impl From<TryDefaultError> for TryHashSetError {
 /// [`TryExtend`](crate::try_extend::TryExtend) /
 /// [`TryExtendFromSlice`](crate::try_extend::TryExtendFromSlice) impls — any
 /// operation that can only fail by reserving capacity or cloning elements.
-/// Unlike [`TryHashSetError`], this has no `Other` variant because these
-/// operations have no logic-level failure mode.
 pub enum TryHashSetWithCloneError {
     /// A capacity reservation on the hash set failed (overflow or OOM).
     Reserve(TryReserveError),
@@ -165,7 +147,7 @@ impl TryDisplay for TryHashSetWithCloneError {
 ///
 /// Implemented for `HashSet<T, S>`. Mirrors the most commonly-used `HashSet`
 /// methods that can fail due to allocation pressure, returning [`Result`] values
-/// that propagate [`TryReserveError`] or [`TryHashSetError`] on failure.
+/// that propagate [`TryReserveError`] or an operation-specific error on failure.
 pub trait TryHashSet<T, S = RandomState>: Sized {
     // ── Construction ────────────────────────────────────────────────────────
 
@@ -179,7 +161,7 @@ pub trait TryHashSet<T, S = RandomState>: Sized {
     ///
     /// Requires `S: [`TryDefault`]` so that hasher creation is safe even when
     /// it involves runtime allocation or thread-local state.
-    fn try_new() -> Result<HashSet<T, S>, TryHashSetError>
+    fn try_new() -> Result<HashSet<T, S>, TryHashSetConstructionError>
     where
         S: TryDefault;
 
@@ -188,12 +170,15 @@ pub trait TryHashSet<T, S = RandomState>: Sized {
     ///
     /// Constructs the hasher via [`TryDefault`] (same as [`Self::try_new`]),
     /// then reserves capacity for `capacity` elements. Returns
-    /// [`TryHashSetError::Reserve`] if the capacity reservation fails, or
-    /// [`TryHashSetError::Other`] if hasher construction panics.
+    /// [`TryHashSetConstructionError::Reserve`] if the capacity reservation
+    /// fails, or [`TryHashSetConstructionError::Default`] if hasher
+    /// construction fails.
     ///
     /// Requires `S: [`TryDefault`]` so that hasher creation is safe even when
     /// it involves runtime allocation or thread-local state.
-    fn try_with_capacity(capacity: usize) -> Result<HashSet<T, S>, TryHashSetError>
+    fn try_with_capacity(
+        capacity: usize,
+    ) -> Result<HashSet<T, S>, TryHashSetConstructionError>
     where
         S: TryDefault;
 
@@ -230,7 +215,7 @@ pub trait TryHashSet<T, S = RandomState>: Sized {
     // ── Aliases with `fallible_` prefix ────────────────────────────────────
 
     /// Alias for [`Self::try_new`].
-    fn fallible_new() -> Result<HashSet<T, S>, TryHashSetError>
+    fn fallible_new() -> Result<HashSet<T, S>, TryHashSetConstructionError>
     where
         S: TryDefault,
     {
@@ -238,7 +223,9 @@ pub trait TryHashSet<T, S = RandomState>: Sized {
     }
 
     /// Alias for [`Self::try_with_capacity`].
-    fn fallible_with_capacity(capacity: usize) -> Result<HashSet<T, S>, TryHashSetError>
+    fn fallible_with_capacity(
+        capacity: usize,
+    ) -> Result<HashSet<T, S>, TryHashSetConstructionError>
     where
         S: TryDefault,
     {
@@ -332,8 +319,12 @@ pub trait TryHashSet<T, S = RandomState>: Sized {
     /// Fallibly collect an iterator of `T` values into a `HashSet`.
     ///
     /// Constructs the hasher via [`TryDefault`] and uses the iterator's size
-    /// hint to pre-allocate when possible.
-    fn try_collect<I: IntoIterator<Item = T>>(iter: I) -> Result<HashSet<T, S>, TryHashSetError>
+    /// hint to pre-allocate when possible. Returns
+    /// [`TryHashSetConstructionError::Reserve`] if a capacity reservation fails,
+    /// or [`TryHashSetConstructionError::Default`] if hasher construction fails.
+    fn try_collect<I: IntoIterator<Item = T>>(
+        iter: I,
+    ) -> Result<HashSet<T, S>, TryHashSetConstructionError>
     where
         S: TryDefault;
 
@@ -346,7 +337,7 @@ pub trait TryHashSet<T, S = RandomState>: Sized {
     /// Alias for [`Self::try_collect`].
     fn fallible_collect<I: IntoIterator<Item = T>>(
         iter: I,
-    ) -> Result<HashSet<T, S>, TryHashSetError>
+    ) -> Result<HashSet<T, S>, TryHashSetConstructionError>
     where
         S: TryDefault,
     {
@@ -367,7 +358,7 @@ pub trait TryHashSet<T, S = RandomState>: Sized {
 impl<T: Eq + Hash, S: BuildHasher> TryHashSet<T, S> for HashSet<T, S> {
     // ── Construction ────────────────────────────────────────────────────────
 
-    fn try_new() -> Result<HashSet<T, S>, TryHashSetError>
+    fn try_new() -> Result<HashSet<T, S>, TryHashSetConstructionError>
     where
         S: TryDefault,
     {
@@ -375,13 +366,15 @@ impl<T: Eq + Hash, S: BuildHasher> TryHashSet<T, S> for HashSet<T, S> {
         Ok(HashSet::with_hasher(hasher))
     }
 
-    fn try_with_capacity(capacity: usize) -> Result<HashSet<T, S>, TryHashSetError>
+    fn try_with_capacity(
+        capacity: usize,
+    ) -> Result<HashSet<T, S>, TryHashSetConstructionError>
     where
         S: TryDefault,
     {
         let mut set = Self::try_new()?;
         if capacity > 0 {
-            set.try_reserve(capacity).map_err(TryHashSetError::from)?;
+            set.try_reserve(capacity)?;
         }
         Ok(set)
     }
@@ -451,7 +444,9 @@ impl<T: Eq + Hash, S: BuildHasher> TryHashSet<T, S> for HashSet<T, S> {
 
     // ── Bulk construction ───────────────────────────────────────────────────
 
-    fn try_collect<I: IntoIterator<Item = T>>(iter: I) -> Result<HashSet<T, S>, TryHashSetError>
+    fn try_collect<I: IntoIterator<Item = T>>(
+        iter: I,
+    ) -> Result<HashSet<T, S>, TryHashSetConstructionError>
     where
         S: TryDefault,
     {
@@ -460,7 +455,7 @@ impl<T: Eq + Hash, S: BuildHasher> TryHashSet<T, S> for HashSet<T, S> {
         let capacity = upper.unwrap_or(lower);
         let mut set = Self::try_new()?;
         if capacity > 0 {
-            set.try_reserve(capacity).map_err(TryHashSetError::from)?;
+            set.try_reserve(capacity)?;
         }
         for value in iter {
             if set.len() == set.capacity() {
@@ -593,45 +588,28 @@ mod tests {
         s
     }
 
-    /// Exercises every variant of `TryHashSetError` through all three impls
-    /// (moved from errors::uniform).
+    /// Exercises every variant of `TryHashSetConstructionError` through all
+    /// three impls (moved from errors::uniform).
     #[test]
-    fn hashset_error_covers_all_variants() {
-        let cases: [(TryHashSetError, &str); 3] = [
-            (
-                TryHashSetError::Reserve(reserve_err()),
-                "hash set operation failed:",
-            ),
-            (
-                TryHashSetError::Clone(TryCloneError::Reserve(reserve_err())),
-                "hash set operation failed:",
-            ),
-            (
-                TryHashSetError::Other("bad"),
-                "hash set operation failed: bad",
-            ),
-        ];
-        for &(ref err, expected_prefix) in cases.iter() {
-            let got = render_display(err);
-            assert!(
-                got.starts_with(expected_prefix),
-                "expected prefix {expected_prefix:?}, got {got:?}"
-            );
-        }
-        // Also drive the TryDebug and TryDisplay impls across every variant.
+    fn hashset_construction_error_covers_all_variants() {
+        let default_err = || TryDefaultError::Alloc(crate::alloc::AllocError);
         let errs = [
-            TryHashSetError::Reserve(reserve_err()),
-            TryHashSetError::Clone(TryCloneError::Reserve(reserve_err())),
-            TryHashSetError::Other("bad"),
+            TryHashSetConstructionError::Reserve(reserve_err()),
+            TryHashSetConstructionError::Default(default_err()),
         ];
         for err in errs.iter() {
-            let got = render_trydebug(err);
+            let disp = render_display(err);
             assert!(
-                got.contains("TryHashSetError::"),
-                "missing type tag in {got:?}"
+                disp.starts_with("hash set operation failed:"),
+                "got {disp:?}"
             );
             let tdisp = render_trydisplay(err);
-            assert_eq!(tdisp, render_display(err), "TryDisplay must match Display");
+            assert_eq!(tdisp, disp, "TryDisplay must match Display");
+            let dbg = render_trydebug(err);
+            assert!(
+                dbg.contains("TryHashSetConstructionError::"),
+                "got {dbg:?}"
+            );
         }
     }
 
@@ -935,7 +913,7 @@ mod tests {
 
     #[test]
     fn hashset_try_with_capacity_fails_on_oom() {
-        let r: Result<HashSet<u32>, TryHashSetError> =
+        let r: Result<HashSet<u32>, TryHashSetConstructionError> =
             with_policy(FailPolicy::fail_next_alloc(), || {
                 <HashSet<u32> as TryHashSet<u32, RandomState>>::try_with_capacity(10)
             });
@@ -944,7 +922,7 @@ mod tests {
 
     #[test]
     fn hashset_try_with_capacity_zero_succeeds_under_oom() {
-        let r: Result<HashSet<u32>, TryHashSetError> =
+        let r: Result<HashSet<u32>, TryHashSetConstructionError> =
             with_policy(FailPolicy::fail_next_alloc(), || {
                 <HashSet<u32> as TryHashSet<u32, RandomState>>::try_with_capacity(0)
             });
@@ -978,7 +956,7 @@ mod tests {
     #[test]
     fn hashset_try_collect_fails_on_oom() {
         let items = [1u32, 2u32, 3u32];
-        let r: Result<HashSet<u32>, TryHashSetError> =
+        let r: Result<HashSet<u32>, TryHashSetConstructionError> =
             with_policy(FailPolicy::fail_next_alloc(), || {
                 HashSet::try_collect(items.iter().copied())
             });
@@ -987,13 +965,13 @@ mod tests {
 
     #[test]
     fn hashset_oom_restores_allocation_afterwards() {
-        let r: Result<HashSet<u32>, TryHashSetError> =
+        let r: Result<HashSet<u32>, TryHashSetConstructionError> =
             with_policy(FailPolicy::fail_next_alloc(), || {
                 <HashSet<u32> as TryHashSet<u32, RandomState>>::try_with_capacity(10)
             });
         assert!(r.is_err());
         // Allocation works again after guard scope ends.
-        let r: Result<HashSet<u32>, TryHashSetError> =
+        let r: Result<HashSet<u32>, TryHashSetConstructionError> =
             <HashSet<u32> as TryHashSet<u32, RandomState>>::try_with_capacity(10);
         assert!(r.is_ok());
     }
@@ -1002,11 +980,11 @@ mod tests {
     fn hashset_nth_alloc_fail_targets_correct_call() {
         type HS = HashSet<u32, RandomState>;
         let (r1_ok, r2_err, r3_ok) = with_policy(FailPolicy::fail_nth_alloc(2), || {
-            let r1: Result<HS, TryHashSetError> =
+            let r1: Result<HS, TryHashSetConstructionError> =
                 <HS as TryHashSet<u32, RandomState>>::try_with_capacity(1);
-            let r2: Result<HS, TryHashSetError> =
+            let r2: Result<HS, TryHashSetConstructionError> =
                 <HS as TryHashSet<u32, RandomState>>::try_with_capacity(1);
-            let r3: Result<HS, TryHashSetError> =
+            let r3: Result<HS, TryHashSetConstructionError> =
                 <HS as TryHashSet<u32, RandomState>>::try_with_capacity(1);
             (r1.is_ok(), r2.is_err(), r3.is_ok())
         });

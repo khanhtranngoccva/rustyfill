@@ -11,5 +11,5 @@
 mod path;
 mod path_buf;
 
-pub use path::{TryPath, TryPathError};
-pub use path_buf::{TryPathBuf, TryPathBufError};
+pub use path::{TryPath, TryPathWithAddedExtensionError};
+pub use path_buf::{TryPathBuf, TryPathBufAddExtensionError, TryPathBufSetExtensionError};

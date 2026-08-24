@@ -18,7 +18,8 @@
 
 use crate::alloc::TryReserveError;
 use crate::std::path::path_buf::inner_push;
-use crate::std::path::{TryPathBuf, TryPathBufError};
+use crate::std::path::path_buf::TryPathBufAddExtensionError;
+use crate::std::path::TryPathBuf;
 use crate::try_clone::{TryClone, TryCloneError};
 use crate::try_fmt::{TryDebug, TryDisplay, helpers::FormatterExt};
 use crate::try_to_owned::{TryToOwned, TryToOwnedError};
@@ -27,46 +28,51 @@ use lang_std::ffi::OsStr;
 use lang_std::path::Display;
 use lang_std::path::{Path, PathBuf};
 
-/// Error returned by [`TryPath`] operations.
-pub enum TryPathError {
+/// Error returned by [`TryPath::try_with_added_extension`].
+pub enum TryPathWithAddedExtensionError {
     /// A capacity reservation failed (overflow or OOM).
     Reserve(TryReserveError),
-    /// A logic-level failure with a static diagnostic message.
-    Other(&'static str),
+    /// The provided extension contains a path separator.
+    SeparatorInPath,
 }
 
-impl fmt::Debug for TryPathError {
+impl fmt::Debug for TryPathWithAddedExtensionError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         TryDebug::try_fmt(self, f)
     }
 }
 
-impl fmt::Display for TryPathError {
+impl fmt::Display for TryPathWithAddedExtensionError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         TryDisplay::try_fmt(self, f)
     }
 }
 
-impl From<TryReserveError> for TryPathError {
+impl From<TryReserveError> for TryPathWithAddedExtensionError {
     fn from(err: TryReserveError) -> Self {
         Self::Reserve(err)
     }
 }
 
-impl TryDebug for TryPathError {
+impl TryDebug for TryPathWithAddedExtensionError {
     fn try_fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::Reserve(e) => f.try_debug_tuple("TryPathError::Reserve").field(e).finish(),
-            Self::Other(msg) => f.try_debug_tuple("TryPathError::Other").field(msg).finish(),
+            Self::Reserve(e) => f
+                .try_debug_tuple("TryPathWithAddedExtensionError::Reserve")
+                .field(e)
+                .finish(),
+            Self::SeparatorInPath => f
+                .try_debug_tuple("TryPathWithAddedExtensionError::SeparatorInPath")
+                .finish(),
         }
     }
 }
 
-impl TryDisplay for TryPathError {
+impl TryDisplay for TryPathWithAddedExtensionError {
     fn try_fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::Reserve(e) => write!(f, "Path operation failed: {}", e),
-            Self::Other(msg) => write!(f, "Path operation failed: {}", msg),
+            Self::Reserve(e) => write!(f, "Path add-extension failed: {}", e),
+            Self::SeparatorInPath => write!(f, "extension cannot contain path separators"),
         }
     }
 }
@@ -82,8 +88,8 @@ pub trait TryPath {
     /// `Path::to_owned`. Reserves capacity for the full byte length before
     /// copying, so that allocation failures are caught cleanly.
     ///
-    /// Returns [`TryPathError::Reserve`] on allocation failure.
-    fn try_to_path_buf(&self) -> Result<PathBuf, TryPathError>;
+    /// Returns [`TryReserveError`] on allocation failure.
+    fn try_to_path_buf(&self) -> Result<PathBuf, TryReserveError>;
 
     /// Fallibly join another path component onto this `Path`, returning a new
     /// [`PathBuf`].
@@ -92,8 +98,8 @@ pub trait TryPath {
     /// appended with a platform-specific separator.
     ///
     /// Mirrors [`Path::join`] but reserves capacity upfront so that allocation
-    /// failures return [`TryPathError::Reserve`] instead of panicking.
-    fn try_join<P: AsRef<Path>>(&self, child: P) -> Result<PathBuf, TryPathError>;
+    /// failures return [`TryReserveError`] instead of panicking.
+    fn try_join<P: AsRef<Path>>(&self, child: P) -> Result<PathBuf, TryReserveError>;
 
     /// Fallibly produce a new [`PathBuf`] with an extension appended to the
     /// file name.
@@ -103,19 +109,23 @@ pub trait TryPath {
     /// currently exists, even if it already has an extension. For example,
     /// `foo.tar.gz.try_with_added_extension("xz")` yields `foo.tar.gz.xz`.
     ///
-    /// Returns [`TryPathError::Reserve`] on allocation failure.
-    /// Returns [`TryPathError::Other`] if `ext` contains path separators.
-    fn try_with_added_extension<E: AsRef<OsStr>>(&self, ext: E) -> Result<PathBuf, TryPathError>;
+    /// Fails with [`TryPathWithAddedExtensionError::Reserve`] on allocation
+    /// failure, or [`TryPathWithAddedExtensionError::SeparatorInPath`] if `ext`
+    /// contains path separators.
+    fn try_with_added_extension<E: AsRef<OsStr>>(
+        &self,
+        ext: E,
+    ) -> Result<PathBuf, TryPathWithAddedExtensionError>;
 
     // ── Aliases with `fallible_` prefix ────────────────────────────────────
 
     /// Alias for [`Self::try_to_path_buf`].
-    fn fallible_to_path_buf(&self) -> Result<PathBuf, TryPathError> {
+    fn fallible_to_path_buf(&self) -> Result<PathBuf, TryReserveError> {
         Self::try_to_path_buf(self)
     }
 
     /// Alias for [`Self::try_join`].
-    fn fallible_join<P: AsRef<Path>>(&self, child: P) -> Result<PathBuf, TryPathError> {
+    fn fallible_join<P: AsRef<Path>>(&self, child: P) -> Result<PathBuf, TryReserveError> {
         Self::try_join(self, child)
     }
 
@@ -123,7 +133,7 @@ pub trait TryPath {
     fn fallible_with_added_extension<E: AsRef<OsStr>>(
         &self,
         ext: E,
-    ) -> Result<PathBuf, TryPathError> {
+    ) -> Result<PathBuf, TryPathWithAddedExtensionError> {
         Self::try_with_added_extension(self, ext)
     }
 }
@@ -135,34 +145,41 @@ pub trait TryPath {
 /// Builds a `PathBuf` from `base` with `child` appended, delegating to
 /// [`inner_push`](crate::path::path_buf::inner_push) so that both `try_join`
 /// and `try_push` share the same platform-aware logic.
-fn inner_join(base: &Path, child: &Path) -> Result<PathBuf, TryPathError> {
+fn inner_join(base: &Path, child: &Path) -> Result<PathBuf, TryReserveError> {
     let mut out = base.try_to_path_buf()?;
     inner_push(&mut out, child)?;
     Ok(out)
 }
 
 impl TryPath for Path {
-    fn try_to_path_buf(&self) -> Result<PathBuf, TryPathError> {
+    fn try_to_path_buf(&self) -> Result<PathBuf, TryReserveError> {
         let mut out = PathBuf::new();
         let os = out.as_mut_os_string();
         let src = self.as_os_str();
         let len = src.len();
         if len > 0 {
-            os.try_reserve(len).map_err(TryPathError::Reserve)?;
+            os.try_reserve(len)?;
         }
         os.push(src);
         Ok(out)
     }
 
-    fn try_join<P: AsRef<Path>>(&self, child: P) -> Result<PathBuf, TryPathError> {
+    fn try_join<P: AsRef<Path>>(&self, child: P) -> Result<PathBuf, TryReserveError> {
         inner_join(self, child.as_ref())
     }
 
-    fn try_with_added_extension<E: AsRef<OsStr>>(&self, ext: E) -> Result<PathBuf, TryPathError> {
-        let mut out = self.try_to_path_buf()?;
+    fn try_with_added_extension<E: AsRef<OsStr>>(
+        &self,
+        ext: E,
+    ) -> Result<PathBuf, TryPathWithAddedExtensionError> {
+        let mut out = self
+            .try_to_path_buf()
+            .map_err(TryPathWithAddedExtensionError::Reserve)?;
         out.try_add_extension(ext).map_err(|e| match e {
-            TryPathBufError::Reserve(r) => TryPathError::Reserve(r),
-            TryPathBufError::Other(m) => TryPathError::Other(m),
+            TryPathBufAddExtensionError::Reserve(r) => TryPathWithAddedExtensionError::Reserve(r),
+            TryPathBufAddExtensionError::SeparatorInPath => {
+                TryPathWithAddedExtensionError::SeparatorInPath
+            }
         })?;
         Ok(out)
     }

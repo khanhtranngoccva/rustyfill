@@ -6,60 +6,9 @@
 //! for consistency with [`TryOsString`](super::os_string::TryOsString).
 
 use crate::alloc::TryReserveError;
-use crate::try_fmt::{TryDebug, TryDisplay, helpers::FormatterExt};
 use lang_core::fmt;
 use lang_std::ffi::os_str::Display;
 use lang_std::ffi::{OsStr, OsString};
-
-/// Error returned by [`TryOsStr`] operations.
-pub enum TryOsStrError {
-    /// A capacity reservation failed (overflow or OOM).
-    Reserve(TryReserveError),
-    /// A logic-level failure with a static diagnostic message.
-    Other(&'static str),
-}
-
-impl fmt::Debug for TryOsStrError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        TryDebug::try_fmt(self, f)
-    }
-}
-
-impl fmt::Display for TryOsStrError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        TryDisplay::try_fmt(self, f)
-    }
-}
-
-impl From<TryReserveError> for TryOsStrError {
-    fn from(err: TryReserveError) -> Self {
-        Self::Reserve(err)
-    }
-}
-
-impl TryDebug for TryOsStrError {
-    fn try_fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::Reserve(e) => f
-                .try_debug_tuple("TryOsStrError::Reserve")
-                .field(e)
-                .finish(),
-            Self::Other(msg) => f
-                .try_debug_tuple("TryOsStrError::Other")
-                .field(msg)
-                .finish(),
-        }
-    }
-}
-
-impl TryDisplay for TryOsStrError {
-    fn try_fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::Reserve(e) => write!(f, "OsStr operation failed: {}", e),
-            Self::Other(msg) => write!(f, "OsStr operation failed: {}", msg),
-        }
-    }
-}
 
 /// A trait for fallibly converting an `OsStr` slice into owned variants.
 ///
@@ -72,61 +21,60 @@ pub trait TryOsStr {
     /// `OsStr::to_owned`. Reserves capacity for the full byte length before
     /// copying, so that allocation failures are caught cleanly.
     ///
-    /// Returns [`TryOsStrError::Reserve`] on allocation failure.
-    fn try_to_os_string(&self) -> Result<OsString, TryOsStrError>;
+    /// Returns [`TryReserveError`] on allocation failure.
+    fn try_to_os_string(&self) -> Result<OsString, TryReserveError>;
 
     /// Fallibly convert ASCII characters in this `OsStr` to uppercase,
     /// returning a new [`OsString`].
     ///
     /// Mirrors [`OsStr::to_ascii_uppercase`] but reserves capacity upfront so
-    /// that allocation failures return [`TryOsStrError::Reserve`] instead of
+    /// that allocation failures return [`TryReserveError`] instead of
     /// panicking.
-    fn try_to_ascii_uppercase(&self) -> Result<OsString, TryOsStrError>;
+    fn try_to_ascii_uppercase(&self) -> Result<OsString, TryReserveError>;
 
     /// Fallibly convert ASCII characters in this `OsStr` to lowercase,
     /// returning a new [`OsString`].
     ///
     /// Mirrors [`OsStr::to_ascii_lowercase`] but reserves capacity upfront so
-    /// that allocation failures return [`TryOsStrError::Reserve`] instead of
+    /// that allocation failures return [`TryReserveError`] instead of
     /// panicking.
-    fn try_to_ascii_lowercase(&self) -> Result<OsString, TryOsStrError>;
+    fn try_to_ascii_lowercase(&self) -> Result<OsString, TryReserveError>;
 
     // ── Aliases with `fallible_` prefix ─────────────────────────────────────
 
     /// Alias for [`Self::try_to_os_string`].
-    fn fallible_to_os_string(&self) -> Result<OsString, TryOsStrError> {
+    fn fallible_to_os_string(&self) -> Result<OsString, TryReserveError> {
         Self::try_to_os_string(self)
     }
 
     /// Alias for [`Self::try_to_ascii_uppercase`].
-    fn fallible_to_ascii_uppercase(&self) -> Result<OsString, TryOsStrError> {
+    fn fallible_to_ascii_uppercase(&self) -> Result<OsString, TryReserveError> {
         Self::try_to_ascii_uppercase(self)
     }
 
     /// Alias for [`Self::try_to_ascii_lowercase`].
-    fn fallible_to_ascii_lowercase(&self) -> Result<OsString, TryOsStrError> {
+    fn fallible_to_ascii_lowercase(&self) -> Result<OsString, TryReserveError> {
         Self::try_to_ascii_lowercase(self)
     }
 }
 
 impl TryOsStr for OsStr {
-    fn try_to_os_string(&self) -> Result<OsString, TryOsStrError> {
+    fn try_to_os_string(&self) -> Result<OsString, TryReserveError> {
         let mut out = OsString::new();
         if !self.is_empty() {
-            out.try_reserve(self.len())
-                .map_err(TryOsStrError::Reserve)?;
+            out.try_reserve(self.len())?;
         }
         out.push(self);
         Ok(out)
     }
 
-    fn try_to_ascii_uppercase(&self) -> Result<OsString, TryOsStrError> {
+    fn try_to_ascii_uppercase(&self) -> Result<OsString, TryReserveError> {
         let mut out = self.try_to_os_string()?;
         out.make_ascii_uppercase();
         Ok(out)
     }
 
-    fn try_to_ascii_lowercase(&self) -> Result<OsString, TryOsStrError> {
+    fn try_to_ascii_lowercase(&self) -> Result<OsString, TryReserveError> {
         let mut out = self.try_to_os_string()?;
         out.make_ascii_lowercase();
         Ok(out)

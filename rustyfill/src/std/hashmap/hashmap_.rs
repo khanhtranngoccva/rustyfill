@@ -26,84 +26,12 @@ use lang_std::collections::HashMap;
 use lang_std::collections::hash_map;
 use lang_std::hash::{BuildHasher, Hash, RandomState};
 
-// ── Error type ────────────────────────────────────────────────────────────────
-
-/// Error returned by [`TryHashMap`] operations.
-///
-/// Wraps the ways a hash map operation can fail on stable Rust: a reserve
-/// failure ([`TryReserveError`], returned by the inherent `HashMap::try_reserve`)
-/// or a clone failure ([`TryCloneError`]) when an element's `try_clone` cannot
-/// allocate its internal buffers.
-pub enum TryHashMapError {
-    /// A capacity reservation on the hash map failed (overflow or OOM).
-    Reserve(TryReserveError),
-    /// An element clone failed during a method that requires [`TryClone`].
-    Clone(TryCloneError),
-    /// A logic-level failure with a static diagnostic message.
-    Other(&'static str),
-}
-
-impl fmt::Debug for TryHashMapError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        TryDebug::try_fmt(self, f)
-    }
-}
-
-impl fmt::Display for TryHashMapError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        TryDisplay::try_fmt(self, f)
-    }
-}
-
-impl From<TryReserveError> for TryHashMapError {
-    fn from(err: TryReserveError) -> Self {
-        Self::Reserve(err)
-    }
-}
-
-impl From<TryCloneError> for TryHashMapError {
-    fn from(err: TryCloneError) -> Self {
-        Self::Clone(err)
-    }
-}
-
-impl TryDebug for TryHashMapError {
-    fn try_fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        use crate::errors::uniform as u;
-        match self {
-            Self::Reserve(e) => u::debug_field(f, "TryHashMapError::Reserve", e),
-            Self::Clone(e) => u::debug_field(f, "TryHashMapError::Clone", e),
-            Self::Other(msg) => u::debug_field(f, "TryHashMapError::Other", msg),
-        }
-    }
-}
-
-impl TryDisplay for TryHashMapError {
-    fn try_fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        use crate::errors::uniform as u;
-        match self {
-            Self::Reserve(e) => u::display_delegated(f, "hash map", e),
-            Self::Clone(e) => u::display_delegated(f, "hash map", e),
-            Self::Other(msg) => u::display_fixed(f, "hash map", msg),
-        }
-    }
-}
-
-impl From<TryDefaultError> for TryHashMapError {
-    fn from(err: TryDefaultError) -> Self {
-        match err {
-            TryDefaultError::Reserve(e) => Self::Reserve(e),
-            TryDefaultError::Alloc(_) => Self::Other("allocation failed"),
-            TryDefaultError::Other(msg) => Self::Other(msg),
-        }
-    }
-}
+// ── Error types ───────────────────────────────────────────────────────────────
 
 /// Error returned by [`TryHashMap`] constructors.
 ///
 /// Construction can only fail via a capacity reservation or hasher creation;
-/// it never clones elements, so the [`TryHashMapError::Clone`] variant is not
-/// possible here.
+/// it never clones elements.
 pub enum TryHashMapConstructionError {
     /// A capacity reservation on the hash map failed (overflow or OOM).
     Reserve(TryReserveError),
@@ -135,15 +63,6 @@ impl From<TryDefaultError> for TryHashMapConstructionError {
     }
 }
 
-impl From<TryHashMapConstructionError> for TryHashMapError {
-    fn from(e: TryHashMapConstructionError) -> Self {
-        match e {
-            TryHashMapConstructionError::Reserve(r) => Self::Reserve(r),
-            TryHashMapConstructionError::Default(d) => d.into(),
-        }
-    }
-}
-
 impl TryDebug for TryHashMapConstructionError {
     fn try_fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         use crate::errors::uniform as u;
@@ -172,8 +91,6 @@ impl TryDisplay for TryHashMapConstructionError {
 /// [`TryExtend`](crate::try_extend::TryExtend) /
 /// [`TryExtendFromSlice`](crate::try_extend::TryExtendFromSlice) impls — any
 /// operation that can only fail by reserving capacity or cloning elements.
-/// Unlike [`TryHashMapError`], this has no `Other` variant because these
-/// operations have no logic-level failure mode.
 pub enum TryHashMapWithCloneError {
     /// A capacity reservation on the hash map failed (overflow or OOM).
     Reserve(TryReserveError),
@@ -249,15 +166,6 @@ impl fmt::Display for TryHashMapInsertUniqueError {
     }
 }
 
-impl From<TryHashMapInsertUniqueError> for TryHashMapError {
-    fn from(e: TryHashMapInsertUniqueError) -> Self {
-        match e {
-            TryHashMapInsertUniqueError::Reserve(r) => Self::Reserve(r),
-            TryHashMapInsertUniqueError::KeyAlreadyExists => Self::Other("key already exists"),
-        }
-    }
-}
-
 impl TryDebug for TryHashMapInsertUniqueError {
     fn try_fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         use crate::errors::uniform as u;
@@ -286,15 +194,15 @@ impl TryDisplay for TryHashMapInsertUniqueError {
 ///
 /// Implemented for `HashMap<K, V, S>`. Mirrors the most commonly-used `HashMap`
 /// methods that can fail due to allocation pressure, returning [`Result`] values
-/// that propagate [`TryReserveError`] or [`TryHashMapError`] on failure.
+/// that propagate [`TryReserveError`] or an operation-specific error on failure.
 ///
 /// # Note on `try_insert`
 ///
 /// The inherent [`HashMap::try_insert`](lang_std::collections::HashMap::try_insert) on
 /// stable Rust returns `Err(old_value)` when a key already exists, but may *panic*
 /// on allocation failure. Our [`Self::try_insert`] reserves capacity first so it
-/// never panics on OOM — it returns [`TryHashMapError::Reserve`] instead, but it
-/// does not return the old value on key collision.
+/// never panics on OOM — it returns [`TryReserveError`] instead, but it does not
+/// return the old value on key collision.
 pub trait TryHashMap<K, V, S = RandomState>: Sized {
     // ── Construction ────────────────────────────────────────────────────────
 
@@ -343,7 +251,7 @@ pub trait TryHashMap<K, V, S = RandomState>: Sized {
     /// existing value for the same key.
     ///
     /// Reserves capacity for one additional element before inserting, so this
-    /// method never panics on out-of-memory. Returns [`TryHashMapError::Reserve`]
+    /// method never panics on out-of-memory. Returns [`TryReserveError`]
     /// if the capacity reservation fails.
     ///
     /// Returns `Ok(None)` if the key was not previously present, or
@@ -381,8 +289,8 @@ pub trait TryHashMap<K, V, S = RandomState>: Sized {
     /// Returns `Ok(())` if the key was newly inserted. Returns
     /// `Err((key, value, TryHashMapInsertUniqueError))` if the insertion failed, giving ownership of
     /// both `key` and `value` back to the caller. The error is
-    /// [`TryHashMapError::Reserve`] on allocation failure or
-    /// [`TryHashMapError::Other`] if the key already exists.
+    /// [`TryHashMapInsertUniqueError::Reserve`] on allocation failure or
+    /// [`TryHashMapInsertUniqueError::KeyAlreadyExists`] if the key already exists.
     fn try_insert_unique(
         &mut self,
         key: K,
@@ -396,7 +304,7 @@ pub trait TryHashMap<K, V, S = RandomState>: Sized {
     /// Reserves space for exactly one additional element so that subsequent
     /// operations on the returned [`Entry`] (such as [`Entry::or_insert`] or
     /// [`Entry::and_modify`]) cannot panic on out-of-memory. Returns
-    /// [`TryHashMapError::Reserve`] if the capacity reservation fails.
+    /// [`TryReserveError`] if the capacity reservation fails.
     ///
     /// Unlike the inherent [`HashMap::entry`], this method guarantees that
     /// inserting through the entry will not allocate again.
@@ -404,7 +312,10 @@ pub trait TryHashMap<K, V, S = RandomState>: Sized {
     /// [`Entry`]: lang_std::collections::hash_map::Entry
     /// [`Entry::or_insert`]: lang_std::collections::hash_map::Entry::or_insert
     /// [`Entry::and_modify`]: lang_std::collections::hash_map::Entry::and_modify
-    fn try_entry<'a>(&'a mut self, key: K) -> Result<hash_map::Entry<'a, K, V>, TryHashMapError>
+    fn try_entry<'a>(
+        &'a mut self,
+        key: K,
+    ) -> Result<hash_map::Entry<'a, K, V>, TryReserveError>
     where
         K: Eq + Hash;
 
@@ -440,7 +351,7 @@ pub trait TryHashMap<K, V, S = RandomState>: Sized {
     /// existing value for the same key.
     ///
     /// Reserves capacity for one additional element before inserting, so this
-    /// method never panics on out-of-memory. Returns [`TryHashMapError::Reserve`]
+    /// method never panics on out-of-memory. Returns [`TryReserveError`]
     /// if the capacity reservation fails.
     ///
     /// Returns `Ok(None)` if the key was not previously present, or
@@ -489,7 +400,7 @@ pub trait TryHashMap<K, V, S = RandomState>: Sized {
     fn fallible_entry<'a>(
         &'a mut self,
         key: K,
-    ) -> Result<hash_map::Entry<'a, K, V>, TryHashMapError>
+    ) -> Result<hash_map::Entry<'a, K, V>, TryReserveError>
     where
         K: Eq + Hash,
     {
@@ -549,10 +460,12 @@ pub trait TryHashMap<K, V, S = RandomState>: Sized {
     /// Fallibly collect an iterator of `(K, V)` pairs into a `HashMap`.
     ///
     /// Constructs the hasher via [`TryDefault`] and uses the iterator's size
-    /// hint to pre-allocate when possible.
+    /// hint to pre-allocate when possible. Returns
+    /// [`TryHashMapConstructionError::Reserve`] if a capacity reservation fails,
+    /// or [`TryHashMapConstructionError::Default`] if hasher construction fails.
     fn try_collect<I: IntoIterator<Item = (K, V)>>(
         iter: I,
-    ) -> Result<HashMap<K, V, S>, TryHashMapError>
+    ) -> Result<HashMap<K, V, S>, TryHashMapConstructionError>
     where
         S: TryDefault;
 
@@ -565,7 +478,7 @@ pub trait TryHashMap<K, V, S = RandomState>: Sized {
     /// Alias for [`Self::try_collect`].
     fn fallible_collect<I: IntoIterator<Item = (K, V)>>(
         iter: I,
-    ) -> Result<HashMap<K, V, S>, TryHashMapError>
+    ) -> Result<HashMap<K, V, S>, TryHashMapConstructionError>
     where
         S: TryDefault,
     {
@@ -622,10 +535,7 @@ impl<K: Eq + Hash, V, S: BuildHasher> TryHashMap<K, V, S> for HashMap<K, V, S> {
     where
         K: Eq + Hash,
     {
-        match self.try_entry(key).map_err(|e| match e {
-            TryHashMapError::Reserve(r) => r,
-            _ => unreachable!("try_entry only fails via reserve"),
-        })? {
+        match self.try_entry(key)? {
             hash_map::Entry::Occupied(mut e) => Ok(Some(e.insert(value))),
             hash_map::Entry::Vacant(e) => {
                 let _v = e.insert(value);
@@ -682,11 +592,14 @@ impl<K: Eq + Hash, V, S: BuildHasher> TryHashMap<K, V, S> for HashMap<K, V, S> {
         }
     }
 
-    fn try_entry<'a>(&'a mut self, key: K) -> Result<hash_map::Entry<'a, K, V>, TryHashMapError>
+    fn try_entry<'a>(
+        &'a mut self,
+        key: K,
+    ) -> Result<hash_map::Entry<'a, K, V>, TryReserveError>
     where
         K: Eq + Hash,
     {
-        self.try_reserve(1).map_err(TryHashMapError::Reserve)?;
+        self.try_reserve(1)?;
         Ok(self.entry(key))
     }
 
@@ -727,7 +640,7 @@ impl<K: Eq + Hash, V, S: BuildHasher> TryHashMap<K, V, S> for HashMap<K, V, S> {
 
     fn try_collect<I: IntoIterator<Item = (K, V)>>(
         iter: I,
-    ) -> Result<HashMap<K, V, S>, TryHashMapError>
+    ) -> Result<HashMap<K, V, S>, TryHashMapConstructionError>
     where
         S: TryDefault,
     {
@@ -736,7 +649,7 @@ impl<K: Eq + Hash, V, S: BuildHasher> TryHashMap<K, V, S> for HashMap<K, V, S> {
         let capacity = upper.unwrap_or(lower);
         let mut map = Self::try_new()?;
         if capacity > 0 {
-            map.try_reserve(capacity).map_err(TryHashMapError::from)?;
+            map.try_reserve(capacity)?;
         }
         for (key, value) in iter {
             if map.len() == map.capacity() {
@@ -872,14 +785,14 @@ mod tests {
         s
     }
 
-    /// Exercises every variant of `TryHashMapError` through all three impls
-    /// (moved from errors::uniform).
+    /// Exercises every variant of `TryHashMapConstructionError` through all
+    /// three impls (moved from errors::uniform).
     #[test]
-    fn hashmap_error_covers_all_variants() {
+    fn hashmap_construction_error_covers_all_variants() {
+        let default_err = || TryDefaultError::Alloc(crate::alloc::AllocError);
         let errs = [
-            TryHashMapError::Reserve(reserve_err()),
-            TryHashMapError::Clone(TryCloneError::Reserve(reserve_err())),
-            TryHashMapError::Other("h"),
+            TryHashMapConstructionError::Reserve(reserve_err()),
+            TryHashMapConstructionError::Default(default_err()),
         ];
         for err in errs.iter() {
             let disp = render_display(err);
@@ -890,7 +803,10 @@ mod tests {
             let tdisp = render_trydisplay(err);
             assert_eq!(tdisp, disp, "TryDisplay must match Display");
             let dbg = render_trydebug(err);
-            assert!(dbg.contains("TryHashMapError::"), "got {dbg:?}");
+            assert!(
+                dbg.contains("TryHashMapConstructionError::"),
+                "got {dbg:?}"
+            );
         }
     }
 
@@ -1364,7 +1280,7 @@ mod tests {
     #[test]
     fn hashmap_try_collect_fails_on_oom() {
         let pairs = [(1u32, 2u32), (3u32, 4u32)];
-        let r: Result<HashMap<u32, u32>, TryHashMapError> =
+        let r: Result<HashMap<u32, u32>, TryHashMapConstructionError> =
             with_policy(FailPolicy::fail_next_alloc(), || {
                 HashMap::try_collect(pairs.iter().copied())
             });

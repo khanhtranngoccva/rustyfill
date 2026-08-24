@@ -20,66 +20,11 @@ use crate::alloc::TryReserveError;
 use crate::alloc::vec::{TryVec, TryVecWithCloneError};
 use crate::try_clone::{TryClone, TryCloneError};
 use crate::try_default::{TryDefault, TryDefaultError};
-use crate::try_fmt::{TryDebug, TryDisplay, helpers::FormatterExt};
 use lang_alloc::string::String;
 use lang_alloc::vec::Vec;
 use lang_core::fmt;
 use lang_core::mem;
 use lang_std::ffi::{OsStr, OsString};
-
-/// Error returned by [`TryOsString`] operations.
-///
-/// Wraps the ways an `OsString` operation can fail on stable Rust: a reserve
-/// failure ([`TryReserveError`]) or an arithmetic overflow when computing
-/// the required capacity.
-pub enum TryOsStringError {
-    /// A capacity reservation failed (overflow or OOM).
-    Reserve(TryReserveError),
-    /// A logic-level failure with a static diagnostic message.
-    Other(&'static str),
-}
-
-impl fmt::Debug for TryOsStringError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        TryDebug::try_fmt(self, f)
-    }
-}
-
-impl fmt::Display for TryOsStringError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        TryDisplay::try_fmt(self, f)
-    }
-}
-
-impl From<TryReserveError> for TryOsStringError {
-    fn from(err: TryReserveError) -> Self {
-        Self::Reserve(err)
-    }
-}
-
-impl TryDebug for TryOsStringError {
-    fn try_fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::Reserve(e) => f
-                .try_debug_tuple("TryOsStringError::Reserve")
-                .field(e)
-                .finish(),
-            Self::Other(msg) => f
-                .try_debug_tuple("TryOsStringError::Other")
-                .field(msg)
-                .finish(),
-        }
-    }
-}
-
-impl TryDisplay for TryOsStringError {
-    fn try_fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::Reserve(e) => write!(f, "OsString operation failed: {}", e),
-            Self::Other(msg) => write!(f, "OsString operation failed: {}", msg),
-        }
-    }
-}
 
 /// A trait for fallible `OsString` operations.
 ///
@@ -122,17 +67,17 @@ pub trait TryOsString: Sized {
     /// Fallibly shrink the capacity of this `OsString` to match its length.
     ///
     /// May reallocate if the current allocation is larger than needed.
-    /// Returns [`TryOsStringError::Reserve`] if the re-allocation fails.
+    /// Returns [`TryReserveError`] if the re-allocation fails.
     /// Equivalent to `OsString::shrink_to_fit()` but fallible.
-    fn try_shrink_to_fit(&mut self) -> Result<(), TryOsStringError>;
+    fn try_shrink_to_fit(&mut self) -> Result<(), TryReserveError>;
 
     /// Fallibly shrink the capacity of this `OsString` to at least `min_capacity`.
     ///
     /// If the current capacity is already less than or equal to `min_capacity`,
     /// does nothing and returns `Ok(())`. Otherwise reallocates down.
-    /// Returns [`TryOsStringError::Reserve`] if the re-allocation fails.
+    /// Returns [`TryReserveError`] if the re-allocation fails.
     /// Equivalent to `OsString::shrink_to(min_capacity)` but fallible.
-    fn try_shrink_to(&mut self, min_capacity: usize) -> Result<(), TryOsStringError>;
+    fn try_shrink_to(&mut self, min_capacity: usize) -> Result<(), TryReserveError>;
 
     // ── Conversion ──────────────────────────────────────────────────────────
 
@@ -175,7 +120,7 @@ pub trait TryOsString: Sized {
     /// Fallibly shrink the capacity of this `OsString` to match its length.
     ///
     /// Alias for [`Self::try_shrink_to_fit`].
-    fn fallible_shrink_to_fit(&mut self) -> Result<(), TryOsStringError> {
+    fn fallible_shrink_to_fit(&mut self) -> Result<(), TryReserveError> {
         Self::try_shrink_to_fit(self)
     }
 
@@ -183,7 +128,7 @@ pub trait TryOsString: Sized {
     ///
     /// Alias for [`Self::try_shrink_to`].
     #[allow(deprecated)]
-    fn fallible_shrink_to(&mut self, min_capacity: usize) -> Result<(), TryOsStringError> {
+    fn fallible_shrink_to(&mut self, min_capacity: usize) -> Result<(), TryReserveError> {
         Self::try_shrink_to(self, min_capacity)
     }
 
@@ -239,11 +184,11 @@ impl TryOsString for OsString {
         Ok(())
     }
 
-    fn try_shrink_to_fit(&mut self) -> Result<(), TryOsStringError> {
+    fn try_shrink_to_fit(&mut self) -> Result<(), TryReserveError> {
         self.try_shrink_to(self.len())
     }
 
-    fn try_shrink_to(&mut self, min_capacity: usize) -> Result<(), TryOsStringError> {
+    fn try_shrink_to(&mut self, min_capacity: usize) -> Result<(), TryReserveError> {
         // Convert to encoded bytes (Vec<u8>), shrink via TryVec, then convert
         // back. Only the spare capacity portion is reallocated — the OS string
         // data bytes are never copied or revalidated.
@@ -252,7 +197,7 @@ impl TryOsString for OsString {
         // SAFETY: the bytes originated from a valid OsString via into_encoded_bytes.
         *self = unsafe { OsString::from_encoded_bytes_unchecked(v) };
         result.map_err(|e| match e {
-            TryVecWithCloneError::Reserve(e) => TryOsStringError::Reserve(e),
+            TryVecWithCloneError::Reserve(e) => e,
             TryVecWithCloneError::Clone(_) => unreachable!("shrink does not clone"),
         })
     }

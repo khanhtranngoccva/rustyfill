@@ -10,5 +10,5 @@ mod os_str;
 mod os_string;
 
 pub use crate::alloc::ffi::{TryCString, TryCStringError};
-pub use os_str::{TryOsStr, TryOsStrError};
-pub use os_string::{TryOsString, TryOsStringError};
+pub use os_str::TryOsStr;
+pub use os_string::TryOsString;

@@ -52,11 +52,11 @@ fn cmd_crap(extra_args: &[String]) {
         // modules (e.g. `dashmap` behind `unstable`) get instrumented too.
         let mut cov_args = vec!["llvm-cov", "--workspace", "--lcov", "--output-path"];
         cov_args.push(LCOV_PATH);
-        if let Some(fi) = extra_args.iter().position(|a| a == "--features") {
-            if fi + 1 < extra_args.len() {
-                cov_args.push("--features");
-                cov_args.push(extra_args[fi + 1].as_str());
-            }
+        if let Some(fi) = extra_args.iter().position(|a| a == "--features")
+            && fi + 1 < extra_args.len()
+        {
+            cov_args.push("--features");
+            cov_args.push(extra_args[fi + 1].as_str());
         }
         let status = Command::new("cargo").args(&cov_args).status();
         match status {

@@ -27,56 +27,106 @@ use lang_core::mem;
 use lang_std::ffi::{OsStr, OsString};
 use lang_std::path::{Component, MAIN_SEPARATOR_STR, Path, PathBuf, Prefix, is_separator};
 
-/// Error returned by [`TryPathBuf`] operations.
-///
-/// Wraps the ways a `PathBuf` operation can fail on stable Rust: a reserve
-/// failure ([`TryReserveError`]) or an arithmetic overflow when computing
-/// the required capacity.
-pub enum TryPathBufError {
+/// Error returned by [`TryPathBuf::try_set_extension`].
+pub enum TryPathBufSetExtensionError {
     /// A capacity reservation failed (overflow or OOM).
     Reserve(TryReserveError),
-    /// A logic-level failure with a static diagnostic message.
-    Other(&'static str),
+    /// The path has no file stem to attach an extension to (e.g., `/`, `.`, `..`).
+    NoFileStem,
+    /// The provided extension contains a path separator.
+    SeparatorInPath,
 }
 
-impl fmt::Debug for TryPathBufError {
+impl fmt::Debug for TryPathBufSetExtensionError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         TryDebug::try_fmt(self, f)
     }
 }
 
-impl fmt::Display for TryPathBufError {
+impl fmt::Display for TryPathBufSetExtensionError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         TryDisplay::try_fmt(self, f)
     }
 }
 
-impl From<TryReserveError> for TryPathBufError {
+impl From<TryReserveError> for TryPathBufSetExtensionError {
     fn from(err: TryReserveError) -> Self {
         Self::Reserve(err)
     }
 }
 
-impl TryDebug for TryPathBufError {
+impl TryDebug for TryPathBufSetExtensionError {
     fn try_fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Reserve(e) => f
-                .try_debug_tuple("TryPathBufError::Reserve")
+                .try_debug_tuple("TryPathBufSetExtensionError::Reserve")
                 .field(e)
                 .finish(),
-            Self::Other(msg) => f
-                .try_debug_tuple("TryPathBufError::Other")
-                .field(msg)
+            Self::NoFileStem => f
+                .try_debug_tuple("TryPathBufSetExtensionError::NoFileStem")
+                .finish(),
+            Self::SeparatorInPath => f
+                .try_debug_tuple("TryPathBufSetExtensionError::SeparatorInPath")
                 .finish(),
         }
     }
 }
 
-impl TryDisplay for TryPathBufError {
+impl TryDisplay for TryPathBufSetExtensionError {
     fn try_fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::Reserve(e) => write!(f, "PathBuf operation failed: {}", e),
-            Self::Other(msg) => write!(f, "PathBuf operation failed: {}", msg),
+            Self::Reserve(e) => write!(f, "PathBuf set-extension failed: {}", e),
+            Self::NoFileStem => write!(f, "cannot set extension on a path with no file stem"),
+            Self::SeparatorInPath => write!(f, "extension cannot contain path separators"),
+        }
+    }
+}
+
+/// Error returned by [`TryPathBuf::try_add_extension`].
+pub enum TryPathBufAddExtensionError {
+    /// A capacity reservation failed (overflow or OOM).
+    Reserve(TryReserveError),
+    /// The provided extension contains a path separator.
+    SeparatorInPath,
+}
+
+impl fmt::Debug for TryPathBufAddExtensionError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        TryDebug::try_fmt(self, f)
+    }
+}
+
+impl fmt::Display for TryPathBufAddExtensionError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        TryDisplay::try_fmt(self, f)
+    }
+}
+
+impl From<TryReserveError> for TryPathBufAddExtensionError {
+    fn from(err: TryReserveError) -> Self {
+        Self::Reserve(err)
+    }
+}
+
+impl TryDebug for TryPathBufAddExtensionError {
+    fn try_fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Reserve(e) => f
+                .try_debug_tuple("TryPathBufAddExtensionError::Reserve")
+                .field(e)
+                .finish(),
+            Self::SeparatorInPath => f
+                .try_debug_tuple("TryPathBufAddExtensionError::SeparatorInPath")
+                .finish(),
+        }
+    }
+}
+
+impl TryDisplay for TryPathBufAddExtensionError {
+    fn try_fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Reserve(e) => write!(f, "PathBuf add-extension failed: {}", e),
+            Self::SeparatorInPath => write!(f, "extension cannot contain path separators"),
         }
     }
 }
@@ -92,13 +142,13 @@ pub trait TryPathBuf: Sized {
     /// Fallibly construct a new empty `PathBuf`.
     ///
     /// This never fails since an empty `PathBuf` requires no allocation.
-    fn try_new() -> Result<PathBuf, TryPathBufError>;
+    fn try_new() -> Result<PathBuf, TryReserveError>;
 
     /// Fallibly construct a `PathBuf` from any value that references a [`Path`].
     ///
     /// Accepts `&Path`, `&PathBuf`, `&str`, `&OsStr`, or anything else implementing
-    /// [`AsRef<Path>`]. Returns [`TryPathBufError::Reserve`] if the allocation fails.
-    fn try_from_path<P: AsRef<Path>>(p: P) -> Result<PathBuf, TryPathBufError>;
+    /// [`AsRef<Path>`]. Returns [`TryReserveError`] if the allocation fails.
+    fn try_from_path<P: AsRef<Path>>(p: P) -> Result<PathBuf, TryReserveError>;
 
     // ── Mutation ────────────────────────────────────────────────────────────
 
@@ -107,16 +157,16 @@ pub trait TryPathBuf: Sized {
     /// If `path` is absolute, it replaces the current contents. Otherwise it is
     /// appended with a platform-specific separator.
     ///
-    /// Returns [`TryPathBufError::Reserve`] if growing the internal buffer fails.
-    fn try_push<P: AsRef<Path>>(&mut self, path: P) -> Result<(), TryPathBufError>;
+    /// Returns [`TryReserveError`] if growing the internal buffer fails.
+    fn try_push<P: AsRef<Path>>(&mut self, path: P) -> Result<(), TryReserveError>;
 
     /// Fallibly set the file name extension for this `PathBuf`.
     ///
-    /// Replaces any existing extension. Returns [`TryPathBufError::Reserve`] if
-    /// growing the internal buffer fails. Returns [`TryPathBufError::Other`] if
-    /// there is no file stem to attach the extension to, or if `ext` contains
-    /// path separators.
-    fn try_set_extension<E: AsRef<OsStr>>(&mut self, ext: E) -> Result<(), TryPathBufError>;
+    /// Replaces any existing extension. Fails with [`TryPathBufSetExtensionError::NoFileStem`]
+    /// if there is no file stem to attach the extension to, or
+    /// [`TryPathBufSetExtensionError::SeparatorInPath`] if `ext` contains path
+    /// separators.
+    fn try_set_extension<E: AsRef<OsStr>>(&mut self, ext: E) -> Result<(), TryPathBufSetExtensionError>;
 
     /// Fallibly append an extension to the file name of this `PathBuf`.
     ///
@@ -128,34 +178,43 @@ pub trait TryPathBuf: Sized {
     /// On success with a non-empty extension returns `Ok(true)`. An empty
     /// extension also returns `Ok(true)` but makes no modification.
     ///
-    /// Returns [`TryPathBufError::Reserve`] if growing the internal buffer fails.
-    /// Returns [`TryPathBufError::Other`] if `ext` contains path separators.
-    fn try_add_extension<E: AsRef<OsStr>>(&mut self, ext: E) -> Result<bool, TryPathBufError>;
+    /// Fails with [`TryPathBufAddExtensionError::SeparatorInPath`] if `ext` contains
+    /// path separators.
+    fn try_add_extension<E: AsRef<OsStr>>(
+        &mut self,
+        ext: E,
+    ) -> Result<bool, TryPathBufAddExtensionError>;
 
     // ── Aliases with `fallible_` prefix ────────────────────────────────────
 
     /// Alias for [`Self::try_new`].
-    fn fallible_new() -> Result<PathBuf, TryPathBufError> {
+    fn fallible_new() -> Result<PathBuf, TryReserveError> {
         Self::try_new()
     }
 
     /// Alias for [`Self::try_from_path`].
-    fn fallible_from_path<P: AsRef<Path>>(p: P) -> Result<PathBuf, TryPathBufError> {
+    fn fallible_from_path<P: AsRef<Path>>(p: P) -> Result<PathBuf, TryReserveError> {
         Self::try_from_path(p)
     }
 
     /// Alias for [`Self::try_push`].
-    fn fallible_push<P: AsRef<Path>>(&mut self, path: P) -> Result<(), TryPathBufError> {
+    fn fallible_push<P: AsRef<Path>>(&mut self, path: P) -> Result<(), TryReserveError> {
         Self::try_push(self, path)
     }
 
     /// Alias for [`Self::try_set_extension`].
-    fn fallible_set_extension<E: AsRef<OsStr>>(&mut self, ext: E) -> Result<(), TryPathBufError> {
+    fn fallible_set_extension<E: AsRef<OsStr>>(
+        &mut self,
+        ext: E,
+    ) -> Result<(), TryPathBufSetExtensionError> {
         Self::try_set_extension(self, ext)
     }
 
     /// Alias for [`Self::try_add_extension`].
-    fn fallible_add_extension<E: AsRef<OsStr>>(&mut self, ext: E) -> Result<bool, TryPathBufError> {
+    fn fallible_add_extension<E: AsRef<OsStr>>(
+        &mut self,
+        ext: E,
+    ) -> Result<bool, TryPathBufAddExtensionError> {
         Self::try_add_extension(self, ext)
     }
 }
@@ -347,62 +406,59 @@ fn truncate_to_prefix(target: &mut PathBuf, prefix_len: usize) {
 }
 
 impl TryPathBuf for PathBuf {
-    fn try_new() -> Result<PathBuf, TryPathBufError> {
+    fn try_new() -> Result<PathBuf, TryReserveError> {
         Ok(PathBuf::new())
     }
 
-    fn try_from_path<P: AsRef<Path>>(p: P) -> Result<PathBuf, TryPathBufError> {
+    fn try_from_path<P: AsRef<Path>>(p: P) -> Result<PathBuf, TryReserveError> {
         let p = p.as_ref();
         let mut out = PathBuf::new();
         let os = out.as_mut_os_string();
         let needed = p.as_os_str().len();
         if needed > 0 {
-            os.try_reserve(needed).map_err(TryPathBufError::Reserve)?;
+            os.try_reserve(needed)?;
         }
         os.push(p.as_os_str());
         Ok(out)
     }
 
-    fn try_push<P: AsRef<Path>>(&mut self, path: P) -> Result<(), TryPathBufError> {
+    fn try_push<P: AsRef<Path>>(&mut self, path: P) -> Result<(), TryReserveError> {
         let path = path.as_ref();
-        inner_push(self, path).map_err(TryPathBufError::Reserve)?;
+        inner_push(self, path)?;
         Ok(())
     }
 
-    fn try_set_extension<E: AsRef<OsStr>>(&mut self, ext: E) -> Result<(), TryPathBufError> {
+    fn try_set_extension<E: AsRef<OsStr>>(&mut self, ext: E) -> Result<(), TryPathBufSetExtensionError> {
         let ext = ext.as_ref();
         if self.file_stem().is_none() {
-            return Err(TryPathBufError::Other(
-                "cannot set extension on a path with no file stem",
-            ));
+            return Err(TryPathBufSetExtensionError::NoFileStem);
         }
         for &b in ext.as_encoded_bytes() {
             if is_separator(b as char) {
-                return Err(TryPathBufError::Other(
-                    "extension cannot contain path separators",
-                ));
+                return Err(TryPathBufSetExtensionError::SeparatorInPath);
             }
         }
         // Reserve room for the dot and extension.
         if !ext.is_empty() {
             let needed = ext.len().checked_add(1).ok_or_else(|| {
-                TryPathBufError::Reserve(TryReserveErrorExt::new_capacity_overflow())
+                TryPathBufSetExtensionError::Reserve(TryReserveErrorExt::new_capacity_overflow())
             })?;
-            self.try_reserve(needed).map_err(TryPathBufError::Reserve)?;
+            self.try_reserve(needed).map_err(TryPathBufSetExtensionError::Reserve)?;
         }
         self.set_extension(ext);
         Ok(())
     }
 
-    fn try_add_extension<E: AsRef<OsStr>>(&mut self, ext: E) -> Result<bool, TryPathBufError> {
+    fn try_add_extension<E: AsRef<OsStr>>(
+        &mut self,
+        ext: E,
+    ) -> Result<bool, TryPathBufAddExtensionError> {
         let ext = ext.as_ref();
 
         // Validate: extension must not contain path separators.
         for &b in ext.as_encoded_bytes() {
             if is_separator(b as char) {
-                return Err(TryPathBufError::Other(
-                    "extension cannot contain path separators",
-                ));
+                return Err(TryPathBufAddExtensionError::SeparatorInPath);
             }
         }
 
@@ -441,12 +497,14 @@ impl TryPathBuf for PathBuf {
         let needed = ext
             .len()
             .checked_add(1)
-            .ok_or_else(|| TryPathBufError::Reserve(TryReserveErrorExt::new_capacity_overflow()))?
+            .ok_or_else(|| {
+                TryPathBufAddExtensionError::Reserve(TryReserveErrorExt::new_capacity_overflow())
+            })?
             .saturating_sub(bytes_to_truncate);
         if needed > 0 {
             self.as_mut_os_string()
                 .try_reserve(needed)
-                .map_err(TryPathBufError::Reserve)?;
+                .map_err(TryPathBufAddExtensionError::Reserve)?;
         }
 
         // OsString::truncate is unstable, so we swap out the bytes, truncate
@@ -734,14 +792,14 @@ mod tests {
     fn try_set_extension_no_stem_fails() {
         let mut p = PathBuf::try_from_path(".").unwrap();
         let result = p.try_set_extension("txt");
-        assert!(matches!(result, Err(TryPathBufError::Other(_))));
+        assert!(matches!(result, Err(TryPathBufSetExtensionError::NoFileStem)));
     }
 
     #[test]
     fn try_set_extension_root_fails() {
         let mut p = PathBuf::try_from_path("/").unwrap();
         let result = p.try_set_extension("txt");
-        assert!(matches!(result, Err(TryPathBufError::Other(_))));
+        assert!(matches!(result, Err(TryPathBufSetExtensionError::NoFileStem)));
     }
 
     // ── Add Extension ────────────────────────────────────────────────────────
@@ -821,14 +879,14 @@ mod tests {
     fn add_extension_rejects_separator() {
         let mut p = PathBuf::try_from_path("file").unwrap();
         let result = p.try_add_extension("a/b");
-        assert!(matches!(result, Err(TryPathBufError::Other(_))));
+        assert!(matches!(result, Err(TryPathBufAddExtensionError::SeparatorInPath)));
     }
 
     #[test]
     fn set_extension_rejects_separator() {
         let mut p = PathBuf::try_from_path("file.txt").unwrap();
         let result = p.try_set_extension("a/b");
-        assert!(matches!(result, Err(TryPathBufError::Other(_))));
+        assert!(matches!(result, Err(TryPathBufSetExtensionError::SeparatorInPath)));
     }
 
     // ── TryClone ─────────────────────────────────────────────────────────────
@@ -898,7 +956,7 @@ mod tests {
 
     #[test]
     fn pathbuf_try_from_path_fails_on_oom() {
-        let r: Result<PathBuf, TryPathBufError> =
+        let r: Result<PathBuf, TryReserveError> =
             with_policy(FailPolicy::fail_next_alloc(), || {
                 <PathBuf as TryPathBuf>::try_from_path("/some/path")
             });
@@ -949,13 +1007,13 @@ mod tests {
 
     #[test]
     fn pathbuf_oom_restores_allocation_afterwards() {
-        let r: Result<PathBuf, TryPathBufError> =
+        let r: Result<PathBuf, TryReserveError> =
             with_policy(FailPolicy::fail_next_alloc(), || {
                 <PathBuf as TryPathBuf>::try_from_path("/x")
             });
         assert!(r.is_err());
         // Allocation works again after guard scope ends.
-        let r: Result<PathBuf, TryPathBufError> = <PathBuf as TryPathBuf>::try_from_path("/y");
+        let r: Result<PathBuf, TryReserveError> = <PathBuf as TryPathBuf>::try_from_path("/y");
         assert!(r.is_ok());
     }
 
