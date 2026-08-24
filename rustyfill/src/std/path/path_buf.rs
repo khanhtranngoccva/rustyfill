@@ -1252,7 +1252,16 @@ mod tests {
             );
         }
 
-        // FIXME: needs to account for non-Linux path separators
+        /// The platform's main separator as a single byte (always ASCII on all
+        /// supported platforms), used to build expected rendered bytes.
+        const SEP: u8 = MAIN_SEPARATOR_STR.as_bytes()[0];
+
+        /// Build an expected rendered path from a `/`-separated template,
+        /// substituting the platform's main separator.
+        fn sep_path(template: &str) -> Vec<u8> {
+            template.bytes().map(|b| if b == b'/' { SEP } else { b }).collect()
+        }
+
         #[test]
         fn append_normalized_plain_append() {
             let mut buf = comps_of("a");
@@ -1260,18 +1269,16 @@ mod tests {
             assert_eq!(buf, comps_of("a/b/c"));
         }
 
-        // FIXME: needs to account for non-Linux path separators
         #[test]
         fn render_components_inserts_separators() {
             let rendered = render_components(comps_of("a/b/c")).unwrap();
-            assert_eq!(rendered.as_encoded_bytes(), b"a/b/c");
+            assert_eq!(rendered.as_encoded_bytes(), sep_path("a/b/c").as_slice());
         }
 
-        // FIXME: needs to account for non-Linux path separators
         #[test]
         fn render_components_leading_root_has_no_double_sep() {
             let rendered = render_components(comps_of("/a/b")).unwrap();
-            assert_eq!(rendered.as_encoded_bytes(), b"/a/b");
+            assert_eq!(rendered.as_encoded_bytes(), sep_path("/a/b").as_slice());
         }
 
         #[test]
@@ -1290,7 +1297,7 @@ mod tests {
             let mut buf = comps_of("a/b/c");
             append_normalized(&mut buf, Path::new("../d")).unwrap();
             let rendered = render_components(buf).unwrap();
-            assert_eq!(rendered.as_encoded_bytes(), b"a/b/d");
+            assert_eq!(rendered.as_encoded_bytes(), sep_path("a/b/d").as_slice());
         }
 
         #[test]
