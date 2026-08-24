@@ -1,14 +1,18 @@
 //! Test-time global allocator that intercepts allocation calls and can be
 //! instructed via thread-local state to return null, simulating OOM conditions.
 //!
-//! This crate installs a custom `#[global_allocator]`
-//! at compile time — it is intended as a **dev-dependency** only. Do not depend on
-//! it in production code.
-
-// On nightly with `rustyfill/allocator-api`, the real `core::alloc::AllocError`
-// is re-exported; we need the same feature gate to name it in test signatures.
-#![cfg_attr(nightly_compiler, feature(allocator_api))]
-
+//! This crate provides [`TestAllocator`] which downstream crates must install
+//! themselves via `#[global_allocator]` in their test harness or binary:
+//!
+//! ```ignore
+//! #[cfg(test)]
+//! #[global_allocator]
+//! static GLOBAL: rustyfill_test_allocator::TestAllocator =
+//!     rustyfill_test_allocator::TestAllocator;
+//! ```
+//!
+//! It is intended as a **dev-dependency** only. Do not depend on it in
+//! production code.
 use std::alloc::{GlobalAlloc, Layout, System};
 use std::cell::Cell;
 use std::marker::PhantomData;
@@ -140,7 +144,10 @@ pub fn with_policy<R>(policy: FailPolicy, f: impl FnOnce() -> R) -> R {
 
 /// Wraps the system allocator and returns null when the current thread-local
 /// policy dictates, delegating everything else to [`System`].
-struct TestAllocator;
+///
+/// Downstream crates must install this as their `#[global_allocator]` in test
+/// code or binaries that need OOM simulation.
+pub struct TestAllocator;
 
 unsafe impl GlobalAlloc for TestAllocator {
     unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
@@ -200,9 +207,6 @@ fn check_should_fail_realloc() -> bool {
         n + 1 == at
     })
 }
-
-#[global_allocator]
-static GLOBAL: TestAllocator = TestAllocator;
 
 // ── Guard ─────────────────────────────────────────────────────────────────────
 
@@ -279,6 +283,11 @@ impl Drop for FailAllocGuard {
 }
 
 // ── Unit tests ────────────────────────────────────────────────────────────────
+
+// Install the OOM-simulating test allocator for this crate's own unit tests.
+#[cfg(test)]
+#[global_allocator]
+static GLOBAL: TestAllocator = TestAllocator;
 
 #[cfg(test)]
 mod tests {

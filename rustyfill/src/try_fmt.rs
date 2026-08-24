@@ -804,8 +804,7 @@ macro_rules! upperexp_passthrough {
 // Data is constructed OUTSIDE with_policy() so that only formatting is tested
 // under OOM conditions, not allocation during setup.
 
-#[cfg(test)]
-#[allow(clippy::needless_borrows_for_generic_args)]
+#[cfg(all(test, feature = "std"))]
 mod oom_tests {
     use super::*;
     use crate::try_fmt::{TryDebug, TryDisplay};

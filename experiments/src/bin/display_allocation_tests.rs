@@ -1,5 +1,12 @@
 use experiments::display_allocation_tests;
 use experiments::display_allocation_tests::TestResult;
+use rustyfill_test_allocator::TestAllocator;
+
+// Install the OOM-simulating test allocator. Child processes re-execute this
+// binary (see `run_in_child`), so they inherit the same global allocator and
+// `FailAllocGuard` works in both runner and child modes.
+#[global_allocator]
+static GLOBAL: TestAllocator = TestAllocator;
 
 fn main() {
     let args: Vec<String> = std::env::args().collect();

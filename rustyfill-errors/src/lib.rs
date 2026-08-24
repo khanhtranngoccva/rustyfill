@@ -97,3 +97,9 @@ impl Default for ForceForwardSlashes {
         Self::new()
     }
 }
+
+// Install the OOM-simulating test allocator for this crate's own unit tests.
+// Requires `std` because the failure-policy hooks are thread-local (std-only).
+#[cfg(all(test, feature = "std"))]
+#[global_allocator]
+static GLOBAL: rustyfill_test_allocator::TestAllocator = rustyfill_test_allocator::TestAllocator;

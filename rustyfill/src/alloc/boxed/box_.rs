@@ -427,5 +427,144 @@ mod tests {
         let _pinned: Pin<Box<i32>> = Box::<i32>::fallible_pin_give_back(42).unwrap();
     }
 
-    // FIXME: missing OOM tests
+    // ── OOM tests ─────────────────────────────────────────────────────────────
+    #[cfg(feature = "std")]
+    mod oom {
+        use super::*;
+        use rustyfill_test_allocator::{FailPolicy, with_policy};
+
+        #[test]
+        fn box_try_new_fails_on_oom() {
+            let r: Result<Box<i32>, AllocError> =
+                with_policy(FailPolicy::fail_next_alloc(), || {
+                    Box::<i32>::fallible_new(42)
+                });
+            assert!(r.is_err());
+        }
+
+        #[test]
+        fn box_try_new_zst_succeeds_under_oom() {
+            // ZST boxes never actually allocate.
+            let r: Result<Box<()>, AllocError> =
+                with_policy(
+                    FailPolicy::fail_next_alloc(),
+                    || Box::<()>::fallible_new(()),
+                );
+            assert!(r.is_ok());
+        }
+
+        #[test]
+        fn box_try_new_uninit_fails_on_oom() {
+            let r: Result<Box<MaybeUninit<u64>>, AllocError> =
+                with_policy(FailPolicy::fail_next_alloc(), || {
+                    Box::<u64>::fallible_new_uninit()
+                });
+            assert!(r.is_err());
+        }
+
+        #[test]
+        fn box_try_new_zeroed_fails_on_oom() {
+            let r: Result<Box<MaybeUninit<[u8; 8]>>, AllocError> =
+                with_policy(FailPolicy::fail_next_alloc(), || {
+                    Box::<[u8; 8]>::fallible_new_zeroed()
+                });
+            assert!(r.is_err());
+        }
+
+        #[test]
+        fn box_try_new_give_back_recovers_value_on_oom() {
+            let val = String::from("give me back");
+            let r: Result<Box<String>, (String, AllocError)> =
+                with_policy(FailPolicy::fail_next_alloc(), || {
+                    Box::<String>::try_new_give_back(val)
+                });
+            match r {
+                Err((recovered, _)) => assert_eq!(recovered, "give me back"),
+                Ok(_) => panic!("expected allocation to fail under OOM policy"),
+            }
+        }
+
+        #[test]
+        fn box_try_pin_fails_on_oom() {
+            let r: Result<Pin<Box<i32>>, AllocError> =
+                with_policy(FailPolicy::fail_next_alloc(), || Box::<i32>::try_pin(7));
+            assert!(r.is_err());
+        }
+
+        #[test]
+        fn box_try_pin_give_back_recovers_value_on_oom() {
+            let val = vec![1, 2, 3];
+            let r: PinBoxResult<Vec<i32>> = with_policy(FailPolicy::fail_next_alloc(), || {
+                Box::<Vec<i32>>::try_pin_give_back(val)
+            });
+            match r {
+                Err((recovered, _)) => assert_eq!(recovered, vec![1, 2, 3]),
+                Ok(_) => panic!("expected allocation to fail under OOM policy"),
+            }
+        }
+
+        #[test]
+        fn box_try_clone_fails_on_oom() {
+            let orig: Box<i32> = Box::new(42);
+            let r: Result<Box<i32>, TryCloneError> =
+                with_policy(FailPolicy::fail_next_alloc(), || orig.try_clone());
+            assert!(r.is_err());
+        }
+
+        #[test]
+        fn box_try_clone_zst_succeeds_under_oom() {
+            let orig: Box<()> = Box::new(());
+            let r: Result<Box<()>, TryCloneError> =
+                with_policy(FailPolicy::fail_next_alloc(), || orig.try_clone());
+            assert!(r.is_ok());
+        }
+
+        #[test]
+        fn box_try_default_fails_on_oom() {
+            let r: Result<Box<i32>, TryDefaultError> =
+                with_policy(FailPolicy::fail_next_alloc(), Box::<i32>::try_default);
+            assert!(r.is_err());
+        }
+
+        #[test]
+        fn box_oom_restores_allocation_afterwards() {
+            let r: Result<Box<i32>, AllocError> =
+                with_policy(FailPolicy::fail_next_alloc(), || {
+                    Box::<i32>::fallible_new(1)
+                });
+            assert!(r.is_err());
+            // Allocation works again after the policy scope ends.
+            let r = Box::<i32>::fallible_new(2);
+            assert!(r.is_ok());
+            assert_eq!(*r.unwrap(), 2);
+        }
+
+        #[test]
+        fn box_nth_alloc_fail_targets_correct_call() {
+            // The first fallible_new consumes the 1st allocation; the second
+            // hits the failing 2nd one.
+            let (r1_ok, r2_err) = with_policy(FailPolicy::fail_nth_alloc(2), || {
+                let r1: Result<Box<i32>, AllocError> = Box::<i32>::fallible_new(1);
+                let r2: Result<Box<i32>, AllocError> = Box::<i32>::fallible_new(2);
+                (r1.is_ok(), r2.is_err())
+            });
+            assert!(r1_ok, "first allocation should succeed");
+            assert!(r2_err, "second allocation should fail");
+        }
+
+        #[test]
+        fn box_nth_alloc_fail_hits_second_of_three_calls() {
+            // A ZST box never allocates, so it does not advance the counter —
+            // use a real allocation to consume slot 1 instead.
+            let (r1_ok, r2_err, r3_ok) = with_policy(FailPolicy::fail_nth_alloc(2), || {
+                let r1: Result<Box<u8>, AllocError> = Box::<u8>::fallible_new(0);
+                let r2: Result<Box<u8>, AllocError> = Box::<u8>::fallible_new(1);
+                let r3: Result<Box<u8>, AllocError> = Box::<u8>::fallible_new(2);
+                (r1.is_ok(), r2.is_err(), r3.is_ok())
+            });
+            assert!(r1_ok, "first allocation should succeed");
+            assert!(r2_err, "second allocation should fail");
+            assert!(r3_ok, "third allocation should succeed");
+        }
+    }
 }

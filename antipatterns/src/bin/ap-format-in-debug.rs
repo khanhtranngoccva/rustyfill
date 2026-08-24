@@ -17,7 +17,12 @@
 
 use std::fmt;
 
-use rustyfill_test_allocator::FailAllocGuard;
+use rustyfill_test_allocator::{FailAllocGuard, TestAllocator};
+
+// Install the OOM-simulating test allocator so `FailAllocGuard` can intercept
+// allocation calls made by this binary.
+#[global_allocator]
+static GLOBAL: TestAllocator = TestAllocator;
 
 // ── Antipattern type ───────────────────────────────────────────────────────────
 

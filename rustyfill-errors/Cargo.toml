@@ -14,5 +14,8 @@ std = ["rustyfill/std"]
 [dependencies]
 rustyfill = { workspace = true }
 
+[dev-dependencies]
+rustyfill-test-allocator = { workspace = true }
+
 [build-dependencies]
 cargo-build = { workspace = true }
