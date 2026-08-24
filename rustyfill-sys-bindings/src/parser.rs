@@ -1357,6 +1357,86 @@ fn strip_visibility_prefix(trimmed: &str) -> &str {
     trimmed
 }
 
+/// Result of collecting an item's full text from the line buffer.
+enum CollectedItem {
+    /// Successfully collected; `0` is the joined text, `1` is the next line index.
+    Done(String, usize),
+    /// Item was unterminated (ran off end of file); skip to the given index.
+    Skipped(usize),
+}
+
+/// Collect the full text of a top-level item starting at line `start`,
+/// including preceding attribute lines. Returns the joined text and the
+/// index of the next line to process, or `Skipped` if the item ran off
+/// the end of the file without a terminator.
+fn collect_item_text(lines: &[&str], start: usize, kind: ItemKind) -> CollectedItem {
+    // Include preceding attributes
+    let mut attr_start = start;
+    while attr_start > 0 {
+        let prev = lines[attr_start - 1].trim();
+        if prev.starts_with('#') {
+            attr_start -= 1;
+        } else {
+            break;
+        }
+    }
+
+    if kind == ItemKind::Const || kind == ItemKind::TypeAlias {
+        let mut item_lines: Vec<&str> = lines[attr_start..=start.min(lines.len() - 1)].to_vec();
+        let mut j = start + 1;
+        let mut found_semi = lines[start].contains(';');
+        while j < lines.len() && !found_semi {
+            item_lines.push(lines[j]);
+            if lines[j].contains(';') {
+                found_semi = true;
+            }
+            j += 1;
+        }
+        CollectedItem::Done(item_lines.join("\n"), j)
+    } else {
+        let mut item_lines: Vec<&str> = Vec::new();
+        let mut terminated = false;
+        let mut brace_depth = 0usize;
+        let mut saw_brace = false;
+        let mut next_i = lines.len();
+
+        for (j, line) in lines.iter().enumerate().skip(attr_start) {
+            item_lines.push(*line);
+            for ch in line.chars() {
+                match ch {
+                    '{' => {
+                        brace_depth += 1;
+                        saw_brace = true;
+                    }
+                    '}' => {
+                        if saw_brace {
+                            brace_depth = brace_depth.saturating_sub(1);
+                        }
+                    }
+                    ';' if !saw_brace => {
+                        next_i = j + 1;
+                        terminated = true;
+                        break;
+                    }
+                    _ => {}
+                }
+            }
+            if terminated {
+                break;
+            }
+            if saw_brace && brace_depth == 0 {
+                next_i = j + 1;
+                terminated = true;
+                break;
+            }
+        }
+        if !terminated {
+            return CollectedItem::Skipped(lines.len());
+        }
+        CollectedItem::Done(item_lines.join("\n"), next_i)
+    }
+}
+
 /// Text-based fallback scanner for extracting struct/enum/union/type/const
 /// declarations from a Rust source file when syn::parse_file fails.
 ///
@@ -1436,90 +1516,15 @@ fn text_scan_source(source: &str, cfg: &CfgContext) -> TextScanResult {
         };
 
         if let Some(kind) = kind {
-            // Collect the full item text including attributes above it
-            let item_text;
-
-            // Include preceding attributes
-            let mut attr_start = i;
-            while attr_start > 0 {
-                let prev = lines[attr_start - 1].trim();
-                if prev.starts_with('#') {
-                    attr_start -= 1;
-                } else {
-                    break;
-                }
-            }
-
-            // For const/type, the item is typically one line (ends with ;)
-            if kind == ItemKind::Const || kind == ItemKind::TypeAlias {
-                // Collect until we find a semicolon
-                let mut item_lines = Vec::new();
-                for line in lines.iter().take(i + 1).skip(attr_start) {
-                    item_lines.push(*line);
-                }
-                // Continue collecting multi-line const/type defs
-                let mut j = i + 1;
-                let mut found_semi = lines[i].contains(';');
-                while j < lines.len() && !found_semi {
-                    item_lines.push(lines[j]);
-                    if lines[j].contains(';') {
-                        found_semi = true;
-                    }
-                    j += 1;
-                }
-                item_text = item_lines.join("\n");
-                i = j;
-            } else {
-                // For struct/enum/union there are two shapes:
-                //   - Unit items ending in `;` (e.g. `pub struct Foo<T>;`)
-                //   - Braced items ending at the matching `}` (field/tuple structs, enums, unions)
-                // Detect which by scanning forward for the first terminating `;` or `{`.
-                // A naive "collect until balanced brace" approach would swallow every
-                // subsequent top-level item when the declaration is a unit struct,
-                // because no opening brace ever appears on the declaration itself.
-                let mut item_lines = Vec::new();
-                let mut terminated = false;
-                let mut brace_depth = 0usize;
-                let mut saw_brace = false;
-
-                for (j, line) in lines.iter().enumerate().skip(attr_start) {
-                    item_lines.push(*line);
-                    for ch in line.chars() {
-                        match ch {
-                            '{' => {
-                                brace_depth += 1;
-                                saw_brace = true;
-                            }
-                            '}' => {
-                                if saw_brace {
-                                    brace_depth = brace_depth.saturating_sub(1);
-                                }
-                            }
-                            ';' if !saw_brace => {
-                                // Unit struct/enum/union: declaration ends here.
-                                i = j + 1;
-                                terminated = true;
-                                break;
-                            }
-                            _ => {}
-                        }
-                    }
-                    if terminated {
-                        break;
-                    }
-                    if saw_brace && brace_depth == 0 {
-                        i = j + 1;
-                        terminated = true;
-                        break;
-                    }
-                }
-                if !terminated {
-                    // Ran off the end of the file without finding a terminator.
-                    i = lines.len();
+            let collected = collect_item_text(&lines, i, kind);
+            let (item_text, next_i) = match collected {
+                CollectedItem::Done(text, next) => (text, next),
+                CollectedItem::Skipped(next) => {
+                    i = next;
                     continue;
                 }
-                item_text = item_lines.join("\n");
-            }
+            };
+            i = next_i;
 
             // Try to parse as tokens
             if let Ok(tokens) = item_text.parse::<TokenStream>() {
@@ -1529,9 +1534,6 @@ fn text_scan_source(source: &str, cfg: &CfgContext) -> TextScanResult {
                 } else {
                     ItemVisibility::Private
                 };
-                // For text-scanned type aliases, extract the RHS (everything
-                // after `=` up to the terminating `;`) so declared-alias
-                // mirroring works even when syn can't parse the whole file.
                 let alias_rhs = if kind == ItemKind::TypeAlias {
                     let text = item_text.to_string();
                     text.split_once('=')

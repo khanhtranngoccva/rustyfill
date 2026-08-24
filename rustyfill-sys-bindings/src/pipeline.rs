@@ -247,273 +247,16 @@ pub fn generate(input: &PipelineInput<'_>) -> GenerateOutcome {
     }
 
     // ── Phase 1c: Discover modules referenced by use statements ─────────────
-    let mut import_discovered: HashSet<String> = HashSet::new();
-    for target in &spec.targets {
-        let lib_src = rust_src.join(&target.lib_name).join("src");
-
-        let active_decls = target.active_declarations(cfg);
-        let declared_roots: Vec<String> = active_decls
-            .iter()
-            .map(|d| d.replace("::", "/"))
-            .filter(|p| p.ends_with(".rs") || !p.contains(".rs"))
-            .map(|p| p.strip_suffix(".rs").unwrap_or(p.as_str()).to_string())
-            .collect();
-        let roots_in_scope = |parts: &[String]| -> bool {
-            let joined = parts.join("/");
-            let part_count = parts.len();
-            declared_roots.iter().any(|root| {
-                if joined == *root || joined.starts_with(&format!("{root}/")) {
-                    return true;
-                }
-                let root_segs: Vec<&str> = root.split('/').filter(|s| !s.is_empty()).collect();
-                if part_count <= root_segs.len() {
-                    let tail = &root_segs[root_segs.len() - part_count..];
-                    if tail.iter().zip(parts.iter()).all(|(a, b)| *a == b.as_str()) {
-                        return true;
-                    }
-                }
-                false
-            })
-        };
-
-        loop {
-            let mut newly_found: Vec<String> = Vec::new();
-            let known_dirs: HashSet<&str> = parsed_cache
-                .keys()
-                .filter_map(|p| p.rsplit_once('/'))
-                .map(|(dir, _)| dir)
-                .collect();
-
-            for (parsed, _) in parsed_cache.values() {
-                for stmt in &parsed.use_statements {
-                    let (segs, is_glob) = match &stmt.kind {
-                        UseKind::Glob(pl) => (pl.segments.clone(), true),
-                        UseKind::Single(pl, _) => (pl.segments.clone(), false),
-                    };
-                    if segs.is_empty() {
-                        continue;
-                    }
-                    let mut mod_parts: Vec<String> = Vec::new();
-                    for seg in &segs {
-                        match seg {
-                            PathSegment::Super => continue,
-                            PathSegment::Crate => continue,
-                            PathSegment::Self_ => continue,
-                            PathSegment::Named(name) => mod_parts.push(name.clone()),
-                        }
-                    }
-                    if mod_parts.is_empty() {
-                        continue;
-                    }
-                    // A trailing `Self_` (from a `use ...::{self, ...}` entry)
-                    // binds the module itself under its own name: every segment
-                    // up to and including the last named one is a module path.
-                    // Without this, e.g. `use crate::sys::sync::futex::{self, ..}`
-                    // would never register `sys/sync/futex`, leaving preserved
-                    // qualifiers like `futex::SmallFutex` unresolvable.
-                    let is_self_binding = matches!(segs.last(), Some(PathSegment::Self_));
-                    let module_candidates = if is_glob || is_self_binding {
-                        vec![mod_parts.clone()]
-                    } else if mod_parts.len() > 1 {
-                        let mut without_last = mod_parts.clone();
-                        without_last.pop();
-                        vec![without_last, mod_parts.clone()]
-                    } else {
-                        vec![mod_parts.clone()]
-                    };
-
-                    for parts in module_candidates {
-                        let resolved = parts.join("/");
-                        if matches!(
-                            resolved.split('/').next().unwrap_or(""),
-                            "core" | "alloc" | "std"
-                        ) {
-                            continue;
-                        }
-                        let parent_known = match parts.last() {
-                            Some(_) if parts.len() > 1 => {
-                                let mut pd = parts.clone();
-                                pd.pop();
-                                known_dirs.contains(pd.join("/").as_str())
-                            }
-                            _ => false,
-                        };
-                        if !parent_known && !roots_in_scope(&parts) {
-                            continue;
-                        }
-                        for candidate in
-                            &[format!("{}/mod.rs", resolved), format!("{}.rs", resolved)]
-                        {
-                            if !import_discovered.insert(candidate.clone()) {
-                                continue;
-                            }
-                            if lib_src.join(candidate).exists() {
-                                newly_found.push(candidate.clone());
-                            }
-                        }
-                    }
-                }
-
-                // Also follow type-alias RHS references.
-                for item in &parsed.items {
-                    if item.kind != ItemKind::TypeAlias {
-                        continue;
-                    }
-                    let Some(rhs_ts) = &item.alias_rhs else {
-                        continue;
-                    };
-                    scan_alias_rhs_for_modules(
-                        &rhs_ts.to_string(),
-                        &roots_in_scope,
-                        &lib_src,
-                        &mut import_discovered,
-                        &mut newly_found,
-                    );
-                }
-            }
-
-            if newly_found.is_empty() {
-                break;
-            }
-
-            for fp in &newly_found {
-                let source_path = lib_src.join(fp);
-                if !source_path.exists() {
-                    continue;
-                }
-                if let Ok(source_text) = fs::read_to_string(&source_path) {
-                    let parsed = parse_source_with_cfg(&source_text, cfg);
-                    resolver.register_source(fp, parsed.clone());
-                }
-            }
-        }
-    }
+    discover_imported_modules(spec, rust_src, cfg, &mut resolver, &mut parsed_cache);
 
     // ── Phase 1d: Build the type registry ───────────────────────────────────
-    let mut registry = TypeRegistry::empty();
-    for target in &spec.targets {
-        let lib_prefix = format!("{}/", target.lib_name);
-        for (file_path, parsed) in resolver.registered_sources() {
-            if !file_path.starts_with(&lib_prefix) {
-                continue;
-            }
-            let module_path = resolver.file_to_module_path(file_path);
-            let exported_names = public_reexport_names(parsed, &module_path);
-            for item in &parsed.items {
-                let canonical = if module_path.is_empty() {
-                    format!("{}::{}", target.lib_name, item.name)
-                } else {
-                    format!(
-                        "{}::{}::{}",
-                        target.lib_name,
-                        module_path.replace('/', "::"),
-                        item.name
-                    )
-                };
-                let is_exported = exported_names.contains(&item.name);
-                registry.register(&canonical, item.visibility, is_exported, file_path);
-                if let Some(rhs) = &item.alias_rhs {
-                    registry.set_alias_rhs(&canonical, rhs.clone());
-                }
-            }
-            for (mod_name, mod_items) in &parsed.inline_modules {
-                let inline_module = if module_path.is_empty() {
-                    mod_name.clone()
-                } else {
-                    format!("{}/{}", module_path, mod_name)
-                };
-                let inline_canonical_base = inline_module.replace('/', "::");
-                for item in mod_items {
-                    let canonical = format!(
-                        "{}::{}::{}",
-                        target.lib_name, inline_canonical_base, item.name
-                    );
-                    let is_exported = exported_names.contains(&item.name);
-                    registry.register(&canonical, item.visibility, is_exported, file_path);
-                    if let Some(rhs) = &item.alias_rhs {
-                        registry.set_alias_rhs(&canonical, rhs.clone());
-                    }
-                }
-            }
-        }
-
-        let lib_src = rust_src.join(&target.lib_name).join("src");
-        let active_decls = target.active_declarations(cfg);
-        for decl in &active_decls {
-            let canonical = format!("{}::{}", target.lib_name, decl);
-            let leaf = decl.rsplit("::").next().unwrap_or("");
-            let mut found_item: Option<&ParsedItem> = None;
-            let def_file_rel = parsed_cache
-                .iter()
-                .find(|(_, (parsed, ln))| {
-                    ln == &target.lib_name && parsed.items.iter().any(|i| i.name == leaf)
-                })
-                .map(|(fp, (parsed, _))| {
-                    found_item = parsed.items.iter().find(|i| i.name == leaf);
-                    fp.clone()
-                })
-                .unwrap_or_else(|| decl.replace("::", "/") + ".rs");
-            let def_file_abs = lib_src.join(&def_file_rel).to_string_lossy().to_string();
-            registry.insert_declared(&canonical, &def_file_abs);
-            if let Some(item) = found_item
-                && item.kind == ItemKind::TypeAlias
-                && let Some(rhs) = &item.alias_rhs
-            {
-                registry.set_alias_rhs(&canonical, rhs.clone());
-            }
-        }
-
-        // Register spec-declared known external types at their canonical path so
-        // references route to them like any other mirrored type. Their definition
-        // is emitted as a standalone stub file (Phase 2), not parsed from source,
-        // so the def_file points at the generated stub's relative path.
-        for kt in &target.known_external_types {
-            let canonical = format!("{}::{}", target.lib_name, kt.path);
-            let segments: Vec<&str> = kt.path.split("::").collect();
-            let stub_rel = if segments.len() >= 2 {
-                format!("{}.rs", segments[..segments.len() - 1].join("/"))
-            } else {
-                continue;
-            };
-            registry.insert_declared(&canonical, &stub_rel);
-        }
-
-        // Register re-export-shim declarations.
-        for (decl, def_file) in &reexport_located {
-            if !def_file.ends_with(".rs") {
-                continue;
-            }
-            let leaf = decl.rsplit("::").next().unwrap_or("");
-            let Some((parsed, _ln)) = parsed_cache.get(def_file) else {
-                continue;
-            };
-            if !parsed.items.iter().any(|i| i.name == leaf) {
-                continue;
-            }
-            let mod_path = def_file
-                .strip_suffix(".rs")
-                .unwrap_or(def_file)
-                .replace('/', "::");
-            let alias_canonical = format!("{}::{}::{}", target.lib_name, mod_path, leaf);
-            let def_file_abs = lib_src.join(def_file).to_string_lossy().to_string();
-            registry.insert_declared_alias(&alias_canonical, &def_file_abs);
-        }
-
-        // ── Minimal-module mirroring for preserved qualifiers ───────────────
-        // Runs after the type registry is fully populated (including this
-        // target's declared types) so that field references route correctly.
-        // It also materializes re-export shims (Strategy B) for non-sibling
-        // preserved qualifiers, registering them with the resolver and the
-        // emitted-file sets used by later phases.
-        let mut sink = EmitSink {
-            resolver: &mut resolver,
-            parsed_cache: &mut parsed_cache,
-            registry: &mut registry,
-            emitted_canonicals: &mut emitted_canonicals,
-            all_files: &mut all_files,
-        };
-        mirror_minimal_modules(target, &lib_src, out_dir, cfg, &mut sink);
-    }
+    let mut reg_state = RegistryBuildState {
+        resolver: &mut resolver,
+        parsed_cache: &mut parsed_cache,
+        emitted_canonicals: &mut emitted_canonicals,
+        all_files: &mut all_files,
+    };
+    let registry = build_type_registry(spec, rust_src, cfg, &reexport_located, out_dir, &mut reg_state);
 
     // Materialize a re-export shim for any spec-declared type whose canonical
     // module has no emitted binding file of its own but whose concrete
@@ -552,135 +295,22 @@ pub fn generate(input: &PipelineInput<'_>) -> GenerateOutcome {
     // ── Phase 2: EMIT ───────────────────────────────────────────────────────
     let replacement_entries_slice = replacement_view(&replacement_entries);
     let mut emitted_paths: Vec<PathBuf> = Vec::new();
-
-    for (file_path, (parsed, lib_name)) in &parsed_cache {
-        if file_path.ends_with("/mod") || file_path == "mod" {
-            continue;
-        }
-        let depth = compute_module_depth(file_path);
-        let mut extra_uses = resolver.emit_use_statements_for_file(file_path, &ignored_name_refs);
-        // Prepend module-alias imports for preserved non-sibling qualifiers so
-        // references like `pal::Mutex` resolve without path rewriting.
-        // The key must match what was recorded: strip `.rs` and `/mod` suffixes.
-        let stem = file_path.strip_suffix(".rs").unwrap_or(file_path);
-        let module_key = stem.strip_suffix("/mod").unwrap_or(stem);
-        // Collect names already bound by the resolver's imports so we don't
-        // emit a conflicting alias.
-        let mut already_bound: std::collections::HashSet<String> = std::collections::HashSet::new();
-        for line in &extra_uses {
-            let trimmed = line
-                .trim()
-                .strip_prefix("#[allow(unused_imports)]")
-                .unwrap_or(line.trim())
-                .trim();
-            if let Some(body) = trimmed.strip_prefix("use ") {
-                let body = body.strip_suffix(';').unwrap_or(body);
-                if let Some((_, alias_name)) = body.rsplit_once(" as ") {
-                    already_bound.insert(alias_name.trim().to_string());
-                } else if !body.ends_with("::*")
-                    && let Some(last_seg) = body.rsplit_once(':').map(|(_, n)| n.trim())
-                {
-                    already_bound.insert(last_seg.to_string());
-                }
-            }
-        }
-        for (alias, crate_path) in registry.module_alias_routes(module_key) {
-            if already_bound.contains(alias) {
-                continue;
-            }
-            extra_uses.push(format!(
-                "#[allow(unused_imports)] use {crate_path} as {alias};"
-            ));
-        }
-        let siblings = get_sibling_modules(file_path, &all_files);
-        let emit_path = out_dir.join(file_path);
-
-        let target_ignored_structs = ignored_structs_by_lib
-            .get(lib_name)
-            .cloned()
-            .unwrap_or_default();
-        let target_extra_derives = extra_derives_by_lib
-            .get(lib_name)
-            .cloned()
-            .unwrap_or_default();
-
-        let has_content = emit_binding_file(
-            &emit_path,
-            &parsed.items,
-            &EmitConfig {
-                lib_name,
-                file_module_depth: depth,
-                extra_uses: &extra_uses,
-                sibling_modules: &siblings,
-                path_replacements: &replacement_entries_slice,
-                ignored_structs: &target_ignored_structs,
-                relative_file_path: file_path,
-                type_registry: &registry,
-                extra_derives: &target_extra_derives,
-            },
-        );
-
-        if has_content {
-            validator.check_emit(&emit_path);
-            emitted_paths.push(emit_path);
-            emitted_canonicals.insert(file_path.clone());
-            all_files.push((file_path.clone(), lib_name.clone()));
-        }
-
-        // Also emit inline modules.
-        for (mod_name, mod_items) in &parsed.inline_modules {
-            let inline_dir = if file_path.ends_with("/mod.rs") {
-                file_path.strip_suffix("/mod.rs").unwrap_or("")
-            } else {
-                file_path.strip_suffix(".rs").unwrap_or(file_path.as_str())
-            };
-
-            let inline_rel_path = if inline_dir.is_empty() {
-                format!("{}/mod.rs", mod_name)
-            } else {
-                format!("{}/{}/mod.rs", inline_dir, mod_name)
-            };
-
-            let inline_emit_path = out_dir.join(&inline_rel_path);
-            let inline_depth = compute_module_depth(&inline_rel_path);
-            let mut inline_extra_uses =
-                resolver.emit_use_statements_for_file(&inline_rel_path, &ignored_name_refs);
-            for (alias, crate_path) in registry.module_alias_routes(&inline_rel_path) {
-                inline_extra_uses.push(format!(
-                    "#[allow(unused_imports)] use {crate_path} as {alias};"
-                ));
-            }
-            let inline_siblings = get_sibling_modules(&inline_rel_path, &all_files);
-            let inline_has_content = emit_binding_file(
-                &inline_emit_path,
-                mod_items,
-                &EmitConfig {
-                    lib_name,
-                    file_module_depth: inline_depth,
-                    extra_uses: &inline_extra_uses,
-                    sibling_modules: &inline_siblings,
-                    path_replacements: &replacement_entries_slice,
-                    ignored_structs: &target_ignored_structs,
-                    relative_file_path: &inline_rel_path,
-                    type_registry: &registry,
-                    extra_derives: &target_extra_derives,
-                },
-            );
-
-            if inline_has_content {
-                validator.check_emit(&inline_emit_path);
-                emitted_paths.push(inline_emit_path);
-                emitted_canonicals.insert(inline_rel_path.clone());
-                all_files.push((inline_rel_path.clone(), lib_name.clone()));
-            }
-        }
-    }
+    emit_all_binding_files(
+        &parsed_cache,
+        &mut resolver,
+        &registry,
+        &replacement_entries_slice,
+        &ignored_name_refs,
+        &ignored_structs_by_lib,
+        &extra_derives_by_lib,
+        out_dir,
+        &mut validator,
+        &mut emitted_paths,
+        &mut emitted_canonicals,
+        &mut all_files,
+    );
 
     // ── Phase 2b: Emit known-external-type stubs at their canonical location ─
-    // Each spec-declared known type gets a standalone binding file at its module
-    // path, carrying the hand-written stub body. These are registered in the
-    // manifest so they're part of the generated tree, and validated like any
-    // other emitted file.
     for target in &spec.targets {
         for kt in &target.known_external_types {
             if let Some(rel_path) = emit_known_type_stub(out_dir, kt) {
@@ -693,44 +323,15 @@ pub fn generate(input: &PipelineInput<'_>) -> GenerateOutcome {
     }
 
     // ── Phase 3: Discover and emit re-export aliases ────────────────────────
-    let mut discovered_aliases = HashSet::new();
-    for target in &spec.targets {
-        let active_decls = target.active_declarations(cfg);
-        for decl in &active_decls {
-            let leaf = decl.rsplit("::").next().unwrap_or("");
-            let def_file = parsed_cache
-                .iter()
-                .find(|(_, (parsed, ln))| {
-                    ln == &target.lib_name
-                        && (parsed.items.iter().any(|i| i.name == leaf)
-                            || parsed
-                                .inline_modules
-                                .iter()
-                                .any(|(_, items)| items.iter().any(|i| i.name == leaf)))
-                })
-                .map(|(fp, _)| fp.clone());
-            let Some(def_file) = def_file else { continue };
-
-            let parents = resolver.get_parent_module_paths(&def_file);
-            let all_related: Vec<String> = std::iter::once(def_file).chain(parents).collect();
-
-            for related_file in all_related {
-                let aliases = resolver.discover_reexport_aliases(&related_file);
-                for (alias_module, canonical_module) in aliases {
-                    let new_files = emit_glob_reexport_aliases(
-                        &mut resolver,
-                        &alias_module,
-                        &canonical_module,
-                        &target.lib_name,
-                        out_dir,
-                        &mut discovered_aliases,
-                        &emitted_canonicals,
-                    );
-                    all_files.extend(new_files);
-                }
-            }
-        }
-    }
+    let discovered_aliases = discover_and_emit_reexport_aliases(
+        spec,
+        cfg,
+        &parsed_cache,
+        &mut resolver,
+        out_dir,
+        &emitted_canonicals,
+        &mut all_files,
+    );
 
     // ── Phase 4: Emit hierarchical manifest ─────────────────────────────────
     emit_hierarchical_manifest(out_dir, &all_files);
@@ -805,6 +406,204 @@ fn collect_ignored_names(
     ignored_name_vec
 }
 
+/// Emit binding files for every parsed source file (and their inline modules),
+/// plus known-external-type stubs. Accumulates emitted paths and canonicals.
+#[allow(clippy::too_many_arguments)]
+fn emit_all_binding_files(
+    parsed_cache: &HashMap<String, (ParsedSource, String)>,
+    resolver: &mut ModuleResolver,
+    registry: &TypeRegistry,
+    replacement_entries_slice: &[(String, Option<&str>)],
+    ignored_name_refs: &[&str],
+    ignored_structs_by_lib: &HashMap<String, Vec<String>>,
+    extra_derives_by_lib: &HashMap<String, HashMap<String, Vec<String>>>,
+    out_dir: &Path,
+    validator: &mut crate::validator::ValidationBuilder,
+    emitted_paths: &mut Vec<PathBuf>,
+    emitted_canonicals: &mut HashSet<String>,
+    all_files: &mut Vec<(String, String)>,
+) {
+    for (file_path, (parsed, lib_name)) in parsed_cache {
+        if file_path.ends_with("/mod") || file_path == "mod" {
+            continue;
+        }
+        let depth = compute_module_depth(file_path);
+        let mut extra_uses = resolver.emit_use_statements_for_file(file_path, ignored_name_refs);
+        let stem = file_path.strip_suffix(".rs").unwrap_or(file_path.as_str());
+        let module_key = stem.strip_suffix("/mod").unwrap_or(stem);
+        let already_bound = collect_bound_names(&extra_uses);
+        for (alias, crate_path) in registry.module_alias_routes(module_key) {
+            if already_bound.contains(alias) {
+                continue;
+            }
+            extra_uses.push(format!(
+                "#[allow(unused_imports)] use {crate_path} as {alias};"
+            ));
+        }
+        let siblings = get_sibling_modules(file_path, all_files);
+        let emit_path = out_dir.join(file_path);
+
+        let target_ignored_structs = ignored_structs_by_lib
+            .get(lib_name)
+            .cloned()
+            .unwrap_or_default();
+        let target_extra_derives = extra_derives_by_lib
+            .get(lib_name)
+            .cloned()
+            .unwrap_or_default();
+
+        let has_content = emit_binding_file(
+            &emit_path,
+            &parsed.items,
+            &EmitConfig {
+                lib_name,
+                file_module_depth: depth,
+                extra_uses: &extra_uses,
+                sibling_modules: &siblings,
+                path_replacements: replacement_entries_slice,
+                ignored_structs: &target_ignored_structs,
+                relative_file_path: file_path,
+                type_registry: registry,
+                extra_derives: &target_extra_derives,
+            },
+        );
+
+        if has_content {
+            validator.check_emit(&emit_path);
+            emitted_paths.push(emit_path);
+            emitted_canonicals.insert(file_path.clone());
+            all_files.push((file_path.clone(), lib_name.clone()));
+        }
+
+        // Also emit inline modules.
+        for (mod_name, mod_items) in &parsed.inline_modules {
+            let inline_dir = if file_path.ends_with("/mod.rs") {
+                file_path.strip_suffix("/mod.rs").unwrap_or("")
+            } else {
+                file_path.strip_suffix(".rs").unwrap_or(file_path.as_str())
+            };
+
+            let inline_rel_path = if inline_dir.is_empty() {
+                format!("{}/mod.rs", mod_name)
+            } else {
+                format!("{}/{}/mod.rs", inline_dir, mod_name)
+            };
+
+            let inline_emit_path = out_dir.join(&inline_rel_path);
+            let inline_depth = compute_module_depth(&inline_rel_path);
+            let mut inline_extra_uses =
+                resolver.emit_use_statements_for_file(&inline_rel_path, ignored_name_refs);
+            for (alias, crate_path) in registry.module_alias_routes(&inline_rel_path) {
+                inline_extra_uses.push(format!(
+                    "#[allow(unused_imports)] use {crate_path} as {alias};"
+                ));
+            }
+            let inline_siblings = get_sibling_modules(&inline_rel_path, all_files);
+            let inline_has_content = emit_binding_file(
+                &inline_emit_path,
+                mod_items,
+                &EmitConfig {
+                    lib_name,
+                    file_module_depth: inline_depth,
+                    extra_uses: &inline_extra_uses,
+                    sibling_modules: &inline_siblings,
+                    path_replacements: replacement_entries_slice,
+                    ignored_structs: &target_ignored_structs,
+                    relative_file_path: &inline_rel_path,
+                    type_registry: registry,
+                    extra_derives: &target_extra_derives,
+                },
+            );
+
+            if inline_has_content {
+                validator.check_emit(&inline_emit_path);
+                emitted_paths.push(inline_emit_path);
+                emitted_canonicals.insert(inline_rel_path.clone());
+                all_files.push((inline_rel_path.clone(), lib_name.clone()));
+            }
+        }
+    }
+}
+
+/// Extract the set of names already bound by a list of `use` statement lines,
+/// so that module-alias imports can skip conflicting identifiers.
+fn collect_bound_names(use_lines: &[String]) -> HashSet<String> {
+    let mut already_bound = HashSet::new();
+    for line in use_lines {
+        let trimmed = line
+            .trim()
+            .strip_prefix("#[allow(unused_imports)]")
+            .unwrap_or(line.trim())
+            .trim();
+        if let Some(body) = trimmed.strip_prefix("use ") {
+            let body = body.strip_suffix(';').unwrap_or(body);
+            if let Some((_, alias_name)) = body.rsplit_once(" as ") {
+                already_bound.insert(alias_name.trim().to_string());
+            } else if !body.ends_with("::*")
+                && let Some(last_seg) = body.rsplit_once(':').map(|(_, n)| n.trim())
+            {
+                already_bound.insert(last_seg.to_string());
+            }
+        }
+    }
+    already_bound
+}
+
+// ── Re-export alias discovery (Phase 3) ─────────────────────────────────────
+
+/// For each active declaration, locate its defining file and all parent module
+/// files, discover re-export aliases from each, and emit glob re-export alias
+/// binding files. Returns the set of discovered alias modules.
+fn discover_and_emit_reexport_aliases(
+    spec: &LoaderSpec,
+    cfg: &CfgContext,
+    parsed_cache: &HashMap<String, (ParsedSource, String)>,
+    resolver: &mut ModuleResolver,
+    out_dir: &Path,
+    emitted_canonicals: &HashSet<String>,
+    all_files: &mut Vec<(String, String)>,
+) -> HashSet<String> {
+    let mut discovered_aliases = HashSet::new();
+    for target in &spec.targets {
+        let active_decls = target.active_declarations(cfg);
+        for decl in &active_decls {
+            let leaf = decl.rsplit("::").next().unwrap_or("");
+            let def_file = parsed_cache
+                .iter()
+                .find(|(_, (parsed, ln))| {
+                    ln == &target.lib_name
+                        && (parsed.items.iter().any(|i| i.name == leaf)
+                            || parsed
+                                .inline_modules
+                                .iter()
+                                .any(|(_, items)| items.iter().any(|i| i.name == leaf)))
+                })
+                .map(|(fp, _)| fp.clone());
+            let Some(def_file) = def_file else { continue };
+
+            let parents = resolver.get_parent_module_paths(&def_file);
+            let all_related: Vec<String> = std::iter::once(def_file).chain(parents).collect();
+
+            for related_file in all_related {
+                let aliases = resolver.discover_reexport_aliases(&related_file);
+                for (alias_module, canonical_module) in aliases {
+                    let new_files = emit_glob_reexport_aliases(
+                        resolver,
+                        &alias_module,
+                        &canonical_module,
+                        &target.lib_name,
+                        out_dir,
+                        &mut discovered_aliases,
+                        emitted_canonicals,
+                    );
+                    all_files.extend(new_files);
+                }
+            }
+        }
+    }
+    discovered_aliases
+}
+
 // ── Minimal-module mirroring ────────────────────────────────────────────────
 
 /// Mutable state that [`mirror_minimal_modules`] reads from and writes into as
@@ -840,87 +639,7 @@ fn mirror_minimal_modules(
 
     // Collect (module_ctx, lead, leaf) triples from every active declaration's
     // alias RHS and struct fields.
-    let active_decls = target.active_declarations(cfg);
-    let mut qual_refs: Vec<(String, Option<String>, String)> = Vec::new();
-    for decl in &active_decls {
-        let leaf = decl.rsplit("::").next().unwrap_or("");
-        // Match the declaration against its actual defining file using the full
-        // module path, not just the leaf name — several files may define a type
-        // with the same leaf (e.g. `Mutex` exists in both `sync/poison/mutex`
-        // and `sys/sync/mutex/futex`). The candidate file's module path must be
-        // either a prefix of the declaration's module path (definition sits in an
-        // ancestor / cfg-selected submodule, e.g. `sys/sync/mutex/futex.rs` for
-        // `sys::sync::mutex::Mutex`) or a suffix of it (inline-module layout).
-        let decl_mod: Vec<&str> = decl.split("::").collect();
-        let Some((def_file_rel, found_item)) = sink
-            .parsed_cache
-            .iter()
-            .find(|(fp, (parsed, ln))| {
-                if ln != &target.lib_name {
-                    return false;
-                }
-                if !parsed.items.iter().any(|i| i.name == leaf) {
-                    return false;
-                }
-                let stem = fp.strip_suffix(".rs").unwrap_or(fp.as_str());
-                let fp_mod: Vec<&str> = stem
-                    .strip_suffix("/mod")
-                    .unwrap_or(stem)
-                    .split('/')
-                    .filter(|s| !s.is_empty())
-                    .collect();
-                // A leaf file (`X.rs`) lives one segment deeper than its owning
-                // module, so strip that trailing segment before comparing. A
-                // `mod.rs` file's module is already represented by the stripped
-                // stem. This yields the *module* path of the file.
-                let file_module: &[&str] = if stem.ends_with("/mod") {
-                    &fp_mod
-                } else {
-                    &fp_mod[..fp_mod.len().saturating_sub(1)]
-                };
-                // Prefix direction: file's module is at or above the declared
-                // module (definition sits in an ancestor / cfg-selected
-                // submodule, e.g. `sys/sync/mutex/futex.rs` for
-                // `sys::sync::mutex::Mutex`).
-                let is_prefix = file_module.len() <= decl_mod.len()
-                    && decl_mod[..file_module.len()] == file_module[..];
-                // Suffix direction: file's module is deeper (inline-module
-                // layout) than the declared module.
-                let is_suffix = file_module.len() >= decl_mod.len()
-                    && file_module[file_module.len() - decl_mod.len()..] == decl_mod[..];
-                is_prefix || is_suffix
-            })
-            .map(|(fp, (parsed, _))| (fp.clone(), parsed.items.iter().find(|i| i.name == leaf)))
-        else {
-            continue;
-        };
-        let module_ctx = def_file_rel
-            .strip_suffix(".rs")
-            .unwrap_or(&def_file_rel)
-            .to_string();
-        let Some(item) = found_item else { continue };
-        match item.kind {
-            ItemKind::TypeAlias => {
-                if let Some(rhs) = &item.alias_rhs
-                    && let Ok(ty) = syn::parse2::<syn::Type>(rhs.clone())
-                {
-                    for (lead, lf) in collect_qualified_refs(&ty) {
-                        qual_refs.push((module_ctx.clone(), lead, lf));
-                    }
-                }
-            }
-            ItemKind::Struct => {
-                if let Ok(s) = syn::parse2::<syn::ItemStruct>(item.full_tokens.clone()) {
-                    for f in &s.fields {
-                        for (lead, lf) in collect_qualified_refs(&f.ty) {
-                            qual_refs.push((module_ctx.clone(), lead, lf));
-                        }
-                    }
-                }
-            }
-            _ => {}
-        }
-    }
+    let qual_refs = collect_qualifier_refs(target, cfg, sink.parsed_cache);
 
     // Map each resolving defining module to the set of leaf aliases actually
     // referenced from it, and record a qualifier route for the emitter. For
@@ -1096,32 +815,109 @@ fn mirror_minimal_modules(
     }
 
     // Strategy B: materialize a re-export shim for every preserved qualifier
-    // whose defining module is NOT a sibling of the referring file. The shim
-    // lives at the canonical alias location (the import binding's target
-    // module) and forwards the leaf to the actual definition, so references
-    // like `sys::Mutex` in `sync/poison/mutex` resolve through source-parity
-    // paths instead of being rewritten to absolute mirror paths.
-    for (module_ctx, lead, lf) in &qual_refs {
+    // whose defining module is NOT a sibling of the referring file.
+    materialize_reexport_shims(target, out_dir, cfg, &mut qres, &qual_refs, sink);
+}
+
+/// Collect `(module_ctx, lead, leaf)` triples from every active declaration's
+/// alias RHS and struct fields by locating the defining file for each
+/// declaration and extracting qualified type references.
+fn collect_qualifier_refs(
+    target: &crate::loader_spec::BindingTarget,
+    cfg: &CfgContext,
+    parsed_cache: &HashMap<String, (ParsedSource, String)>,
+) -> Vec<(String, Option<String>, String)> {
+    let active_decls = target.active_declarations(cfg);
+    let mut qual_refs: Vec<(String, Option<String>, String)> = Vec::new();
+    for decl in &active_decls {
+        let leaf = decl.rsplit("::").next().unwrap_or("");
+        let decl_mod: Vec<&str> = decl.split("::").collect();
+        let Some((def_file_rel, found_item)) = parsed_cache
+            .iter()
+            .find(|(fp, (parsed, ln))| {
+                if ln != &target.lib_name {
+                    return false;
+                }
+                if !parsed.items.iter().any(|i| i.name == leaf) {
+                    return false;
+                }
+                let stem = fp.strip_suffix(".rs").unwrap_or(fp.as_str());
+                let fp_mod: Vec<&str> = stem
+                    .strip_suffix("/mod")
+                    .unwrap_or(stem)
+                    .split('/')
+                    .filter(|s| !s.is_empty())
+                    .collect();
+                let file_module: &[&str] = if stem.ends_with("/mod") {
+                    &fp_mod
+                } else {
+                    &fp_mod[..fp_mod.len().saturating_sub(1)]
+                };
+                let is_prefix = file_module.len() <= decl_mod.len()
+                    && decl_mod[..file_module.len()] == file_module[..];
+                let is_suffix = file_module.len() >= decl_mod.len()
+                    && file_module[file_module.len() - decl_mod.len()..] == decl_mod[..];
+                is_prefix || is_suffix
+            })
+            .map(|(fp, (parsed, _))| (fp.clone(), parsed.items.iter().find(|i| i.name == leaf)))
+        else {
+            continue;
+        };
+        let module_ctx = def_file_rel
+            .strip_suffix(".rs")
+            .unwrap_or(&def_file_rel)
+            .to_string();
+        let Some(item) = found_item else { continue };
+        match item.kind {
+            ItemKind::TypeAlias => {
+                if let Some(rhs) = &item.alias_rhs
+                    && let Ok(ty) = syn::parse2::<syn::Type>(rhs.clone())
+                {
+                    for (lead, lf) in collect_qualified_refs(&ty) {
+                        qual_refs.push((module_ctx.clone(), lead, lf));
+                    }
+                }
+            }
+            ItemKind::Struct => {
+                if let Ok(s) = syn::parse2::<syn::ItemStruct>(item.full_tokens.clone()) {
+                    for f in &s.fields {
+                        for (lead, lf) in collect_qualified_refs(&f.ty) {
+                            qual_refs.push((module_ctx.clone(), lead, lf));
+                        }
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    qual_refs
+}
+
+/// Materialize re-export shims (Strategy B) for every preserved qualifier whose
+/// defining module is NOT a sibling of the referring file. The shim lives at the
+/// canonical alias location and forwards the leaf to the actual definition.
+#[allow(clippy::too_many_arguments)]
+fn materialize_reexport_shims(
+    target: &crate::loader_spec::BindingTarget,
+    out_dir: &Path,
+    cfg: &CfgContext,
+    qres: &mut QualifierResolver<'_>,
+    qual_refs: &[(String, Option<String>, String)],
+    sink: &mut EmitSink<'_>,
+) {
+    for (module_ctx, lead, lf) in qual_refs {
         let Some(lead) = lead else { continue };
         let Some(def_mod) = qres.resolve_qualified_ref(module_ctx, Some(lead), lf) else {
             continue;
         };
-        // Sibling qualifiers already resolve through the emitted `use super::<lead>;`
-        // line — no shim needed. Only non-sibling routes get a shim.
         let sibling = format!("{module_ctx}/{lead}");
         if sibling == def_mod {
             continue;
         }
-        // The shim must live where the import binding points: the module that
-        // `lead` resolves to from `module_ctx`. For a plain `use crate::X as lead`,
-        // that is `X`; for `use super::Y as lead`, it is the parent's `Y`.
         let cur = match qres.source_module(module_ctx) {
             Some(s) => s,
             None => continue,
         };
-        // Compute the name a `use` statement binds, mirroring the logic in
-        // `QualifierResolver::resolve_qualified_ref`. Returns `None` when the
-        // path has no usable named segment.
         let bound_name_of = |segs: &[PathSegment], alias: &Option<String>| -> Option<String> {
             match alias {
                 Some(a) => Some(a.clone()),
@@ -1152,8 +948,6 @@ fn mirror_minimal_modules(
             if bound_name != *lead {
                 continue;
             }
-            // Resolve the import target to a concrete module relative to the
-            // referring file's module context.
             let base: Vec<String> = module_ctx
                 .split('/')
                 .filter(|s| !s.is_empty())
@@ -1170,8 +964,6 @@ fn mirror_minimal_modules(
                     PathSegment::Named(n) => resolved_base.push(n.clone()),
                 }
             }
-            // Walk left-to-right, descending through re-export layers when a
-            // segment isn't a direct child module.
             let mut trail: Vec<String> = Vec::new();
             let mut ok = true;
             for name in &resolved_base {
@@ -1207,12 +999,6 @@ fn mirror_minimal_modules(
             }
         }
         let Some(alias_mod) = alias_mod else { continue };
-        // Skip when the alias module already has an emitted binding file — a
-        // shim would collide with it (e.g. `sync/poison/mod.rs` is already
-        // emitted as the poison module's own file, and `marker/mod.rs` carries
-        // the marker enums). Structural parents registered in `parsed_cache`
-        // but never emitted (like `sys/sync`) do NOT count — they have no
-        // output file, so a shim can safely occupy their path.
         let existing_alias_file = format!("{alias_mod}.rs");
         let existing_alias_mod = format!("{alias_mod}/mod.rs");
         if sink.emitted_canonicals.contains(&existing_alias_file)
@@ -1220,17 +1006,11 @@ fn mirror_minimal_modules(
         {
             continue;
         }
-        // The concrete submodule under `def_mod` that defines `leaf`. Empty when
-        // `def_mod` itself is the defining module; otherwise the relative path
-        // from `def_mod` to the defining file (e.g. `"mutex/futex"`).
         let def_submodule = if def_mod == alias_mod {
             String::new()
         } else if let Some(rest) = def_mod.strip_prefix(&format!("{alias_mod}/")) {
             rest.to_string()
         } else {
-            // Defining module is not nested under the alias module — fall back
-            // to treating `def_mod` as a sibling of the alias's parent. This
-            // shouldn't happen for import-binding routes, but guard anyway.
             def_mod.rsplit('/').next().unwrap_or("").to_string()
         };
         let shim_rel = emit_reexport_shim(
@@ -1242,8 +1022,6 @@ fn mirror_minimal_modules(
             &def_submodule,
         );
         let Some(shim_rel) = shim_rel else { continue };
-        // Register with the resolver so use-statement generation can see the
-        // new module, and record it for the manifest.
         let shim_content = fs::read_to_string(out_dir.join(&shim_rel)).unwrap_or_default();
         let parsed = parse_source_with_cfg(&shim_content, cfg);
         sink.resolver.register_source(&shim_rel, parsed);
@@ -1321,6 +1099,316 @@ fn emit_cfg_reexport_shims(
                 resolver.mark_emittable(&shim_rel);
                 emitted_canonicals.insert(shim_rel.clone());
                 all_files.push((shim_rel, target.lib_name.clone()));
+            }
+        }
+    }
+}
+
+// ── Type registry construction (Phase 1d) ───────────────────────────────────
+
+/// Populate a [`TypeRegistry`] from all registered sources, spec declarations,
+/// known external types, and re-export shims. Also runs minimal-module
+/// mirroring for each target so preserved qualifiers resolve correctly.
+/// Mutable accumulators threaded through [`build_type_registry`] and its
+/// call to [`mirror_minimal_modules`].
+struct RegistryBuildState<'a> {
+    resolver: &'a mut ModuleResolver,
+    parsed_cache: &'a mut HashMap<String, (ParsedSource, String)>,
+    emitted_canonicals: &'a mut HashSet<String>,
+    all_files: &'a mut Vec<(String, String)>,
+}
+
+fn build_type_registry(
+    spec: &LoaderSpec,
+    rust_src: &Path,
+    cfg: &CfgContext,
+    reexport_located: &[(String, String)],
+    out_dir: &Path,
+    state: &mut RegistryBuildState<'_>,
+) -> TypeRegistry {
+    let RegistryBuildState {
+        resolver,
+        parsed_cache,
+        emitted_canonicals,
+        all_files,
+    } = state;
+    let mut registry = TypeRegistry::empty();
+    for target in &spec.targets {
+        let lib_prefix = format!("{}/", target.lib_name);
+        for (file_path, parsed) in resolver.registered_sources().iter() {
+            if !file_path.starts_with(&lib_prefix) {
+                continue;
+            }
+            let module_path = resolver.file_to_module_path(file_path);
+            let exported_names = public_reexport_names(parsed, &module_path);
+            for item in &parsed.items {
+                let canonical = if module_path.is_empty() {
+                    format!("{}::{}", target.lib_name, item.name)
+                } else {
+                    format!(
+                        "{}::{}::{}",
+                        target.lib_name,
+                        module_path.replace('/', "::"),
+                        item.name
+                    )
+                };
+                let is_exported = exported_names.contains(&item.name);
+                registry.register(&canonical, item.visibility, is_exported, file_path);
+                if let Some(rhs) = &item.alias_rhs {
+                    registry.set_alias_rhs(&canonical, rhs.clone());
+                }
+            }
+            for (mod_name, mod_items) in &parsed.inline_modules {
+                let inline_module = if module_path.is_empty() {
+                    mod_name.clone()
+                } else {
+                    format!("{}/{}", module_path, mod_name)
+                };
+                let inline_canonical_base = inline_module.replace('/', "::");
+                for item in mod_items {
+                    let canonical = format!(
+                        "{}::{}::{}",
+                        target.lib_name, inline_canonical_base, item.name
+                    );
+                    let is_exported = exported_names.contains(&item.name);
+                    registry.register(&canonical, item.visibility, is_exported, file_path);
+                    if let Some(rhs) = &item.alias_rhs {
+                        registry.set_alias_rhs(&canonical, rhs.clone());
+                    }
+                }
+            }
+        }
+
+        let lib_src = rust_src.join(&target.lib_name).join("src");
+        let active_decls = target.active_declarations(cfg);
+        for decl in &active_decls {
+            let canonical = format!("{}::{}", target.lib_name, decl);
+            let leaf = decl.rsplit("::").next().unwrap_or("");
+            let mut found_item: Option<&ParsedItem> = None;
+            let def_file_rel = parsed_cache
+                .iter()
+                .find(|(_, (parsed, ln))| {
+                    ln == &target.lib_name && parsed.items.iter().any(|i| i.name == leaf)
+                })
+                .map(|(fp, (parsed, _))| {
+                    found_item = parsed.items.iter().find(|i| i.name == leaf);
+                    fp.clone()
+                })
+                .unwrap_or_else(|| decl.replace("::", "/") + ".rs");
+            let def_file_abs = lib_src.join(&def_file_rel).to_string_lossy().to_string();
+            registry.insert_declared(&canonical, &def_file_abs);
+            if let Some(item) = found_item
+                && item.kind == ItemKind::TypeAlias
+                && let Some(rhs) = &item.alias_rhs
+            {
+                registry.set_alias_rhs(&canonical, rhs.clone());
+            }
+        }
+
+        // Register spec-declared known external types at their canonical path so
+        // references route to them like any other mirrored type. Their definition
+        // is emitted as a standalone stub file (Phase 2), not parsed from source,
+        // so the def_file points at the generated stub's relative path.
+        for kt in &target.known_external_types {
+            let canonical = format!("{}::{}", target.lib_name, kt.path);
+            let segments: Vec<&str> = kt.path.split("::").collect();
+            let stub_rel = if segments.len() >= 2 {
+                format!("{}.rs", segments[..segments.len() - 1].join("/"))
+            } else {
+                continue;
+            };
+            registry.insert_declared(&canonical, &stub_rel);
+        }
+
+        // Register re-export-shim declarations.
+        for (decl, def_file) in reexport_located {
+            if !def_file.ends_with(".rs") {
+                continue;
+            }
+            let leaf = decl.rsplit("::").next().unwrap_or("");
+            let Some((parsed, _ln)) = parsed_cache.get(def_file) else {
+                continue;
+            };
+            if !parsed.items.iter().any(|i| i.name == leaf) {
+                continue;
+            }
+            let mod_path = def_file
+                .strip_suffix(".rs")
+                .unwrap_or(def_file)
+                .replace('/', "::");
+            let alias_canonical = format!("{}::{}::{}", target.lib_name, mod_path, leaf);
+            let def_file_abs = lib_src.join(def_file).to_string_lossy().to_string();
+            registry.insert_declared_alias(&alias_canonical, &def_file_abs);
+        }
+
+        // ── Minimal-module mirroring for preserved qualifiers ───────────────
+        // Runs after the type registry is fully populated (including this
+        // target's declared types) so that field references route correctly.
+        // It also materializes re-export shims (Strategy B) for non-sibling
+        // preserved qualifiers, registering them with the resolver and the
+        // emitted-file sets used by later phases.
+        let mut sink = EmitSink {
+            resolver,
+            parsed_cache,
+            registry: &mut registry,
+            emitted_canonicals,
+            all_files,
+        };
+        mirror_minimal_modules(target, &lib_src, out_dir, cfg, &mut sink);
+    }
+    registry
+}
+
+// ── Import-driven module discovery (Phase 1c) ───────────────────────────────
+
+/// Iteratively discover and register modules referenced by `use` statements
+/// and type-alias RHS paths in already-parsed files. Continues until no new
+/// module files are found (fixed-point).
+fn discover_imported_modules(
+    spec: &LoaderSpec,
+    rust_src: &Path,
+    cfg: &CfgContext,
+    resolver: &mut ModuleResolver,
+    parsed_cache: &mut HashMap<String, (ParsedSource, String)>,
+) {
+    let mut import_discovered: HashSet<String> = HashSet::new();
+    for target in &spec.targets {
+        let lib_src = rust_src.join(&target.lib_name).join("src");
+
+        let active_decls = target.active_declarations(cfg);
+        let declared_roots: Vec<String> = active_decls
+            .iter()
+            .map(|d| d.replace("::", "/"))
+            .filter(|p| p.ends_with(".rs") || !p.contains(".rs"))
+            .map(|p| p.strip_suffix(".rs").unwrap_or(p.as_str()).to_string())
+            .collect();
+        let roots_in_scope = |parts: &[String]| -> bool {
+            let joined = parts.join("/");
+            let part_count = parts.len();
+            declared_roots.iter().any(|root| {
+                if joined == *root || joined.starts_with(&format!("{root}/")) {
+                    return true;
+                }
+                let root_segs: Vec<&str> = root.split('/').filter(|s| !s.is_empty()).collect();
+                if part_count <= root_segs.len() {
+                    let tail = &root_segs[root_segs.len() - part_count..];
+                    if tail.iter().zip(parts.iter()).all(|(a, b)| *a == b.as_str()) {
+                        return true;
+                    }
+                }
+                false
+            })
+        };
+
+        loop {
+            let mut newly_found: Vec<String> = Vec::new();
+            let known_dirs: HashSet<&str> = parsed_cache
+                .keys()
+                .filter_map(|p| p.rsplit_once('/'))
+                .map(|(dir, _)| dir)
+                .collect();
+
+            for (parsed, _) in parsed_cache.values() {
+                for stmt in &parsed.use_statements {
+                    let (segs, is_glob) = match &stmt.kind {
+                        UseKind::Glob(pl) => (pl.segments.clone(), true),
+                        UseKind::Single(pl, _) => (pl.segments.clone(), false),
+                    };
+                    if segs.is_empty() {
+                        continue;
+                    }
+                    let mut mod_parts: Vec<String> = Vec::new();
+                    for seg in &segs {
+                        match seg {
+                            PathSegment::Super => continue,
+                            PathSegment::Crate => continue,
+                            PathSegment::Self_ => continue,
+                            PathSegment::Named(name) => mod_parts.push(name.clone()),
+                        }
+                    }
+                    if mod_parts.is_empty() {
+                        continue;
+                    }
+                    // A trailing `Self_` (from a `use ...::{self, ...}` entry)
+                    // binds the module itself under its own name: every segment
+                    // up to and including the last named one is a module path.
+                    // Without this, e.g. `use crate::sys::sync::futex::{self, ..}`
+                    // would never register `sys/sync/futex`, leaving preserved
+                    // qualifiers like `futex::SmallFutex` unresolvable.
+                    let is_self_binding = matches!(segs.last(), Some(PathSegment::Self_));
+                    let module_candidates = if is_glob || is_self_binding {
+                        vec![mod_parts.clone()]
+                    } else if mod_parts.len() > 1 {
+                        let mut without_last = mod_parts.clone();
+                        without_last.pop();
+                        vec![without_last, mod_parts.clone()]
+                    } else {
+                        vec![mod_parts.clone()]
+                    };
+
+                    for parts in module_candidates {
+                        let resolved = parts.join("/");
+                        if matches!(
+                            resolved.split('/').next().unwrap_or(""),
+                            "core" | "alloc" | "std"
+                        ) {
+                            continue;
+                        }
+                        let parent_known = match parts.last() {
+                            Some(_) if parts.len() > 1 => {
+                                let mut pd = parts.clone();
+                                pd.pop();
+                                known_dirs.contains(pd.join("/").as_str())
+                            }
+                            _ => false,
+                        };
+                        if !parent_known && !roots_in_scope(&parts) {
+                            continue;
+                        }
+                        for candidate in
+                            &[format!("{}/mod.rs", resolved), format!("{}.rs", resolved)]
+                        {
+                            if !import_discovered.insert(candidate.clone()) {
+                                continue;
+                            }
+                            if lib_src.join(candidate).exists() {
+                                newly_found.push(candidate.clone());
+                            }
+                        }
+                    }
+                }
+
+                // Also follow type-alias RHS references.
+                for item in &parsed.items {
+                    if item.kind != ItemKind::TypeAlias {
+                        continue;
+                    }
+                    let Some(rhs_ts) = &item.alias_rhs else {
+                        continue;
+                    };
+                    scan_alias_rhs_for_modules(
+                        &rhs_ts.to_string(),
+                        &roots_in_scope,
+                        &lib_src,
+                        &mut import_discovered,
+                        &mut newly_found,
+                    );
+                }
+            }
+
+            if newly_found.is_empty() {
+                break;
+            }
+
+            for fp in &newly_found {
+                let source_path = lib_src.join(fp);
+                if !source_path.exists() {
+                    continue;
+                }
+                if let Ok(source_text) = fs::read_to_string(&source_path) {
+                    let parsed = parse_source_with_cfg(&source_text, cfg);
+                    resolver.register_source(fp, parsed.clone());
+                }
             }
         }
     }

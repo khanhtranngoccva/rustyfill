@@ -174,12 +174,15 @@ impl TryDisplay for TryDashMapWithCloneError {
 
 // ── Construction error ─────────────────────────────────────────────────
 
-/// Error returned by [`TryDashMap`] constructors.
+/// Error returned by [`TryDashMap`] constructors that default-construct the hasher.
+///
+/// Constructors that accept an explicit hasher ([`TryDashMap::try_with_capacity_and_hasher`])
+/// cannot produce [`Self::HasherDefault`] and instead return [`TryReserveError`] directly.
 pub enum TryDashMapConstructionError {
     /// A capacity reservation on the DashMap failed (overflow or OOM).
     Reserve(TryReserveError),
-    /// Hasher construction failed via [`TryDefault`].
-    Default(crate::try_default::TryDefaultError),
+    /// The hasher failed to be constructed via [`TryDefault`].
+    HasherDefault(crate::try_default::TryDefaultError),
 }
 
 impl fmt::Debug for TryDashMapConstructionError {
@@ -212,7 +215,7 @@ impl From<TryReserveError> for TryDashMapConstructionError {
 
 impl From<crate::try_default::TryDefaultError> for TryDashMapConstructionError {
     fn from(err: crate::try_default::TryDefaultError) -> Self {
-        Self::Default(err)
+        Self::HasherDefault(err)
     }
 }
 
@@ -221,7 +224,9 @@ impl TryDebug for TryDashMapConstructionError {
         use crate::errors::uniform as u;
         match self {
             Self::Reserve(e) => u::debug_field(f, "TryDashMapConstructionError::Reserve", e),
-            Self::Default(e) => u::debug_field(f, "TryDashMapConstructionError::Default", e),
+            Self::HasherDefault(e) => {
+                u::debug_field(f, "TryDashMapConstructionError::HasherDefault", e)
+            }
         }
     }
 }
@@ -231,7 +236,7 @@ impl TryDisplay for TryDashMapConstructionError {
         use crate::errors::uniform as u;
         match self {
             Self::Reserve(e) => u::display_delegated(f, "dash map", e),
-            Self::Default(e) => u::display_delegated(f, "dash map", e),
+            Self::HasherDefault(e) => u::display_delegated(f, "dash map", e),
         }
     }
 }
@@ -240,7 +245,7 @@ impl From<TryDashMapConstructionError> for TryDashMapError {
     fn from(e: TryDashMapConstructionError) -> Self {
         match e {
             TryDashMapConstructionError::Reserve(r) => Self::Reserve(r),
-            TryDashMapConstructionError::Default(d) => d.into(),
+            TryDashMapConstructionError::HasherDefault(d) => d.into(),
         }
     }
 }
@@ -437,7 +442,7 @@ pub trait TryDashMap<K, V, S = RandomState>: Sized {
     /// Constructs the hasher via [`TryDefault`] (same as [`Self::try_new`]),
     /// then reserves capacity for `capacity` elements. Returns
     /// [`TryDashMapConstructionError::Reserve`] if the capacity reservation
-    /// fails, or [`TryDashMapConstructionError::Default`] if hasher
+    /// fails, or [`TryDashMapConstructionError::HasherDefault`] if hasher
     /// construction fails.
     ///
     /// Requires `S: [`TryDefault`]` so that hasher creation is safe even when
@@ -449,14 +454,14 @@ pub trait TryDashMap<K, V, S = RandomState>: Sized {
     /// Fallibly construct an empty `DashMap` with at least enough capacity for
     /// `capacity` elements, using the provided hash builder.
     ///
-    /// Returns [`TryDashMapConstructionError::Reserve`] if the initial
+    /// Returns [`TryReserveError`] if the initial
     /// allocation fails. Equivalent to
     /// [`DashMap::with_capacity_and_hasher`](dashmap::DashMap::with_capacity_and_hasher)
     /// but fallible.
     fn try_with_capacity_and_hasher(
         capacity: usize,
         hasher: S,
-    ) -> Result<DashMap<K, V, S>, TryDashMapConstructionError>;
+    ) -> Result<DashMap<K, V, S>, TryReserveError>;
 
     // ── Insertion ───────────────────────────────────────────────────────────
 
@@ -597,7 +602,7 @@ pub trait TryDashMap<K, V, S = RandomState>: Sized {
     fn fallible_with_capacity_and_hasher(
         capacity: usize,
         hasher: S,
-    ) -> Result<DashMap<K, V, S>, TryDashMapConstructionError> {
+    ) -> Result<DashMap<K, V, S>, TryReserveError> {
         Self::try_with_capacity_and_hasher(capacity, hasher)
     }
 
@@ -791,10 +796,15 @@ impl<K: Eq + Hash, V, S: BuildHasher + TryClone> TryDashMap<K, V, S> for DashMap
     fn try_with_capacity_and_hasher(
         capacity: usize,
         hasher: S,
-    ) -> Result<DashMap<K, V, S>, TryDashMapConstructionError> {
+    ) -> Result<DashMap<K, V, S>, TryReserveError> {
         let mut map = DashMap::with_hasher(hasher);
         if capacity > 0 {
-            map.try_reserve(capacity)?;
+            // `dashmap::TryReserveError` is a zero-sized placeholder that carries
+            // no layout information, so we cannot recover the exact failed layout.
+            // Record a minimal placeholder layout; the important signal (that an
+            // allocation, not a capacity overflow, failed) is preserved.
+            map.try_reserve(capacity)
+                .map_err(|_| TryReserveError::new_alloc(Layout::new::<u8>()))?;
         }
         Ok(map)
     }
