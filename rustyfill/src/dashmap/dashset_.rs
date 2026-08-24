@@ -1,9 +1,12 @@
-//! Placeholder for [`TryDashSet`] implementation.
-//!
-//! To be implemented in a subsequent chunk, following the same pattern as
+//! Fallible operations for `dashmap::DashSet`, mirroring
 //! [`TryDashMap`](super::dashmap_::TryDashMap).
+//!
+//! A `DashSet<T, S>` is a thin wrapper over `DashMap<T, (), S>`; since values
+//! are `()`, no element clone can fail. Operations that only fail on capacity
+//! reservation report [`TryReserveError`] directly, while constructor failures
+//! surface via the narrow [`TryDashSetConstructionError`].
 
-use crate::alloc::{TryReserveError, TryReserveErrorExt};
+use crate::alloc::TryReserveError;
 use crate::dashmap::TryDashMap;
 use crate::prelude::{TryClone, TryDefault};
 use crate::try_clone::TryCloneError;
@@ -17,81 +20,64 @@ use lang_std::hash::{BuildHasher, Hash, RandomState};
 type DashMap<K, V, S = RandomState> = dashmap::DashMap<K, V, S>;
 type DashSet<T, S = RandomState> = dashmap::DashSet<T, S>;
 
-// ── Error type ────────────────────────────────────────────────────────────────
+// ── Construction error ─────────────────────────────────────────────────
 
-/// Error returned by [`TryDashSet`] operations.
-pub enum TryDashSetError {
+/// Error returned by [`TryDashSet`] constructors that default-construct the
+/// hasher.
+///
+/// Constructors that accept an explicit hasher ([`TryDashSet::try_with_capacity_and_hasher`])
+/// cannot produce [`Self::HasherDefault`] and instead return [`TryReserveError`]
+/// directly. Mirrors [`TryDashMapConstructionError`](super::TryDashMapConstructionError).
+pub enum TryDashSetConstructionError {
     /// A capacity reservation on the DashSet failed (overflow or OOM).
     Reserve(TryReserveError),
-    /// An element clone failed during a method that requires [`TryClone`].
-    Clone(TryCloneError),
-    /// A logic-level failure with a static diagnostic message.
-    Other(&'static str),
+    /// The hasher failed to be constructed via [`TryDefault`].
+    HasherDefault(crate::try_default::TryDefaultError),
 }
 
-impl fmt::Debug for TryDashSetError {
+impl fmt::Debug for TryDashSetConstructionError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         TryDebug::try_fmt(self, f)
     }
 }
 
-impl fmt::Display for TryDashSetError {
+impl fmt::Display for TryDashSetConstructionError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         TryDisplay::try_fmt(self, f)
     }
 }
 
-impl From<TryReserveError> for TryDashSetError {
+impl From<TryReserveError> for TryDashSetConstructionError {
     fn from(err: TryReserveError) -> Self {
         Self::Reserve(err)
     }
 }
 
-impl From<TryCloneError> for TryDashSetError {
-    fn from(err: TryCloneError) -> Self {
-        Self::Clone(err)
-    }
-}
-
-impl From<crate::try_default::TryDefaultError> for TryDashSetError {
+impl From<crate::try_default::TryDefaultError> for TryDashSetConstructionError {
     fn from(err: crate::try_default::TryDefaultError) -> Self {
-        match err {
-            crate::try_default::TryDefaultError::Reserve(e) => Self::Reserve(e),
-            crate::try_default::TryDefaultError::Alloc(_) => Self::Other("allocation failed"),
-            crate::try_default::TryDefaultError::Other(msg) => Self::Other(msg),
-        }
+        Self::HasherDefault(err)
     }
 }
 
-impl TryDebug for TryDashSetError {
+impl TryDebug for TryDashSetConstructionError {
     fn try_fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         use crate::errors::uniform as u;
         match self {
-            Self::Reserve(e) => u::debug_field(f, "TryDashSetError::Reserve", e),
-            Self::Clone(e) => u::debug_field(f, "TryDashSetError::Clone", e),
-            Self::Other(msg) => u::debug_field(f, "TryDashSetError::Other", msg),
+            Self::Reserve(e) => u::debug_field(f, "TryDashSetConstructionError::Reserve", e),
+            Self::HasherDefault(e) => {
+                u::debug_field(f, "TryDashSetConstructionError::HasherDefault", e)
+            }
         }
     }
 }
 
-impl TryDisplay for TryDashSetError {
+impl TryDisplay for TryDashSetConstructionError {
     fn try_fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         use crate::errors::uniform as u;
         match self {
             Self::Reserve(e) => u::display_delegated(f, "dash set", e),
-            Self::Clone(e) => u::display_delegated(f, "dash set", e),
-            Self::Other(msg) => u::display_fixed(f, "dash set", msg),
+            Self::HasherDefault(e) => u::display_delegated(f, "dash set", e),
         }
-    }
-}
-
-impl From<dashmap::TryReserveError> for TryDashSetError {
-    fn from(_e: dashmap::TryReserveError) -> Self {
-        // `dashmap::TryReserveError` is a zero-sized placeholder that carries
-        // no layout information, so we cannot recover the exact failed layout.
-        // Record a minimal placeholder layout; the important signal (that an
-        // allocation, not a capacity overflow, failed) is preserved.
-        Self::Reserve(TryReserveErrorExt::new_alloc(Layout::new::<u8>()))
     }
 }
 
@@ -158,7 +144,8 @@ impl TryDisplay for TryDashSetWithCloneError {
 ///
 /// Implemented for `dashmap::DashSet<T, S>`. Mirrors the most commonly-used
 /// `DashSet` methods that can fail due to allocation pressure, returning
-/// [`Result`] values that propagate [`TryDashSetError`] on failure.
+/// [`Result`] values that propagate [`TryReserveError`] (or the narrow
+/// [`TryDashSetConstructionError`] for constructors) on failure.
 pub trait TryDashSet<T, S = RandomState>: Sized {
     // ── Construction ────────────────────────────────────────────────────────
 
@@ -171,7 +158,7 @@ pub trait TryDashSet<T, S = RandomState>: Sized {
     ///
     /// Requires `S: [`TryDefault`]` so that hasher creation is safe even when
     /// it involves runtime allocation or thread-local state.
-    fn try_new() -> Result<DashSet<T, S>, TryDashSetError>
+    fn try_new() -> Result<DashSet<T, S>, TryDashSetConstructionError>
     where
         S: TryDefault;
 
@@ -180,21 +167,28 @@ pub trait TryDashSet<T, S = RandomState>: Sized {
     ///
     /// Constructs the hasher via [`TryDefault`] (same as [`Self::try_new`]),
     /// then reserves capacity for `capacity` elements. Returns
-    /// [`TryDashSetError::Reserve`] if the capacity reservation fails, or
-    /// [`TryDashSetError::Other`] if hasher construction panics.
+    /// [`TryDashSetConstructionError::Reserve`] if the capacity reservation
+    /// fails, or [`TryDashSetConstructionError::HasherDefault`] if hasher
+    /// construction fails.
     ///
     /// Requires `S: [`TryDefault`]` so that hasher creation is safe even when
     /// it involves runtime allocation or thread-local state.
-    fn try_with_capacity(capacity: usize) -> Result<DashSet<T, S>, TryDashSetError>
+    fn try_with_capacity(
+        capacity: usize,
+    ) -> Result<DashSet<T, S>, TryDashSetConstructionError>
     where
         S: TryDefault;
 
     /// Fallibly construct an empty `DashSet` with at least enough capacity for
     /// `capacity` elements, using the provided hash builder.
+    ///
+    /// Returns [`TryReserveError`] if the initial allocation fails. Equivalent
+    /// to [`DashSet::with_capacity_and_hasher`](dashmap::DashSet::with_capacity_and_hasher)
+    /// but fallible.
     fn try_with_capacity_and_hasher(
         capacity: usize,
         hasher: S,
-    ) -> Result<DashSet<T, S>, TryDashSetError>;
+    ) -> Result<DashSet<T, S>, TryReserveError>;
 
     // ── Insertion ───────────────────────────────────────────────────────────
 
@@ -214,7 +208,7 @@ pub trait TryDashSet<T, S = RandomState>: Sized {
     // ── Aliases with `fallible_` prefix ────────────────────────────────────
 
     /// Alias for [`Self::try_new`].
-    fn fallible_new() -> Result<DashSet<T, S>, TryDashSetError>
+    fn fallible_new() -> Result<DashSet<T, S>, TryDashSetConstructionError>
     where
         S: TryDefault,
     {
@@ -222,7 +216,9 @@ pub trait TryDashSet<T, S = RandomState>: Sized {
     }
 
     /// Alias for [`Self::try_with_capacity`].
-    fn fallible_with_capacity(capacity: usize) -> Result<DashSet<T, S>, TryDashSetError>
+    fn fallible_with_capacity(
+        capacity: usize,
+    ) -> Result<DashSet<T, S>, TryDashSetConstructionError>
     where
         S: TryDefault,
     {
@@ -233,7 +229,7 @@ pub trait TryDashSet<T, S = RandomState>: Sized {
     fn fallible_with_capacity_and_hasher(
         capacity: usize,
         hasher: S,
-    ) -> Result<DashSet<T, S>, TryDashSetError> {
+    ) -> Result<DashSet<T, S>, TryReserveError> {
         Self::try_with_capacity_and_hasher(capacity, hasher)
     }
 
@@ -266,7 +262,7 @@ pub trait TryDashSet<T, S = RandomState>: Sized {
     fn try_extend<Src>(
         &self,
         source: Src,
-    ) -> Result<(), (crate::recovery::Resumable<Src::Inner>, TryDashSetError)>
+    ) -> Result<(), (crate::recovery::Resumable<Src::Inner>, TryReserveError)>
     where
         Src: crate::recovery::ResumableSource<Item = T>;
 
@@ -274,7 +270,7 @@ pub trait TryDashSet<T, S = RandomState>: Sized {
     fn fallible_extend<Src>(
         &self,
         source: Src,
-    ) -> Result<(), (crate::recovery::Resumable<Src::Inner>, TryDashSetError)>
+    ) -> Result<(), (crate::recovery::Resumable<Src::Inner>, TryReserveError)>
     where
         Src: crate::recovery::ResumableSource<Item = T>,
     {
@@ -286,15 +282,15 @@ pub trait TryDashSet<T, S = RandomState>: Sized {
     /// Fallibly shrink the capacity of this DashSet to match its length.
     ///
     /// Rebuilds the internal table so that it holds approximately `len` elements.
-    /// Returns [`TryDashSetError::Reserve`] if the allocation for the rebuilt
-    /// table fails. Equivalent to [`DashSet::shrink_to_fit`](dashmap::DashSet::shrink_to_fit)
+    /// Returns [`TryReserveError`] if the allocation for the rebuilt table
+    /// fails. Equivalent to [`DashSet::shrink_to_fit`](dashmap::DashSet::shrink_to_fit)
     /// but fallible.
-    fn try_shrink_to_fit(&self) -> Result<(), TryDashSetError>;
+    fn try_shrink_to_fit(&self) -> Result<(), TryReserveError>;
 
     /// Fallibly shrink the capacity of this DashSet to match its length.
     ///
     /// Alias for [`Self::try_shrink_to_fit`]
-    fn fallible_shrink_to_fit(&self) -> Result<(), TryDashSetError> {
+    fn fallible_shrink_to_fit(&self) -> Result<(), TryReserveError> {
         Self::try_shrink_to_fit(self)
     }
 
@@ -304,7 +300,9 @@ pub trait TryDashSet<T, S = RandomState>: Sized {
     ///
     /// Constructs the hasher via [`TryDefault`] and uses the iterator's size
     /// hint to pre-allocate when possible.
-    fn try_collect<I: IntoIterator<Item = T>>(iter: I) -> Result<DashSet<T, S>, TryDashSetError>
+    fn try_collect<I: IntoIterator<Item = T>>(
+        iter: I,
+    ) -> Result<DashSet<T, S>, TryReserveError>
     where
         S: TryDefault;
 
@@ -312,12 +310,12 @@ pub trait TryDashSet<T, S = RandomState>: Sized {
     fn try_collect_with_hasher<I: IntoIterator<Item = T>>(
         iter: I,
         hasher: S,
-    ) -> Result<DashSet<T, S>, TryDashSetError>;
+    ) -> Result<DashSet<T, S>, TryReserveError>;
 
     /// Alias for [`Self::try_collect`].
     fn fallible_collect<I: IntoIterator<Item = T>>(
         iter: I,
-    ) -> Result<DashSet<T, S>, TryDashSetError>
+    ) -> Result<DashSet<T, S>, TryReserveError>
     where
         S: TryDefault,
     {
@@ -328,7 +326,7 @@ pub trait TryDashSet<T, S = RandomState>: Sized {
     fn fallible_collect_with_hasher<I: IntoIterator<Item = T>>(
         iter: I,
         hasher: S,
-    ) -> Result<DashSet<T, S>, TryDashSetError> {
+    ) -> Result<DashSet<T, S>, TryReserveError> {
         Self::try_collect_with_hasher(iter, hasher)
     }
 }
@@ -356,7 +354,7 @@ fn convert_mut<T, S>(set: &mut DashSet<T, S>) -> &mut DashMap<T, (), S> {
 impl<T: Eq + Hash, S: BuildHasher + TryClone> TryDashSet<T, S> for DashSet<T, S> {
     // ── Construction ────────────────────────────────────────────────────────
 
-    fn try_new() -> Result<DashSet<T, S>, TryDashSetError>
+    fn try_new() -> Result<DashSet<T, S>, TryDashSetConstructionError>
     where
         S: TryDefault,
     {
@@ -364,15 +362,15 @@ impl<T: Eq + Hash, S: BuildHasher + TryClone> TryDashSet<T, S> for DashSet<T, S>
         Ok(DashSet::with_hasher(hasher))
     }
 
-    fn try_with_capacity(capacity: usize) -> Result<DashSet<T, S>, TryDashSetError>
+    fn try_with_capacity(
+        capacity: usize,
+    ) -> Result<DashSet<T, S>, TryDashSetConstructionError>
     where
         S: TryDefault,
     {
         let mut set = Self::try_new()?;
         if capacity > 0 {
-            convert_mut(&mut set)
-                .try_reserve(capacity)
-                .map_err(TryDashSetError::from)?;
+            crate::dashmap::dashmap_::try_reserve_shards(convert_mut(&mut set), capacity)?;
         }
         Ok(set)
     }
@@ -380,12 +378,10 @@ impl<T: Eq + Hash, S: BuildHasher + TryClone> TryDashSet<T, S> for DashSet<T, S>
     fn try_with_capacity_and_hasher(
         capacity: usize,
         hasher: S,
-    ) -> Result<DashSet<T, S>, TryDashSetError> {
+    ) -> Result<DashSet<T, S>, TryReserveError> {
         let mut set = DashSet::with_hasher(hasher);
         if capacity > 0 {
-            convert_mut(&mut set)
-                .try_reserve(capacity)
-                .map_err(TryDashSetError::from)?;
+            crate::dashmap::dashmap_::try_reserve_shards(convert_mut(&mut set), capacity)?;
         }
         Ok(set)
     }
@@ -417,7 +413,7 @@ impl<T: Eq + Hash, S: BuildHasher + TryClone> TryDashSet<T, S> for DashSet<T, S>
     fn try_extend<Src>(
         &self,
         source: Src,
-    ) -> Result<(), (crate::recovery::Resumable<Src::Inner>, TryDashSetError)>
+    ) -> Result<(), (crate::recovery::Resumable<Src::Inner>, TryReserveError)>
     where
         Src: crate::recovery::ResumableSource<Item = T>,
         T: Eq + Hash,
@@ -429,14 +425,14 @@ impl<T: Eq + Hash, S: BuildHasher + TryClone> TryDashSet<T, S> for DashSet<T, S>
         if let Some(value) = head
             && let Err((v, e)) = Self::try_insert_give_back(self, value)
         {
-            return Err((Resumable::new(v, iter), TryDashSetError::Reserve(e)));
+            return Err((Resumable::new(v, iter), e));
         }
 
         while let Some(value) = iter.next() {
             match Self::try_insert_give_back(self, value) {
                 Ok(_) => {}
                 Err((v, e)) => {
-                    return Err((Resumable::new(v, iter), TryDashSetError::Reserve(e)));
+                    return Err((Resumable::new(v, iter), e));
                 }
             }
         }
@@ -445,21 +441,27 @@ impl<T: Eq + Hash, S: BuildHasher + TryClone> TryDashSet<T, S> for DashSet<T, S>
 
     // ── Capacity / shrink ───────────────────────────────────────────────────
 
-    fn try_shrink_to_fit(&self) -> Result<(), TryDashSetError> {
-        convert_ref(self).try_shrink_to_fit().map_err(|e| match e {
-            super::TryDashMapError::Reserve(r) => TryDashSetError::Reserve(r),
-            super::TryDashMapError::Clone(c) => TryDashSetError::Clone(c),
-            super::TryDashMapError::Other(m) => TryDashSetError::Other(m),
-        })
+    fn try_shrink_to_fit(&self) -> Result<(), TryReserveError> {
+        convert_ref(self).try_shrink_to_fit()
     }
 
     // ── Bulk construction ───────────────────────────────────────────────────
 
-    fn try_collect<I: IntoIterator<Item = T>>(iter: I) -> Result<DashSet<T, S>, TryDashSetError>
+    fn try_collect<I: IntoIterator<Item = T>>(
+        iter: I,
+    ) -> Result<DashSet<T, S>, TryReserveError>
     where
         S: TryDefault,
     {
-        let set = Self::try_new()?;
+        // The hasher is default-constructed here; a defaulting failure that is
+        // not a reservation failure cannot be represented by `TryReserveError`,
+        // so it is reported uniformly as an allocation failure.
+        let set = Self::try_new().map_err(|e| match e {
+            TryDashSetConstructionError::Reserve(r) => r,
+            TryDashSetConstructionError::HasherDefault(_) => {
+                crate::alloc::TryReserveErrorExt::new_alloc(lang_core::alloc::Layout::new::<S>())
+            }
+        })?;
         for value in iter {
             <DashSet<T, S> as TryDashSet<T, S>>::try_insert(&set, value)?;
         }
@@ -469,7 +471,7 @@ impl<T: Eq + Hash, S: BuildHasher + TryClone> TryDashSet<T, S> for DashSet<T, S>
     fn try_collect_with_hasher<I: IntoIterator<Item = T>>(
         iter: I,
         hasher: S,
-    ) -> Result<DashSet<T, S>, TryDashSetError> {
+    ) -> Result<DashSet<T, S>, TryReserveError> {
         let set = DashSet::with_hasher(hasher);
         for value in iter {
             Self::try_insert(&set, value)?;
@@ -486,16 +488,19 @@ where
     S: BuildHasher + TryClone,
 {
     fn try_clone(&self) -> Result<Self, crate::try_clone::TryCloneError> {
+        use crate::try_clone::TryCloneError;
+
         let map_ref = convert_ref(self);
         let out = DashSet::with_hasher(map_ref.hasher().clone());
         // We cannot reserve everything immediately because shards may be uneven.
         if !self.is_empty() {
             let map: &DashMap<T, (), S> = convert_ref(&out);
             for elem in self.iter() {
+                // Keys are cloned by `try_entry_ref`; a clone failure surfaces as
+                // the entry-by-ref error's `Clone` arm and propagates unchanged.
                 let entry = TryDashMap::try_entry_ref(map, &elem).map_err(|e| match e {
-                    crate::dashmap::TryDashMapError::Reserve(r) => TryCloneError::Reserve(r),
-                    crate::dashmap::TryDashMapError::Clone(c) => c,
-                    crate::dashmap::TryDashMapError::Other(m) => TryCloneError::Other(m),
+                    super::TryDashMapEntryByRefError::Reserve(r) => TryCloneError::Reserve(r),
+                    super::TryDashMapEntryByRefError::Clone(c) => c,
                 })?;
                 entry.insert(());
             }
@@ -523,6 +528,7 @@ mod tests {
     use lang_alloc::format;
     use lang_alloc::string::String;
     use lang_alloc::string::ToString;
+    use crate::alloc::TryReserveErrorExt;
     use lang_alloc::vec;
     use lang_core::fmt::Write as _;
     use lang_std::iter;
@@ -565,26 +571,30 @@ mod tests {
         s
     }
 
-    /// Exercises every variant of `TryDashSetError` through all three impls
-    /// (moved from errors::uniform).
+    /// Exercises every variant of `TryDashSetConstructionError` and
+    /// `TryDashSetWithCloneError` through all formatting impls.
     #[test]
     fn dashset_error_covers_all_variants() {
-        let errs = [
-            TryDashSetError::Reserve(reserve_err()),
-            TryDashSetError::Clone(TryCloneError::Reserve(reserve_err())),
-            TryDashSetError::Other("ds"),
-        ];
-        for err in errs.iter() {
-            let disp = render_display(err);
-            assert!(
-                disp.starts_with("dash set operation failed:"),
-                "got {disp:?}"
-            );
-            let tdisp = render_trydisplay(err);
-            assert_eq!(tdisp, disp, "TryDisplay must match Display");
-            let dbg = render_trydebug(err);
-            assert!(dbg.contains("TryDashSetError::"), "got {dbg:?}");
+        macro_rules! check {
+            ($err:expr) => {{
+                let disp = render_display(&$err);
+                assert!(
+                    disp.starts_with("dash set operation failed:"),
+                    "got {disp:?}"
+                );
+                let dbg = format!("{:?}", $err);
+                assert!(
+                    dbg.contains("TryDashSet") && dbg.contains("Error::"),
+                    "got {dbg:?}"
+                );
+            }};
         }
+        check!(TryDashSetConstructionError::Reserve(reserve_err()));
+        check!(TryDashSetConstructionError::HasherDefault(
+            crate::try_default::TryDefaultError::Other("hasher unavailable")
+        ));
+        check!(TryDashSetWithCloneError::Reserve(reserve_err()));
+        check!(TryDashSetWithCloneError::Clone(TryCloneError::Reserve(reserve_err())));
     }
 
     // ── Construction ─────────────────────────────────────────────────────────

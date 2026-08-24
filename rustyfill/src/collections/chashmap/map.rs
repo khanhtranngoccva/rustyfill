@@ -740,6 +740,7 @@ impl<K: Eq + Hash, V, S: BuildHasher> ConcurrentHashMap<K, V, S> {
     /// pointer reads, and the new table is hydrated back into the shard slot.
     /// The old (now empty) table is dropped at the end of the loop iteration.
     pub fn try_shrink_to_fit(&self) -> Result<(), TryReserveError>
+    // FIXME: why cloning the hasher factory here??
     where
         S: Clone,
     {
@@ -1113,6 +1114,7 @@ where
     V: Clone,
     S: BuildHasher + Clone,
 {
+    /// Clones the map infallibly. It is recommended to avoid this function to avoid errors.
     fn clone(&self) -> Self {
         let hasher = self.hasher.clone();
         let shard_count = self.shard_count();
@@ -1891,7 +1893,10 @@ mod tests {
             let before = map.capacity();
             map.try_shrink_to_fit().unwrap();
             let after = map.capacity();
-            assert!(after <= before, "shrink should not grow: {before} -> {after}");
+            assert!(
+                after <= before,
+                "shrink should not grow: {before} -> {after}"
+            );
             assert_eq!(map.len(), 8);
             for i in 0..8 {
                 assert_eq!(*map.get(&i).unwrap(), i * 10);

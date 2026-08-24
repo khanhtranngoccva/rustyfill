@@ -90,7 +90,7 @@ pub trait TryRc<T>: Sized {
     /// caller retains access to the shared data.
     fn unwrap_or_try_clone(self) -> Result<T, (Self, TryCloneError)>
     where
-        T: Clone + crate::try_clone::TryClone;
+        T: crate::try_clone::TryClone;
 
     /// Fallibly allocate `value` on the heap and pin it in place.
     ///
@@ -170,7 +170,7 @@ pub trait TryRc<T>: Sized {
     /// This method mirrors [`Self::unwrap_or_try_clone`].
     fn unwrap_or_fallible_clone(self) -> Result<T, (Self, TryCloneError)>
     where
-        T: Clone + crate::try_clone::TryClone,
+        T: crate::try_clone::TryClone,
     {
         Self::unwrap_or_try_clone(self)
     }

@@ -1424,7 +1424,6 @@ mod tests {
         /// uniform prefix scheme.
         #[test]
         fn insert_error_formats_canonically() {
-            use crate::errors::uniform as u;
             use lang_alloc::format;
 
             // Reserve variant: delegated display + tuple debug.
