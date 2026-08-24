@@ -17,9 +17,9 @@
 //! [`TryToOwned`](crate::try_to_owned::TryToOwned) for `Path`.
 
 use crate::alloc::TryReserveError;
-use crate::std::path::path_buf::inner_push;
-use crate::std::path::path_buf::TryPathBufAddExtensionError;
 use crate::std::path::TryPathBuf;
+use crate::std::path::path_buf::TryPathBufAddExtensionError;
+use crate::std::path::path_buf::inner_push;
 use crate::try_clone::{TryClone, TryCloneError};
 use crate::try_fmt::{TryDebug, TryDisplay, helpers::FormatterExt};
 use crate::try_to_owned::{TryToOwned, TryToOwnedError};

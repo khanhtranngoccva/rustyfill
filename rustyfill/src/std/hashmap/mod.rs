@@ -8,6 +8,5 @@ mod hashmap_;
 mod try_extend;
 
 pub use hashmap_::{
-    TryHashMap, TryHashMapConstructionError, TryHashMapInsertUniqueError,
-    TryHashMapWithCloneError,
+    TryHashMap, TryHashMapConstructionError, TryHashMapInsertUniqueError, TryHashMapWithCloneError,
 };

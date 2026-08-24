@@ -5,9 +5,7 @@
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
-use crate::emitter::{
-    EmitConfig, TypeRegistry, emit_binding_file, emit_glob_reexport_aliases,
-};
+use crate::emitter::{EmitConfig, TypeRegistry, emit_binding_file, emit_glob_reexport_aliases};
 use crate::loader_spec::LoaderSpec;
 use crate::parser::{CfgContext, ParsedSource};
 use crate::resolver::ModuleResolver;

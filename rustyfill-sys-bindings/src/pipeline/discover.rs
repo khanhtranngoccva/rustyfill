@@ -36,7 +36,11 @@ pub(super) enum LocatedStruct {
 /// directories/files, keeping the longest one whose items actually include
 /// the leaf name. This handles both `X.rs` / `X/mod.rs` layouts and inline
 /// modules (where the definition sits in an ancestor file).
-pub(super) fn locate_declared_struct(decl: &str, lib_src: &Path, cfg: &CfgContext) -> LocatedStruct {
+pub(super) fn locate_declared_struct(
+    decl: &str,
+    lib_src: &Path,
+    cfg: &CfgContext,
+) -> LocatedStruct {
     let parts: Vec<&str> = decl.split("::").collect();
     if parts.is_empty() || parts.iter().any(|p| p.is_empty()) {
         return LocatedStruct::BadPath(format!(

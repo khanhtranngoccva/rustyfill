@@ -573,7 +573,10 @@ mod tests {
     fn try_insert_out_of_bounds_returns_error() {
         let mut s = String::try_from_str("hi").unwrap();
         let result = s.try_insert(10, 'x');
-        assert!(matches!(result, Err(TryStringError::InvalidCharBoundary(10))));
+        assert!(matches!(
+            result,
+            Err(TryStringError::InvalidCharBoundary(10))
+        ));
         assert_eq!(s, "hi"); // string unchanged
     }
 
@@ -582,7 +585,10 @@ mod tests {
         let mut s = String::try_from_str("αβ").unwrap();
         // 'α' is 2 bytes (0xCE, 0xB1), so index 1 is mid-character.
         let result = s.try_insert(1, 'x');
-        assert!(matches!(result, Err(TryStringError::InvalidCharBoundary(1))));
+        assert!(matches!(
+            result,
+            Err(TryStringError::InvalidCharBoundary(1))
+        ));
         assert_eq!(s, "αβ"); // string unchanged
     }
 
@@ -590,7 +596,10 @@ mod tests {
     fn try_insert_str_out_of_bounds_returns_error() {
         let mut s = String::try_from_str("hi").unwrap();
         let result = s.try_insert_str(10, "world");
-        assert!(matches!(result, Err(TryStringError::InvalidCharBoundary(10))));
+        assert!(matches!(
+            result,
+            Err(TryStringError::InvalidCharBoundary(10))
+        ));
         assert_eq!(s, "hi"); // string unchanged
     }
 
@@ -599,7 +608,10 @@ mod tests {
         let mut s = String::try_from_str("αβ").unwrap();
         // index 1 is in the middle of 'α'.
         let result = s.try_insert_str(1, "x");
-        assert!(matches!(result, Err(TryStringError::InvalidCharBoundary(1))));
+        assert!(matches!(
+            result,
+            Err(TryStringError::InvalidCharBoundary(1))
+        ));
         assert_eq!(s, "αβ"); // string unchanged
     }
 

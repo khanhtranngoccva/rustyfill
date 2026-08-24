@@ -29,7 +29,9 @@ pub(crate) fn build_replacement_entries(spec: &LoaderSpec) -> Vec<(String, Optio
 
 /// Borrow an owned replacement list as the `&[(String, Option<&str>)]` shape
 /// expected by [`crate::emitter::EmitConfig::path_replacements`].
-pub(crate) fn replacement_view(entries: &[(String, Option<String>)]) -> Vec<(String, Option<&str>)> {
+pub(crate) fn replacement_view(
+    entries: &[(String, Option<String>)],
+) -> Vec<(String, Option<&str>)> {
     entries
         .iter()
         .map(|(k, v)| (k.clone(), v.as_deref()))

@@ -166,7 +166,10 @@ pub trait TryPathBuf: Sized {
     /// if there is no file stem to attach the extension to, or
     /// [`TryPathBufSetExtensionError::SeparatorInPath`] if `ext` contains path
     /// separators.
-    fn try_set_extension<E: AsRef<OsStr>>(&mut self, ext: E) -> Result<(), TryPathBufSetExtensionError>;
+    fn try_set_extension<E: AsRef<OsStr>>(
+        &mut self,
+        ext: E,
+    ) -> Result<(), TryPathBufSetExtensionError>;
 
     /// Fallibly append an extension to the file name of this `PathBuf`.
     ///
@@ -428,7 +431,10 @@ impl TryPathBuf for PathBuf {
         Ok(())
     }
 
-    fn try_set_extension<E: AsRef<OsStr>>(&mut self, ext: E) -> Result<(), TryPathBufSetExtensionError> {
+    fn try_set_extension<E: AsRef<OsStr>>(
+        &mut self,
+        ext: E,
+    ) -> Result<(), TryPathBufSetExtensionError> {
         let ext = ext.as_ref();
         if self.file_stem().is_none() {
             return Err(TryPathBufSetExtensionError::NoFileStem);
@@ -443,7 +449,8 @@ impl TryPathBuf for PathBuf {
             let needed = ext.len().checked_add(1).ok_or_else(|| {
                 TryPathBufSetExtensionError::Reserve(TryReserveErrorExt::new_capacity_overflow())
             })?;
-            self.try_reserve(needed).map_err(TryPathBufSetExtensionError::Reserve)?;
+            self.try_reserve(needed)
+                .map_err(TryPathBufSetExtensionError::Reserve)?;
         }
         self.set_extension(ext);
         Ok(())
@@ -792,14 +799,20 @@ mod tests {
     fn try_set_extension_no_stem_fails() {
         let mut p = PathBuf::try_from_path(".").unwrap();
         let result = p.try_set_extension("txt");
-        assert!(matches!(result, Err(TryPathBufSetExtensionError::NoFileStem)));
+        assert!(matches!(
+            result,
+            Err(TryPathBufSetExtensionError::NoFileStem)
+        ));
     }
 
     #[test]
     fn try_set_extension_root_fails() {
         let mut p = PathBuf::try_from_path("/").unwrap();
         let result = p.try_set_extension("txt");
-        assert!(matches!(result, Err(TryPathBufSetExtensionError::NoFileStem)));
+        assert!(matches!(
+            result,
+            Err(TryPathBufSetExtensionError::NoFileStem)
+        ));
     }
 
     // ── Add Extension ────────────────────────────────────────────────────────
@@ -879,14 +892,20 @@ mod tests {
     fn add_extension_rejects_separator() {
         let mut p = PathBuf::try_from_path("file").unwrap();
         let result = p.try_add_extension("a/b");
-        assert!(matches!(result, Err(TryPathBufAddExtensionError::SeparatorInPath)));
+        assert!(matches!(
+            result,
+            Err(TryPathBufAddExtensionError::SeparatorInPath)
+        ));
     }
 
     #[test]
     fn set_extension_rejects_separator() {
         let mut p = PathBuf::try_from_path("file.txt").unwrap();
         let result = p.try_set_extension("a/b");
-        assert!(matches!(result, Err(TryPathBufSetExtensionError::SeparatorInPath)));
+        assert!(matches!(
+            result,
+            Err(TryPathBufSetExtensionError::SeparatorInPath)
+        ));
     }
 
     // ── TryClone ─────────────────────────────────────────────────────────────

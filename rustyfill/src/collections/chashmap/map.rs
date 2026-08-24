@@ -117,9 +117,7 @@ impl TryDebug for ConcurrentHashMapInsertUniqueError {
     fn try_fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         use crate::errors::uniform as u;
         match self {
-            Self::Reserve(e) => {
-                u::debug_field(f, "ConcurrentHashMapInsertUniqueError::Reserve", e)
-            }
+            Self::Reserve(e) => u::debug_field(f, "ConcurrentHashMapInsertUniqueError::Reserve", e),
             Self::KeyAlreadyExists => {
                 u::debug_unit(f, "ConcurrentHashMapInsertUniqueError::KeyAlreadyExists")
             }
@@ -226,9 +224,7 @@ impl TryDebug for ConcurrentHashMapWithHasherError {
     fn try_fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         use crate::errors::uniform as u;
         match self {
-            Self::Reserve(e) => {
-                u::debug_field(f, "ConcurrentHashMapWithHasherError::Reserve", e)
-            }
+            Self::Reserve(e) => u::debug_field(f, "ConcurrentHashMapWithHasherError::Reserve", e),
             Self::InvalidShards => {
                 u::debug_unit(f, "ConcurrentHashMapWithHasherError::InvalidShards")
             }
@@ -361,7 +357,9 @@ impl<K: Eq + Hash, V, S: BuildHasher> ConcurrentHashMap<K, V, S> {
             .expect("trailing zeros <= BITS for nonzero power of two");
         let layout =
             lang_alloc::alloc::Layout::array::<Shard<K, V>>(shard_count).map_err(|_| {
-                ConcurrentHashMapWithHasherError::Reserve(TryReserveErrorExt::new_capacity_overflow())
+                ConcurrentHashMapWithHasherError::Reserve(
+                    TryReserveErrorExt::new_capacity_overflow(),
+                )
             })?;
         let ptr = unsafe { lang_alloc::alloc::alloc(layout) };
         if ptr.is_null() {
@@ -418,8 +416,7 @@ impl<K: Eq + Hash, V, S: BuildHasher> ConcurrentHashMap<K, V, S> {
         S: TryDefault,
     {
         let hasher = S::try_default()?;
-        Self::try_with_capacity_and_hasher_and_shards(0, hasher, shard_count)
-            .map_err(Into::into)
+        Self::try_with_capacity_and_hasher_and_shards(0, hasher, shard_count).map_err(Into::into)
     }
 
     /// Fallibly construct with capacity spread evenly across `shard_count` shards.

@@ -159,10 +159,7 @@ pub fn generate(input: &PipelineInput<'_>) -> GenerateOutcome {
                 discover::LocatedStruct::NotDefinedOnDisk(path_hint) => {
                     pending_declarations.push((decl.clone(), path_hint));
                 }
-                discover::LocatedStruct::CfgExcluded {
-                    module,
-                    predicate,
-                } => {
+                discover::LocatedStruct::CfgExcluded { module, predicate } => {
                     return Err(GenerateReport {
                         errors: vec![format!(
                             "[spec] `{}` is defined in `{}`, which is excluded for this \
@@ -263,8 +260,14 @@ pub fn generate(input: &PipelineInput<'_>) -> GenerateOutcome {
         emitted_canonicals: &mut emitted_canonicals,
         all_files: &mut all_files,
     };
-    let registry =
-        registry::build_type_registry(spec, rust_src, cfg, &reexport_located, out_dir, &mut reg_state);
+    let registry = registry::build_type_registry(
+        spec,
+        rust_src,
+        cfg,
+        &reexport_located,
+        out_dir,
+        &mut reg_state,
+    );
 
     // Materialize a re-export shim for any spec-declared type whose canonical
     // module has no emitted binding file of its own but whose concrete

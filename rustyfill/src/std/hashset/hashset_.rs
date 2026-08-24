@@ -176,9 +176,7 @@ pub trait TryHashSet<T, S = RandomState>: Sized {
     ///
     /// Requires `S: [`TryDefault`]` so that hasher creation is safe even when
     /// it involves runtime allocation or thread-local state.
-    fn try_with_capacity(
-        capacity: usize,
-    ) -> Result<HashSet<T, S>, TryHashSetConstructionError>
+    fn try_with_capacity(capacity: usize) -> Result<HashSet<T, S>, TryHashSetConstructionError>
     where
         S: TryDefault;
 
@@ -223,9 +221,7 @@ pub trait TryHashSet<T, S = RandomState>: Sized {
     }
 
     /// Alias for [`Self::try_with_capacity`].
-    fn fallible_with_capacity(
-        capacity: usize,
-    ) -> Result<HashSet<T, S>, TryHashSetConstructionError>
+    fn fallible_with_capacity(capacity: usize) -> Result<HashSet<T, S>, TryHashSetConstructionError>
     where
         S: TryDefault,
     {
@@ -366,9 +362,7 @@ impl<T: Eq + Hash, S: BuildHasher> TryHashSet<T, S> for HashSet<T, S> {
         Ok(HashSet::with_hasher(hasher))
     }
 
-    fn try_with_capacity(
-        capacity: usize,
-    ) -> Result<HashSet<T, S>, TryHashSetConstructionError>
+    fn try_with_capacity(capacity: usize) -> Result<HashSet<T, S>, TryHashSetConstructionError>
     where
         S: TryDefault,
     {
@@ -606,10 +600,7 @@ mod tests {
             let tdisp = render_trydisplay(err);
             assert_eq!(tdisp, disp, "TryDisplay must match Display");
             let dbg = render_trydebug(err);
-            assert!(
-                dbg.contains("TryHashSetConstructionError::"),
-                "got {dbg:?}"
-            );
+            assert!(dbg.contains("TryHashSetConstructionError::"), "got {dbg:?}");
         }
     }
 

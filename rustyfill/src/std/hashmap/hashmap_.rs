@@ -312,10 +312,7 @@ pub trait TryHashMap<K, V, S = RandomState>: Sized {
     /// [`Entry`]: lang_std::collections::hash_map::Entry
     /// [`Entry::or_insert`]: lang_std::collections::hash_map::Entry::or_insert
     /// [`Entry::and_modify`]: lang_std::collections::hash_map::Entry::and_modify
-    fn try_entry<'a>(
-        &'a mut self,
-        key: K,
-    ) -> Result<hash_map::Entry<'a, K, V>, TryReserveError>
+    fn try_entry<'a>(&'a mut self, key: K) -> Result<hash_map::Entry<'a, K, V>, TryReserveError>
     where
         K: Eq + Hash;
 
@@ -592,10 +589,7 @@ impl<K: Eq + Hash, V, S: BuildHasher> TryHashMap<K, V, S> for HashMap<K, V, S> {
         }
     }
 
-    fn try_entry<'a>(
-        &'a mut self,
-        key: K,
-    ) -> Result<hash_map::Entry<'a, K, V>, TryReserveError>
+    fn try_entry<'a>(&'a mut self, key: K) -> Result<hash_map::Entry<'a, K, V>, TryReserveError>
     where
         K: Eq + Hash,
     {
@@ -803,10 +797,7 @@ mod tests {
             let tdisp = render_trydisplay(err);
             assert_eq!(tdisp, disp, "TryDisplay must match Display");
             let dbg = render_trydebug(err);
-            assert!(
-                dbg.contains("TryHashMapConstructionError::"),
-                "got {dbg:?}"
-            );
+            assert!(dbg.contains("TryHashMapConstructionError::"), "got {dbg:?}");
         }
     }
 

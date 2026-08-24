@@ -9,9 +9,7 @@ use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::Path;
 
-use crate::emitter::{
-    QualifierResolver, TypeRegistry, collect_qualified_refs, emit_reexport_shim,
-};
+use crate::emitter::{QualifierResolver, TypeRegistry, collect_qualified_refs, emit_reexport_shim};
 use crate::loader_spec::BindingTarget;
 use crate::parser::{CfgContext, ItemKind, ParsedSource, parse_source_with_cfg};
 use crate::resolver::{ModuleResolver, PathSegment, UseKind};

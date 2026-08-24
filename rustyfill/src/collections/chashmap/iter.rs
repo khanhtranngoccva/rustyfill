@@ -49,8 +49,14 @@ impl fmt::Display for ConcurrentHashMapIterError {
 impl TryDebug for ConcurrentHashMapIterError {
     fn try_fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::Alloc(e) => f.try_debug_tuple("ConcurrentHashMapIterError::Alloc").field(e).finish(),
-            Self::Clone(e) => f.try_debug_tuple("ConcurrentHashMapIterError::Clone").field(e).finish(),
+            Self::Alloc(e) => f
+                .try_debug_tuple("ConcurrentHashMapIterError::Alloc")
+                .field(e)
+                .finish(),
+            Self::Clone(e) => f
+                .try_debug_tuple("ConcurrentHashMapIterError::Clone")
+                .field(e)
+                .finish(),
         }
     }
 }
