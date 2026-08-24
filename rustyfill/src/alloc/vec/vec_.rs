@@ -486,9 +486,7 @@ pub trait TryVec<T>: Sized {
     }
 
     /// Alias for [`Self::try_into_boxed_slice_give_back`].
-    fn fallible_into_boxed_slice_give_back(
-        self,
-    ) -> Result<Box<[T]>, (Vec<T>, TryReserveError)> {
+    fn fallible_into_boxed_slice_give_back(self) -> Result<Box<[T]>, (Vec<T>, TryReserveError)> {
         Self::try_into_boxed_slice_give_back(self)
     }
 
@@ -527,9 +525,7 @@ pub trait TryVec<T>: Sized {
 
     /// Like [`Self::try_into_boxed_slice`] but returns ownership of the vector
     /// back on failure so the caller is not left empty-handed.
-    fn try_into_boxed_slice_give_back(
-        self,
-    ) -> Result<Box<[T]>, (Vec<T>, TryReserveError)>;
+    fn try_into_boxed_slice_give_back(self) -> Result<Box<[T]>, (Vec<T>, TryReserveError)>;
 }
 
 #[allow(deprecated)]

@@ -163,7 +163,9 @@ pub trait TryOsString: Sized {
     }
 
     /// Alias for [`Self::try_into_boxed_osstr_give_back`].
-    fn fallible_into_boxed_osstr_give_back(self) -> Result<Box<OsStr>, (OsString, TryReserveError)> {
+    fn fallible_into_boxed_osstr_give_back(
+        self,
+    ) -> Result<Box<OsStr>, (OsString, TryReserveError)> {
         Self::try_into_boxed_osstr_give_back(self)
     }
 }

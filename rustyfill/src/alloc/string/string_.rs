@@ -891,7 +891,9 @@ mod tests {
             let mut s = String::fallible_with_capacity(4096).unwrap();
             s.push_str("recover me");
             let r: Result<Box<str>, (String, TryReserveError)> =
-                with_policy(FailPolicy::fail_next_realloc(), || s.try_into_boxed_str_give_back());
+                with_policy(FailPolicy::fail_next_realloc(), || {
+                    s.try_into_boxed_str_give_back()
+                });
             match r {
                 Err((recovered, _)) => assert_eq!(recovered, "recover me"),
                 Ok(_) => panic!("expected shrink reallocation to fail under OOM policy"),

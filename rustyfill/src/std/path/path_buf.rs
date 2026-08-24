@@ -580,7 +580,9 @@ impl TryPathBuf for PathBuf {
             Ok(()) => {
                 // SAFETY: Path is #[repr(transparent)] over OsStr and the bytes
                 // came from a valid PathBuf.
-                Ok(unsafe { from_boxed_osstr_to_boxed_path(p.into_os_string().into_boxed_os_str()) })
+                Ok(unsafe {
+                    from_boxed_osstr_to_boxed_path(p.into_os_string().into_boxed_os_str())
+                })
             }
             Err(e) => Err((p, e)),
         }
