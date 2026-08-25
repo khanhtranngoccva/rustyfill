@@ -323,4 +323,56 @@ mod tests {
         let owned: String = <str as ToOwned>::to_owned(s);
         assert_eq!(owned, "test");
     }
+
+    // ── Boxed str TryClone + TryDefault ───────────────────────────────────────
+
+    #[test]
+    fn boxed_str_try_clone_ascii() {
+        let b: Box<str> = String::from("hello").into_boxed_str();
+        let c = b.try_clone().unwrap();
+        assert_eq!(&*c, "hello");
+    }
+
+    #[test]
+    fn boxed_str_try_clone_unicode() {
+        let b: Box<str> = String::from("こんにちは 🦀").into_boxed_str();
+        let c = b.try_clone().unwrap();
+        assert_eq!(&*c, "こんにちは 🦀");
+    }
+
+    #[test]
+    fn boxed_str_try_clone_empty() {
+        let b: Box<str> = String::new().into_boxed_str();
+        let c = b.try_clone().unwrap();
+        assert!(c.is_empty());
+    }
+
+    #[test]
+    fn boxed_str_try_default_empty() {
+        let b: Box<str> = Box::<str>::try_default().unwrap();
+        assert!(b.is_empty());
+    }
+
+    // ── OOM tests ─────────────────────────────────────────────────────
+    #[cfg(feature = "std")]
+    mod oom {
+        use super::*;
+        use rustyfill_test_allocator::{FailPolicy, with_policy};
+
+        #[test]
+        fn boxed_str_try_clone_fails_on_oom() {
+            let orig: Box<str> = String::from("hello").into_boxed_str();
+            let r: Result<Box<str>, TryCloneError> =
+                with_policy(FailPolicy::fail_next_alloc(), || orig.try_clone());
+            assert!(r.is_err());
+        }
+
+        #[test]
+        fn boxed_str_try_clone_empty_succeeds_under_oom() {
+            let orig: Box<str> = String::new().into_boxed_str();
+            let r: Result<Box<str>, TryCloneError> =
+                with_policy(FailPolicy::fail_next_alloc(), || orig.try_clone());
+            assert!(r.is_ok());
+        }
+    }
 }

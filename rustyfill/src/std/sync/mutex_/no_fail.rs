@@ -17,29 +17,44 @@ use crate::alloc::AllocError;
 use lang_core::mem::MaybeUninit;
 use lang_std::sync::Mutex;
 
-impl<T> TryMutex<T> for Mutex<T> {
-    fn try_new(value: T) -> Result<Mutex<T>, AllocError> {
+impl<T: ?Sized> TryMutex<T> for Mutex<T> {
+    fn try_new(value: T) -> Result<Mutex<T>, AllocError>
+    where
+        T: Sized,
+    {
         // No allocation on this backend; the returned mutex is armed by
         // construction.
         Ok(Mutex::new(value))
     }
 
-    fn try_new_give_back(value: T) -> Result<Mutex<T>, (T, AllocError)> {
+    fn try_new_give_back(value: T) -> Result<Mutex<T>, (T, AllocError)>
+    where
+        T: Sized,
+    {
         // Infallible here, so the give-back arm is unreachable.
         Ok(Mutex::new(value))
     }
 
-    fn try_new_uninit() -> Result<Mutex<MaybeUninit<T>>, AllocError> {
+    fn try_new_uninit() -> Result<Mutex<MaybeUninit<T>>, AllocError>
+    where
+        T: Sized,
+    {
         // The data slot is `MaybeUninit<T>` (uninit) by construction.
         Ok(Mutex::new(MaybeUninit::uninit()))
     }
 
-    fn try_new_zeroed() -> Result<Mutex<MaybeUninit<T>>, AllocError> {
+    fn try_new_zeroed() -> Result<Mutex<MaybeUninit<T>>, AllocError>
+    where
+        T: Sized,
+    {
         // Zero-filled slot; still typed as `MaybeUninit<T>` per the convention.
         Ok(Mutex::new(MaybeUninit::zeroed()))
     }
 
-    unsafe fn assume_init(this: Mutex<MaybeUninit<T>>) -> Mutex<T> {
+    unsafe fn assume_init(this: Mutex<MaybeUninit<T>>) -> Mutex<T>
+    where
+        T: Sized,
+    {
         unsafe { assume_init_impl(this) }
     }
 

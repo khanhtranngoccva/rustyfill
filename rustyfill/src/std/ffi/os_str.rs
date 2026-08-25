@@ -5,8 +5,14 @@
 //! Uses [`TryReserveError`](crate::alloc::TryReserveError) as the error type
 //! for consistency with [`TryOsString`](super::os_string::TryOsString).
 
-use crate::alloc::TryReserveError;
+use crate::alloc::{TryReserveError, TryReserveErrorExt};
+use crate::try_clone::{TryClone, TryCloneError};
+use crate::try_default::{TryDefault, TryDefaultError};
+use lang_alloc::alloc;
+use lang_alloc::boxed::Box;
+use lang_core::alloc::Layout;
 use lang_core::fmt;
+use lang_core::ptr;
 use lang_std::ffi::os_str::Display;
 use lang_std::ffi::{OsStr, OsString};
 
@@ -124,6 +130,80 @@ impl crate::try_fmt::TryDebug for Display<'_> {
 impl crate::try_fmt::TryDisplay for Display<'_> {
     fn try_fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         fmt::Display::fmt(self, f)
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Boxed OsStr TryClone + TryDefault
+// ---------------------------------------------------------------------------
+// Box<OsStr> owns a dynamically-sized OsStr on the heap. Cloning goes through
+// the platform-agnostic encoded-byte representation exposed by
+// `as_encoded_bytes` / `from_encoded_bytes_unchecked`: allocate the exact byte
+// length, copy the bytes with a single memcpy-style pass (no per-element
+// try_clone), then rebuild the box via the unchecked conversion. This works
+// identically on every platform — unix (UTF-8-backed) and Windows
+// (WTF-8-backed) alike — because the round-trip preserves whatever encoding
+// the source was stored in. It avoids both the overshoot of reserving through
+// an intermediate OsString and the cost of routing each element through Clone.
+
+/// # Safety
+///
+/// `bytes` must be a valid OS string encoding (i.e., they must have come from
+/// an existing `OsString`).
+unsafe fn from_boxed_osstr_unchecked(bytes: Box<[u8]>) -> Box<OsStr> {
+    // Reconstruct the OsString from the raw encoded bytes (no validation —
+    // they came from a valid OsStr), then hand its buffer straight to the box.
+    // Capacity equals length, so no shrink reallocation occurs.
+    let owned = unsafe { OsString::from_encoded_bytes_unchecked(bytes.into_vec()) };
+    owned.into_boxed_os_str()
+}
+
+impl TryClone for Box<OsStr> {
+    fn try_clone(&self) -> Result<Self, TryCloneError> {
+        // View the contents as their platform-specific encoded bytes. On unix
+        // this is a zero-cost fat-pointer reinterpretation; on Windows it
+        // borrows the WTF-8 bytes held inside the OsStr. Either way no data is
+        // copied or validated.
+        let bytes = self.as_encoded_bytes();
+        let len = bytes.len();
+
+        // Empty string — no allocation needed.
+        if len == 0 {
+            return Ok(Box::<OsStr>::default());
+        }
+
+        // Allocate exactly `len` bytes — no excess capacity.
+        // Layout::array handles overflow checking internally.
+        let layout = Layout::array::<u8>(len)
+            .map_err(|_| TryCloneError::Reserve(TryReserveErrorExt::new_capacity_overflow()))?;
+        let ptr = unsafe { alloc::alloc(layout) };
+        if ptr.is_null() {
+            return Err(TryCloneError::Reserve(TryReserveErrorExt::new_alloc(
+                layout,
+            )));
+        }
+
+        // Wrap immediately in a Box<[u8]> so that Drop cleans up on any panic
+        // between here and the final conversion to Box<OsStr>.
+        // SAFETY: layout matches `len` elements of u8.
+        let mut out: Box<[u8]> = unsafe { Box::from_raw(ptr::slice_from_raw_parts_mut(ptr, len)) };
+
+        // SAFETY: source is valid for `len` bytes, destination holds exactly
+        // `len` initialized bytes.
+        unsafe {
+            ptr::copy_nonoverlapping(bytes.as_ptr(), out.as_mut_ptr(), len);
+        }
+
+        // SAFETY: the bytes were copied verbatim from a valid OsStr, so they
+        // form a valid OS string encoding.
+        Ok(unsafe { from_boxed_osstr_unchecked(out) })
+    }
+}
+
+impl TryDefault for Box<OsStr> {
+    fn try_default() -> Result<Self, TryDefaultError> {
+        // An empty boxed OsStr requires no allocation.
+        Ok(Box::<OsStr>::default())
     }
 }
 
@@ -291,5 +371,57 @@ mod tests {
         let s = OsStr::new("test");
         let owned: OsString = <OsStr as ToOwned>::to_owned(s);
         assert_eq!(owned, OsString::from("test"));
+    }
+
+    // ── Boxed OsStr TryClone + TryDefault ─────────────────────────────────────
+
+    #[test]
+    fn boxed_osstr_try_clone_ascii() {
+        let b: Box<OsStr> = OsString::from("hello").into_boxed_os_str();
+        let c = b.try_clone().unwrap();
+        assert_eq!(&*c, OsStr::new("hello"));
+    }
+
+    #[test]
+    fn boxed_osstr_try_clone_unicode() {
+        let b: Box<OsStr> = OsString::from("こんにちは 🦀").into_boxed_os_str();
+        let c = b.try_clone().unwrap();
+        assert_eq!(&*c, OsStr::new("こんにちは 🦀"));
+    }
+
+    #[test]
+    fn boxed_osstr_try_clone_empty() {
+        let b: Box<OsStr> = Box::<OsStr>::default();
+        let c = b.try_clone().unwrap();
+        assert!(c.is_empty());
+    }
+
+    #[test]
+    fn boxed_osstr_try_default_empty() {
+        let b: Box<OsStr> = Box::<OsStr>::try_default().unwrap();
+        assert!(b.is_empty());
+    }
+
+    // ── OOM tests ─────────────────────────────────────────────────────
+    #[cfg(feature = "std")]
+    mod oom {
+        use super::*;
+        use rustyfill_test_allocator::{FailPolicy, with_policy};
+
+        #[test]
+        fn boxed_osstr_try_clone_fails_on_oom() {
+            let orig: Box<OsStr> = OsString::from("hello").into_boxed_os_str();
+            let r: Result<Box<OsStr>, TryCloneError> =
+                with_policy(FailPolicy::fail_next_alloc(), || orig.try_clone());
+            assert!(r.is_err());
+        }
+
+        #[test]
+        fn boxed_osstr_try_clone_empty_succeeds_under_oom() {
+            let orig: Box<OsStr> = Box::<OsStr>::default();
+            let r: Result<Box<OsStr>, TryCloneError> =
+                with_policy(FailPolicy::fail_next_alloc(), || orig.try_clone());
+            assert!(r.is_ok());
+        }
     }
 }

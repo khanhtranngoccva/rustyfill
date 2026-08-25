@@ -25,5 +25,9 @@
 //! panicked mutation — e.g. elements stranded mid-promotion during a split can be
 //! silently lost.
 
+// FIXME: export aliases
 pub mod entry;
 mod entry_try_extend;
+/// Fallible `TryDebug` / `TryDisplay` impls for `BTreeMap<K, V>` and
+/// `BTreeSet<T>`.
+mod fmt_;

@@ -259,6 +259,10 @@ impl crate::try_fmt::TryDebug for CString {
     }
 }
 
+// NOTE: no `TryDisplay` impl for `CString` — it does not implement
+// `fmt::Display` (only `Debug`), and `TryDisplay` requires `Display` as a
+// supertrait. Use `TryDebug`, or format via `as_c_str()`.
+
 #[cfg(test)]
 mod tests {
     use super::*;

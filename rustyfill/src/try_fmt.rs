@@ -28,14 +28,11 @@
 //!   producing precise compiler diagnostics when a value lacks the expected trait.
 
 use lang_alloc::alloc;
-use lang_alloc::borrow::Cow;
 use lang_core::any;
 use lang_core::fmt;
 use lang_core::marker;
 use lang_core::mem;
 use lang_core::ops;
-#[cfg(feature = "std")]
-use lang_std::sync;
 
 mod assert;
 pub mod helpers;
@@ -602,53 +599,11 @@ impl TryDebug for alloc::Layout {
     }
 }
 
-// ── ::lang_alloc::borrow::Cow<'_, str> ────────────────────────────────────────────────
-// Cow's Debug impl delegates to str's Debug which never allocates. Safe to passthrough.
+// NOTE: `Cow<'_, B>` fallible-trait impls live in `crate::alloc::borrow`.
 
-impl TryDebug for Cow<'_, str> {
-    #[inline]
-    fn try_fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        fmt::Debug::fmt(self, f)
-    }
-}
-
-// ── sync guard types ──────────────────────────────────────────────────────
-// MutexGuard, RwLockReadGuard, and RwLockWriteGuard are not error types per se,
-// but are commonly encountered inside error wrappers (PoisonError, TryLockError).
-// Their Debug impls delegate to the inner type's Debug, which may allocate.
-// Reduced functionality: print struct name via try_debug_struct. Requires T: Debug
-// because TryDebug supertrait requires Debug. When T: TryDebug, callers should
-// route through PoisonError<G: TryDebug> instead of holding the guard directly.
-
-#[cfg(feature = "std")]
-impl<T: fmt::Debug> TryDebug for sync::MutexGuard<'_, T> {
-    #[inline]
-    fn try_fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.try_debug_struct("MutexGuard")
-            .field_owned("inner", "<suppressed>")
-            .finish()
-    }
-}
-
-#[cfg(feature = "std")]
-impl<T: fmt::Debug> TryDebug for sync::RwLockReadGuard<'_, T> {
-    #[inline]
-    fn try_fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.try_debug_struct("RwLockReadGuard")
-            .field_owned("inner", "<suppressed>")
-            .finish()
-    }
-}
-
-#[cfg(feature = "std")]
-impl<T: fmt::Debug> TryDebug for sync::RwLockWriteGuard<'_, T> {
-    #[inline]
-    fn try_fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.try_debug_struct("RwLockWriteGuard")
-            .field_owned("inner", "<suppressed>")
-            .finish()
-    }
-}
+// NOTE: `MutexGuard` / `RwLockReadGuard` / `RwLockWriteGuard` fallible-trait
+// impls live in `crate::std::sync` (full-fidelity delegation to the locked
+// value, bounded on `T: TryDebug` / `T: TryDisplay`).
 
 // ── Formatting macros ──────────────────────────────────────────────────────────
 // The `try_format_args` proc-macro is defined in `rustyfill-macros` and re-exported
@@ -994,13 +949,13 @@ mod oom_tests {
     #[test]
     fn try_debug_arc_primitive_no_alloc() {
         let a: Arc<i32> = Arc::new(42);
-        assert!(assert_try_debug_no_alloc(&a));
+        assert!(assert_try_debug_no_alloc(a));
     }
 
     #[test]
     fn try_debug_arc_string_no_alloc() {
         let a: Arc<String> = Arc::new(String::from("arc string"));
-        assert!(assert_try_debug_no_alloc(&a));
+        assert!(assert_try_debug_no_alloc(a));
     }
 
     // ── PathBuf (sized — uses generic helper) ──────────────────────────────
@@ -1102,19 +1057,19 @@ mod oom_tests {
     #[test]
     fn try_debug_result_ok_no_alloc() {
         let r: Result<String, i32> = Ok(String::from("success"));
-        assert!(assert_try_debug_no_alloc(&r));
+        assert!(assert_try_debug_no_alloc(r));
     }
 
     #[test]
     fn try_debug_result_err_no_alloc() {
         let r: Result<i32, String> = Err(String::from("failure"));
-        assert!(assert_try_debug_no_alloc(&r));
+        assert!(assert_try_debug_no_alloc(r));
     }
 
     #[test]
     fn try_debug_tuple_no_alloc() {
         let t = (42, String::from("x"), true);
-        assert!(assert_try_debug_no_alloc(&t));
+        assert!(assert_try_debug_no_alloc(t));
     }
 
     #[test]
@@ -1265,20 +1220,20 @@ mod oom_tests {
     fn try_debug_raw_ptr_const_no_alloc() {
         let val: i32 = 42;
         let ptr: *const i32 = &val;
-        assert!(assert_try_debug_no_alloc(&ptr));
+        assert!(assert_try_debug_no_alloc(ptr));
     }
 
     #[test]
     fn try_debug_raw_ptr_mut_no_alloc() {
         let val: i32 = 42;
         let ptr: *mut i32 = &val as *const i32 as *mut i32;
-        assert!(assert_try_debug_no_alloc(&ptr));
+        assert!(assert_try_debug_no_alloc(ptr));
     }
 
     #[test]
     fn try_debug_null_ptr_no_alloc() {
         let ptr: *const u8 = ptr::null();
-        assert!(assert_try_debug_no_alloc(&ptr));
+        assert!(assert_try_debug_no_alloc(ptr));
     }
 
     // ── Marker types ────────────────────────────────────────────────────────
@@ -1286,19 +1241,19 @@ mod oom_tests {
     #[test]
     fn try_debug_phantom_data_no_alloc() {
         let pd: marker::PhantomData<String> = marker::PhantomData;
-        assert!(assert_try_debug_no_alloc(&pd));
+        assert!(assert_try_debug_no_alloc(pd));
     }
 
     #[test]
     fn try_debug_maybe_uninit_no_alloc() {
         let mu: mem::MaybeUninit<i32> = mem::MaybeUninit::uninit();
-        assert!(assert_try_debug_no_alloc(&mu));
+        assert!(assert_try_debug_no_alloc(mu));
     }
 
     #[test]
     fn try_debug_phantom_pinned_no_alloc() {
         let pp: marker::PhantomPinned = marker::PhantomPinned;
-        assert!(assert_try_debug_no_alloc(&pp));
+        assert!(assert_try_debug_no_alloc(pp));
     }
 
     // ── ManuallyDrop ────────────────────────────────────────────────────────
@@ -1306,7 +1261,7 @@ mod oom_tests {
     #[test]
     fn try_debug_manually_drop_primitive_no_alloc() {
         let md: mem::ManuallyDrop<i32> = mem::ManuallyDrop::new(42);
-        assert!(assert_try_debug_no_alloc(&md));
+        assert!(assert_try_debug_no_alloc(md));
     }
 
     #[test]
@@ -1323,31 +1278,31 @@ mod oom_tests {
     #[test]
     fn try_debug_range_usize_no_alloc() {
         let r: ops::Range<usize> = 0..10;
-        assert!(assert_try_debug_no_alloc(&r));
+        assert!(assert_try_debug_no_alloc(r));
     }
 
     #[test]
     fn try_debug_range_i32_no_alloc() {
         let r: ops::Range<i32> = -5..5;
-        assert!(assert_try_debug_no_alloc(&r));
+        assert!(assert_try_debug_no_alloc(r));
     }
 
     #[test]
     fn try_debug_range_from_no_alloc() {
         let r: ops::RangeFrom<usize> = 10..;
-        assert!(assert_try_debug_no_alloc(&r));
+        assert!(assert_try_debug_no_alloc(r));
     }
 
     #[test]
     fn try_debug_range_to_no_alloc() {
         let r: ops::RangeTo<usize> = ..10;
-        assert!(assert_try_debug_no_alloc(&r));
+        assert!(assert_try_debug_no_alloc(r));
     }
 
     #[test]
     fn try_debug_range_full_no_alloc() {
         let r = ..;
-        assert!(assert_try_debug_no_alloc(&r));
+        assert!(assert_try_debug_no_alloc(r));
     }
 
     // ── Tuples of varying arity ─────────────────────────────────────────────
@@ -1355,19 +1310,19 @@ mod oom_tests {
     #[test]
     fn try_debug_one_element_tuple_no_alloc() {
         let t = (42,);
-        assert!(assert_try_debug_no_alloc(&t));
+        assert!(assert_try_debug_no_alloc(t));
     }
 
     #[test]
     fn try_debug_two_element_tuple_no_alloc() {
         let t = (1, "two");
-        assert!(assert_try_debug_no_alloc(&t));
+        assert!(assert_try_debug_no_alloc(t));
     }
 
     #[test]
     fn try_debug_five_element_tuple_no_alloc() {
         let t = (1, 2u32, true, 'x', String::from("five"));
-        assert!(assert_try_debug_no_alloc(&t));
+        assert!(assert_try_debug_no_alloc(t));
     }
 
     // ── Empty and larger arrays ─────────────────────────────────────────────
@@ -1375,13 +1330,13 @@ mod oom_tests {
     #[test]
     fn try_debug_empty_array_no_alloc() {
         let a: [i32; 0] = [];
-        assert!(assert_try_debug_no_alloc(&a));
+        assert!(assert_try_debug_no_alloc(a));
     }
 
     #[test]
     fn try_debug_large_array_no_alloc() {
         let a: [u8; 16] = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15];
-        assert!(assert_try_debug_no_alloc(&a));
+        assert!(assert_try_debug_no_alloc(a));
     }
 
     // ── Byte slices and byte arrays ─────────────────────────────────────────
@@ -1389,13 +1344,13 @@ mod oom_tests {
     #[test]
     fn try_debug_byte_slice_no_alloc() {
         let bytes: &[u8] = &[0xDE, 0xAD, 0xBE, 0xEF];
-        assert!(assert_try_debug_no_alloc(&bytes));
+        assert!(assert_try_debug_no_alloc(bytes));
     }
 
     #[test]
     fn try_debug_byte_array_no_alloc() {
         let bytes: [u8; 4] = [0xDE, 0xAD, 0xBE, 0xEF];
-        assert!(assert_try_debug_no_alloc(&bytes));
+        assert!(assert_try_debug_no_alloc(bytes));
     }
 
     // ── Nested references ───────────────────────────────────────────────────
@@ -1404,14 +1359,14 @@ mod oom_tests {
     fn try_debug_double_ref_no_alloc() {
         let val: i32 = 42;
         let r: &&i32 = &&val;
-        assert!(assert_try_debug_no_alloc(&r));
+        assert!(assert_try_debug_no_alloc(r));
     }
 
     #[test]
     fn try_debug_triple_ref_no_alloc() {
         let val: i32 = 42;
         let r: &&&i32 = &&&val;
-        assert!(assert_try_debug_no_alloc(&r));
+        assert!(assert_try_debug_no_alloc(r));
     }
 
     // ── Option wrapping collections ─────────────────────────────────────────
@@ -1427,7 +1382,7 @@ mod oom_tests {
     #[test]
     fn try_debug_result_ok_vec_no_alloc() {
         let r: Result<Vec<String>, &str> = Ok(vec![String::from("ok")]);
-        assert!(assert_try_debug_no_alloc(&r));
+        assert!(assert_try_debug_no_alloc(r));
     }
 
     // ── Deeply nested compounds ─────────────────────────────────────────────
@@ -2996,6 +2951,10 @@ mod try_write_tests {
         let result: Cow<'static, str> = rustyfill_macros::try_format_or!("standalone");
         assert_eq!(result, "standalone");
     }
+
+    // NOTE: generic `Cow<'_, B>` fallible-trait tests live in
+    // `crate::alloc::borrow`.
+
     // ── try_writeln! / try_write! output tests ──────────────────────────────
     // try_println! delegates to the same code path as try_writeln! (stdout as
     // the destination), and try_print! delegates to the same code path as

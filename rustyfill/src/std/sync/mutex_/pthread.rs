@@ -134,8 +134,11 @@ unsafe impl OnceBoxPayload for PalMutex {
     }
 }
 
-impl<T> TryMutex<T> for Mutex<T> {
-    fn try_new(value: T) -> Result<Mutex<T>, AllocError> {
+impl<T: ?Sized> TryMutex<T> for Mutex<T> {
+    fn try_new(value: T) -> Result<Mutex<T>, AllocError>
+    where
+        T: Sized,
+    {
         // Allocate the backend eagerly, then install the value and activate.
         let uninit = Self::try_new_uninit()?;
         let mut filled = uninit;
@@ -144,7 +147,10 @@ impl<T> TryMutex<T> for Mutex<T> {
         Ok(unsafe { Self::assume_init(filled) })
     }
 
-    fn try_new_give_back(value: T) -> Result<Mutex<T>, (T, AllocError)> {
+    fn try_new_give_back(value: T) -> Result<Mutex<T>, (T, AllocError)>
+    where
+        T: Sized,
+    {
         // On allocation failure hand the original value back to the caller.
         let uninit = match Self::try_new_uninit() {
             Ok(u) => u,
@@ -156,7 +162,10 @@ impl<T> TryMutex<T> for Mutex<T> {
         Ok(unsafe { Self::assume_init(filled) })
     }
 
-    fn try_new_uninit() -> Result<Mutex<MaybeUninit<T>>, AllocError> {
+    fn try_new_uninit() -> Result<Mutex<MaybeUninit<T>>, AllocError>
+    where
+        T: Sized,
+    {
         // Start from a real, freshly-constructed mutex (its `OnceBox` is null)
         // so the payload bytes are whatever `Mutex::new` writes; then arm the
         // backend eagerly. On allocation failure the slot stays null, so the
@@ -175,7 +184,10 @@ impl<T> TryMutex<T> for Mutex<T> {
         }
     }
 
-    fn try_new_zeroed() -> Result<Mutex<MaybeUninit<T>>, AllocError> {
+    fn try_new_zeroed() -> Result<Mutex<MaybeUninit<T>>, AllocError>
+    where
+        T: Sized,
+    {
         let this = Mutex::new(MaybeUninit::zeroed());
         // SAFETY: as in `try_new_uninit`.
         let slot = unsafe { oncebox_slot(&this) };
@@ -188,14 +200,18 @@ impl<T> TryMutex<T> for Mutex<T> {
         }
     }
 
-    unsafe fn assume_init(this: Mutex<MaybeUninit<T>>) -> Mutex<T> {
+    unsafe fn assume_init(this: Mutex<MaybeUninit<T>>) -> Mutex<T>
+    where
+        T: Sized,
+    {
         unsafe { assume_init_impl(this) }
     }
 
     fn try_arm(&self) -> Result<(), AllocError> {
         // Arming mutates only the OnceBox pointer cell, which is interior-
         // mutable (an atomic), so a shared reference suffices — exactly how
-        // std's `OnceBox::get_or_init(&self)` works.
+        // std's `OnceBox::get_or_init(&self)` works. Works for unsized payloads
+        // too: the surgery never touches the data slot.
         let slot = unsafe { oncebox_slot(self) };
         // SAFETY: `self` is a valid `Mutex<T>`; arming only touches the leading
         // OnceBox pointer cell through its atomic. If it is already armed this
@@ -222,7 +238,7 @@ impl<T> TryMutex<T> for Mutex<T> {
 /// pointer cell is not aliased by any non-atomic access. Both `try_new*`
 /// (unique ownership of a fresh mutex) and `try_arm` (shared reference, with all
 /// other accesses going through the mutex's own atomics) satisfy this.
-pub(super) unsafe fn oncebox_slot<T>(
+pub(super) unsafe fn oncebox_slot<T: ?Sized>(
     this: &Mutex<T>,
 ) -> &lang_core::sync::atomic::AtomicPtr<PalMutex> {
     // Step 1: public `Mutex<T>` → its layout mirror. Identical field layout
@@ -303,4 +319,29 @@ mod tests {
         let (value_back, _err) = r.unwrap_err();
         assert_eq!(value_back, 42);
     }
+
+    /// std's `Mutex` Debug impl locks internally to inspect the value, which on
+    /// this backend triggers the deferred `OnceBox` allocation. Formatting a
+    /// *lazy* mutex under OOM must therefore bail via `try_arm()` and print a
+    /// placeholder — not abort the process. This test lives in this module
+    /// precisely because it is only compiled on the pthread (allocating) target.
+    #[test]
+    fn try_debug_lazy_mutex_oom_bails_without_aborting() {
+        use crate::try_format;
+        use rustyfill_test_allocator::{FailPolicy, with_policy};
+
+        // A plain `Mutex::new` is lazy on this backend: nothing allocated yet.
+        let lazy = Mutex::new(42i32);
+        let dbg = with_policy(FailPolicy::fail_next_alloc(), || {
+            // If the impl skipped arming, std's Debug would take the lock here,
+            // hit the failed allocation inside OnceBox, and abort the test
+            // binary. Surviving this call is the assertion.
+            try_format!("{:?}", lazy).unwrap()
+        });
+        assert!(
+            dbg.starts_with("Mutex"),
+            "expected non-exhaustive Mutex placeholder, got: {dbg}"
+        );
+    }
+}
 }

@@ -21,8 +21,10 @@ use crate::std::path::TryPathBuf;
 use crate::std::path::path_buf::TryPathBufAddExtensionError;
 use crate::std::path::path_buf::inner_push;
 use crate::try_clone::{TryClone, TryCloneError};
+use crate::try_default::{TryDefault, TryDefaultError};
 use crate::try_fmt::{TryDebug, TryDisplay, helpers::FormatterExt};
 use crate::try_to_owned::{TryToOwned, TryToOwnedError};
+use lang_alloc::boxed::Box;
 use lang_core::fmt;
 use lang_std::ffi::OsStr;
 use lang_std::path::Display;
@@ -200,6 +202,43 @@ impl TryClone for &Path {
 }
 
 // ---------------------------------------------------------------------------
+// Boxed Path TryClone + TryDefault
+// ---------------------------------------------------------------------------
+// Box<Path> owns a dynamically-sized Path on the heap. Since Path is
+// repr(transparent) over OsStr, we reinterpret the box as Box<OsStr>, clone it
+// via the customized exact-allocation implementation in ffi::os_str, then cast
+// the result back — no intermediate PathBuf/OsString construction and no
+// overshoot of capacity.
+
+/// # Safety
+///
+/// `boxed` must be a valid `Box<OsStr>` whose bytes came from an existing
+/// `OsString`.
+unsafe fn from_boxed_osstr_to_boxed_path(boxed: Box<OsStr>) -> Box<Path> {
+    // Path is #[repr(transparent)] over OsStr, so this cast mirrors std's own
+    // layout-based conversions between the two types.
+    unsafe { lang_core::mem::transmute::<Box<OsStr>, Box<Path>>(boxed) }
+}
+
+impl TryClone for Box<Path> {
+    fn try_clone(&self) -> Result<Self, TryCloneError> {
+        // Reinterpret as Box<OsStr> (Path is #[repr(transparent)] over it),
+        // clone, then cast the result back to Box<Path>.
+        let boxed_os = unsafe { lang_core::mem::transmute::<&Self, &Box<OsStr>>(self) };
+        // SAFETY: Path and OsStr are repr(transparent) with identical layout.
+        let cloned = boxed_os.try_clone()?;
+        Ok(unsafe { from_boxed_osstr_to_boxed_path(cloned) })
+    }
+}
+
+impl TryDefault for Box<Path> {
+    fn try_default() -> Result<Self, TryDefaultError> {
+        // An empty path requires no allocation.
+        Ok(unsafe { from_boxed_osstr_to_boxed_path(Box::<OsStr>::default()) })
+    }
+}
+
+// ---------------------------------------------------------------------------
 // TryToOwned for Path
 // ---------------------------------------------------------------------------
 
@@ -371,6 +410,61 @@ mod tests {
         let r: &Path = Path::new("");
         let c: &Path = r.try_clone().unwrap();
         assert!(c.as_os_str().is_empty());
+    }
+
+    // ── Boxed Path TryClone + TryDefault ──────────────────────────────────────
+
+    #[test]
+    fn boxed_path_try_clone_simple() {
+        let p = PathBuf::from("/usr/local/bin");
+        let boxed: Box<Path> = p.try_into_boxed_path().unwrap();
+        let c = boxed.try_clone().unwrap();
+        assert_eq!(&*c, Path::new("/usr/local/bin"));
+    }
+
+    #[test]
+    fn boxed_path_try_clone_unicode() {
+        let p = PathBuf::from("/home/ユーザー/docs");
+        let boxed: Box<Path> = p.try_into_boxed_path().unwrap();
+        let c = boxed.try_clone().unwrap();
+        assert_eq!(&*c, Path::new("/home/ユーザー/docs"));
+    }
+
+    #[test]
+    fn boxed_path_try_clone_empty() {
+        let p = PathBuf::new();
+        let boxed: Box<Path> = p.try_into_boxed_path().unwrap();
+        let c = boxed.try_clone().unwrap();
+        assert!(c.as_os_str().is_empty());
+    }
+
+    #[test]
+    fn boxed_path_try_default_empty() {
+        let b: Box<Path> = Box::<Path>::try_default().unwrap();
+        assert!(b.as_os_str().is_empty());
+    }
+
+    // ── OOM tests ─────────────────────────────────────────────────────
+    #[cfg(feature = "std")]
+    mod oom {
+        use super::*;
+        use rustyfill_test_allocator::{FailPolicy, with_policy};
+
+        #[test]
+        fn boxed_path_try_clone_fails_on_oom() {
+            let orig: Box<Path> = PathBuf::from("/some/path").try_into_boxed_path().unwrap();
+            let r: Result<Box<Path>, TryCloneError> =
+                with_policy(FailPolicy::fail_next_alloc(), || orig.try_clone());
+            assert!(r.is_err());
+        }
+
+        #[test]
+        fn boxed_path_try_clone_empty_succeeds_under_oom() {
+            let orig: Box<Path> = PathBuf::new().try_into_boxed_path().unwrap();
+            let r: Result<Box<Path>, TryCloneError> =
+                with_policy(FailPolicy::fail_next_alloc(), || orig.try_clone());
+            assert!(r.is_ok());
+        }
     }
 
     // ── TryToOwned ─────────────────────────────────────────────────────────────

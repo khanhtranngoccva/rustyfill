@@ -867,6 +867,10 @@ impl<T: crate::try_fmt::TryDebug> crate::try_fmt::TryDebug for VecDeque<T> {
     }
 }
 
+// NOTE: no `TryDisplay` impl for `VecDeque<T>` — `VecDeque` does not implement
+// `fmt::Display` (only `Debug`), and `TryDisplay` requires `Display` as a
+// supertrait. Use `TryDebug` for list rendering.
+
 #[cfg(test)]
 mod tests {
     use super::*;

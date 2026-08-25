@@ -35,10 +35,13 @@ use rustyfill_sys::std::collections::TryReserveError as SysTryReserveError;
 use rustyfill_sys::std::collections::TryReserveErrorKind as SysTryReserveErrorKind;
 
 pub mod arc;
+pub mod binary_heap;
+pub mod borrow;
 pub mod boxed;
 #[cfg(feature = "std")]
 pub mod btrees;
 pub mod ffi;
+pub mod linked_list;
 pub mod rc;
 pub mod string;
 pub mod vec;

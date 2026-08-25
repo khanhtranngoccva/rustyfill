@@ -596,7 +596,7 @@ impl TryPathBuf for PathBuf {
 unsafe fn from_boxed_osstr_to_boxed_path(boxed: Box<OsStr>) -> Box<Path> {
     // Path is #[repr(transparent)] over OsStr, so this cast mirrors std's own
     // layout-based conversions between the two types.
-    unsafe { Box::from_raw(Box::into_raw(boxed) as *mut Path) }
+    unsafe { lang_core::mem::transmute::<Box<OsStr>, Box<Path>>(boxed) }
 }
 
 // ── TryClone for PathBuf ────────────────────────────────────────────────────
@@ -1024,6 +1024,8 @@ mod tests {
         assert!(boxed.as_os_str().is_empty());
     }
 
+    // NOTE: `Box<Path>` TryClone/TryDefault tests live in `path.rs`.
+
     // ── TryClone ─────────────────────────────────────────────────────────────
 
     #[test]
@@ -1259,7 +1261,10 @@ mod tests {
         /// Build an expected rendered path from a `/`-separated template,
         /// substituting the platform's main separator.
         fn sep_path(template: &str) -> Vec<u8> {
-            template.bytes().map(|b| if b == b'/' { SEP } else { b }).collect()
+            template
+                .bytes()
+                .map(|b| if b == b'/' { SEP } else { b })
+                .collect()
         }
 
         #[test]
