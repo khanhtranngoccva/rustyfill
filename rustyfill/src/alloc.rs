@@ -175,7 +175,12 @@ pub enum TryReserveErrorKind {
     /// Error due to the computed capacity exceeding the collection's maximum.
     CapacityOverflow,
     /// The memory allocator returned an error.
-    AllocError { layout: Layout },
+    AllocError {
+        layout: Layout,
+        #[doc(hidden)]
+        // This field is necessary to force source compatibility with the nightly export.
+        _non_exhaustive: (),
+    },
 }
 
 /// Compile-time proof that the sys mirror's size and alignment match the real
@@ -280,9 +285,10 @@ impl TryReserveErrorExt for TryReserveError {
         let decoded: SysTryReserveError = unsafe { core::mem::transmute_copy(self) };
         match decoded.kind {
             SysTryReserveErrorKind::CapacityOverflow => TryReserveErrorKind::CapacityOverflow,
-            SysTryReserveErrorKind::AllocError { layout, .. } => {
-                TryReserveErrorKind::AllocError { layout }
-            }
+            SysTryReserveErrorKind::AllocError { layout, .. } => TryReserveErrorKind::AllocError {
+                layout,
+                _non_exhaustive: (),
+            },
         }
     }
 

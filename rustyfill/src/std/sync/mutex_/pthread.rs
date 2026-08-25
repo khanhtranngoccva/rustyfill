@@ -238,7 +238,7 @@ impl<T: ?Sized> TryMutex<T> for Mutex<T> {
 /// pointer cell is not aliased by any non-atomic access. Both `try_new*`
 /// (unique ownership of a fresh mutex) and `try_arm` (shared reference, with all
 /// other accesses going through the mutex's own atomics) satisfy this.
-pub(super) unsafe fn oncebox_slot<T: ?Sized>(
+unsafe fn oncebox_slot<T: ?Sized>(
     this: &Mutex<T>,
 ) -> &lang_core::sync::atomic::AtomicPtr<PalMutex> {
     // Step 1: public `Mutex<T>` → its layout mirror. Identical field layout

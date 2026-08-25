@@ -431,51 +431,11 @@ mod tests {
     }
 
     #[test]
-    fn binary_heap_new_does_not_allocate() {
-        use rustyfill_test_allocator::{FailPolicy, with_policy};
-
-        // If new() performed any heap allocation, fail_all_alloc would cause
-        // the OOM handler to fire (or abort). It doesn't — Vec::new() is a
-        // zero-capacity inline representation with no backing store.
-        let h = with_policy(FailPolicy::fail_all(), BinaryHeap::<i32>::new);
-        assert!(h.is_empty());
-        assert_eq!(h.capacity(), 0);
-    }
-
-    #[test]
     fn binary_heap_try_with_capacity() {
         let h: BinaryHeap<i32> = BinaryHeap::try_with_capacity(8).unwrap();
         assert!(h.capacity() >= 8);
         assert!(h.is_empty());
         let h: BinaryHeap<i32> = BinaryHeap::try_with_capacity(0).unwrap();
-        assert!(h.is_empty());
-    }
-
-    #[test]
-    fn binary_heap_try_push_and_give_back() {
-        use rustyfill_test_allocator::{FailPolicy, with_policy};
-
-        let mut h: BinaryHeap<i32> = BinaryHeap::new();
-        h.try_push(5).unwrap();
-        h.try_push(9).unwrap();
-        assert_eq!(h.pop(), Some(9));
-        assert_eq!(h.pop(), Some(5));
-
-        let mut h: BinaryHeap<i32> = BinaryHeap::new();
-        let (back, _err) = with_policy(FailPolicy::fail_next_alloc(), || {
-            h.try_push_give_back(42).unwrap_err()
-        });
-        assert_eq!(back, 42);
-        assert!(h.is_empty());
-    }
-
-    #[test]
-    fn binary_heap_try_push_fails_on_oom() {
-        use rustyfill_test_allocator::{FailPolicy, with_policy};
-
-        let mut h: BinaryHeap<i32> = BinaryHeap::new();
-        let r = with_policy(FailPolicy::fail_next_alloc(), || h.try_push(1));
-        assert!(r.is_err());
         assert!(h.is_empty());
     }
 
@@ -498,33 +458,9 @@ mod tests {
     }
 
     #[test]
-    fn binary_heap_try_append_fails_on_oom_leaves_both_intact() {
-        use rustyfill_test_allocator::{FailPolicy, with_policy};
-
-        // Equal-size heaps prevent the swap inside try_append. The combined
-        // size (4) exceeds the initial capacity (2), forcing a real alloc.
-        let mut a: BinaryHeap<i32> = vec![1, 2].into_iter().collect();
-        let mut b: BinaryHeap<i32> = vec![3, 4].into_iter().collect();
-        let r = with_policy(FailPolicy::fail_all(), || a.try_append(&mut b));
-        assert!(r.is_err());
-        assert_eq!(sorted(a), vec![1, 2]);
-        assert_eq!(sorted(b), vec![3, 4]);
-    }
-
-    #[test]
     fn binary_heap_try_collect_basic() {
         let h = BinaryHeap::try_collect(3..7).unwrap();
         assert_eq!(sorted(h), vec![3, 4, 5, 6]);
-    }
-
-    #[test]
-    fn binary_heap_try_collect_fails_on_oom() {
-        use rustyfill_test_allocator::{FailPolicy, with_policy};
-
-        let r = with_policy(FailPolicy::fail_next_alloc(), || {
-            BinaryHeap::try_collect(0..10)
-        });
-        assert!(r.is_err());
     }
 
     #[test]
@@ -534,42 +470,10 @@ mod tests {
     }
 
     #[test]
-    fn binary_heap_try_from_slice_fails_on_oom() {
-        use rustyfill_test_allocator::{FailPolicy, with_policy};
-
-        let r = with_policy(FailPolicy::fail_next_alloc(), || {
-            BinaryHeap::try_from_slice(&[1, 2, 3])
-        });
-        assert!(matches!(r, Err(TryBinaryHeapWithCloneError::Reserve(_))));
-    }
-
-    #[test]
     fn binary_heap_generic_try_extend_via_trait() {
         let mut h: BinaryHeap<i32> = BinaryHeap::new();
         <_ as TryExtend<i32>>::try_extend(&mut h, 10..13).unwrap();
         assert_eq!(sorted(h), vec![10, 11, 12]);
-    }
-
-    #[test]
-    fn binary_heap_generic_try_extend_retry_with_resumable() {
-        use rustyfill_test_allocator::{FailPolicy, with_policy};
-
-        let mut h: BinaryHeap<i32> = BinaryHeap::new();
-        // Fail all allocations inside the policy. The head push's
-        // try_reserve(1) fails immediately (heap is empty, len==cap==0).
-        // All 4 items are stranded in the Resumable.
-        let resumable =
-            with_policy(
-                FailPolicy::fail_all(),
-                || match <_ as TryExtend<i32>>::try_extend(&mut h, 0..4) {
-                    Ok(()) => panic!("expected failure"),
-                    Err((resumable, _)) => resumable,
-                },
-            );
-        assert_eq!(h.len(), 0);
-        // Retry outside the policy: everything lands.
-        <_ as TryExtend<i32>>::try_extend(&mut h, resumable).unwrap();
-        assert_eq!(sorted(h), vec![0, 1, 2, 3]);
     }
 
     #[test]
@@ -587,5 +491,95 @@ mod tests {
         assert!(s.contains("binary heap"));
         let d = format!("{e:?}");
         assert!(d.contains("TryBinaryHeapWithCloneError::Reserve"));
+    }
+
+    // ── OOM tests ─────────────────────────────────────────────────────────────
+    // Require `std`: the failing-allocator hooks are thread-local (std-only).
+    #[cfg(feature = "std")]
+    mod oom {
+        use super::*;
+        use rustyfill_test_allocator::{FailPolicy, with_policy};
+
+        #[test]
+        fn binary_heap_new_does_not_allocate() {
+            // If new() performed any heap allocation, fail_all_alloc would cause
+            // the OOM handler to fire (or abort). It doesn't — Vec::new() is a
+            // zero-capacity inline representation with no backing store.
+            let h = with_policy(FailPolicy::fail_all(), BinaryHeap::<i32>::new);
+            assert!(h.is_empty());
+            assert_eq!(h.capacity(), 0);
+        }
+
+        #[test]
+        fn binary_heap_try_push_and_give_back() {
+            let mut h: BinaryHeap<i32> = BinaryHeap::new();
+            h.try_push(5).unwrap();
+            h.try_push(9).unwrap();
+            assert_eq!(h.pop(), Some(9));
+            assert_eq!(h.pop(), Some(5));
+
+            let mut h: BinaryHeap<i32> = BinaryHeap::new();
+            let (back, _err) = with_policy(FailPolicy::fail_next_alloc(), || {
+                h.try_push_give_back(42).unwrap_err()
+            });
+            assert_eq!(back, 42);
+            assert!(h.is_empty());
+        }
+
+        #[test]
+        fn binary_heap_try_push_fails_on_oom() {
+            let mut h: BinaryHeap<i32> = BinaryHeap::new();
+            let r = with_policy(FailPolicy::fail_next_alloc(), || h.try_push(1));
+            assert!(r.is_err());
+            assert!(h.is_empty());
+        }
+
+        #[test]
+        fn binary_heap_try_append_fails_on_oom_leaves_both_intact() {
+            // Equal-size heaps prevent the swap inside try_append. The combined
+            // size (4) exceeds the initial capacity (2), forcing a real alloc.
+            let mut a: BinaryHeap<i32> = vec![1, 2].into_iter().collect();
+            let mut b: BinaryHeap<i32> = vec![3, 4].into_iter().collect();
+            let r = with_policy(FailPolicy::fail_all(), || a.try_append(&mut b));
+            assert!(r.is_err());
+            assert_eq!(super::sorted(a), vec![1, 2]);
+            assert_eq!(super::sorted(b), vec![3, 4]);
+        }
+
+        #[test]
+        fn binary_heap_try_collect_fails_on_oom() {
+            let r = with_policy(FailPolicy::fail_next_alloc(), || {
+                BinaryHeap::try_collect(0..10)
+            });
+            assert!(r.is_err());
+        }
+
+        #[test]
+        fn binary_heap_try_from_slice_fails_on_oom() {
+            let r = with_policy(FailPolicy::fail_next_alloc(), || {
+                BinaryHeap::try_from_slice(&[1, 2, 3])
+            });
+            assert!(matches!(r, Err(TryBinaryHeapWithCloneError::Reserve(_))));
+        }
+
+        #[test]
+        fn binary_heap_generic_try_extend_retry_with_resumable() {
+            let mut h: BinaryHeap<i32> = BinaryHeap::new();
+            // Fail all allocations inside the policy. The head push's
+            // try_reserve(1) fails immediately (heap is empty, len==cap==0).
+            // All 4 items are stranded in the Resumable.
+            let resumable =
+                with_policy(
+                    FailPolicy::fail_all(),
+                    || match <_ as TryExtend<i32>>::try_extend(&mut h, 0..4) {
+                        Ok(()) => panic!("expected failure"),
+                        Err((resumable, _)) => resumable,
+                    },
+                );
+            assert_eq!(h.len(), 0);
+            // Retry outside the policy: everything lands.
+            <_ as TryExtend<i32>>::try_extend(&mut h, resumable).unwrap();
+            assert_eq!(super::sorted(h), vec![0, 1, 2, 3]);
+        }
     }
 }

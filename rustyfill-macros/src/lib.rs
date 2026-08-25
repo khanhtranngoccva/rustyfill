@@ -186,7 +186,7 @@ pub fn try_writeln(input: TokenStream) -> TokenStream {
 pub fn try_format(input: TokenStream) -> TokenStream {
     let tokens: proc_macro2::TokenStream = input.clone().into();
     quote! {{
-        let mut buf = String::new();
+        let mut buf = ::rustyfill::lang_alloc::string::String::new();
         ::rustyfill::alloc::string::TryString::try_write_fmt(
             &mut buf,
             ::rustyfill::try_format_args!(#tokens),
@@ -252,12 +252,12 @@ pub fn try_format_or(input: TokenStream) -> TokenStream {
             // No comma — treat entire input as format args with empty-string fallback
             let fmt_ts: proc_macro2::TokenStream = tts.into_iter().collect();
             quote! {{
-                let mut buf = String::new();
+                let mut buf = ::rustyfill::lang_alloc::string::String::new();
                 ::rustyfill::alloc::string::TryString::try_write_fmt(
                     &mut buf,
                     ::rustyfill::try_format_args!(#fmt_ts),
-                ).map(|()| ::lang_alloc::borrow::Cow::Owned(buf))
-                .unwrap_or(::lang_alloc::borrow::Cow::Borrowed(""))
+                ).map(|()| ::rustyfill::lang_alloc::borrow::Cow::Owned(buf))
+                .unwrap_or(::rustyfill::lang_alloc::borrow::Cow::Borrowed(""))
             }}
             .into()
         }
@@ -266,12 +266,12 @@ pub fn try_format_or(input: TokenStream) -> TokenStream {
             let fb_part: proc_macro2::TokenStream = tts[comma_idx + 1..].iter().cloned().collect();
 
             quote! {{
-                let mut buf = String::new();
+                let mut buf = ::rustyfill::lang_alloc::string::String::new();
                 ::rustyfill::alloc::string::TryString::try_write_fmt(
                     &mut buf,
                     ::rustyfill::try_format_args!(#fmt_part),
-                ).map(|()| ::lang_alloc::borrow::Cow::Owned(buf))
-                  .unwrap_or(::lang_alloc::borrow::Cow::Borrowed(#fb_part))
+                ).map(|()| ::rustyfill::lang_alloc::borrow::Cow::Owned(buf))
+                  .unwrap_or(::rustyfill::lang_alloc::borrow::Cow::Borrowed(#fb_part))
             }}
             .into()
         }

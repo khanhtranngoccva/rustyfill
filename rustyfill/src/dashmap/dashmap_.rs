@@ -2093,7 +2093,7 @@ mod tests {
         .expect_err("reservation should fail under the failing allocator");
 
         match err.error_kind() {
-            TryReserveErrorKind::AllocError { layout } => {
+            TryReserveErrorKind::AllocError { layout, .. } => {
                 // The failed allocation is the new bucket array for the
                 // rehashed shard — its layout is far larger than any single
                 // entry and aligned to at least 8 bytes.

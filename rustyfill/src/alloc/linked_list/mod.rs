@@ -543,76 +543,9 @@ mod tests {
     }
 
     #[test]
-    fn linked_list_try_push_fails_on_oom() {
-        use rustyfill_test_allocator::{FailPolicy, with_policy};
-
-        let mut l: LinkedList<i32> = LinkedList::new();
-        let r = with_policy(FailPolicy::fail_next_alloc(), || l.try_push_back(1));
-        assert!(r.is_err());
-        assert!(l.is_empty());
-
-        let r = with_policy(FailPolicy::fail_next_alloc(), || l.try_push_front(1));
-        assert!(r.is_err());
-        assert!(l.is_empty());
-    }
-
-    #[test]
-    fn linked_list_try_push_give_back_returns_value() {
-        use rustyfill_test_allocator::{FailPolicy, with_policy};
-
-        let mut l: LinkedList<i32> = LinkedList::new();
-        let (back, _err) = with_policy(FailPolicy::fail_next_alloc(), || {
-            l.try_push_back_give_back(42).unwrap_err()
-        });
-        assert_eq!(back, 42);
-        assert!(l.is_empty());
-
-        let (back, _err) = with_policy(FailPolicy::fail_next_alloc(), || {
-            l.try_push_front_give_back(7).unwrap_err()
-        });
-        assert_eq!(back, 7);
-        assert!(l.is_empty());
-    }
-
-    #[test]
-    fn linked_list_try_push_canonical_mut_give_back() {
-        use rustyfill_test_allocator::{FailPolicy, with_policy};
-
-        let mut l: LinkedList<i32> = LinkedList::new();
-        l.try_push_front_mut_give_back(1).unwrap();
-        l.try_push_back_mut_give_back(2).unwrap();
-        assert_eq!(contents(&l), vec![1, 2]);
-
-        // Failure path: value is given back.
-        let (back, _err) = with_policy(FailPolicy::fail_next_alloc(), || {
-            l.try_push_back_mut_give_back(99).unwrap_err()
-        });
-        assert_eq!(back, 99);
-        assert_eq!(contents(&l), vec![1, 2]);
-    }
-
-    #[test]
     fn linked_list_try_collect_basic() {
         let l = LinkedList::try_collect(1..4).unwrap();
         assert_eq!(contents(&l), vec![1, 2, 3]);
-    }
-
-    #[test]
-    fn linked_list_try_collect_fails_midway_keeps_partial_list() {
-        use rustyfill_test_allocator::{FailPolicy, with_policy};
-
-        // Each element costs exactly ONE allocation now (we control the node).
-        // Values 0, 1 succeed (allocs 1, 2). Value 2 → alloc 3 fails.
-        let (stranded, rest) =
-            with_policy(
-                FailPolicy::fail_nth_alloc(3),
-                || match LinkedList::try_collect(0..5) {
-                    Ok(_) => panic!("expected failure"),
-                    Err((stranded, rest, _e)) => (stranded, rest),
-                },
-            );
-        assert_eq!(stranded, Some(2));
-        assert_eq!(rest.collect::<lang_alloc::vec::Vec<_>>(), vec![3, 4]);
     }
 
     #[test]
@@ -622,39 +555,10 @@ mod tests {
     }
 
     #[test]
-    fn linked_list_try_from_slice_fails_on_oom() {
-        use rustyfill_test_allocator::{FailPolicy, with_policy};
-
-        let r = with_policy(FailPolicy::fail_next_alloc(), || {
-            LinkedList::try_from_slice(&[1, 2])
-        });
-        assert!(matches!(r, Err(TryLinkedListWithCloneError::Alloc(_))));
-    }
-
-    #[test]
     fn linked_list_generic_try_extend_via_trait() {
         let mut l: LinkedList<i32> = LinkedList::new();
         <_ as TryExtend<i32>>::try_extend(&mut l, 10..13).unwrap();
         assert_eq!(contents(&l), vec![10, 11, 12]);
-    }
-
-    #[test]
-    fn linked_list_generic_try_extend_retry_with_resumable() {
-        use rustyfill_test_allocator::{FailPolicy, with_policy};
-
-        let mut l: LinkedList<i32> = LinkedList::new();
-        // Each item costs exactly 1 alloc. Items 0, 1 succeed (allocs 1, 2).
-        // Item 2 → alloc 3 fails. Resumable carries head=2, remainder=[3].
-        let resumable = with_policy(FailPolicy::fail_nth_alloc(3), || {
-            match <_ as TryExtend<i32>>::try_extend(&mut l, 0..4) {
-                Ok(()) => panic!("expected failure"),
-                Err((resumable, _)) => resumable,
-            }
-        });
-        assert_eq!(l.len(), 2);
-        // Retry outside the policy: pass the full Resumable (head + remainder).
-        <_ as TryExtend<i32>>::try_extend(&mut l, resumable).unwrap();
-        assert_eq!(contents(&l), vec![0, 1, 2, 3]);
     }
 
     #[test]
@@ -690,5 +594,98 @@ mod tests {
         assert_eq!(l.pop_front(), Some(-1));
         assert_eq!(l.pop_back(), Some(3));
         assert_eq!(contents(&l), vec![0, 1, 2]);
+    }
+
+    // ── OOM tests ─────────────────────────────────────────────────────────────
+    // Require `std`: the failing-allocator hooks are thread-local (std-only).
+    #[cfg(feature = "std")]
+    mod oom {
+        use super::*;
+        use rustyfill_test_allocator::{FailPolicy, with_policy};
+
+        #[test]
+        fn linked_list_try_push_fails_on_oom() {
+            let mut l: LinkedList<i32> = LinkedList::new();
+            let r = with_policy(FailPolicy::fail_next_alloc(), || l.try_push_back(1));
+            assert!(r.is_err());
+            assert!(l.is_empty());
+
+            let r = with_policy(FailPolicy::fail_next_alloc(), || l.try_push_front(1));
+            assert!(r.is_err());
+            assert!(l.is_empty());
+        }
+
+        #[test]
+        fn linked_list_try_push_give_back_returns_value() {
+            let mut l: LinkedList<i32> = LinkedList::new();
+            let (back, _err) = with_policy(FailPolicy::fail_next_alloc(), || {
+                l.try_push_back_give_back(42).unwrap_err()
+            });
+            assert_eq!(back, 42);
+            assert!(l.is_empty());
+
+            let (back, _err) = with_policy(FailPolicy::fail_next_alloc(), || {
+                l.try_push_front_give_back(7).unwrap_err()
+            });
+            assert_eq!(back, 7);
+            assert!(l.is_empty());
+        }
+
+        #[test]
+        fn linked_list_try_push_canonical_mut_give_back() {
+            let mut l: LinkedList<i32> = LinkedList::new();
+            l.try_push_front_mut_give_back(1).unwrap();
+            l.try_push_back_mut_give_back(2).unwrap();
+            assert_eq!(contents(&l), vec![1, 2]);
+
+            // Failure path: value is given back.
+            let (back, _err) = with_policy(FailPolicy::fail_next_alloc(), || {
+                l.try_push_back_mut_give_back(99).unwrap_err()
+            });
+            assert_eq!(back, 99);
+            assert_eq!(contents(&l), vec![1, 2]);
+        }
+
+        #[test]
+        fn linked_list_try_collect_fails_midway_keeps_partial_list() {
+            // Each element costs exactly ONE allocation now (we control the node).
+            // Values 0, 1 succeed (allocs 1, 2). Value 2 → alloc 3 fails.
+            let (stranded, rest) =
+                with_policy(
+                    FailPolicy::fail_nth_alloc(3),
+                    || match LinkedList::try_collect(0..5) {
+                        Ok(_) => panic!("expected failure"),
+                        Err((stranded, rest, _e)) => (stranded, rest),
+                    },
+                );
+            assert_eq!(stranded, Some(2));
+            assert_eq!(rest.collect::<lang_alloc::vec::Vec<_>>(), vec![3, 4]);
+        }
+
+        #[test]
+        fn linked_list_try_from_slice_fails_on_oom() {
+            let r = with_policy(FailPolicy::fail_next_alloc(), || {
+                LinkedList::try_from_slice(&[1, 2])
+            });
+            assert!(matches!(r, Err(TryLinkedListWithCloneError::Alloc(_))));
+        }
+
+        #[test]
+        fn linked_list_generic_try_extend_retry_with_resumable() {
+            let mut l: LinkedList<i32> = LinkedList::new();
+            // Each item costs exactly 1 alloc. Items 0, 1 succeed (allocs 1, 2).
+            // Item 2 → alloc 3 fails. Resumable carries head=2, remainder=[3].
+            let resumable =
+                with_policy(FailPolicy::fail_nth_alloc(3), || {
+                    match <_ as TryExtend<i32>>::try_extend(&mut l, 0..4) {
+                        Ok(()) => panic!("expected failure"),
+                        Err((resumable, _)) => resumable,
+                    }
+                });
+            assert_eq!(l.len(), 2);
+            // Retry outside the policy: pass the full Resumable (head + remainder).
+            <_ as TryExtend<i32>>::try_extend(&mut l, resumable).unwrap();
+            assert_eq!(contents(&l), vec![0, 1, 2, 3]);
+        }
     }
 }

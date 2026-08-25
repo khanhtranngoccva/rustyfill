@@ -1282,238 +1282,245 @@ mod tests {
     }
 
     // ── OOM tests ─────────────────────────────────────────────────────────────
-    #[cfg(test)]
-    use rustyfill_test_allocator::{FailPolicy, with_policy};
+    // Require `std`: the failing-allocator hooks are thread-local (std-only).
+    #[cfg(feature = "std")]
+    mod oom {
+        use super::*;
+        use rustyfill_test_allocator::{FailPolicy, with_policy};
 
-    #[test]
-    fn vecdeque_try_with_capacity_fails_on_oom() {
-        let r: Result<VecDeque<u32>, TryReserveError> =
-            with_policy(FailPolicy::fail_next_alloc(), || {
-                <VecDeque<u32> as TryVecDeque<u32>>::try_with_capacity(10)
+        #[test]
+        fn vecdeque_try_with_capacity_fails_on_oom() {
+            let r: Result<VecDeque<u32>, TryReserveError> =
+                with_policy(FailPolicy::fail_next_alloc(), || {
+                    <VecDeque<u32> as TryVecDeque<u32>>::try_with_capacity(10)
+                });
+            assert!(r.is_err());
+        }
+
+        #[test]
+        fn vecdeque_try_with_capacity_zero_succeeds_under_oom() {
+            let r: Result<VecDeque<u32>, TryReserveError> =
+                with_policy(FailPolicy::fail_next_alloc(), || {
+                    <VecDeque<u32> as TryVecDeque<u32>>::try_with_capacity(0)
+                });
+            assert!(r.is_ok());
+        }
+
+        #[test]
+        fn vecdeque_try_push_back_fails_on_oom() {
+            let mut dq: VecDeque<u32> = VecDeque::new();
+            dq.try_shrink_to_fit().unwrap();
+            let r = with_policy(FailPolicy::fail_next_alloc(), || dq.fallible_push_back(1));
+            assert!(r.is_err());
+        }
+
+        #[test]
+        fn vecdeque_try_push_front_fails_on_oom() {
+            let mut dq: VecDeque<u32> = VecDeque::new();
+            dq.try_shrink_to_fit().unwrap();
+            let r = with_policy(FailPolicy::fail_next_alloc(), || dq.fallible_push_front(1));
+            assert!(r.is_err());
+        }
+
+        #[test]
+        fn vecdeque_try_clone_fails_on_oom() {
+            let orig: VecDeque<u32> = VecDeque::from([1, 2, 3]);
+            let r: Result<VecDeque<u32>, TryCloneError> =
+                with_policy(FailPolicy::fail_next_alloc(), || orig.try_clone());
+            assert!(r.is_err());
+        }
+
+        #[test]
+        fn vecdeque_try_clone_empty_succeeds_under_oom() {
+            let orig: VecDeque<u32> = VecDeque::new();
+            let r: Result<VecDeque<u32>, TryCloneError> =
+                with_policy(FailPolicy::fail_next_alloc(), || orig.try_clone());
+            assert!(r.is_ok());
+        }
+
+        #[test]
+        fn vecdeque_try_collect_fails_on_oom() {
+            let items = [1u32, 2u32, 3u32];
+            let r: Result<VecDeque<u32>, TryReserveError> =
+                with_policy(FailPolicy::fail_next_alloc(), || {
+                    VecDeque::try_collect(items.iter().copied())
+                });
+            assert!(r.is_err());
+        }
+
+        #[test]
+        fn vecdeque_try_from_slice_fails_on_oom() {
+            let slice = &[1u32, 2u32];
+            let r: Result<VecDeque<u32>, TryVecDequeWithCloneError> =
+                with_policy(FailPolicy::fail_next_alloc(), || {
+                    <VecDeque<u32> as TryVecDeque<u32>>::try_from_slice(slice)
+                });
+            assert!(r.is_err());
+        }
+
+        #[test]
+        fn vecdeque_try_from_elem_fails_on_oom() {
+            let val = 42u32;
+            let r: Result<VecDeque<u32>, TryVecDequeWithCloneError> =
+                with_policy(FailPolicy::fail_next_alloc(), || {
+                    <VecDeque<u32> as TryVecDeque<u32>>::try_from_elem(&val, 5)
+                });
+            assert!(r.is_err());
+        }
+
+        #[test]
+        fn vecdeque_oom_restores_allocation_afterwards() {
+            let r: Result<VecDeque<u32>, TryReserveError> =
+                with_policy(FailPolicy::fail_next_alloc(), || {
+                    <VecDeque<u32> as TryVecDeque<u32>>::try_with_capacity(10)
+                });
+            assert!(r.is_err());
+            let r: Result<VecDeque<u32>, TryReserveError> =
+                <VecDeque<u32> as TryVecDeque<u32>>::try_with_capacity(10);
+            assert!(r.is_ok());
+        }
+
+        #[test]
+        fn vecdeque_nth_alloc_fail_targets_correct_call() {
+            let (r1_ok, r2_err, r3_ok) = with_policy(FailPolicy::fail_nth_alloc(2), || {
+                let r1: Result<VecDeque<u8>, TryReserveError> =
+                    <VecDeque<u8> as TryVecDeque<u8>>::try_with_capacity(1);
+                let r2: Result<VecDeque<u8>, TryReserveError> =
+                    <VecDeque<u8> as TryVecDeque<u8>>::try_with_capacity(1);
+                let r3: Result<VecDeque<u8>, TryReserveError> =
+                    <VecDeque<u8> as TryVecDeque<u8>>::try_with_capacity(1);
+                (r1.is_ok(), r2.is_err(), r3.is_ok())
             });
-        assert!(r.is_err());
-    }
+            assert!(r1_ok, "first alloc should succeed");
+            assert!(r2_err, "second alloc should fail");
+            assert!(r3_ok, "third alloc should succeed");
+        }
 
-    #[test]
-    fn vecdeque_try_with_capacity_zero_succeeds_under_oom() {
-        let r: Result<VecDeque<u32>, TryReserveError> =
-            with_policy(FailPolicy::fail_next_alloc(), || {
-                <VecDeque<u32> as TryVecDeque<u32>>::try_with_capacity(0)
-            });
-        assert!(r.is_ok());
-    }
+        // ── Explicit rollback / TruncateGuard tests ───────────────────────────
 
-    #[test]
-    fn vecdeque_try_push_back_fails_on_oom() {
-        let mut dq: VecDeque<u32> = VecDeque::new();
-        dq.try_shrink_to_fit().unwrap();
-        let r = with_policy(FailPolicy::fail_next_alloc(), || dq.fallible_push_back(1));
-        assert!(r.is_err());
-    }
+        #[test]
+        fn extend_from_slice_with_rollback_on_mid_way_clone_failure() {
+            // try_extend_from_slice_with_rollback on VecDeque<String> reserves capacity upfront,
+            // then clones each element. A mid-way clone failure must trigger the
+            // TruncateGuard to drop all elements pushed before the failure.
+            use lang_alloc::string::String;
 
-    #[test]
-    fn vecdeque_try_push_front_fails_on_oom() {
-        let mut dq: VecDeque<u32> = VecDeque::new();
-        dq.try_shrink_to_fit().unwrap();
-        let r = with_policy(FailPolicy::fail_next_alloc(), || dq.fallible_push_front(1));
-        assert!(r.is_err());
-    }
+            let source: Vec<String> = vec![
+                "item0".into(),
+                "item1".into(),
+                "item2".into(),
+                "item3".into(),
+                "item4".into(),
+                "item5".into(),
+                "item6".into(),
+                "item7".into(),
+                "item8".into(),
+                "item9".into(),
+            ];
+            let len_source = source.len();
 
-    #[test]
-    fn vecdeque_try_clone_fails_on_oom() {
-        let orig: VecDeque<u32> = VecDeque::from([1, 2, 3]);
-        let r: Result<VecDeque<u32>, TryCloneError> =
-            with_policy(FailPolicy::fail_next_alloc(), || orig.try_clone());
-        assert!(r.is_err());
-    }
+            let mut deque: VecDeque<String> =
+                VecDeque::from(["pre0".into(), "pre1".into(), "pre2".into()]);
+            let len_before = deque.len();
 
-    #[test]
-    fn vecdeque_try_clone_empty_succeeds_under_oom() {
-        let orig: VecDeque<u32> = VecDeque::new();
-        let r: Result<VecDeque<u32>, TryCloneError> =
-            with_policy(FailPolicy::fail_next_alloc(), || orig.try_clone());
-        assert!(r.is_ok());
-    }
+            let r: Result<(), TryVecDequeWithCloneError> =
+                with_policy(FailPolicy::fail_nth_alloc(2), || {
+                    <VecDeque<String> as TryVecDeque<String>>::try_extend_from_slice_with_rollback(
+                        &mut deque, &source,
+                    )
+                });
 
-    #[test]
-    fn vecdeque_try_collect_fails_on_oom() {
-        let items = [1u32, 2u32, 3u32];
-        let r: Result<VecDeque<u32>, TryReserveError> =
-            with_policy(FailPolicy::fail_next_alloc(), || {
-                VecDeque::try_collect(items.iter().copied())
-            });
-        assert!(r.is_err());
-    }
-
-    #[test]
-    fn vecdeque_try_from_slice_fails_on_oom() {
-        let slice = &[1u32, 2u32];
-        let r: Result<VecDeque<u32>, TryVecDequeWithCloneError> =
-            with_policy(FailPolicy::fail_next_alloc(), || {
-                <VecDeque<u32> as TryVecDeque<u32>>::try_from_slice(slice)
-            });
-        assert!(r.is_err());
-    }
-
-    #[test]
-    fn vecdeque_try_from_elem_fails_on_oom() {
-        let val = 42u32;
-        let r: Result<VecDeque<u32>, TryVecDequeWithCloneError> =
-            with_policy(FailPolicy::fail_next_alloc(), || {
-                <VecDeque<u32> as TryVecDeque<u32>>::try_from_elem(&val, 5)
-            });
-        assert!(r.is_err());
-    }
-
-    #[test]
-    fn vecdeque_oom_restores_allocation_afterwards() {
-        let r: Result<VecDeque<u32>, TryReserveError> =
-            with_policy(FailPolicy::fail_next_alloc(), || {
-                <VecDeque<u32> as TryVecDeque<u32>>::try_with_capacity(10)
-            });
-        assert!(r.is_err());
-        let r: Result<VecDeque<u32>, TryReserveError> =
-            <VecDeque<u32> as TryVecDeque<u32>>::try_with_capacity(10);
-        assert!(r.is_ok());
-    }
-
-    #[test]
-    fn vecdeque_nth_alloc_fail_targets_correct_call() {
-        let (r1_ok, r2_err, r3_ok) = with_policy(FailPolicy::fail_nth_alloc(2), || {
-            let r1: Result<VecDeque<u8>, TryReserveError> =
-                <VecDeque<u8> as TryVecDeque<u8>>::try_with_capacity(1);
-            let r2: Result<VecDeque<u8>, TryReserveError> =
-                <VecDeque<u8> as TryVecDeque<u8>>::try_with_capacity(1);
-            let r3: Result<VecDeque<u8>, TryReserveError> =
-                <VecDeque<u8> as TryVecDeque<u8>>::try_with_capacity(1);
-            (r1.is_ok(), r2.is_err(), r3.is_ok())
-        });
-        assert!(r1_ok, "first alloc should succeed");
-        assert!(r2_err, "second alloc should fail");
-        assert!(r3_ok, "third alloc should succeed");
-    }
-
-    // ── Explicit rollback / TruncateGuard tests ─────────────────────────────
-
-    #[test]
-    fn extend_from_slice_with_rollback_on_mid_way_clone_failure() {
-        // try_extend_from_slice_with_rollback on VecDeque<String> reserves capacity upfront,
-        // then clones each element. A mid-way clone failure must trigger the
-        // TruncateGuard to drop all elements pushed before the failure.
-        use lang_alloc::string::String;
-
-        let source: Vec<String> = vec![
-            "item0".into(),
-            "item1".into(),
-            "item2".into(),
-            "item3".into(),
-            "item4".into(),
-            "item5".into(),
-            "item6".into(),
-            "item7".into(),
-            "item8".into(),
-            "item9".into(),
-        ];
-        let len_source = source.len();
-
-        let mut deque: VecDeque<String> =
-            VecDeque::from(["pre0".into(), "pre1".into(), "pre2".into()]);
-        let len_before = deque.len();
-
-        let r: Result<(), TryVecDequeWithCloneError> =
-            with_policy(FailPolicy::fail_nth_alloc(2), || {
-                <VecDeque<String> as TryVecDeque<String>>::try_extend_from_slice_with_rollback(
-                    &mut deque, &source,
-                )
-            });
-
-        match r {
-            Err(TryVecDequeWithCloneError::Clone(_)) => {
-                assert_eq!(
-                    deque.len(),
-                    len_before,
-                    "TruncateGuard did not roll back: expected {} elements, got {}",
-                    len_before,
-                    deque.len()
-                );
-                assert_eq!(deque[0], "pre0");
-                assert_eq!(deque[1], "pre1");
-                assert_eq!(deque[2], "pre2");
-            }
-            Ok(()) => {
-                assert_eq!(deque.len(), len_before + len_source);
-            }
-            Err(other) => {
-                panic!("unexpected error variant: {:?}", other);
+            match r {
+                Err(TryVecDequeWithCloneError::Clone(_)) => {
+                    assert_eq!(
+                        deque.len(),
+                        len_before,
+                        "TruncateGuard did not roll back: expected {} elements, got {}",
+                        len_before,
+                        deque.len()
+                    );
+                    assert_eq!(deque[0], "pre0");
+                    assert_eq!(deque[1], "pre1");
+                    assert_eq!(deque[2], "pre2");
+                }
+                Ok(()) => {
+                    assert_eq!(deque.len(), len_before + len_source);
+                }
+                Err(other) => {
+                    panic!("unexpected error variant: {:?}", other);
+                }
             }
         }
-    }
 
-    #[test]
-    fn extend_from_within_rollback_on_mid_way_clone_failure() {
-        // try_extend_from_within clones from within the same deque.
-        // Mid-way failure must truncate back to original length.
-        use lang_alloc::string::String;
+        #[test]
+        fn extend_from_within_rollback_on_mid_way_clone_failure() {
+            // try_extend_from_within clones from within the same deque.
+            // Mid-way failure must truncate back to original length.
+            use lang_alloc::string::String;
 
-        let mut deque: VecDeque<String> =
-            VecDeque::from(["a".into(), "b".into(), "c".into(), "d".into(), "e".into()]);
-        let len_before = deque.len();
+            let mut deque: VecDeque<String> =
+                VecDeque::from(["a".into(), "b".into(), "c".into(), "d".into(), "e".into()]);
+            let len_before = deque.len();
 
-        let r: Result<(), TryVecDequeExtendFromWithinError> =
-            with_policy(FailPolicy::fail_nth_alloc(2), || {
-                <VecDeque<String> as TryVecDeque<String>>::try_extend_from_within(&mut deque, 0..3)
-            });
+            let r: Result<(), TryVecDequeExtendFromWithinError> =
+                with_policy(FailPolicy::fail_nth_alloc(2), || {
+                    <VecDeque<String> as TryVecDeque<String>>::try_extend_from_within(
+                        &mut deque,
+                        0..3,
+                    )
+                });
 
-        match r {
-            Err(TryVecDequeExtendFromWithinError::Clone(_)) => {
-                assert_eq!(
-                    deque.len(),
-                    len_before,
-                    "TruncateGuard failed to roll back extend_from_within"
-                );
-                assert_eq!(deque[0], "a");
-                assert_eq!(deque[4], "e");
-            }
-            Ok(()) => {
-                assert_eq!(deque.len(), len_before + 3);
-            }
-            Err(other) => {
-                panic!("unexpected error: {:?}", other);
+            match r {
+                Err(TryVecDequeExtendFromWithinError::Clone(_)) => {
+                    assert_eq!(
+                        deque.len(),
+                        len_before,
+                        "TruncateGuard failed to roll back extend_from_within"
+                    );
+                    assert_eq!(deque[0], "a");
+                    assert_eq!(deque[4], "e");
+                }
+                Ok(()) => {
+                    assert_eq!(deque.len(), len_before + 3);
+                }
+                Err(other) => {
+                    panic!("unexpected error: {:?}", other);
+                }
             }
         }
-    }
 
-    #[test]
-    fn resize_with_clone_rollback_on_mid_way_failure() {
-        // try_resize_with clones a value repeatedly. Mid-way failure must
-        // truncate back to original length via TruncateGuard.
-        use lang_alloc::string::String;
+        #[test]
+        fn resize_with_clone_rollback_on_mid_way_failure() {
+            // try_resize_with clones a value repeatedly. Mid-way failure must
+            // truncate back to original length via TruncateGuard.
+            use lang_alloc::string::String;
 
-        let val: String = "repeated".into();
-        let mut deque: VecDeque<String> = VecDeque::from(["original".into()]);
-        let len_before = deque.len();
+            let val: String = "repeated".into();
+            let mut deque: VecDeque<String> = VecDeque::from(["original".into()]);
+            let len_before = deque.len();
 
-        let r: Result<(), TryVecDequeWithCloneError> =
-            with_policy(FailPolicy::fail_nth_alloc(3), || {
-                <VecDeque<String> as TryVecDeque<String>>::try_resize(&mut deque, &val, 15)
-            });
+            let r: Result<(), TryVecDequeWithCloneError> =
+                with_policy(FailPolicy::fail_nth_alloc(3), || {
+                    <VecDeque<String> as TryVecDeque<String>>::try_resize(&mut deque, &val, 15)
+                });
 
-        match r {
-            Err(TryVecDequeWithCloneError::Clone(_)) => {
-                assert_eq!(
-                    deque.len(),
-                    len_before,
-                    "resize rollback failed: expected {}, got {}",
-                    len_before,
-                    deque.len()
-                );
-                assert_eq!(deque[0], "original");
-            }
-            Ok(()) => {
-                assert_eq!(deque.len(), 15);
-            }
-            Err(other) => {
-                panic!("unexpected error: {:?}", other);
+            match r {
+                Err(TryVecDequeWithCloneError::Clone(_)) => {
+                    assert_eq!(
+                        deque.len(),
+                        len_before,
+                        "resize rollback failed: expected {}, got {}",
+                        len_before,
+                        deque.len()
+                    );
+                    assert_eq!(deque[0], "original");
+                }
+                Ok(()) => {
+                    assert_eq!(deque.len(), 15);
+                }
+                Err(other) => {
+                    panic!("unexpected error: {:?}", other);
+                }
             }
         }
     }

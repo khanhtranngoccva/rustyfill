@@ -225,10 +225,7 @@ fn cmd_crap(
 /// Run `cargo +nightly test` with the leak sanitizer enabled.
 fn cmd_sanitize(features: FeatureArgs, scope: ScopeArgs) -> ExitCode {
     let mut cmd = Command::new("cargo");
-    cmd.env(
-        "RUSTFLAGS",
-        "-Zunstable-options -Cpanic=immediate-abort -Zsanitizer=leak -Zpanic_abort_tests",
-    );
+    cmd.env("RUSTFLAGS", "-Zunstable-options -Zsanitizer=leak");
     let mut args: Vec<String> = vec![
         "+nightly".into(),
         "test".into(),
