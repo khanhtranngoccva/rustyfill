@@ -61,6 +61,11 @@ pub use crate::std::hashset::TryHashSet;
 
 pub use crate::alloc::vecdeque::TryVecDeque;
 
+// ── BinaryHeap & LinkedList ──────────────────────────
+
+pub use crate::alloc::binary_heap::{TryBinaryHeap, TryBinaryHeapWithCloneError};
+pub use crate::alloc::linked_list::{TryLinkedList, TryLinkedListWithCloneError};
+
 // ── String & str ─────────────────────────────────────
 
 pub use crate::alloc::string::{TryStr, TryString};

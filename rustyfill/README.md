@@ -42,9 +42,19 @@ Import `rustyfill::prelude::*` to bring all `Try*` extension traits into scope a
 
 Outside of deprecated structures, every operation in this crate guarantees it will not panic on allocation failure. The foundational traits (`TryClone`, `TryDefault`, `TryToOwned`) require their standard counterparts as supertraits, ensuring compatibility with existing APIs while providing a safe escape hatch.
 
-Certain operations guarantee atomicity in the event of failure - when they fail, these operations restore the old state of the data structure. They do so by reserving capacity before performing logical work so that allocation failures short-circuit early, avoiding wasted computation or partially constructed intermediate values. If short circuiting is impossible because the operation is midway, failures automatically trigger a rollback.
+### Atomicity, Resumability, and Laziness
 
-Operations involving extending from iterators cannot be atomic because iterators cannot be restored to a previous state, but as long as the library can hold a stranded element, the caller can resume the operation from that point after a delay. The crate offers facilities for this pattern.
+All basic element operations and some bulk operations guarantee atomicity in the event of failure - when they fail, these operations ensure data structure is in the old state. Some operations are lazy or partially lazy. 
+
+All operations, atomic or non-atomic, generally try to be as lazy as possible. They may do so by reserving capacity before performing logical work so that allocation failures short-circuit early, avoiding wasted computation or partially constructed intermediate values.
+
+Fully lazy operations mean that when the operations fail, no elements are duplicated or committed into the data structures, and therefore, no rollback is necessary. For example, appending a vector to a vector is fully lazy, because all memory can be reserved beforehand. If laziness is not fully unachievable, for example, in case of extending vectors from slices with cloning and opted-in rollback, failures automatically trigger a rollback.
+
+For the sake of memory footprint, operations involving extending from iterators and slices (without opted-in rollback) cannot be atomic because iterators cannot be restored to a previous state and/or element operations are irreversible. However, as long as the stranded element can be retained, the caller can resume the operation from that point after a delay. The crate offers facilities for this pattern. 
+
+In cases where atomic semantics is really necessary and memory cost is acceptable, the callers may manually create an intermediate vector, store all intermediates there, reserve all the space, and push elements infallibly once reservation succeeds. Note that some structures like concurrent hash maps and B-Trees cannot completely honor capacity reservation requests or fulfill them at all, making this workaround impossible.
+
+Please consult each method's documentation for information on these attributes.
 
 ## What it covers
 

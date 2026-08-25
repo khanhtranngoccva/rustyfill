@@ -170,6 +170,14 @@ fn alloc_target() -> BindingTarget {
         target.add_derive("collections::TryReserveErrorKind", derive);
     }
 
+    // ── Linked list ─────────────────────────────────────────────────────────
+    // The container shell and its private Node type. The fallible push methods
+    // allocate Node<T> directly via TryBox and splice it into the list through
+    // raw pointer surgery on the mirrored fields (head/tail/len), so both must
+    // be mirrored for compile-time layout enforcement.
+    target.declare_struct("collections::linked_list::LinkedList");
+    target.declare_struct("collections::linked_list::Node");
+
     // ── B-tree containers ───────────────────────────────────────────────────
     // Only the two public container shells are mirrored. Their iterators,
     // cursors, range views, and set-algebra engines are peripheral to the
