@@ -739,14 +739,9 @@ impl<K: Eq + Hash, V, S: BuildHasher> ConcurrentHashMap<K, V, S> {
     /// dehydrated `RawTable` reserved to `count`, entries are moved out via raw
     /// pointer reads, and the new table is hydrated back into the shard slot.
     /// The old (now empty) table is dropped at the end of the loop iteration.
-    pub fn try_shrink_to_fit(&self) -> Result<(), TryReserveError>
-    // FIXME: why cloning the hasher factory here??
-    where
-        S: Clone,
-    {
+    pub fn try_shrink_to_fit(&self) -> Result<(), TryReserveError> {
         use lang_core::mem::ManuallyDrop;
-
-        let hf = self.hasher.clone();
+        let hf = &self.hasher;
 
         for i in 0..self.shard_count() {
             let shard = self.shards.get_shard(i);
@@ -792,10 +787,7 @@ impl<K: Eq + Hash, V, S: BuildHasher> ConcurrentHashMap<K, V, S> {
     }
 
     /// Alias for [`Self::try_shrink_to_fit`].
-    pub fn fallible_shrink_to_fit(&self) -> Result<(), TryReserveError>
-    where
-        S: Clone,
-    {
+    pub fn fallible_shrink_to_fit(&self) -> Result<(), TryReserveError> {
         Self::try_shrink_to_fit(self)
     }
 

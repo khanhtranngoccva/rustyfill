@@ -36,7 +36,6 @@ impl<T: TryDefault> TryDefault for UnsafeCell<T> {
 mod tests {
     use super::*;
     use crate::try_format;
-    use lang_alloc::string::String;
 
     #[test]
     fn unsafe_cell_try_debug() {

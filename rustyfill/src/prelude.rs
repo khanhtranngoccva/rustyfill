@@ -98,7 +98,7 @@ pub use crate::dashmap::{TryDashMap, TryDashSet};
 // ── BTreeMap entry API (requires `std` feature) ───────────────────────────────
 
 #[cfg(feature = "std")]
-pub use crate::alloc::btrees::entry::{
+pub use crate::alloc::btrees::{
     TryBTreeMap, TryBTreeMapEntry, TryBTreeMapEntryWithError, TryBTreeMapVacantEntry,
 };
 

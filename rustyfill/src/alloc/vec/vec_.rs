@@ -1871,5 +1871,40 @@ mod tests {
                 }
             }
         }
+
+        /// A panicking `try_clone` mid-extension must still trigger the
+        /// [`TruncateGuard`] to roll back all elements appended during the
+        /// call — unconditional rollback even on unwind.
+        #[test]
+        fn extend_from_slice_with_rollback_panic_safe() {
+            use crate::try_clone::TryCloneError;
+            use lang_std::panic;
+
+            #[derive(Clone)]
+            struct Panicky(u8);
+            impl TryClone for Panicky {
+                fn try_clone(&self) -> Result<Self, TryCloneError> {
+                    if self.0 == 40 {
+                        panic!("simulated clone panic");
+                    }
+                    Ok(Self(self.0))
+                }
+            }
+
+            let mut vec: Vec<Panicky> = vec![Panicky(10), Panicky(20)];
+
+            let result = panic::catch_unwind(panic::AssertUnwindSafe(|| {
+                <Vec<Panicky> as TryVec<Panicky>>::try_extend_from_slice_with_rollback(
+                    &mut vec,
+                    &[Panicky(30), Panicky(40)],
+                )
+            }));
+            assert!(result.is_err(), "expected a panic from element 40");
+            // The guard truncated the appended 30 during unwinding; only the
+            // pre-existing elements remain.
+            assert_eq!(vec.len(), 2);
+            assert_eq!(vec[0].0, 10);
+            assert_eq!(vec[1].0, 20);
+        }
     }
 }

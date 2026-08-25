@@ -1523,5 +1523,133 @@ mod tests {
                 }
             }
         }
+
+        #[test]
+        fn extend_from_slice_with_rollback_no_partial_elements_after_failure() {
+            // Verify that after a mid-way clone failure of the _with_rollback
+            // variant, the deque contains zero elements from the source slice —
+            // not even the ones cloned before the failure.
+            use lang_alloc::string::String;
+
+            let source: Vec<String> = vec![
+                "src0xxxxxxxx".into(),
+                "src1xxxxxxxx".into(),
+                "src2xxxxxxxx".into(),
+                "src3xxxxxxxx".into(),
+                "src4xxxxxxxx".into(),
+                "src5xxxxxxxx".into(),
+                "src6xxxxxxxx".into(),
+                "src7xxxxxxxx".into(),
+                "src8xxxxxxxx".into(),
+                "src9xxxxxxxx".into(),
+            ];
+            let mut deque: VecDeque<String> = VecDeque::from(["anchor".into()]);
+
+            let _: Result<(), TryVecDequeWithCloneError> =
+                with_policy(FailPolicy::fail_nth_alloc(3), || {
+                    <VecDeque<String> as TryVecDeque<String>>::try_extend_from_slice_with_rollback(
+                        &mut deque, &source,
+                    )
+                });
+
+            // Whatever happened, no source strings should appear in deque.
+            for elem in deque.iter() {
+                assert!(
+                    !elem.starts_with("src"),
+                    "found a source element in deque after supposed rollback"
+                );
+            }
+        }
+
+        #[test]
+        fn extend_from_slice_no_rollback_returns_remainder_and_keeps_prefix() {
+            // The standard try_extend_from_slice keeps already-cloned elements and
+            // returns the unprocessed tail alongside the error.
+            use crate::try_extend::TryExtendFromSlice;
+            use lang_alloc::string::String;
+
+            let source: Vec<String> = vec![
+                "item0".into(),
+                "item1".into(),
+                "item2".into(),
+                "item3".into(),
+                "item4".into(),
+                "item5".into(),
+                "item6".into(),
+                "item7".into(),
+                "item8".into(),
+                "item9".into(),
+            ];
+            let len_source = source.len();
+
+            let mut deque: VecDeque<String> = VecDeque::from(["pre".into()]);
+            let len_before = deque.len();
+
+            let r: Result<(), (&[String], TryVecDequeWithCloneError)> =
+                with_policy(FailPolicy::fail_nth_alloc(2), || {
+                    <VecDeque<String> as TryExtendFromSlice<'_, String>>::try_extend_from_slice(
+                        &mut deque, &source,
+                    )
+                });
+
+            match r {
+                Err((remaining, err)) => {
+                    matches!(err, TryVecDequeWithCloneError::Clone(_));
+                    // Returned subslice must be a contiguous tail of `source`.
+                    assert!(!remaining.is_empty());
+                    let fail_idx = len_source - remaining.len();
+                    assert_eq!(remaining, &source[fail_idx..]);
+                    // No-rollback: every element before the failing index was pushed.
+                    assert_eq!(deque.len(), len_before + fail_idx);
+                    for i in 0..fail_idx {
+                        assert_eq!(deque[len_before + i], source[i]);
+                    }
+                    // Pre-existing elements are intact.
+                    assert_eq!(deque[0], "pre");
+                }
+                Ok(()) => {
+                    // If it succeeded (failure didn't hit a clone alloc point),
+                    // all elements were appended.
+                    assert_eq!(deque.len(), len_before + len_source);
+                }
+            }
+        }
+
+        /// A panicking `try_clone` mid-extension must still trigger the
+        /// [`TruncateGuard`] to roll back all elements appended during the
+        /// call — unconditional rollback even on unwind.
+        #[test]
+        fn extend_from_slice_with_rollback_panic_safe() {
+            use crate::try_clone::TryCloneError;
+            use lang_std::panic;
+
+            #[derive(Clone)]
+            struct Panicky(u8);
+            impl TryClone for Panicky {
+                fn try_clone(&self) -> Result<Self, TryCloneError> {
+                    if self.0 == 40 {
+                        panic!("simulated clone panic");
+                    }
+                    Ok(Self(self.0))
+                }
+            }
+
+            let mut deque: VecDeque<Panicky> = VecDeque::new();
+            deque.push_back(Panicky(10));
+            deque.push_back(Panicky(20));
+
+            let result = panic::catch_unwind(panic::AssertUnwindSafe(|| {
+                <VecDeque<Panicky> as TryVecDeque<Panicky>>::try_extend_from_slice_with_rollback(
+                    &mut deque,
+                    &[Panicky(30), Panicky(40)],
+                )
+            }));
+            assert!(result.is_err(), "expected a panic from element 40");
+            // The guard truncated the appended 30 during unwinding; only the
+            // pre-existing elements remain.
+            assert_eq!(deque.len(), 2);
+            assert_eq!(deque[0].0, 10);
+            assert_eq!(deque[1].0, 20);
+        }
     }
 }

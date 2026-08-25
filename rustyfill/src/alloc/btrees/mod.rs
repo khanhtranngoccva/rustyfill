@@ -1,13 +1,13 @@
 //! Fallible B-tree map entry operations.
 //!
-//! The [`entry`] submodule provides three traits covering the full API surface:
+//! This module re-exports three traits covering the full API surface:
 //!
-//! - [`entry::TryBTreeMap`] — a single-call `try_insert(key, value)` on
+//! - [`TryBTreeMap`] — a single-call `try_insert(key, value)` on
 //!   `BTreeMap<K, V>` (plain insert semantics). Routes through the standard
 //!   entry API; only the split cascade can fail, reported as a [`Result`].
-//! - [`entry::TryBTreeMapEntry`] — fallible `try_or_insert`-family methods on
+//! - [`TryBTreeMapEntry`] — fallible `try_or_insert`-family methods on
 //!   the standard `BTreeMap` Entry API (`Entry<'_, K, V>`).
-//! - [`entry::TryBTreeMapVacantEntry`] — fallible `try_insert` on the standard
+//! - [`TryBTreeMapVacantEntry`] — fallible `try_insert` on the standard
 //!   `VacantEntry<'_, K, V>`.
 //!
 //! All three manipulate the internal B-tree structure directly using mirrored
@@ -25,9 +25,16 @@
 //! panicked mutation — e.g. elements stranded mid-promotion during a split can be
 //! silently lost.
 
-// FIXME: export aliases
-pub mod entry;
+mod entry;
 mod entry_try_extend;
 /// Fallible `TryDebug` / `TryDisplay` impls for `BTreeMap<K, V>` and
 /// `BTreeSet<T>`.
 mod fmt_;
+
+// Re-export the public API of the (private) `entry` module so callers can use
+// the short paths `crate::alloc::btrees::{...}` without reaching into a
+// submodule. The implementation lives in `entry`; these are plain aliases.
+pub use entry::{
+    TryBTreeMap, TryBTreeMapEntry, TryBTreeMapEntryWithError, TryBTreeMapVacantEntry, TryBTreeSet,
+    TryBTreeWithCloneError,
+};

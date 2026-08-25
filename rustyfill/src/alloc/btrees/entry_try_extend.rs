@@ -1,8 +1,8 @@
 //! [`TryExtend`] / [`TryExtendFromSlice`] implementations for `BTreeMap<K, V>`
 //! and `BTreeSet<T>`.
 
+use super::{TryBTreeMap, TryBTreeSet, TryBTreeWithCloneError};
 use crate::alloc::AllocError;
-use crate::alloc::btrees::entry::{TryBTreeMap, TryBTreeSet, TryBTreeWithCloneError};
 use crate::recovery::Resumable;
 use crate::try_clone::TryClone;
 use crate::try_extend::{TryExtend, TryExtendFromSlice};

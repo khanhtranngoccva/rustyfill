@@ -342,7 +342,7 @@ unsafe fn build_occupied_entry<'a, K: Ord, V>(
 ///
 /// ```
 /// use std::collections::BTreeMap;
-/// use rustyfill::alloc::btrees::entry::TryBTreeMap;
+/// use rustyfill::alloc::btrees::TryBTreeMap;
 ///
 /// let mut map: BTreeMap<String, i32> = BTreeMap::new();
 ///

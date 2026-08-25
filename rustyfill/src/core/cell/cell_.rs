@@ -35,7 +35,6 @@ impl<T: Copy + crate::try_fmt::TryDebug> TryDebug for Cell<T> {
 mod tests {
     use super::*;
     use crate::try_format;
-    use lang_alloc::string::String;
 
     #[test]
     fn cell_try_clone_copy() {

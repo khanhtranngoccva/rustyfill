@@ -1,7 +1,7 @@
 //! Low-level helpers for B-tree entry operations.
 //!
 //! These operate on raw pointers and mirrored [`rustyfill_sys`] types and are
-//! used by the reserve-and-commit architecture in [`super`](crate::alloc::btrees::entry).
+//! used by the reserve-and-commit architecture in [`super`].
 //! They are deliberately split into two families:
 //!
 //! * **Allocation / cleanup** — fallible node allocation ([`try_new_leaf`],
@@ -16,7 +16,7 @@
 //!
 //! Nearly every function here is `unsafe`: it dereferences raw pointers into
 //! live B-tree nodes. Callers must uphold the B-tree invariants described in
-//! [`super`](crate::alloc::btrees::entry) and guarantee that any pointer passed
+//! [`super`] and guarantee that any pointer passed
 //! in refers to a valid, suitably-aligned node owned by the map being mutated.
 
 use crate::alloc::boxed::TryBox;

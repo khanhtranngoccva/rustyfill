@@ -38,6 +38,7 @@ use crate::try_fmt::{TryDebug, TryDisplay};
 use lang_alloc::boxed::Box;
 use lang_alloc::collections::LinkedList;
 use lang_core::fmt;
+use lang_core::mem;
 use lang_core::ptr::NonNull;
 
 mod sys {
@@ -79,6 +80,37 @@ fn try_alloc_node<T>(element: T) -> Result<NonNull<sys::Node<T>>, (T, AllocError
 /// alloc: (), marker: PhantomData<Box<Node<U>, ()>> }`.
 unsafe fn as_sys_mut<U>(list: &mut LinkedList<U>) -> &mut sys::SysLinkedList<U> {
     unsafe { &mut *(list as *mut LinkedList<U> as *mut sys::SysLinkedList<U>) }
+}
+
+/// Panic-safe guard that pops a `LinkedList` back down to its original length
+/// on drop unless disarmed via `forget()`. Used by fallible bulk-append methods
+/// so that if an element's `try_clone` or node allocation fails (or panics)
+/// mid-way, partially-appended elements are removed rather than left behind.
+struct TruncateGuard<'a, T> {
+    list: &'a mut LinkedList<T>,
+    len_before: usize,
+}
+
+impl<'a, T> TruncateGuard<'a, T> {
+    fn new(list: &'a mut LinkedList<T>) -> Self {
+        Self {
+            len_before: list.len(),
+            list,
+        }
+    }
+
+    /// Disable the guard — no rollback on scope exit.
+    fn forget(self) {
+        mem::forget(self);
+    }
+}
+
+impl<'a, T> Drop for TruncateGuard<'a, T> {
+    fn drop(&mut self) {
+        while self.list.len() > self.len_before {
+            self.list.pop_back();
+        }
+    }
 }
 
 // ── TryClone for LinkedList<T> ────────────────────────────────────────────────
@@ -274,6 +306,21 @@ pub trait TryLinkedList<T>: Sized {
     where
         T: TryClone;
 
+    // ── Bulk extension ───────────────────────────────────────────────────────
+
+    /// Fallibly append all elements from another slice by cloning each one.
+    ///
+    /// Rolls back to the pre-call state on any failure (allocation or clone),
+    /// so no partially-appended elements remain. Because `LinkedList` appends
+    /// in order and never reorders, undoing this call is simply popping the
+    /// elements added during it off the back — no side buffer needed.
+    fn try_extend_from_slice_with_rollback(
+        &mut self,
+        other: &[T],
+    ) -> Result<(), TryLinkedListWithCloneError>
+    where
+        T: TryClone;
+
     // ── Aliases with `fallible_` prefix ─────────────────────────────────────
 
     /// Alias for [`Self::try_push_front_mut_give_back`].
@@ -319,6 +366,17 @@ pub trait TryLinkedList<T>: Sized {
         T: TryClone,
     {
         Self::try_from_slice(slice)
+    }
+
+    /// Alias for [`Self::try_extend_from_slice_with_rollback`].
+    fn fallible_extend_from_slice_with_rollback(
+        &mut self,
+        other: &[T],
+    ) -> Result<(), TryLinkedListWithCloneError>
+    where
+        T: TryClone,
+    {
+        Self::try_extend_from_slice_with_rollback(self, other)
     }
 }
 
@@ -419,6 +477,31 @@ impl<T> TryLinkedList<T> for LinkedList<T> {
             }
         }
         Ok(list)
+    }
+
+    // ── Bulk extension ───────────────────────────────────────────────────────
+
+    fn try_extend_from_slice_with_rollback(
+        &mut self,
+        other: &[T],
+    ) -> Result<(), TryLinkedListWithCloneError>
+    where
+        T: TryClone,
+    {
+        if other.is_empty() {
+            return Ok(());
+        }
+        let guard = TruncateGuard::new(self);
+        for item in other {
+            let cloned = item
+                .try_clone()
+                .map_err(TryLinkedListWithCloneError::Clone)?;
+            if let Err(e) = guard.list.try_push_back(cloned) {
+                return Err(TryLinkedListWithCloneError::Alloc(e));
+            }
+        }
+        guard.forget();
+        Ok(())
     }
 }
 
@@ -569,6 +652,29 @@ mod tests {
         assert_eq!(l.len(), 1);
     }
 
+    // ── try_extend_from_slice_with_rollback tests ────────────────────────────
+
+    #[test]
+    fn linked_list_try_extend_from_slice_with_rollback_success() {
+        let mut l: LinkedList<i32> = vec![1, 2].into_iter().collect();
+        l.try_extend_from_slice_with_rollback(&[3, 4]).unwrap();
+        assert_eq!(contents(&l), vec![1, 2, 3, 4]);
+    }
+
+    #[test]
+    fn linked_list_try_extend_from_slice_with_rollback_empty_source() {
+        let mut l: LinkedList<i32> = vec![1].into_iter().collect();
+        l.try_extend_from_slice_with_rollback(&[]).unwrap();
+        assert_eq!(contents(&l), vec![1]);
+    }
+
+    #[test]
+    fn linked_list_try_extend_from_slice_with_rollback_alias() {
+        let mut l: LinkedList<i32> = LinkedList::new();
+        l.fallible_extend_from_slice_with_rollback(&[9]).unwrap();
+        assert_eq!(contents(&l), vec![9]);
+    }
+
     /// Isolated diagnostic: does `Box::try_new(Vec<u8>)` work under Miri?
     #[test]
     fn linked_list_error_display() {
@@ -670,6 +776,80 @@ mod tests {
             assert!(matches!(r, Err(TryLinkedListWithCloneError::Alloc(_))));
         }
 
+        /// Failure partway through the slice: the first new element appends
+        /// fine; the second element fails, so the first must be rolled back
+        /// by the [`TruncateGuard`] while the pre-existing elements survive.
+        /// Covers both error variants:
+        ///
+        /// - **Alloc**: `i32` clones are `Copy` (no allocation), so each
+        ///   element costs exactly one allocation — its node. With a
+        ///   stack-allocated source slice and an empty list inside the
+        ///   policy window, element 30's node is alloc 1 and element 40's
+        ///   node is alloc 2 → no incidental heap traffic can interfere.
+        /// - **Clone**: a failing `TryClone` type keeps the test
+        ///   deterministic regardless of incidental heap traffic in the
+        ///   harness (e.g. lazy TLS initialization).
+        #[test]
+        fn linked_list_try_extend_from_slice_with_rollback_restores_pre_call_state() {
+            use crate::try_clone::TryCloneError;
+
+            // ── Alloc variant ────────────────────────────────────────────────
+            let src: [i32; 2] = [30, 40];
+            let mut l: LinkedList<i32> = LinkedList::new();
+            let r = with_policy(FailPolicy::fail_nth_alloc(2), || {
+                l.try_extend_from_slice_with_rollback(&src)
+            });
+            assert!(matches!(r, Err(TryLinkedListWithCloneError::Alloc(_))));
+            // The appended 30 was rolled back by the guard; list is empty.
+            assert!(l.is_empty());
+
+            // ── Clone variant ────────────────────────────────────────────────
+            #[derive(Clone)]
+            struct Sim(u8);
+            impl TryClone for Sim {
+                fn try_clone(&self) -> Result<Self, TryCloneError> {
+                    if self.0 == 40 {
+                        Err(TryCloneError::Other("simulated OOM"))
+                    } else {
+                        Ok(Self(self.0))
+                    }
+                }
+            }
+
+            let mut l: LinkedList<Sim> = LinkedList::new();
+            l.try_push_back(Sim(10)).unwrap();
+            l.try_push_back(Sim(20)).unwrap();
+            // Element 30 clones + appends fine. Element 40's clone fails.
+            let r = l.try_extend_from_slice_with_rollback(&[Sim(30), Sim(40), Sim(50)]);
+            assert!(matches!(
+                r,
+                Err(TryLinkedListWithCloneError::Clone(TryCloneError::Other(_)))
+            ));
+            // The appended 30 was rolled back; pre-existing elements intact.
+            assert_eq!(
+                l.iter().map(|e| e.0).collect::<lang_alloc::vec::Vec<_>>(),
+                vec![10, 20]
+            );
+
+            // The list is still fully usable after a rollback.
+            l.try_push_back(Sim(99)).unwrap();
+            assert_eq!(
+                l.iter().map(|e| e.0).collect::<lang_alloc::vec::Vec<_>>(),
+                vec![10, 20, 99]
+            );
+        }
+
+        #[test]
+        fn linked_list_try_extend_from_slice_with_rollback_first_element_fails() {
+            let mut l: LinkedList<i32> = LinkedList::new();
+            l.try_push_back(1).unwrap();
+            let r = with_policy(FailPolicy::fail_next_alloc(), || {
+                l.try_extend_from_slice_with_rollback(&[2, 3])
+            });
+            assert!(matches!(r, Err(TryLinkedListWithCloneError::Alloc(_))));
+            assert_eq!(contents(&l), vec![1]);
+        }
+
         #[test]
         fn linked_list_generic_try_extend_retry_with_resumable() {
             let mut l: LinkedList<i32> = LinkedList::new();
@@ -686,6 +866,45 @@ mod tests {
             // Retry outside the policy: pass the full Resumable (head + remainder).
             <_ as TryExtend<i32>>::try_extend(&mut l, resumable).unwrap();
             assert_eq!(contents(&l), vec![0, 1, 2, 3]);
+        }
+
+        /// A panicking `try_clone` mid-extension must still trigger the
+        /// [`TruncateGuard`] to roll back all elements appended during the
+        /// call — unconditional rollback even on unwind.
+        #[test]
+        fn linked_list_try_extend_from_slice_with_rollback_panic_safe() {
+            use crate::try_clone::TryCloneError;
+
+            use lang_core::sync::atomic::{AtomicU8, Ordering};
+            use lang_std::panic;
+
+            static PANIC_AT: AtomicU8 = AtomicU8::new(40);
+
+            #[derive(Clone)]
+            struct Panicky(u8);
+            impl TryClone for Panicky {
+                fn try_clone(&self) -> Result<Self, TryCloneError> {
+                    if self.0 == PANIC_AT.load(Ordering::Relaxed) {
+                        panic!("simulated clone panic");
+                    }
+                    Ok(Self(self.0))
+                }
+            }
+
+            let mut l: LinkedList<Panicky> = LinkedList::new();
+            l.try_push_back(Panicky(10)).unwrap();
+            l.try_push_back(Panicky(20)).unwrap();
+
+            let result = panic::catch_unwind(panic::AssertUnwindSafe(|| {
+                l.try_extend_from_slice_with_rollback(&[Panicky(30), Panicky(40)])
+            }));
+            assert!(result.is_err(), "expected a panic from element 40");
+            // The guard popped the appended 30 during unwinding; only the
+            // pre-existing elements remain.
+            assert_eq!(
+                l.iter().map(|e| e.0).collect::<lang_alloc::vec::Vec<_>>(),
+                vec![10, 20]
+            );
         }
     }
 }
