@@ -405,11 +405,17 @@ pub fn module_file_cfg_excluded(source: &str, cfg: &CfgContext) -> Option<bool> 
         // Accumulate continuation lines until the attribute's parens balance,
         // since `#![cfg(not(any(...)))]` frequently spans multiple lines.
         let mut buf = String::from(trimmed);
-        while !balanced_parens(&buf)
-            && let Some(cont) = lines.next()
-        {
-            buf.push(' ');
-            buf.push_str(cont.trim());
+        loop {
+            if balanced_parens(&buf) {
+                break;
+            }
+            match lines.next() {
+                Some(cont) => {
+                    buf.push(' ');
+                    buf.push_str(cont.trim());
+                }
+                None => break,
+            }
         }
         // Look for a `cfg(...)` list inside this attribute.
         if let Some(pred) = extract_inner_list_arg(&buf, "cfg") {
@@ -684,10 +690,10 @@ fn extract_all_uses_from_item(item: &Item, out: &mut Vec<UseStatement>) {
         }
         Item::Trait(it) => {
             for inner in &it.items {
-                if let syn::TraitItem::Fn(tf) = inner
-                    && let Some(block) = &tf.default
-                {
-                    extract_all_uses_from_block(block, out);
+                if let syn::TraitItem::Fn(tf) = inner {
+                    if let Some(block) = &tf.default {
+                        extract_all_uses_from_block(block, out);
+                    }
                 }
             }
         }
@@ -1012,10 +1018,10 @@ fn ident_to_segment(ident: &syn::Ident) -> PathSegment {
 /// blocks by evaluating cfg predicates against the build target.
 fn scan_mod_declarations_with_cfg(source: &str, cfg: &CfgContext) -> Vec<ModDeclaration> {
     // Check if this file uses cfg_select!.
-    if source.contains("cfg_select!")
-        && let Some(body) = extract_cfg_select_body(source)
-    {
-        return scan_cfg_select_branches(&body, cfg);
+    if source.contains("cfg_select!") {
+        if let Some(body) = extract_cfg_select_body(source) {
+            return scan_cfg_select_branches(&body, cfg);
+        }
     }
 
     // No cfg_select — fall back to simple line-by-line scan.
@@ -1150,10 +1156,10 @@ fn scan_reexport_sources(branch_body: &str) -> Vec<String> {
             !(s == "self" || s == "super" || s == "crate")
                 && s.chars().all(|c| c.is_alphanumeric() || c == '_')
         });
-        if let Some(name) = name
-            && !out.iter().any(|s| s.as_str() == *name)
-        {
-            out.push(name.to_string());
+        if let Some(name) = name {
+            if !out.iter().any(|s| s.as_str() == *name) {
+                out.push(name.to_string());
+            }
         }
     }
     out

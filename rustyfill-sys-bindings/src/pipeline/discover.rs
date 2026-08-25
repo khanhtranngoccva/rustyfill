@@ -66,13 +66,13 @@ pub(super) fn locate_declared_struct(
             // valid definition site for this target. Fail loudly so the spec
             // can gate the declaration with a matching predicate instead of
             // silently mirroring dead code (e.g. pthread types on Windows).
-            if let Some(active) = crate::parser::module_file_cfg_excluded(&text, cfg)
-                && !active
-            {
-                return LocatedStruct::CfgExcluded {
-                    module: rel_prefix.clone(),
-                    predicate: extract_inner_cfg_predicate(&text),
-                };
+            if let Some(active) = crate::parser::module_file_cfg_excluded(&text, cfg) {
+                if !active {
+                    return LocatedStruct::CfgExcluded {
+                        module: rel_prefix.clone(),
+                        predicate: extract_inner_cfg_predicate(&text),
+                    };
+                }
             }
             let parsed = parse_source_with_cfg(&text, cfg);
             if parsed.items.iter().any(|i| i.name == leaf) {
@@ -113,10 +113,10 @@ fn extract_inner_cfg_predicate(source: &str) -> String {
     let cleaned = crate::parser::strip_comments_and_strings_pub(source);
     for line in cleaned.lines() {
         let trimmed = line.trim();
-        if let Some(rest) = trimmed.strip_prefix("#![cfg(")
-            && rest.ends_with(')')
-        {
-            return format!("#![cfg({})]", &rest[..rest.len() - 1]);
+        if let Some(rest) = trimmed.strip_prefix("#![cfg(") {
+            if rest.ends_with(')') {
+                return format!("#![cfg({})]", &rest[..rest.len() - 1]);
+            }
         }
     }
     String::new()

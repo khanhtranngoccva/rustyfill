@@ -143,10 +143,10 @@ pub(super) fn mirror_minimal_modules(
                     None => break,
                 }
             }
-            if !trail.is_empty()
-                && let Some(def) = qres.find_defining_module(&trail.join("/"), lf)
-            {
-                return Some(def);
+            if !trail.is_empty() {
+                if let Some(def) = qres.find_defining_module(&trail.join("/"), lf) {
+                    return Some(def);
+                }
             }
         }
         None
@@ -280,11 +280,11 @@ fn collect_qualifier_refs(
         let Some(item) = found_item else { continue };
         match item.kind {
             ItemKind::TypeAlias => {
-                if let Some(rhs) = &item.alias_rhs
-                    && let Ok(ty) = syn::parse2::<syn::Type>(rhs.clone())
-                {
-                    for (lead, lf) in collect_qualified_refs(&ty) {
-                        qual_refs.push((module_ctx.clone(), lead, lf));
+                if let Some(rhs) = &item.alias_rhs {
+                    if let Ok(ty) = syn::parse2::<syn::Type>(rhs.clone()) {
+                        for (lead, lf) in collect_qualified_refs(&ty) {
+                            qual_refs.push((module_ctx.clone(), lead, lf));
+                        }
                     }
                 }
             }

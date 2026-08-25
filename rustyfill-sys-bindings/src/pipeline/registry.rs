@@ -101,11 +101,12 @@ pub(super) fn build_type_registry(
                 .unwrap_or_else(|| decl.replace("::", "/") + ".rs");
             let def_file_abs = lib_src.join(&def_file_rel).to_string_lossy().to_string();
             registry.insert_declared(&canonical, &def_file_abs);
-            if let Some(item) = found_item
-                && item.kind == ItemKind::TypeAlias
-                && let Some(rhs) = &item.alias_rhs
-            {
-                registry.set_alias_rhs(&canonical, rhs.clone());
+            if let Some(item) = found_item {
+                if item.kind == ItemKind::TypeAlias {
+                    if let Some(rhs) = &item.alias_rhs {
+                        registry.set_alias_rhs(&canonical, rhs.clone());
+                    }
+                }
             }
         }
 

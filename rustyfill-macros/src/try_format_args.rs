@@ -241,9 +241,7 @@ impl TryFormatArgsInput {
 
         while pos < tts.len() {
             // Skip commas
-            if let proc_macro2::TokenTree::Punct(ref p) = tts[pos]
-                && p.as_char() == ','
-            {
+            if matches!(tts[pos], proc_macro2::TokenTree::Punct(ref p) if p.as_char() == ',') {
                 pos += 1;
                 continue;
             }
@@ -461,10 +459,12 @@ fn parse_arg(
         }
     }
 
-    if eq_pos_found && let Some(ident) = first_ident {
-        let name = ident.to_string();
-        let expr_tokens = split_after_eq(tokens);
-        return Ok((Some(name), expr_tokens));
+    if eq_pos_found {
+        if let Some(ident) = first_ident {
+            let name = ident.to_string();
+            let expr_tokens = split_after_eq(tokens);
+            return Ok((Some(name), expr_tokens));
+        }
     }
 
     Ok((None, tokens.clone()))
@@ -745,9 +745,7 @@ where
     //   - A trailing format character like `x` or `?` (single char)
     // Both start with an alphabetic character. We disambiguate by looking ahead
     // to see if the identifier is followed by '$'.
-    if let Some(&c) = chars.peek()
-        && (c.is_alphabetic() || c == '_')
-    {
+    if matches!(chars.peek(), Some(c) if c.is_alphabetic() || *c == '_') {
         // Consume the full identifier into a buffer.
         let mut ident = String::new();
         while let Some(&ch) = chars.peek() {
@@ -776,11 +774,11 @@ where
 
     // Additional format character — returned to the caller so it can determine
     // the wrapper kind (Debug, Display, LowerHex, UpperHex).
-    if let Some(&c) = chars.peek()
-        && c != '}'
-    {
-        chars.next();
-        return Some(c);
+    if let Some(&c) = chars.peek() {
+        if c != '}' {
+            chars.next();
+            return Some(c);
+        }
     }
     None
 }

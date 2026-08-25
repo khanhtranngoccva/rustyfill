@@ -350,21 +350,23 @@ impl ModuleResolver {
                     // (re-exported via the parent's use statements).
                     if path.segments.len() == 2
                         && matches!(path.segments.first(), Some(PathSegment::Super))
-                        && let Some(last_name) = path.segments.iter().find_map(|s| {
+                    {
+                        let last_name = path.segments.iter().find_map(|s| {
                             if let PathSegment::Named(n) = s {
                                 Some(n.clone())
                             } else {
                                 None
                             }
-                        })
-                    {
-                        // Go up two levels and look for the name there.
-                        let parts: Vec<&str> = current_module.split('/').collect();
-                        if parts.len() > 2 {
-                            let grandparent = parts[..parts.len() - 2].join("/");
-                            let candidate = format!("{}/{}", grandparent, last_name);
-                            if let Some(file) = self.find_module(&candidate) {
-                                return Resolution::File(file);
+                        });
+                        if let Some(last_name) = last_name {
+                            // Go up two levels and look for the name there.
+                            let parts: Vec<&str> = current_module.split('/').collect();
+                            if parts.len() > 2 {
+                                let grandparent = parts[..parts.len() - 2].join("/");
+                                let candidate = format!("{}/{}", grandparent, last_name);
+                                if let Some(file) = self.find_module(&candidate) {
+                                    return Resolution::File(file);
+                                }
                             }
                         }
                     }

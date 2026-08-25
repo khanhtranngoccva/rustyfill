@@ -146,10 +146,10 @@ fn collect_bound_names(use_lines: &[String]) -> HashSet<String> {
             let body = body.strip_suffix(';').unwrap_or(body);
             if let Some((_, alias_name)) = body.rsplit_once(" as ") {
                 already_bound.insert(alias_name.trim().to_string());
-            } else if !body.ends_with("::*")
-                && let Some(last_seg) = body.rsplit_once(':').map(|(_, n)| n.trim())
-            {
-                already_bound.insert(last_seg.to_string());
+            } else if !body.ends_with("::*") {
+                if let Some(last_seg) = body.rsplit_once(':').map(|(_, n)| n.trim()) {
+                    already_bound.insert(last_seg.to_string());
+                }
             }
         }
     }

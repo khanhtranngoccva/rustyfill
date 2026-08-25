@@ -674,13 +674,14 @@ impl<'a> QualifierResolver<'a> {
         };
         // Case A: `lead` is a direct child/sibling module of the current module.
         let child_mod = format!("{module_ctx}/{lead}");
-        if let Some(src) = self.source_module(&child_mod)
-            && src
+        if let Some(src) = self.source_module(&child_mod) {
+            if src
                 .items
                 .iter()
                 .any(|i| i.name == leaf && i.kind.is_type_def())
-        {
-            return Some(child_mod);
+            {
+                return Some(child_mod);
+            }
         }
         // Case B: `lead` is an import binding in the current file. Follow the
         // import target to a concrete module, then confirm `leaf` is defined.
@@ -711,13 +712,14 @@ impl<'a> QualifierResolver<'a> {
             }
             if let Some(target_mod) = self.follow_import_target(module_ctx, &target_segs) {
                 // Direct definition in the target module.
-                if let Some(src) = self.source_module(&target_mod)
-                    && src
+                if let Some(src) = self.source_module(&target_mod) {
+                    if src
                         .items
                         .iter()
                         .any(|i| i.name == leaf && i.kind.is_type_def())
-                {
-                    return Some(target_mod);
+                    {
+                        return Some(target_mod);
+                    }
                 }
                 // Re-export: the target module has `pub use <sub>::Leaf`.
                 // Follow one hop to the defining submodule. Also handles
@@ -879,13 +881,14 @@ impl<'a> QualifierResolver<'a> {
     /// an intermediate re-export layer.
     pub(crate) fn find_defining_module(&mut self, mod_path: &str, leaf: &str) -> Option<String> {
         // Direct definition in the module's own file.
-        if let Some(src) = self.source_module(mod_path)
-            && src
+        if let Some(src) = self.source_module(mod_path) {
+            if src
                 .items
                 .iter()
                 .any(|i| i.name == leaf && i.kind.is_type_def())
-        {
-            return Some(mod_path.to_string());
+            {
+                return Some(mod_path.to_string());
+            }
         }
         // cfg-select shim: the module file contains only `cfg_select!` and no
         // parseable items. Follow the active backend submodule(s).
@@ -902,13 +905,14 @@ impl<'a> QualifierResolver<'a> {
         };
         for tgt in cfg_select_reexport_targets(&text, self.cfg) {
             let sub = format!("{mod_path}/{tgt}");
-            if let Some(src) = self.source_module(&sub)
-                && src
+            if let Some(src) = self.source_module(&sub) {
+                if src
                     .items
                     .iter()
                     .any(|i| i.name == leaf && i.kind.is_type_def())
-            {
-                return Some(sub);
+                {
+                    return Some(sub);
+                }
             }
         }
         None
@@ -949,18 +953,20 @@ impl<'a> QualifierResolver<'a> {
                 None => continue,
             };
             for stmt in &src.use_statements {
-                if let UseKind::Glob(pl) = &stmt.kind
-                    && matches!(stmt.visibility, Visibility::Public)
-                {
-                    let rn = pl.segments.iter().find_map(|s| match s {
-                        PathSegment::Named(n) => Some(n.clone()),
-                        _ => None,
-                    });
-                    if let Some(rn) = rn {
-                        let next = format!("{cur}/{rn}");
-                        if self.source_module(&next).is_some() {
-                            queue.push(next);
-                        }
+                if !matches!(stmt.visibility, Visibility::Public) {
+                    continue;
+                }
+                let UseKind::Glob(pl) = &stmt.kind else {
+                    continue;
+                };
+                let rn = pl.segments.iter().find_map(|s| match s {
+                    PathSegment::Named(n) => Some(n.clone()),
+                    _ => None,
+                });
+                if let Some(rn) = rn {
+                    let next = format!("{cur}/{rn}");
+                    if self.source_module(&next).is_some() {
+                        queue.push(next);
                     }
                 }
             }
@@ -1495,42 +1501,41 @@ fn rewrite_path(
     // recorded for this qualifier (i.e., we emit `use <abs> as <lead>;` at the
     // top of the file), keep the original qualified path unchanged — the alias
     // import resolves it. Otherwise, rewrite to an absolute mirror path.
-    if segs.len() == 2
-        && leading_colon.is_none()
-        && let Some(def_module) = registry.qualifier_route(module_ctx, &head)
-    {
-        // Check if we've recorded a module-alias route for this qualifier in
-        // this module context. The key is slash-separated (e.g.,
-        // `sys/sync/mutex/pthread`), but `module_ctx` here is colon-separated
-        // (e.g., `sys::sync::mutex::pthread`), so normalize before looking up.
-        let slash_key = module_ctx.replace("::", "/");
-        let has_alias_import = registry
-            .module_alias_routes(&slash_key)
-            .iter()
-            .any(|(alias, _)| alias == &head);
-        if has_alias_import {
-            // Keep the original qualified path (e.g., `pal::Mutex`) — the
-            // alias import at the top of the file makes it resolvable.
-            return syn::Path {
-                leading_colon,
-                segments: segs.into_iter().collect(),
-            };
-        }
-        // No alias import recorded — rewrite to absolute mirror path.
-        let leaf = segs[1].ident.to_string();
-        let def_colons = def_module.replace('/', "::");
-        let abs = format!("crate::{}::{def_colons}::{leaf}", registry.wrapper_mod());
-        if let Ok(mut p) = syn::parse_str::<syn::Path>(&abs) {
-            // Preserve the generic arguments from the original last segment
-            // (e.g., `marker::Mut<'a>` → `...::marker::Mut<'a>`). Without this,
-            // the lifetime/type params are silently dropped.
-            if let Some(last_seg) = p.segments.last_mut() {
-                last_seg.arguments =
-                    rewrite_generic_args(&segs[1].arguments, registry, module_ctx, guard);
+    if segs.len() == 2 && leading_colon.is_none() {
+        if let Some(def_module) = registry.qualifier_route(module_ctx, &head) {
+            // Check if we've recorded a module-alias route for this qualifier in
+            // this module context. The key is slash-separated (e.g.,
+            // `sys/sync/mutex/pthread`), but `module_ctx` here is colon-separated
+            // (e.g., `sys::sync::mutex::pthread`), so normalize before looking up.
+            let slash_key = module_ctx.replace("::", "/");
+            let has_alias_import = registry
+                .module_alias_routes(&slash_key)
+                .iter()
+                .any(|(alias, _)| alias == &head);
+            if has_alias_import {
+                // Keep the original qualified path (e.g., `pal::Mutex`) — the
+                // alias import at the top of the file makes it resolvable.
+                return syn::Path {
+                    leading_colon,
+                    segments: segs.into_iter().collect(),
+                };
             }
-            return p;
+            // No alias import recorded — rewrite to absolute mirror path.
+            let leaf = segs[1].ident.to_string();
+            let def_colons = def_module.replace('/', "::");
+            let abs = format!("crate::{}::{def_colons}::{leaf}", registry.wrapper_mod());
+            if let Ok(mut p) = syn::parse_str::<syn::Path>(&abs) {
+                // Preserve the generic arguments from the original last segment
+                // (e.g., `marker::Mut<'a>` → `...::marker::Mut<'a>`). Without this,
+                // the lifetime/type params are silently dropped.
+                if let Some(last_seg) = p.segments.last_mut() {
+                    last_seg.arguments =
+                        rewrite_generic_args(&segs[1].arguments, registry, module_ctx, guard);
+                }
+                return p;
+            }
+            // Parsing failed unexpectedly; fall through to default resolution.
         }
-        // Parsing failed unexpectedly; fall through to default resolution.
     }
     // Multi-segment, non-leading-colon paths are treated as module-relative
     // references (e.g. `futex::SmallFutex` inside a file whose module is
@@ -2024,9 +2029,7 @@ fn strip_tokens_recursive(tokens: TokenStream, ignored_names: &[&str]) -> TokenS
     while let Some(tt) = iter.next() {
         match &tt {
             TokenTree::Punct(p) if p.as_char() == '#' => {
-                if let Some(TokenTree::Group(next_group)) = iter.peek()
-                    && is_blocked_attr_group(next_group)
-                {
+                if matches!(iter.peek(), Some(TokenTree::Group(g)) if is_blocked_attr_group(g)) {
                     // Consume and discard the group too.
                     iter.next();
                     continue;
@@ -2091,25 +2094,22 @@ fn strip_ignored_identifiers(tokens: TokenStream, ignored_names: &[&str]) -> Tok
 
         if should_strip {
             // Clean up preceding separator (`+` for trait bounds, `,` for use lists).
-            if let Some(TokenTree::Punct(p)) = result.last()
-                && (p.as_char() == '+' || p.as_char() == ',')
+            if matches!(result.last(), Some(TokenTree::Punct(p)) if p.as_char() == '+' || p.as_char() == ',')
             {
                 result.pop();
             }
             // Advance past the identifier.
             i += 1;
             // Skip trailing separator if present.
-            if i < trees.len()
-                && let TokenTree::Punct(p) = &trees[i]
-                && (p.as_char() == '+' || p.as_char() == ',')
-            {
-                i += 1;
+            if i < trees.len() {
+                if matches!(&trees[i], TokenTree::Punct(p) if p.as_char() == '+' || p.as_char() == ',')
+                {
+                    i += 1;
+                }
             }
             // If previous token is now `:`, check if there are any remaining bounds after us.
             // If not, remove the colon too (was `A: IgnoredTrait`, becoming just `A`).
-            if let Some(TokenTree::Punct(p)) = result.last()
-                && p.as_char() == ':'
-            {
+            if matches!(result.last(), Some(TokenTree::Punct(p)) if p.as_char() == ':') {
                 let has_more_bounds = if i < trees.len() {
                     !matches!(
                         &trees[i],
@@ -2281,40 +2281,42 @@ fn emit_item(out: &mut String, item: &ParsedItem, ctx: &EmitContext<'_>) {
     // re-emitted with its RHS routed through the registry (e.g. `Root` →
     // `crate::alloc::collections::btree::node::NodeRef<...>`), so references
     // from other modules converge on our tree instead of dangling.
-    if item.kind == ItemKind::TypeAlias
-        && let Some(info) = find_declared_alias_info(item, ctx.type_registry)
-        && let Some(rhs) = &info.alias_rhs
-    {
-        let mut ts = TokenStream::new();
-        for attr in &item.attrs {
-            if !is_emittable_attr(attr) {
-                continue;
+    if item.kind == ItemKind::TypeAlias {
+        let info = find_declared_alias_info(item, ctx.type_registry);
+        let rhs = info.as_ref().and_then(|i| i.alias_rhs.as_ref());
+        if let Some(rhs) = rhs {
+            let mut ts = TokenStream::new();
+            for attr in &item.attrs {
+                if !is_emittable_attr(attr) {
+                    continue;
+                }
+                attr.to_tokens(&mut ts);
             }
-            attr.to_tokens(&mut ts);
+            // Classify the alias RHS as a pseudo-field: it names exactly what the
+            // alias expands to, so its drop-safety classification is inherited by
+            // every field whose type is this alias.
+            if drop_annotations_enabled() {
+                if let Ok(rhs_ty) = syn::parse2::<syn::Type>(rhs.clone()) {
+                    let value = classify_field_drop(&rhs_ty, ctx.type_registry, ctx.guard);
+                    drop_doc_comment(value).to_tokens(&mut ts);
+                }
+            }
+            emit_declared_type_alias(
+                &item.name,
+                rhs,
+                &item.full_tokens,
+                ctx.type_registry,
+                ctx.module_ctx,
+                ctx.guard,
+                &mut ts,
+            );
+            let widened = widen_visibility(ts);
+            let rewritten =
+                rewrite_crate_paths(widened, ctx.preamble_use_path, ctx.path_replacements);
+            write!(out, "{}", rewritten).ok();
+            out.push('\n');
+            return;
         }
-        // Classify the alias RHS as a pseudo-field: it names exactly what the
-        // alias expands to, so its drop-safety classification is inherited by
-        // every field whose type is this alias.
-        if drop_annotations_enabled()
-            && let Ok(rhs_ty) = syn::parse2::<syn::Type>(rhs.clone())
-        {
-            let value = classify_field_drop(&rhs_ty, ctx.type_registry, ctx.guard);
-            drop_doc_comment(value).to_tokens(&mut ts);
-        }
-        emit_declared_type_alias(
-            &item.name,
-            rhs,
-            &item.full_tokens,
-            ctx.type_registry,
-            ctx.module_ctx,
-            ctx.guard,
-            &mut ts,
-        );
-        let widened = widen_visibility(ts);
-        let rewritten = rewrite_crate_paths(widened, ctx.preamble_use_path, ctx.path_replacements);
-        write!(out, "{}", rewritten).ok();
-        out.push('\n');
-        return;
     }
 
     // Names to strip from trait bounds and use lists: spec-configured ignored
@@ -2441,15 +2443,12 @@ fn strip_const_trait_modifier(tokens: TokenStream) -> TokenStream {
     let mut i = 0;
     while i < n {
         // Look for the sequence: [attrs] ... 'const' 'trait'.
-        if let TokenTree::Ident(id) = &trees[i]
-            && id == "const"
-            && i + 1 < n
-            && let TokenTree::Ident(next) = &trees[i + 1]
-            && next == "trait"
-        {
-            // Drop the `const` token; keep `trait` and everything after.
-            i += 1;
-            continue;
+        if matches!(&trees[i], TokenTree::Ident(id) if id == "const") && i + 1 < n {
+            if matches!(&trees[i + 1], TokenTree::Ident(next) if next == "trait") {
+                // Drop the `const` token; keep `trait` and everything after.
+                i += 1;
+                continue;
+            }
         }
         result.push(trees[i].clone());
         i += 1;
@@ -2653,6 +2652,9 @@ fn rewrite_crate_paths_legacy(
     }
 
     for tt in &trees {
+        let is_brace_group =
+            matches!(tt, TokenTree::Group(g) if g.delimiter() == proc_macro2::Delimiter::Brace);
+
         if let TokenTree::Ident(id) = tt {
             let name = id.to_string();
             if !past_def_kw && def_keywords.contains(&name.as_str()) {
@@ -2660,35 +2662,31 @@ fn rewrite_crate_paths_legacy(
                 result.push(tt.clone());
                 continue;
             }
-            if past_def_kw
-                && !name.starts_with('_')
-                && !is_keywordish(&name)
-                && name != item_name
-                && let FieldRefResolution::Mirrored(canonical) = registry.resolve_field_ref(&name)
-            {
-                // Mirrors always live under the manifest's single wrapper
-                // module (named by the registry), so drop the leading
-                // library segment.
-                let rest = canonical
-                    .split_once("::")
-                    .map(|(_, r)| r)
-                    .unwrap_or(canonical.as_str());
-                let abs = format!("crate::{}::{rest}", registry.wrapper_mod());
-                if let Ok(subst) = abs.parse::<TokenStream>() {
-                    if annotate_fields && in_body && body_depth == 1 {
-                        field_buf.extend(subst);
-                    } else {
-                        result.extend(subst);
+
+            if past_def_kw && !name.starts_with('_') && !is_keywordish(&name) && name != item_name {
+                if let FieldRefResolution::Mirrored(canonical) = registry.resolve_field_ref(&name) {
+                    // Mirrors always live under the manifest's single wrapper
+                    // module (named by the registry), so drop the leading
+                    // library segment.
+                    let rest = canonical
+                        .split_once("::")
+                        .map(|(_, r)| r)
+                        .unwrap_or(canonical.as_str());
+                    let abs = format!("crate::{}::{rest}", registry.wrapper_mod());
+                    if let Ok(subst) = abs.parse::<TokenStream>() {
+                        if annotate_fields && in_body && body_depth == 1 {
+                            field_buf.extend(subst);
+                        } else {
+                            result.extend(subst);
+                        }
+                        continue;
                     }
-                    continue;
                 }
             }
         }
 
         // Body tracking for field annotation.
-        if let TokenTree::Group(g) = tt
-            && g.delimiter() == proc_macro2::Delimiter::Brace
-        {
+        if is_brace_group {
             if in_body {
                 body_depth += 1;
             } else if annotate_fields && past_def_kw {
@@ -2714,11 +2712,7 @@ fn rewrite_crate_paths_legacy(
         }
 
         result.push(tt.clone());
-        if let TokenTree::Group(g) = tt
-            && g.delimiter() == proc_macro2::Delimiter::Brace
-            && in_body
-            && body_depth > 0
-        {
+        if is_brace_group && in_body && body_depth > 0 {
             body_depth -= 1;
             if body_depth == 0 {
                 flush_field!();
@@ -2782,18 +2776,17 @@ fn widen_visibility(tokens: TokenStream) -> TokenStream {
 
     // Skip leading attributes (`# [...]` pairs).
     while i < tts.len() {
-        if let TokenTree::Punct(p) = &tts[i]
-            && p.as_char() == '#'
-            && i + 1 < tts.len()
-            && matches!(&tts[i + 1], TokenTree::Group(g) if g.delimiter() == proc_macro2::Delimiter::Bracket)
-        {
-            result.extend(Some(tts[i].clone()));
-            i += 1;
-            result.extend(Some(tts[i].clone()));
-            i += 1;
-            continue;
+        if !matches!(&tts[i], TokenTree::Punct(p) if p.as_char() == '#') || i + 1 >= tts.len() {
+            break;
         }
-        break;
+        if !matches!(&tts[i + 1], TokenTree::Group(g) if g.delimiter() == proc_macro2::Delimiter::Bracket)
+        {
+            break;
+        }
+        result.extend(Some(tts[i].clone()));
+        i += 1;
+        result.extend(Some(tts[i].clone()));
+        i += 1;
     }
 
     // Determine if we have an existing visibility modifier and whether this
@@ -2829,19 +2822,18 @@ fn widen_visibility(tokens: TokenStream) -> TokenStream {
     };
 
     // If no visibility on an item keyword, inject `pub`.
-    if !has_vis
-        && i < tts.len()
-        && let TokenTree::Ident(kw) = &tts[i]
-    {
-        let kw_str = kw.to_string();
-        if matches!(
-            kw_str.as_str(),
-            "struct" | "enum" | "union" | "type" | "const"
-        ) {
-            result.extend(Some(TokenTree::Ident(proc_macro2::Ident::new(
-                "pub",
-                tts[i].span(),
-            ))));
+    if !has_vis && i < tts.len() {
+        if let TokenTree::Ident(kw) = &tts[i] {
+            let kw_str = kw.to_string();
+            if matches!(
+                kw_str.as_str(),
+                "struct" | "enum" | "union" | "type" | "const"
+            ) {
+                result.extend(Some(TokenTree::Ident(proc_macro2::Ident::new(
+                    "pub",
+                    tts[i].span(),
+                ))));
+            }
         }
     }
 
@@ -2850,24 +2842,26 @@ fn widen_visibility(tokens: TokenStream) -> TokenStream {
     let mut struct_body_widened = false;
     while i < tts.len() {
         // Strip scope parens from `pub(X)` → `pub` everywhere in the item.
-        if let TokenTree::Ident(id) = &tts[i]
-            && id == "pub"
-            && i + 1 < tts.len()
-            && matches!(&tts[i + 1], TokenTree::Group(g) if g.delimiter() == proc_macro2::Delimiter::Parenthesis)
-        {
-            // Emit just `pub`, skip the scope parens.
-            result.extend(Some(tts[i].clone()));
-            i += 1;
-            i += 1; // skip parenthesized scope
-            continue;
+        if matches!(&tts[i], TokenTree::Ident(id) if id == "pub") && i + 1 < tts.len() {
+            if matches!(&tts[i + 1], TokenTree::Group(g) if g.delimiter() == proc_macro2::Delimiter::Parenthesis)
+            {
+                // Emit just `pub`, skip the scope parens.
+                result.extend(Some(tts[i].clone()));
+                i += 1;
+                i += 1; // skip parenthesized scope
+                continue;
+            }
         }
 
         // For struct/union, widen the first braced body.
         if is_struct_or_union
             && !struct_body_widened
-            && let TokenTree::Group(group) = &tts[i]
-            && group.delimiter() == proc_macro2::Delimiter::Brace
+            && matches!(&tts[i], TokenTree::Group(group) if group.delimiter() == proc_macro2::Delimiter::Brace)
         {
+            let group = match &tts[i] {
+                TokenTree::Group(g) => g,
+                _ => unreachable!(),
+            };
             let widened_body = widen_struct_field_visibility(group.stream());
             let new_group = TokenTree::Group(proc_macro2::Group::new(
                 proc_macro2::Delimiter::Brace,
@@ -2901,16 +2895,15 @@ fn widen_struct_field_visibility(tokens: TokenStream) -> TokenStream {
 
     while i < tts.len() {
         // Skip attributes: `#` followed by `[...]`.
-        if let TokenTree::Punct(p) = &tts[i]
-            && p.as_char() == '#'
-            && i + 1 < tts.len()
-            && matches!(&tts[i + 1], TokenTree::Group(g) if g.delimiter() == proc_macro2::Delimiter::Bracket)
-        {
-            result.extend(Some(tts[i].clone()));
-            i += 1;
-            result.extend(Some(tts[i].clone()));
-            i += 1;
-            continue;
+        if matches!(&tts[i], TokenTree::Punct(p) if p.as_char() == '#') && i + 1 < tts.len() {
+            if matches!(&tts[i + 1], TokenTree::Group(g) if g.delimiter() == proc_macro2::Delimiter::Bracket)
+            {
+                result.extend(Some(tts[i].clone()));
+                i += 1;
+                result.extend(Some(tts[i].clone()));
+                i += 1;
+                continue;
+            }
         }
 
         // Pass through nested groups (they're inside field types).
@@ -2922,9 +2915,7 @@ fn widen_struct_field_visibility(tokens: TokenStream) -> TokenStream {
 
         // At a field boundary, check for `pub` or inject it.
         if at_field_boundary {
-            if let TokenTree::Ident(id) = &tts[i]
-                && id == "pub"
-            {
+            if matches!(&tts[i], TokenTree::Ident(id) if id == "pub") {
                 // Already public — emit `pub` and optional scope, then field name.
                 result.extend(Some(tts[i].clone()));
                 i += 1;
@@ -2990,9 +2981,7 @@ fn widen_struct_field_visibility(tokens: TokenStream) -> TokenStream {
         }
 
         // Comma means end of current field, next token starts a new field.
-        if let TokenTree::Punct(p) = &tts[i]
-            && p.as_char() == ','
-        {
+        if matches!(&tts[i], TokenTree::Punct(p) if p.as_char() == ',') {
             result.extend(Some(tts[i].clone()));
             i += 1;
             at_field_boundary = true;
@@ -3096,44 +3085,46 @@ fn rewrite_crate_paths_recursive(
                 && matches!(&trees[i + 2], TokenTree::Punct(p) if p.as_char() == ':')
                 && matches!(&trees[i + 3], TokenTree::Ident(_));
 
-            if looks_like_path && let TokenTree::Ident(mod_name) = &trees[i + 3] {
-                let name = mod_name.to_string();
-                match name.as_str() {
-                    "alloc" | "core" | "boxed" => {
-                        // Route crate::core::..., crate::alloc::..., and
-                        // crate::boxed::... through the preamble, which
-                        // re-exports from __rustyfill_builtin_core,
-                        // __rustyfill_builtin_alloc, and the mirrored
-                        // crate::std::boxed module respectively.
-                        result.extend(token_stream_from_str(preamble_path));
-                        i += 4;
-                        continue;
-                    }
-                    _ => {
-                        // Check if the next segment (after `crate::<mod>::`) matches
-                        // a configured replacement leaf. For example,
-                        // `crate::boxed::Box<T,A>` where "Box" has a replacement.
-                        if i + 6 < trees.len()
-                            && matches!(&trees[i + 4], TokenTree::Punct(p) if p.as_char() == ':')
-                            && matches!(&trees[i + 5], TokenTree::Punct(p) if p.as_char() == ':')
-                            && matches!(&trees[i + 6], TokenTree::Ident(_))
-                            && let TokenTree::Ident(leaf_ident) = &trees[i + 6]
-                        {
-                            let leaf = leaf_ident.to_string();
-                            if let Some(replacement) = repl_map.get(&leaf) {
-                                i += 7; // skip `crate :: <mod> :: <leaf>`
-                                // Skip `< ... >` generic arguments if present.
-                                if i < trees.len()
-                                    && let TokenTree::Punct(p) = &trees[i]
-                                    && p.as_char() == '<'
-                                {
-                                    i = skip_angle_brackets(&trees, i);
+            if looks_like_path {
+                if let TokenTree::Ident(mod_name) = &trees[i + 3] {
+                    let name = mod_name.to_string();
+                    match name.as_str() {
+                        "alloc" | "core" | "boxed" => {
+                            // Route crate::core::..., crate::alloc::..., and
+                            // crate::boxed::... through the preamble, which
+                            // re-exports from __rustyfill_builtin_core,
+                            // __rustyfill_builtin_alloc, and the mirrored
+                            // crate::std::boxed module respectively.
+                            result.extend(token_stream_from_str(preamble_path));
+                            i += 4;
+                            continue;
+                        }
+                        _ => {
+                            // Check if the next segment (after `crate::<mod>::`) matches
+                            // a configured replacement leaf. For example,
+                            // `crate::boxed::Box<T,A>` where "Box" has a replacement.
+                            if i + 6 < trees.len()
+                                && matches!(&trees[i + 4], TokenTree::Punct(p) if p.as_char() == ':')
+                                && matches!(&trees[i + 5], TokenTree::Punct(p) if p.as_char() == ':')
+                            {
+                                if let TokenTree::Ident(leaf_ident) = &trees[i + 6] {
+                                    let leaf = leaf_ident.to_string();
+                                    if let Some(replacement) = repl_map.get(&leaf) {
+                                        i += 7; // skip `crate :: <mod> :: <leaf>`
+                                        // Skip `< ... >` generic arguments if present.
+                                        if i < trees.len() {
+                                            if matches!(&trees[i], TokenTree::Punct(p) if p.as_char() == '<')
+                                            {
+                                                i = skip_angle_brackets(&trees, i);
+                                            }
+                                        }
+                                        if let Some(repl_text) = replacement {
+                                            result.extend(token_stream_from_str(repl_text));
+                                        }
+                                        // If replacement is None, just drop it entirely.
+                                        continue;
+                                    }
                                 }
-                                if let Some(repl_text) = replacement {
-                                    result.extend(token_stream_from_str(repl_text));
-                                }
-                                // If replacement is None, just drop it entirely.
-                                continue;
                             }
                         }
                     }
@@ -3145,16 +3136,17 @@ fn rewrite_crate_paths_recursive(
         // Only applied when the identifier is NOT immediately followed by `::`,
         // so that routed absolute paths (`crate::...`, `::__rustyfill_builtin_...`)
         // and module-qualified references are never clobbered.
-        if let TokenTree::Ident(id) = &trees[i]
-            && !(i + 2 < trees.len()
+        if let TokenTree::Ident(id) = &trees[i] {
+            let followed_by_double_colon = i + 2 < trees.len()
                 && matches!(&trees[i + 1], TokenTree::Punct(p) if p.as_char() == ':')
-                && matches!(&trees[i + 2], TokenTree::Punct(p) if p.as_char() == ':'))
-        {
-            let name = id.to_string();
-            if let Some(Some(repl_text)) = repl_map.get(&name) {
-                result.extend(token_stream_from_str(repl_text));
-                i += 1;
-                continue;
+                && matches!(&trees[i + 2], TokenTree::Punct(p) if p.as_char() == ':');
+            if !followed_by_double_colon {
+                let name = id.to_string();
+                if let Some(Some(repl_text)) = repl_map.get(&name) {
+                    result.extend(token_stream_from_str(repl_text));
+                    i += 1;
+                    continue;
+                }
             }
         }
 
@@ -3248,10 +3240,10 @@ pub fn emit_binding_file(output_path: &Path, items: &[ParsedItem], config: &Emit
                 imported_names.insert(alias_name.trim().to_string());
             } else if body.ends_with("::*") {
                 // Glob import — extract the module name
-                if let Some(mod_path) = body.strip_suffix("::*")
-                    && let Some(last_seg) = mod_path.rsplit_once(':').map(|(_, n)| n.trim())
-                {
-                    imported_names.insert(last_seg.to_string());
+                if let Some(mod_path) = body.strip_suffix("::*") {
+                    if let Some(last_seg) = mod_path.rsplit_once(':').map(|(_, n)| n.trim()) {
+                        imported_names.insert(last_seg.to_string());
+                    }
                 }
             } else if let Some(last_seg) = body.rsplit_once(':').map(|(_, n)| n.trim()) {
                 imported_names.insert(last_seg.to_string());
