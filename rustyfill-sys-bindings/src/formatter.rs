@@ -111,7 +111,7 @@ mod tests {
     // Miri cannot spawn processes (`posix_spawn`), so the rustfmt-binary path
     // of `format_source` is unrunnable there; the fallback formatter's own
     // behavior is covered by the two tests above.
-    #[cfg(not(miri))]
+    #[cfg_attr(miri, ignore = "cannot run cargo fmt process on Miri")]
     #[test]
     fn format_source_never_loses_content_when_rustfmt_missing() {
         // rustfmt is expected to be present in CI/dev environments; either way

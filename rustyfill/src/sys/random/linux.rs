@@ -339,7 +339,7 @@ mod tests {
     // Miri does not support I/O readiness watching (`libc::poll` on a file fd),
     // so the blocking-poll path cannot run there; the two short-circuit paths
     // above still cover the helper's logic under Miri.
-    #[cfg(not(miri))]
+    #[cfg_attr(miri, ignore = "I/O readiness watching is not supported on Miri")]
     #[test]
     fn urandom_ready_blocks_until_pool_initialized() {
         // Secure mode with the flag unset will poll /dev/random until the

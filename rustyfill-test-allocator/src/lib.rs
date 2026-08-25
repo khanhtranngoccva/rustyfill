@@ -13,6 +13,9 @@
 //!
 //! It is intended as a **dev-dependency** only. Do not depend on it in
 //! production code.
+
+#![cfg_attr(all(nightly_compiler, test), feature(allocator_api))]
+
 use std::alloc::{GlobalAlloc, Layout, System};
 use std::cell::Cell;
 use std::marker::PhantomData;
