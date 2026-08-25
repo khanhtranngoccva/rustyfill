@@ -1,0 +1,7 @@
+# Default toolchain for local development and any CI job that does not pin
+# its own version. This is the workspace MSRV (Rust 1.85, required by edition
+# 2024). Nightly-dependent jobs (miri, crap, sanitize) install their own
+# nightly explicitly in CI; locally, add a `nightly` channel as needed.
+[toolchain]
+channel = "1.85"
+components = ["rustfmt", "clippy"]

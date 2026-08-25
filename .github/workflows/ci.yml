@@ -8,6 +8,11 @@ on:
 
 env:
   CARGO_TERM_COLOR: always
+  # MSRV for the workspace. Edition 2024 requires Rust 1.85+, and stable CI
+  # pins to this version so a dependency or API bump that raises the effective
+  # MSRV fails loudly here instead of silently breaking older users. Nightly
+  # jobs (miri, crap, sanitize) intentionally stay on @nightly.
+  RUST_VERSION: "1.85"
 
 jobs:
   # ── Formatting ──────────────────────────────────────────────────────────
@@ -16,8 +21,9 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@master
         with:
+          toolchain: ${{ env.RUST_VERSION }}
           components: rustfmt
       - run: cargo fmt --all --check
 
@@ -45,8 +51,9 @@ jobs:
       # during setup, before any code change can invalidate the build. The
       # build script's own `rustup component add` fallback remains as a
       # safety net for local/dev machines without the component.
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@master
         with:
+          toolchain: ${{ env.RUST_VERSION }}
           targets: ${{ matrix.target }}
           components: rust-src
       - run: cargo test --workspace --target ${{ matrix.target }}
@@ -73,8 +80,9 @@ jobs:
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@master
         with:
+          toolchain: ${{ env.RUST_VERSION }}
           targets: ${{ matrix.target }}
           components: rust-src
       - run: cargo test --workspace --all-features --target ${{ matrix.target }}
@@ -106,7 +114,9 @@ jobs:
         package: [rustyfill, rustyfill-errors]
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ env.RUST_VERSION }}
       - name: Check ${{ matrix.package }} compiles without std
         run: cargo check --package ${{ matrix.package }} --no-default-features
       - name: Test ${{ matrix.package }} without std
