@@ -350,7 +350,10 @@ impl<T> TryLinkedList<T> for LinkedList<T> {
             // Overflow is unreachable: each node holds two pointers plus the
             // element, so a list of usize::MAX nodes would need >= 2 * ptr_size * usize::MAX
             // bytes — far beyond any addressable memory.
-            sys_self.len = sys_self.len.checked_add(1).expect("linked list length overflow");
+            sys_self.len = sys_self
+                .len
+                .checked_add(1)
+                .expect("linked list length overflow");
         }
         Ok(())
     }
@@ -379,7 +382,10 @@ impl<T> TryLinkedList<T> for LinkedList<T> {
             // Overflow is unreachable: each node holds two pointers plus the
             // element, so a list of usize::MAX nodes would need >= 2 * ptr_size * usize::MAX
             // bytes — far beyond any addressable memory.
-            sys_self.len = sys_self.len.checked_add(1).expect("linked list length overflow");
+            sys_self.len = sys_self
+                .len
+                .checked_add(1)
+                .expect("linked list length overflow");
         }
         Ok(())
     }

@@ -50,5 +50,4 @@ mod tests {
         let cell: UnsafeCell<i32> = UnsafeCell::try_default().unwrap();
         assert_eq!(unsafe { *cell.get() }, 0);
     }
-
 }

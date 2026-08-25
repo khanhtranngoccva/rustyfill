@@ -16,6 +16,4 @@ pub use dashmap_::{
     TryDashMapInsertUniqueError, TryDashMapInsertUniqueNonblockError, TryDashMapNonblockError,
     TryDashMapWithCloneError,
 };
-pub use dashset_::{
-    TryDashSet, TryDashSetConstructionError, TryDashSetWithCloneError,
-};
+pub use dashset_::{TryDashSet, TryDashSetConstructionError, TryDashSetWithCloneError};

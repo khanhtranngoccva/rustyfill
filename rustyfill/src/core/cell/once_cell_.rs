@@ -12,9 +12,8 @@ impl<T: TryClone + Clone> TryClone for OnceCell<T> {
     fn try_clone(&self) -> Result<Self, TryCloneError> {
         let out = OnceCell::new();
         if let Some(val) = self.get() {
-            out.set(val.try_clone()?).map_err(|_| {
-                TryCloneError::Other("OnceCell clone failed: set returned Err")
-            })?;
+            out.set(val.try_clone()?)
+                .map_err(|_| TryCloneError::Other("OnceCell clone failed: set returned Err"))?;
         }
         Ok(out)
     }
@@ -54,7 +53,10 @@ mod tests {
         let cell = OnceCell::new();
         cell.set(vec![1, 2, 3]).unwrap();
         let cloned = cell.try_clone().unwrap();
-        assert_eq!(cloned.get().map(|v| v.as_slice()), Some([1, 2, 3].as_slice()));
+        assert_eq!(
+            cloned.get().map(|v| v.as_slice()),
+            Some([1, 2, 3].as_slice())
+        );
     }
 
     #[test]

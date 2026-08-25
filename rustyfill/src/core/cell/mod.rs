@@ -9,9 +9,9 @@
 //! - `TryDebug`, `TryDisplay` for `Ref<'_, T>` and `RefMut<'_, T>`
 //! - `TryDebug`, `TryDefault` for `UnsafeCell<T>`
 
-mod ref_cell_;
 mod cell_;
 mod lazy_cell_;
 mod once_cell_;
 mod ref_;
+mod ref_cell_;
 mod unsafe_cell_;

@@ -131,9 +131,6 @@ mod tests {
         // `TryReserveError` with the `CapacityOverflow` kind.
         let err = crate::alloc::TryReserveError::new_capacity_overflow();
         let got = render_trydebug(&err);
-        assert!(
-            got.contains("TryReserveError"),
-            "missing tag in {got:?}"
-        );
+        assert!(got.contains("TryReserveError"), "missing tag in {got:?}");
     }
 }

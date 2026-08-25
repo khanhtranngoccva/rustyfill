@@ -29,7 +29,9 @@ impl<T: TryDefault + Default> TryDefault for LazyCell<T> {
         // Uninitialized — no allocation. The initializer runs lazily on first
         // access; if `T::try_default` fails at that point the cell panics,
         // matching how a plain `LazyCell::new` with a failing closure behaves.
-        Ok(LazyCell::new(|| T::try_default().expect("LazyCell default initializer failed")))
+        Ok(LazyCell::new(|| {
+            T::try_default().expect("LazyCell default initializer failed")
+        }))
     }
 }
 

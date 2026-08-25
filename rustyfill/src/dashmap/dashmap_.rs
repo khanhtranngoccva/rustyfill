@@ -550,10 +550,7 @@ pub trait TryDashMap<K, V, S = RandomState>: Sized {
     /// This avoids wasting a clone if reservation fails. The key is cloned
     /// unconditionally once reservation succeeds (both [`Entry::Occupied`] and
     /// [`Entry::Vacant`] require an owned key internally).
-    fn try_entry_ref<'a>(
-        &'a self,
-        key: &K,
-    ) -> Result<Entry<'a, K, V>, TryDashMapEntryByRefError>
+    fn try_entry_ref<'a>(&'a self, key: &K) -> Result<Entry<'a, K, V>, TryDashMapEntryByRefError>
     where
         K: TryClone + Eq + Hash;
 
@@ -1057,10 +1054,7 @@ impl<K: Eq + Hash, V, S: BuildHasher + TryClone> TryDashMap<K, V, S> for DashMap
         }
     }
 
-    fn try_entry_ref<'a>(
-        &'a self,
-        key: &K,
-    ) -> Result<Entry<'a, K, V>, TryDashMapEntryByRefError>
+    fn try_entry_ref<'a>(&'a self, key: &K) -> Result<Entry<'a, K, V>, TryDashMapEntryByRefError>
     where
         K: TryClone + Eq + Hash,
     {
@@ -1251,10 +1245,11 @@ pub(super) fn try_reserve_shards<K: Eq + Hash, V, S: BuildHasher + Clone>(
         // Each shard is a `hashbrown::raw::RawTable<(K, SharedValue<V>)>` —
         // exposed publicly under dashmap's `raw-api` feature — so no casts are
         // needed to reach the table directly.
-        shard.try_reserve(additional, |e: &(K, dashmap::SharedValue<V>)| {
-            hf.hash_one(&e.0)
-        })
-        .map_err(crate::alloc::try_reserve_error_from_hashbrown)?;
+        shard
+            .try_reserve(additional, |e: &(K, dashmap::SharedValue<V>)| {
+                hf.hash_one(&e.0)
+            })
+            .map_err(crate::alloc::try_reserve_error_from_hashbrown)?;
     }
     Ok(())
 }
@@ -1307,13 +1302,13 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::alloc::TryReserveErrorExt;
     use crate::try_default::TryDefault as _;
     use lang_alloc::format;
     use lang_alloc::string::String;
     use lang_alloc::string::ToString;
     use lang_alloc::vec;
     use lang_alloc::vec::Vec;
-    use crate::alloc::TryReserveErrorExt;
     use lang_core::fmt::Write as _;
     use lang_std::iter;
 
