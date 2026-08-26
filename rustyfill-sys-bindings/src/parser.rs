@@ -700,6 +700,13 @@ fn extract_all_uses_from_item(item: &Item, out: &mut Vec<UseStatement>) {
         Item::Fn(iff) => {
             extract_all_uses_from_block(&iff.block, out);
         }
+        // Macro *invocations* (e.g., `cfg_if! { ... }`) can contain `use`
+        // statements in their brace-delimited body. The body tokens are not a
+        // plain block (they start with `if #[cfg(...)] {...}`), so walk the
+        // token tree manually and parse each brace group as a block.
+        Item::Macro(im) => {
+            extract_uses_from_macro_tokens(&im.mac.tokens, out);
+        }
         Item::ExternCrate(_)
         | Item::Struct(_)
         | Item::Enum(_)
@@ -707,7 +714,6 @@ fn extract_all_uses_from_item(item: &Item, out: &mut Vec<UseStatement>) {
         | Item::Type(_)
         | Item::Static(_)
         | Item::Const(_)
-        | Item::Macro(_)
         | Item::Verbatim(_)
         | Item::ForeignMod(_) => {}
         _ => {}
@@ -720,6 +726,42 @@ fn extract_all_uses_from_block(block: &syn::Block, out: &mut Vec<UseStatement>) 
     for stmt in &block.stmts {
         if let syn::Stmt::Item(item) = stmt {
             extract_all_uses_from_item(item, out);
+        }
+    }
+}
+
+/// Extract `use` statements from a macro invocation's token body. The body of
+/// a `cfg_if!` / `cfg_select!` invocation is not a plain block — it starts with
+/// `if #[cfg(...)] { ... } else { ... }`, which syn cannot parse as an
+/// expression because of the `#[cfg]` attribute. Instead, walk the top-level
+/// token tree and wrap each brace-delimited group's content in an outer brace
+/// pair so syn can parse it as a [`syn::Block`], extracting any `use` items
+/// found inside. Groups whose content fails to parse as a block (e.g., nested
+/// macro invocations) are recursed into so their inner brace groups are still
+/// visited.
+fn extract_uses_from_macro_tokens(tokens: &proc_macro2::TokenStream, out: &mut Vec<UseStatement>) {
+    for tt in tokens.clone().into_iter() {
+        if let proc_macro2::TokenTree::Group(g) = tt {
+            if g.delimiter() != proc_macro2::Delimiter::Brace {
+                continue;
+            }
+            // Wrap the group's content in braces so syn sees a complete block.
+            let wrapped: proc_macro2::TokenStream =
+                format!("{{ {} }}", g.stream()).parse().unwrap_or_default();
+            match syn::parse2::<syn::Block>(wrapped) {
+                Ok(block) => {
+                    for stmt in &block.stmts {
+                        if let syn::Stmt::Item(item) = stmt {
+                            extract_all_uses_from_item(item, out);
+                        }
+                    }
+                }
+                Err(_) => {
+                    // Not a plain block (nested macro body or similar).
+                    // Recurse to find inner brace groups.
+                    extract_uses_from_macro_tokens(&g.stream(), out);
+                }
+            }
         }
     }
 }
@@ -1123,10 +1165,112 @@ pub fn cfg_select_reexport_targets(source: &str, cfg: &CfgContext) -> Vec<String
     Vec::new()
 }
 
-/// Scan a cfg_select branch body for `pub use <path>::*;` and collect the
-/// leading module name being re-exported from. Handles `self::`, `super::`,
-/// and `crate::` prefixes by skipping them to find the actual module name.
-/// E.g. `pub use self::unix::*;` → `"unix"`, `pub use pal::*;` → `"pal"`.
+/// For a file whose platform selection uses `cfg_if!` (the older macro with
+/// `if #[cfg(...)] { ... } else if ...` syntax), return the set of re-export
+/// source modules named in the *active* branch's `pub use <mod>::…;`
+/// statements. This is the counterpart to [`cfg_select_reexport_targets`] for
+/// files like `sys/pal/mod.rs` that select the platform backend via `cfg_if!`.
+///
+/// Returns an empty vec when the file has no `cfg_if!` or the active branch
+/// carries no single-module re-exports.
+pub fn cfg_if_reexport_targets(source: &str, cfg: &CfgContext) -> Vec<String> {
+    if !source.contains("cfg_if") {
+        return Vec::new();
+    }
+    // Find each `#[cfg(predicate)]` followed by `{ ... }` inside a cfg_if block.
+    // The structure is: `if #[cfg(pred)] { body } else if #[cfg(pred2)] { body2 } ...`
+    // We scan for `#[cfg(` occurrences within the cfg_if region and pair each with
+    // its following brace-delimited body. Predicates may span multiple lines
+    // (e.g., `any(\n all(...),\n target_os = "linux",\n)`), so the inner text is
+    // collected verbatim and evaluated as-is — [`CfgContext::eval_predicate`]
+    // splits on commas at any parenthesis depth, which tolerates embedded
+    // newlines.
+    let mut branches: Vec<(String, String)> = Vec::new();
+    let start = source.find("cfg_if").unwrap_or(0);
+    let region = &source[start..];
+    let chars: Vec<char> = region.chars().collect();
+    let len = chars.len();
+    let mut i = 0;
+    while i < len {
+        // Look for `#[cfg(` pattern. The literal `#[cfg(` is six characters
+        // (`#`, `[`, `c`, `f`, `g`, `(`), so the opening paren sits at
+        // `i + 5` and the predicate text begins at `i + 6`.
+        if region[i..].starts_with("#[cfg(") {
+            let pred_begin = i + 6;
+            // Find the closing ')' balanced against the one at `i + 5`.
+            let mut depth = 1;
+            let mut j = pred_begin;
+            while j < len && depth > 0 {
+                match chars[j] {
+                    '(' => depth += 1,
+                    ')' => depth -= 1,
+                    _ => {}
+                }
+                j += 1;
+            }
+            if j > len || depth != 0 {
+                break; // Unbalanced; bail out rather than panic on slicing.
+            }
+            // Predicate spans `pred_begin..j-1`; `j-1` is the closing ')'.
+            let predicate: String = chars[pred_begin..j - 1].iter().collect();
+            // After ')', expect `]` then optionally whitespace (including
+            // newlines) then `{`.
+            let mut k = j; // position after ')'
+            while k < len && (chars[k] == ']' || chars[k].is_whitespace()) {
+                k += 1;
+            }
+            if k < len && chars[k] == '{' {
+                k += 1; // skip '{'
+                let body_start = k;
+                let mut bdepth = 1;
+                while k < len && bdepth > 0 {
+                    match chars[k] {
+                        '{' => bdepth += 1,
+                        '}' => bdepth -= 1,
+                        _ => {}
+                    }
+                    k += 1;
+                }
+                let body: String = chars[body_start..k.saturating_sub(1)].iter().collect();
+                branches.push((predicate, body));
+                i = k;
+                continue;
+            }
+        }
+        i += 1;
+    }
+
+    // Evaluate predicates in order; first active branch wins (same semantics
+    // as cfg_if!). An empty predicate list means "else" fallback.
+    let mut fallback: Option<Vec<String>> = None;
+    for (predicate, body) in &branches {
+        let active = if predicate.is_empty() {
+            true
+        } else {
+            cfg.eval_predicate(predicate)
+        };
+        if !active {
+            continue;
+        }
+        let targets = scan_reexport_sources(body.trim());
+        if !targets.is_empty() {
+            return targets;
+        }
+        if predicate.is_empty() {
+            fallback = Some(targets);
+        }
+    }
+    fallback.unwrap_or_default()
+}
+
+/// Scan a cfg_select!/cfg_if! branch body for `pub use <path>…;` statements
+/// and collect the leading module name each re-export comes from. Handles
+/// `self::`, `super::`, and `crate::` prefixes by skipping them to find the
+/// actual module name. Works for both glob re-exports
+/// (`pub use self::unix::*;` → `"unix"`, `pub use pal::*;` → `"pal"`) and
+/// specific-item re-exports used by `cfg_if!` platform shims
+/// (`pub use futex::Mutex;` → `"futex"`). Callers must verify the returned
+/// candidate modules actually exist before following them.
 fn scan_reexport_sources(branch_body: &str) -> Vec<String> {
     let mut out: Vec<String> = Vec::new();
     for line in branch_body.lines() {
@@ -1150,14 +1294,21 @@ fn scan_reexport_sources(branch_body: &str) -> Vec<String> {
             .map(str::trim)
             .filter(|s| !s.is_empty())
             .collect();
-        // Skip leading keywords (self, super, crate) to find the module name.
-        let name = segs.iter().find(|s| {
-            let s = **s;
-            !(s == "self" || s == "super" || s == "crate")
-                && s.chars().all(|c| c.is_alphanumeric() || c == '_')
-        });
+        // Skip leading keywords (self, super, crate) and glob wildcards to
+        // find the actual module name. For `pub use self::unix::*;` the
+        // segments are ["self", "unix", "*"] — we must skip "self" to get
+        // "unix".
+        let is_keyword = |s: &str| matches!(s, "self" | "super" | "crate");
+        let is_ident = |s: &str| s.chars().all(|c| c.is_alphanumeric() || c == '_');
+        let named: Vec<&str> = segs
+            .iter()
+            .copied()
+            .filter(|s| *s != "*" && !is_keyword(s) && is_ident(s))
+            .collect();
+        // The source module is the first non-keyword identifier segment.
+        let name = named.first().copied();
         if let Some(name) = name {
-            if !out.iter().any(|s| s.as_str() == *name) {
+            if !out.iter().any(|s| s.as_str() == name) {
                 out.push(name.to_string());
             }
         }
@@ -1450,6 +1601,11 @@ fn collect_item_text(lines: &[&str], start: usize, kind: ItemKind) -> CollectedI
 /// what syn supports. Uses brace-counting to extract complete item definitions.
 fn text_scan_source(source: &str, cfg: &CfgContext) -> TextScanResult {
     let mut items = Vec::new();
+    // The AST path extracts uses via `extract_all_uses_from_file`; the text
+    // fallback scans them in the item loop below (indented lines included for
+    // this purpose), so that files syn cannot parse (e.g., cfg_if!/cfg_select!
+    // platform shims) still contribute their import bindings to qualifier
+    // resolution.
     let mut use_statements = Vec::new();
     let mod_declarations = scan_mod_declarations_with_cfg(source, cfg);
 
@@ -1489,8 +1645,15 @@ fn text_scan_source(source: &str, cfg: &CfgContext) -> TextScanResult {
             leading_spaces / 4
         };
 
-        // Only consider top-level items (indent == 0)
+        // Indented lines are never top-level *definitions*, but they can be
+        // `use` statements inside macro-invocation bodies (e.g., cfg_if!
+        // branches). Extract those before skipping the line so import bindings
+        // from files syn cannot parse still reach qualifier resolution.
         if indent > 0 {
+            if trimmed.starts_with("use ") || trimmed.starts_with("pub use ") {
+                let use_line = trimmed.strip_suffix(';').unwrap_or(trimmed);
+                use_statements.extend(text_parse_use_statement(use_line));
+            }
             i += 1;
             continue;
         }
@@ -2422,4 +2585,95 @@ mod child;
         let linux = CfgContext::from_target_triple("x86_64-unknown-linux-gnu");
         assert_eq!(module_file_cfg_excluded(source, &linux), None);
     }
+
+    // ── cfg_if! multi-line predicate parsing ───────────────────────────────
+
+    #[test]
+    fn test_cfg_if_multiline_any_predicate_activates_first_branch() {
+        // Mirrors the shape of std's sys/sync/mutex/mod.rs: a cfg_if! whose
+        // first branch predicate spans multiple lines inside any(...). The
+        // active branch must be detected and its re-export target returned.
+        let source = r#"cfg_if::cfg_if! {
+    if #[cfg(any(
+        all(target_os = "windows", not(target_vendor = "win7")),
+        target_os = "linux",
+        target_os = "android",
+    ))] {
+        mod futex;
+        pub use futex::Mutex;
+    } else if #[cfg(target_os = "fuchsia")] {
+        mod fuchsia;
+        pub use fuchsia::Mutex;
+    } else {
+        mod no_threads;
+        pub use no_threads::Mutex;
+    }
+}"#;
+        let linux = CfgContext::from_target_triple("x86_64-unknown-linux-gnu");
+        assert_eq!(cfg_if_reexport_targets(source, &linux), vec!["futex"]);
+    }
+
+    #[test]
+    fn test_cfg_if_multiline_predicate_inactive_falls_through() {
+        let source = r#"cfg_if::cfg_if! {
+    if #[cfg(any(
+        target_os = "freebsd",
+        target_os = "openbsd",
+    ))] {
+        mod bsd;
+        pub use bsd::Thing;
+    } else if #[cfg(target_os = "linux")] {
+        mod futex;
+        pub use futex::Thing;
+    } else {
+        mod none;
+        pub use none::Thing;
+    }
+}"#;
+        let linux = CfgContext::from_target_triple("x86_64-unknown-linux-gnu");
+        assert_eq!(cfg_if_reexport_targets(source, &linux), vec!["futex"]);
+    }
+
+    // ── Text-fallback use-statement extraction ─────────────────────────────
+
+    #[test]
+    fn test_parse_source_text_fallback_extracts_indented_uses() {
+        // A cfg_if! shim defeats syn's file parser (the macro call is not a
+        // valid item), forcing the text-scan fallback. Indented `pub use`
+        // lines inside the macro body must still be extracted so qualifier
+        // resolution can follow the import binding to its defining module.
+        let source = r#"cfg_if::cfg_if! {
+    if #[cfg(target_os = "linux")] {
+        mod futex;
+        pub use futex::Mutex;
+    } else {
+        mod pthread;
+        pub use pthread::Mutex;
+    }
+}"#;
+        let linux = CfgContext::from_target_triple("x86_64-unknown-linux-gnu");
+        let parsed = parse_source_with_cfg(source, &linux);
+        let bases: Vec<Vec<String>> = parsed
+            .use_statements
+            .iter()
+            .map(|s| match &s.kind {
+                UseKind::Single(pl, _) | UseKind::Glob(pl) => pl
+                    .segments
+                    .iter()
+                    .map(|seg| match seg {
+                        PathSegment::Named(n) => n.clone(),
+                        PathSegment::Crate => "crate".to_string(),
+                        PathSegment::Super => "super".to_string(),
+                        PathSegment::Self_ => "self".to_string(),
+                    })
+                    .collect(),
+            })
+            .collect();
+        // Both branches' indented uses are extracted (branch selection for
+        // *modules* happens via cfg_if_reexport_targets; use bindings from all
+        // branches feed the resolver, which discards unresolvable ones).
+        assert!(bases.iter().any(|b| b == &vec!["futex", "Mutex"]));
+        assert!(bases.iter().any(|b| b == &vec!["pthread", "Mutex"]));
+    }
 }
+

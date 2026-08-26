@@ -153,9 +153,53 @@ pub(super) fn mirror_minimal_modules(
     };
 
     let mut needed_leaves: HashMap<String, HashSet<String>> = HashMap::new();
-    for (module_ctx, lead, lf) in &qual_refs {
-        let Some(lead) = lead else { continue };
-        let Some(def_mod) = resolve_def_mod(&mut qres, module_ctx, lead, lf) else {
+    for (module_ctx, lead_opt, lf) in &qual_refs {
+        // For bare names (lead_opt = None), synthesize a lead from the import
+        // binding that brings the name into scope. This lets us reuse the
+        // existing qualified-ref resolution machinery (import-following,
+        // re-export descent) to find the defining module.
+        let lead: String = match lead_opt {
+            Some(l) => l.clone(),
+            None => {
+                // Find the import binding whose bound name equals the bare leaf.
+                let cur = match qres.source_module(module_ctx) {
+                    Some(s) => s,
+                    None => continue,
+                };
+                let mut found_lead: Option<String> = None;
+                for stmt in &cur.use_statements {
+                    let (target_segs, alias_name) = match &stmt.kind {
+                        UseKind::Single(pl, alias) => (pl.segments.clone(), alias.clone()),
+                        _ => continue,
+                    };
+                    let bound_name: Option<String> = match &alias_name {
+                        Some(a) => Some(a.clone()),
+                        None => {
+                            let last_named = target_segs.iter().rev().find_map(|s| match s {
+                                PathSegment::Named(n) => Some(n.clone()),
+                                _ => None,
+                            });
+                            match last_named.as_deref() {
+                                Some("self") => target_segs.iter().rev().find_map(|s| match s {
+                                    PathSegment::Named(n) if n != "self" => Some(n.clone()),
+                                    _ => None,
+                                }),
+                                other => other.map(str::to_string),
+                            }
+                        }
+                    };
+                    if bound_name.as_deref() == Some(lf.as_str()) {
+                        found_lead = Some(bound_name.unwrap_or_else(|| lf.clone()));
+                        break;
+                    }
+                }
+                match found_lead {
+                    Some(l) => l,
+                    None => continue,
+                }
+            }
+        };
+        let Some(def_mod) = resolve_def_mod(&mut qres, module_ctx, &lead, lf) else {
             continue;
         };
         needed_leaves
@@ -163,30 +207,48 @@ pub(super) fn mirror_minimal_modules(
             .or_default()
             .insert(lf.clone());
         sink.registry
-            .set_qualifier_route(module_ctx, lead, &def_mod);
+            .set_qualifier_route(module_ctx, &lead, &def_mod);
 
         // Record an alias import for any non-sibling qualifier so that
         // references like `pal::Mutex` resolve without path rewriting.
         // At emit time, the pipeline checks whether the resolver already
         // bound the same name and skips the alias to avoid E0252.
+        //
+        // IMPORTANT: only record the alias when the leaf is DIRECTLY defined
+        // in the alias-target module. If the leaf lives in a sub-module of the
+        // alias target (e.g., `sys` → `sys/sync` but `Mutex` is in
+        // `sys/sync/mutex`), the alias would dangle. In that case, skip the
+        // alias and let the qualifier-route rewrite absolutize the reference.
         let sibling = format!("{module_ctx}/{lead}");
         if sibling != def_mod {
-            // Prefer the module that actually *defines* the leaf over the
-            // import binding's target: an intermediate re-export layer (e.g.
-            // `sys/sync/futex` with `pub use unix::*`) is not guaranteed to be
-            // mirrored with its re-exports intact, while the defining module
-            // (`sys/sync/futex/unix`) is always emitted as a slim mirror.
-            let import_target = match qres.resolve_import_target(module_ctx, lead) {
+            let import_target = match qres.resolve_import_target(module_ctx, &lead) {
                 Some(t) if t == def_mod => t,
                 _ => def_mod.clone(),
             };
-            let crate_path = format!(
-                "crate::{}::{}",
-                sink.registry.wrapper_mod(),
-                import_target.replace('/', "::")
-            );
-            sink.registry
-                .set_module_alias_route(module_ctx, lead, &crate_path);
+            // Verify the leaf is directly accessible from the alias target.
+            // If not, skip the alias — the qualifier route will absolutize.
+            let leaf_accessible = if import_target == def_mod {
+                true // Leaf is in the defining module itself.
+            } else {
+                // Check if the alias target module directly defines or
+                // re-exports the leaf.
+                qres.source_module(&import_target)
+                    .map(|src| {
+                        src.items
+                            .iter()
+                            .any(|i| i.name.as_str() == lf.as_str() && i.kind.is_type_def())
+                    })
+                    .unwrap_or(false)
+            };
+            if leaf_accessible {
+                let crate_path = format!(
+                    "crate::{}::{}",
+                    sink.registry.wrapper_mod(),
+                    import_target.replace('/', "::")
+                );
+                sink.registry
+                    .set_module_alias_route(module_ctx, &lead, &crate_path);
+            }
         }
     }
 
@@ -207,17 +269,21 @@ pub(super) fn mirror_minimal_modules(
         let mod_path = def_mod.replace('/', "::");
         let def_file_abs = lib_src.join(&def_file).to_string_lossy().to_string();
         for item in &parsed.items {
-            if item.kind != ItemKind::TypeAlias {
-                continue;
-            }
             if !leaves.contains(&item.name) {
                 continue;
             }
             let canonical = format!("{}::{}::{}", target.lib_name, mod_path, item.name);
-            sink.registry
-                .insert_declared_alias(&canonical, &def_file_abs);
-            if let Some(rhs) = &item.alias_rhs {
-                sink.registry.set_alias_rhs(&canonical, rhs.clone());
+            match item.kind {
+                ItemKind::TypeAlias => {
+                    sink.registry.insert_declared_alias(&canonical, &def_file_abs);
+                    if let Some(rhs) = &item.alias_rhs {
+                        sink.registry.set_alias_rhs(&canonical, rhs.clone());
+                    }
+                }
+                ItemKind::Struct | ItemKind::Enum | ItemKind::Union => {
+                    sink.registry.insert_declared(&canonical, &def_file_abs);
+                }
+                _ => {}
             }
         }
         sink.parsed_cache
@@ -294,6 +360,15 @@ fn collect_qualifier_refs(
                         for (lead, lf) in collect_qualified_refs(&f.ty) {
                             qual_refs.push((module_ctx.clone(), lead, lf));
                         }
+                    }
+                }
+            }
+            ItemKind::Const => {
+                // Const items carry a type annotation (e.g., `pub const ONCE_INIT: Once`).
+                // Bare names in the type position need routing just like struct fields.
+                if let Ok(c) = syn::parse2::<syn::ItemConst>(item.full_tokens.clone()) {
+                    for (lead, lf) in collect_qualified_refs(&c.ty) {
+                        qual_refs.push((module_ctx.clone(), lead, lf));
                     }
                 }
             }

@@ -16,7 +16,7 @@ use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
 use crate::emitter::{
-    check_declared_struct_fields, emit_hierarchical_manifest, emit_known_type_stub,
+    check_declared_struct_fields, emit_hierarchical_manifest, emit_known_type_stubs,
     emit_preamble_module,
 };
 use crate::loader_spec::LoaderSpec;
@@ -221,6 +221,12 @@ pub fn generate(input: &PipelineInput<'_>) -> GenerateOutcome {
         });
     }
 
+    // Remember each file's library so emitted imports can be written as
+    // absolute `crate::{lib}::...` paths.
+    for (file_path, (_, lib_name)) in &parsed_cache {
+        resolver.set_file_lib(file_path, lib_name);
+    }
+
     // Mark all Phase 1 files as emittable, EXCEPT structural parents that were
     // registered solely to support alias discovery (their module paths end in
     // "/mod").
@@ -249,9 +255,16 @@ pub fn generate(input: &PipelineInput<'_>) -> GenerateOutcome {
             );
         }
     }
+    // Parents registered above may not be in the cache yet; sync lib names.
+    for (file_path, (_, lib_name)) in &parsed_cache {
+        resolver.set_file_lib(file_path, lib_name);
+    }
 
     // ── Phase 1c: Discover modules referenced by use statements ─────────────
     discover::discover_imported_modules(spec, rust_src, cfg, &mut resolver, &mut parsed_cache);
+    for (file_path, (_, lib_name)) in &parsed_cache {
+        resolver.set_file_lib(file_path, lib_name);
+    }
 
     // ── Phase 1d: Build the type registry ───────────────────────────────────
     let mut reg_state = registry::RegistryBuildState {
@@ -284,9 +297,15 @@ pub fn generate(input: &PipelineInput<'_>) -> GenerateOutcome {
         &mut emitted_canonicals,
         &mut all_files,
     );
+    // Shims registered above are keyed by target lib name; sync with resolver.
+    for (file_path, lib_name) in &all_files {
+        resolver.set_file_lib(file_path, lib_name);
+    }
 
     // Hand the resolver the same declared-path set the emitter uses to filter
-    // output.
+    // output. Minimal modules mirrored during registry construction inherit
+    // their lib name from the referring file's lib (all files in a given
+    // module tree belong to one library), so no extra bookkeeping is needed.
     resolver.set_declared_paths(registry.declared_paths().cloned());
 
     // Field-type publicity check.
@@ -322,14 +341,31 @@ pub fn generate(input: &PipelineInput<'_>) -> GenerateOutcome {
     );
 
     // ── Phase 2b: Emit known-external-type stubs at their canonical location ─
+    // Group by (lib, module path) so multiple known types sharing a module
+    // (e.g. `Atomic`, `AtomicBool`, `AtomicPtr` all in `sync::atomic`) are
+    // merged into a single file instead of clobbering each other.
+    let mut kt_by_module: std::collections::BTreeMap<(String, String), Vec<&crate::loader_spec::KnownExternalType>> =
+        std::collections::BTreeMap::new();
     for target in &spec.targets {
         for kt in &target.known_external_types {
-            if let Some(rel_path) = emit_known_type_stub(out_dir, kt) {
-                validator.check_emit(&out_dir.join(&rel_path));
-                emitted_paths.push(out_dir.join(&rel_path));
-                emitted_canonicals.insert(rel_path.clone());
-                all_files.push((rel_path, target.lib_name.clone()));
+            let segments: Vec<&str> = kt.path.split("::").collect();
+            if segments.len() < 2 {
+                continue;
             }
+            let module_slash: String = segments[..segments.len() - 1].join("/");
+            kt_by_module
+                .entry((target.lib_name.clone(), module_slash))
+                .or_default()
+                .push(kt);
+        }
+    }
+    for ((lib_name, _module_slash), kts) in &kt_by_module {
+        if let Some(rel_path) = emit_known_type_stubs(out_dir, kts) {
+            validator.check_emit(&out_dir.join(&rel_path));
+            emitted_paths.push(out_dir.join(&rel_path));
+            emitted_canonicals.insert(rel_path.clone());
+            resolver.set_file_lib(&rel_path, lib_name);
+            all_files.push((rel_path, lib_name.clone()));
         }
     }
 
@@ -350,6 +386,12 @@ pub fn generate(input: &PipelineInput<'_>) -> GenerateOutcome {
     // ── Post-flight: validate everything ────────────────────────────────────
     validator.check_manifest(out_dir, &all_files);
     validator.check_aliases(&mut resolver, &discovered_aliases);
+    // Re-validate every emitted binding file so that files written before an
+    // earlier error was surfaced (or by a previous stale run sharing this
+    // OUT_DIR) are caught here rather than only at the crate's compile time.
+    for path in &emitted_paths {
+        validator.check_emit(path);
+    }
     let result = validator.finish();
     if !result.errors.is_empty() {
         return Err(GenerateReport {

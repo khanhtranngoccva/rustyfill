@@ -84,8 +84,17 @@ fn std_target() -> BindingTarget {
         "all(target_family = \"wasm\", target_feature = \"atomics\")",
         ")",
     );
+    target.declare_struct_cfg("sys::sync::mutex::futex::Mutex", FUTEX_ACTIVE);
     target.declare_struct_cfg("sys::sync::mutex::futex::Futex", FUTEX_ACTIVE);
     target.declare_struct_cfg("sys::sync::mutex::futex::State", FUTEX_ACTIVE);
+    // The futex primitive type aliases in the PAL layer. `SmallFutex` is a
+    // `pub type` alias (e.g., `AtomicU32` on unix, `AtomicU8` on Windows),
+    // not a struct, but declaring it pulls the defining module
+    // (`sys/pal/unix/futex.rs`) into the mirror so that the private aliases
+    // in `sys/sync/mutex/futex.rs` (`type Futex = futex::SmallFutex;`)
+    // resolve to the correct platform-specific definition.
+    target.declare_struct_cfg("sys::pal::unix::futex::SmallFutex", FUTEX_ACTIVE);
+    target.declare_struct_cfg("sys::pal::unix::futex::SmallPrimitive", FUTEX_ACTIVE);
     // The lazy-allocation helper used by the pthread backend (active on
     // macOS/iOS). Mirrored so the polyfill can interact with its pointer slot.
     target.declare_struct("sys::sync::once_box::OnceBox");
@@ -142,6 +151,40 @@ fn core_target() -> BindingTarget {
             "    #[inline]\n",
             "    pub const unsafe fn assume_init_mut(&mut self) -> &mut T {\n",
             "        unsafe { &mut *self.inner.get() }\n",
+            "    }\n",
+            "}",
+        ),
+    );
+
+    // AtomicBool: transparent wrapper over a single bool word. Referenced bare
+    // in sync/poison.rs (`pub failed: AtomicBool`). Registered at its canonical
+    // core location so the emitter routes the bare name to this stub.
+    target.add_known_type(
+        "sync::atomic::AtomicBool",
+        concat!(
+            "#[repr(transparent)]\n",
+            "pub struct AtomicBool(::__rustyfill_builtin_core::cell::UnsafeCell<bool>);\n",
+            "impl AtomicBool {\n",
+            "    #[inline]\n",
+            "    pub const fn new(v: bool) -> Self {\n",
+            "        Self(::__rustyfill_builtin_core::cell::UnsafeCell::new(v))\n",
+            "    }\n",
+            "}",
+        ),
+    );
+
+    // AtomicPtr<T>: transparent wrapper over a raw pointer. Referenced bare in
+    // sys/sync/once_box.rs (`pub ptr: AtomicPtr<T>`). Registered at its
+    // canonical core location so the emitter routes the bare name here.
+    target.add_known_type(
+        "sync::atomic::AtomicPtr",
+        concat!(
+            "#[repr(transparent)]\n",
+            "pub struct AtomicPtr<T>(::__rustyfill_builtin_core::cell::UnsafeCell<*mut T>);\n",
+            "impl<T> AtomicPtr<T> {\n",
+            "    #[inline]\n",
+            "    pub const fn new(p: *mut T) -> Self {\n",
+            "        Self(::__rustyfill_builtin_core::cell::UnsafeCell::new(p))\n",
             "    }\n",
             "}",
         ),

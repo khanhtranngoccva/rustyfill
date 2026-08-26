@@ -110,6 +110,9 @@ pub struct ModuleResolver {
     /// peripheral public items (iterators, cursors, range views, …) that the
     /// emitter now filters out, producing dangling re-exports.
     declared_paths: HashSet<String>,
+    /// Library name (`"std"`, `"core"`, `"alloc"`) for each registered file.
+    /// Used to build absolute `crate::{lib}::...` import paths at emit time.
+    lib_by_file: HashMap<String, String>,
 }
 
 impl ModuleResolver {
@@ -123,7 +126,19 @@ impl ModuleResolver {
             sources: HashMap::new(),
             emittable_files: HashSet::new(),
             declared_paths: HashSet::new(),
+            lib_by_file: HashMap::new(),
         }
+    }
+
+    /// Remember which library a registered file belongs to, so emitted imports
+    /// can be written as absolute `crate::{lib}::...` paths.
+    pub fn set_file_lib(&mut self, file_path: &str, lib_name: &str) {
+        self.lib_by_file.insert(file_path.to_string(), lib_name.to_string());
+    }
+
+    /// Library name for a file (falls back to `"std"` when unknown).
+    pub fn lib_of_file(&self, file_path: &str) -> &str {
+        self.lib_by_file.get(file_path).map(String::as_str).unwrap_or("std")
     }
 
     /// Populate the set of spec-declared canonical paths. Called once after the
@@ -847,11 +862,20 @@ impl ModuleResolver {
                 if bound_name != item_name {
                     continue;
                 }
+                let resolved = self.resolve_path_segments(&path.segments, &container_mod);
+                // A use statement whose resolved target IS a known module is a
+                // module binding (`use super::btree;`, `use X::{self}`), not an
+                // item re-export. Following it would strip the module's own
+                // segment and yield its parent — emitting a bogus import like
+                // `use crate::alloc::::collections`. Only follow uses whose
+                // target extends past a module into an actual item.
+                if self.find_module(&resolved).is_some() {
+                    continue;
+                }
                 // Resolve the use target relative to the container module. The
                 // resolved string ends in the item name (e.g.,
                 // `collections/btree/set_val/SetValZST`), so strip the final
                 // segment to get the defining *module*, then look that up.
-                let resolved = self.resolve_path_segments(&path.segments, &container_mod);
                 let parts: Vec<&str> = resolved.split('/').collect();
                 if parts.len() > 1 {
                     let def_mod = parts[..parts.len() - 1].join("/");
@@ -908,22 +932,43 @@ impl ModuleResolver {
                     // phase of the pipeline.
                     // Convert file path to module path for resolution.
                     let target_mod = Self::file_to_module_path_str(target_file);
-                    let rel_path = self.module_path_to_super_chain(&current_module, &target_mod);
-                    if !rel_path.is_empty() {
+                    let lib_name = self.lib_of_file(target_file);
+                    let abs_path = self.module_path_to_abs_chain(&target_mod, lib_name);
+                    if !abs_path.is_empty() {
                         let last_seg = target_mod.split('/').next_back().unwrap_or("");
-                        let alias_key = format!("module:{rel_path}");
+                        // Preserve the original alias from the source import when
+                        // present (e.g. `use crate::sys::sync as sys;` must keep
+                        // the `as sys` suffix so `sys::Mutex` resolves downstream).
+                        let bind_name = match &ri.use_stmt.kind {
+                            UseKind::Single(_, Some(alias)) => alias.as_str(),
+                            _ => last_seg,
+                        };
+                        let alias_key = format!("module:{abs_path}:{bind_name}");
                         if seen_paths.insert(alias_key) {
-                            // Bring the module into scope under its original name so that
-                            // `X::item` paths resolve (e.g., `marker::Mut`), then glob
-                            // import all items for bare-name access. Use `self` in the
-                            // alias to disambiguate from any item of the same name.
-                            lines.push(format!(
-                                "#[allow(unused_imports)] use {rel_path} as {last_seg};"
-                            ));
-                            lines.push(format!("#[allow(unused_imports)] use {rel_path}::*;"));
-                            // Mark this module as glob-imported so individual items
-                            // from it are skipped below.
-                            globbed_modules.insert(rel_path.clone());
+                            // An import whose resolved target is the *enclosing* module
+                            // (e.g. `use crate::sync::poison;` written in
+                            // `sync/poison/mutex.rs`) binds the parent module's own name
+                            // (`poison`). The parent does not contain a child by its own
+                            // name, so no `use ... as poison;` can be emitted. The
+                            // qualifier-route mechanism (recorded during mirror phase)
+                            // rewrites all `<parent_leaf>::X` references to absolute
+                            // paths at emit time. No import needed.
+                            if current_module == target_mod {
+                                // Enclosing module: handled by qualifier routes.
+                            } else {
+                                // Bring the module into scope under its original name so
+                                // that `X::item` paths resolve (e.g., `marker::Mut`), then
+                                // glob import all items for bare-name access.
+                                lines.push(format!(
+                                    "#[allow(unused_imports)] use {abs_path} as {bind_name};"
+                                ));
+                                lines.push(format!(
+                                    "#[allow(unused_imports)] use {abs_path}::*;"
+                                ));
+                                // Mark this module as glob-imported so individual items
+                                // from it are skipped below.
+                                globbed_modules.insert(abs_path.clone());
+                            }
                         }
                     }
                 }
@@ -932,6 +977,10 @@ impl ModuleResolver {
                     if ignored_names.contains(&item_name.as_str()) {
                         continue;
                     }
+                    // Library of the referring file: all absolute imports are rooted
+                    // at `crate::{lib}` so they resolve identically regardless of
+                    // where in the include! tree the file lands.
+                    let lib_name = self.lib_of_file(file_path);
                     // target_path might be a file path or a module path depending on which
                     // code path created this resolution. Normalize to module path.
                     let mut target_mod = Self::file_to_module_path_str(target_path);
@@ -978,12 +1027,12 @@ impl ModuleResolver {
                     } else {
                         continue;
                     }
-                    let rel_path = self.module_path_to_super_chain(&current_module, &target_mod);
+                    let abs_path = self.module_path_to_abs_chain(&target_mod, lib_name);
                     // Skip if we already glob-imported this entire module.
-                    if globbed_modules.contains(&rel_path) {
+                    if globbed_modules.contains(&abs_path) {
                         continue;
                     }
-                    if !rel_path.is_empty() {
+                    if !abs_path.is_empty() {
                         // For public re-exports (`pub use`), verify the target name
                         // will actually exist in the emitted tree. Without this check,
                         // a parent module that re-exports many items from a child would
@@ -1007,15 +1056,7 @@ impl ModuleResolver {
                                 continue;
                             }
                         }
-                        // When the relative path doesn't start with `super`, it refers
-                        // to a local child/sibling module. Prefix with `self::` to
-                        // disambiguate from names brought in by glob imports.
-                        let qualified = if rel_path.starts_with("super") {
-                            rel_path.clone()
-                        } else {
-                            format!("self::{}", rel_path)
-                        };
-                        let full = format!("{qualified}::{item_name}");
+                        let full = format!("{abs_path}::{item_name}");
                         if seen_paths.insert(full.clone()) {
                             let vis = match ri.use_stmt.visibility {
                                 Visibility::Public => "pub use",
@@ -1035,14 +1076,15 @@ impl ModuleResolver {
                     } else {
                         continue;
                     }
-                    let rel_path = self.module_path_to_super_chain(&current_module, target_module);
-                    if !rel_path.is_empty() && seen_paths.insert(rel_path.clone()) {
+                    let lib_name = self.lib_of_file(file_path);
+                    let abs_path = self.module_path_to_abs_chain(target_module, lib_name);
+                    if !abs_path.is_empty() && seen_paths.insert(abs_path.clone()) {
                         let vis = match ri.use_stmt.visibility {
                             Visibility::Public => "pub use",
                             _ => "use",
                         };
-                        lines.push(format!("#[allow(unused_imports)] {vis} {rel_path}::*;"));
-                        globbed_modules.insert(rel_path);
+                        lines.push(format!("#[allow(unused_imports)] {vis} {abs_path}::*;"));
+                        globbed_modules.insert(abs_path);
                     }
                 }
                 Resolution::ExternalLibrary(_, _) | Resolution::Unresolved => {}
@@ -1052,33 +1094,39 @@ impl ModuleResolver {
         lines
     }
 
-    /// Convert an absolute module path to a `super::...` relative chain from
-    /// the current module. E.g., from "collections/btree/set" to
-    /// "collections/btree/node" yields "super::node".
-    fn module_path_to_super_chain(&self, from: &str, to: &str) -> String {
-        let from_parts: Vec<&str> = from.split('/').filter(|s| !s.is_empty()).collect();
-        let to_parts: Vec<&str> = to.split('/').filter(|s| !s.is_empty()).collect();
-
-        let common_len = from_parts
-            .iter()
-            .zip(to_parts.iter())
-            .take_while(|(a, b)| a == b)
-            .count();
-
-        let ups = from_parts.len() - common_len;
-        let downs: Vec<&str> = to_parts[common_len..].to_vec();
-
-        let mut segments = Vec::new();
-        segments.extend(std::iter::repeat_n("super", ups));
-        for d in &downs {
-            segments.push(*d);
-        }
-
-        if segments.is_empty() {
-            String::new()
+    /// The leaf name of the module that directly encloses `module_path`, i.e.
+    /// the name one would bind with `use super as <name>;`. For
+    /// "sync/poison/mutex" this is "poison"; for a top-level module ("sync") it
+    /// is None (there is no enclosing named module to alias).
+    #[allow(dead_code)]
+    fn parent_module_leaf(module_path: &str) -> Option<&str> {
+        let parts: Vec<&str> = module_path.split('/').filter(|s| !s.is_empty()).collect();
+        if parts.len() >= 2 {
+            Some(parts[parts.len() - 2])
         } else {
-            segments.join("::")
+            None
         }
+    }
+
+    /// Convert a target module path to an absolute `crate::std::...` import
+    /// path. All emitted imports are absolute so they never depend on the
+    /// include!-based module nesting depth or on sibling-name collisions.
+    /// The manifest merges all libraries (core, alloc, std) into a single
+    /// `crate::std::` wrapper module, so every import is rooted there.
+    /// E.g., target "collections/btree/node" yields
+    /// "crate::std::collections::btree::node". Returns an empty string when
+    /// `to` is empty (nothing to import). Empty segments are dropped as a
+    /// defense-in-depth measure so a malformed upstream path can never
+    /// produce invalid syntax like `crate::std::::collections`.
+    fn module_path_to_abs_chain(&self, to: &str, _lib_name: &str) -> String {
+        if to.is_empty() {
+            return String::new();
+        }
+        let clean: Vec<&str> = to.split('/').filter(|s| !s.is_empty()).collect();
+        if clean.is_empty() {
+            return String::new();
+        }
+        format!("crate::std::{}", clean.join("::"))
     }
 }
 
@@ -1129,8 +1177,8 @@ mod tests {
         let lines = r.emit_use_statements_for_file("collections/btree/set/entry.rs", &[]);
         let joined = lines.join("\n");
         assert!(
-            joined.contains("set_val::SetValZST"),
-            "expected re-export follow to emit a set_val::SetValZST import, got:\n{joined}"
+            joined.contains("crate::std::collections::btree::set_val::SetValZST"),
+            "expected re-export follow to emit an absolute set_val::SetValZST import, got:\n{joined}"
         );
     }
 }

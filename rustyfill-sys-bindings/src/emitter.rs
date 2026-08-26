@@ -20,8 +20,8 @@ use syn::{Generics, Ident, ItemStruct, Type, punctuated::Punctuated};
 
 use crate::formatter::format_source;
 use crate::parser::{
-    CfgContext, ItemKind, ItemVisibility, ParsedItem, ParsedSource, cfg_select_reexport_targets,
-    parse_source_with_cfg,
+    CfgContext, ItemKind, ItemVisibility, ParsedItem, ParsedSource, cfg_if_reexport_targets,
+    cfg_select_reexport_targets, parse_source_with_cfg,
 };
 use crate::resolver::{ModuleResolver, PathSegment, UseKind, Visibility};
 
@@ -312,11 +312,22 @@ impl TypeRegistry {
     }
 
     /// Resolve a module-relative path (e.g. `futex::SmallFutex`) written in a
-    /// file whose module is `module_context`. The leading segment is treated as
-    /// a sibling submodule of the current module, so the full candidate path is
-    /// built as `<module_context>::<seg0>::…::<last>` and matched against known
-    /// canonical paths. Returns the resolution for the leaf when a match is
-    /// found; `None` otherwise (caller leaves the path untouched).
+    /// file whose module is `module_context`. All but the last segment are
+    /// treated as module qualifiers relative to the current module, so the
+    /// full candidate path is built as
+    /// `<module_context>::<seg0>::…::<second-to-last>` with the last segment
+    /// as the leaf, and matched against known canonical paths. Returns the
+    /// resolution for the leaf when a match is found; `None` otherwise
+    /// (caller leaves the path untouched).
+    ///
+    /// When several candidates tie on suffix overlap — e.g. `Root` seen from
+    /// `collections/btree/map`, where both `map::inner::Root` (an item inside
+    /// a child module) and `node::Root` (an alias bound via import) share the
+    /// same longest suffix — the shortest candidate wins. That mirrors Rust's
+    /// own name-resolution preference for items over deeper same-named
+    /// descendants, which is what makes bare references like `Root<K, V>` in
+    /// `btree/map` bind to the `node::Root` alias rather than to a deeper
+    /// same-named definition.
     pub fn resolve_module_relative(
         &self,
         segments: &[String],
@@ -331,36 +342,68 @@ impl TypeRegistry {
             full.push_str(s);
         }
         let leaf = segments.last().unwrap();
-        // Ensure the leaf isn't shadowed by a local name before matching.
-        let guard = LocalNameGuard::new(None);
-        if guard.contains(leaf) {
-            return None;
+        // Bare names (single segment) are resolved against the module context
+        // via the guarded resolver, which scores every candidate by proximity
+        // and applies the declared/exported/shallowest tie-break cascade.
+        if segments.len() == 1 {
+            let guard = LocalNameGuard::new(None);
+            return Some(self.resolve_with_guard(leaf, module_context, &guard));
         }
-        // Try exact match first, then fall back to suffix scoring among the
-        // leaf's candidates (handles library-prefix differences).
+        // Multi-segment paths: try exact match first, then fall back to
+        // proximity scoring among the leaf's candidates (also handles
+        // library-prefix differences).
         let candidates = self.candidates_for_leaf(leaf);
-        let chosen: &String = candidates.iter().find(|p| p.as_str() == full).or_else(|| {
-            let scored: Vec<(usize, &String)> = candidates
-                .iter()
-                .map(|p| (suffix_overlap(p, &full), p))
-                .collect();
-            let max = scored.iter().map(|(s, _)| *s).max()?;
-            if max == 0 {
-                return None;
-            }
-            scored
-                .iter()
-                .filter(|(s, _)| *s == max)
-                .map(|(_, p)| *p)
-                .find(|p| {
-                    self.declared.contains(*p)
-                        || self.by_path.get(*p).is_some_and(|t| t.is_exported)
-                })
-        })?;
-        Some(match self.by_path.get(chosen) {
-            Some(info) if info.is_declared() => FieldRefResolution::Mirrored(chosen.clone()),
-            Some(info) if info.is_usable() => FieldRefResolution::Original(chosen.clone()),
-            Some(_) => FieldRefResolution::UndeclaredPrivate(chosen.clone()),
+        let chosen_owned: String = candidates
+            .iter()
+            .find(|p| p.as_str() == full)
+            .cloned()
+            .or_else(|| {
+                // Score each candidate by how much its *prefix* (canonical
+                // path minus the leaf) overlaps with `full`: for multi-segment
+                // paths `full` ends at the second-to-last segment, and for
+                // bare names it equals the module context — so a candidate
+                // defined in (or nested under) the referring module scores
+                // highest either way.
+                let prefixes: Vec<String> = candidates
+                    .iter()
+                    .map(|p| {
+                        p.rsplit_once("::")
+                            .map(|(pre, _)| pre.to_string())
+                            .unwrap_or_default()
+                    })
+                    .collect();
+                let scored: Vec<(usize, &String)> = candidates
+                    .iter()
+                    .enumerate()
+                    .map(|(i, p)| (suffix_overlap(&prefixes[i], &full), p))
+                    .collect();
+                let max = scored.iter().map(|(s, _)| *s).max()?;
+                let top: Vec<&String> = scored
+                    .iter()
+                    .filter(|(s, _)| *s == max)
+                    .map(|(_, p)| *p)
+                    .collect();
+                // Tie-break: prefer declared candidates, then exported ones,
+                // then the shallowest canonical path (fewest segments) so an
+                // import-bound alias one level up beats a deeper same-named
+                // descendant of the referring module.
+                let winner = top
+                    .iter()
+                    .find(|p| self.declared.contains(p.as_str()))
+                    .or_else(|| {
+                        top.iter()
+                            .find(|p| self.by_path.get(p.as_str()).is_some_and(|t| t.is_exported))
+                    })
+                    .or_else(|| {
+                        top.iter()
+                            .min_by_key(|p| p.split("::").count())
+                    });
+                winner.map(|p| (*p).clone())
+            })?;
+        Some(match self.by_path.get(chosen_owned.as_str()) {
+            Some(info) if info.is_declared() => FieldRefResolution::Mirrored(chosen_owned),
+            Some(info) if info.is_usable() => FieldRefResolution::Original(chosen_owned),
+            Some(_) => FieldRefResolution::UndeclaredPrivate(chosen_owned),
             None => FieldRefResolution::Unknown(leaf.to_string()),
         })
     }
@@ -388,16 +431,32 @@ impl TypeRegistry {
             return FieldRefResolution::Unknown(leaf.to_string());
         }
 
-        // Score each candidate by how much its canonical path overlaps with
-        // the current module context. Longer shared suffix = closer module.
+        // Score each candidate by how much its *prefix* (canonical path minus
+        // the leaf) overlaps with the current module context. Scoring the full
+        // path would always fail for bare names whose leaf differs from the
+        // context's last segment, leaving valid candidates unrouted.
+        let prefixes: Vec<String> = candidates
+            .iter()
+            .map(|p| {
+                p.rsplit_once("::")
+                    .map(|(pre, _)| pre.to_string())
+                    .unwrap_or_default()
+            })
+            .collect();
         let scored: Vec<(usize, &String)> = candidates
             .iter()
-            .map(|p| (suffix_overlap(p, module_context), p))
+            .enumerate()
+            .map(|(i, p)| (suffix_overlap(&prefixes[i], module_context), p))
             .collect();
         let mut scored_sorted = scored;
         scored_sorted.sort_by_key(|b| std::cmp::Reverse(b.0));
 
-        // Among the highest-scoring candidates, prefer declared, then exported.
+        // Among the highest-scoring candidates, prefer declared, then
+        // exported, then the shallowest canonical path (fewest segments) so
+        // an import-bound alias one level up beats a deeper same-named
+        // descendant of the referring module. A zero score does not reject:
+        // when every candidate scores equally (including all-zero), the
+        // tie-break cascade still picks the best available reference.
         let max_score = scored_sorted.first().map(|(s, _)| *s).unwrap_or(0);
         let top: Vec<&String> = scored_sorted
             .iter()
@@ -411,6 +470,10 @@ impl TypeRegistry {
             .or_else(|| {
                 top.iter()
                     .find(|p| self.by_path.get(p.as_str()).is_some_and(|t| t.is_exported))
+            })
+            .or_else(|| {
+                top.iter()
+                    .min_by_key(|p| p.split("::").count())
             })
             .copied()
             .unwrap_or(top[0]);
@@ -441,7 +504,15 @@ impl TypeRegistry {
         }
         canonical.push_str("::");
         canonical.push_str(leaf);
-        self.declared.contains(&canonical) || self.declared_aliases.contains(&canonical)
+        if self.declared.contains(&canonical) || self.declared_aliases.contains(&canonical) {
+            return true;
+        }
+        // A mirrored module may register only a subset of its items (the leaves
+        // actually referenced from declared types). Any item that the registry
+        // knows about at this exact location belongs to a materialized mirror,
+        // so it must be emitted alongside them — otherwise its own references
+        // are never routed through the registry and dangle in the output.
+        self.by_path.contains_key(&canonical)
     }
 }
 
@@ -683,6 +754,26 @@ impl<'a> QualifierResolver<'a> {
                 return Some(child_mod);
             }
         }
+        // Case C: `lead` is the parent module's own name (the referring file is
+        // a direct child of the referenced module). E.g., `poison::Flag` seen
+        // from `sync/poison/mutex` where `poison` is the enclosing leaf-file
+        // module. The parent's leaf name equals `lead`.
+        let parent_parts: Vec<&str> = module_ctx.split('/').filter(|s| !s.is_empty()).collect();
+        if parent_parts.len() >= 2 {
+            let parent_leaf = parent_parts[parent_parts.len() - 2];
+            if parent_leaf == lead {
+                let parent_mod = parent_parts[..parent_parts.len() - 1].join("/");
+                if let Some(src) = self.source_module(&parent_mod) {
+                    if src
+                        .items
+                        .iter()
+                        .any(|i| i.name == leaf && i.kind.is_type_def())
+                    {
+                        return Some(parent_mod);
+                    }
+                }
+            }
+        }
         // Case B: `lead` is an import binding in the current file. Follow the
         // import target to a concrete module, then confirm `leaf` is defined.
         let cur = self.source_module(module_ctx)?;
@@ -903,7 +994,11 @@ impl<'a> QualifierResolver<'a> {
         let Ok(text) = std::fs::read_to_string(&abs) else {
             return None;
         };
-        for tgt in cfg_select_reexport_targets(&text, self.cfg) {
+        let mut targets = cfg_select_reexport_targets(&text, self.cfg);
+        if targets.is_empty() {
+            targets = cfg_if_reexport_targets(&text, self.cfg);
+        }
+        for tgt in targets {
             let sub = format!("{mod_path}/{tgt}");
             if let Some(src) = self.source_module(&sub) {
                 if src
@@ -972,7 +1067,11 @@ impl<'a> QualifierResolver<'a> {
             }
             let abs = self.lib_src.join(&file);
             if let Ok(text) = std::fs::read_to_string(&abs) {
-                let targets = cfg_select_reexport_targets(&text, self.cfg);
+                // Try both cfg_select! and cfg_if! platform selections.
+                let mut targets = cfg_select_reexport_targets(&text, self.cfg);
+                if targets.is_empty() {
+                    targets = cfg_if_reexport_targets(&text, self.cfg);
+                }
                 for tgt in targets {
                     let next = format!("{cur}/{tgt}");
                     if self.source_module(&next).is_some() {
@@ -1432,6 +1531,13 @@ fn rewrite_type(
     module_ctx: &str,
     guard: &LocalNameGuard<'_>,
 ) -> Type {
+    // Generic arguments are handled by `rewrite_path` (via
+    // `assemble_abs_path`, which recursively rewrites the last segment's args)
+    // and by `rewrite_generics` for declared-type emissions. Rewriting them a
+    // second time here would double-route already-absolute paths — e.g., the
+    // self-reference in `type Entry = RawEntry<Entry>` resolves to
+    // `crate::std::m::Entry`, and rewriting that again would mangle it. So
+    // only the type skeleton is walked; generic arg lists pass through intact.
     match ty {
         Type::Path(mut tp) => {
             if let Some(q) = &mut tp.qself {
@@ -1439,38 +1545,6 @@ fn rewrite_type(
             }
             tp.path = rewrite_path(tp.path, registry, module_ctx, guard);
             Type::Path(tp)
-        }
-        Type::Reference(mut tr) => {
-            tr.elem = Box::new(rewrite_type(*tr.elem, registry, module_ctx, guard));
-            Type::Reference(tr)
-        }
-        Type::Ptr(mut tp) => {
-            tp.elem = Box::new(rewrite_type(*tp.elem, registry, module_ctx, guard));
-            Type::Ptr(tp)
-        }
-        Type::Tuple(mut tt) => {
-            tt.elems = tt
-                .elems
-                .into_iter()
-                .map(|e| rewrite_type(e, registry, module_ctx, guard))
-                .collect();
-            Type::Tuple(tt)
-        }
-        Type::Slice(mut ts) => {
-            ts.elem = Box::new(rewrite_type(*ts.elem, registry, module_ctx, guard));
-            Type::Slice(ts)
-        }
-        Type::Array(mut ta) => {
-            ta.elem = Box::new(rewrite_type(*ta.elem, registry, module_ctx, guard));
-            Type::Array(ta)
-        }
-        Type::Paren(mut tp) => {
-            tp.elem = Box::new(rewrite_type(*tp.elem, registry, module_ctx, guard));
-            Type::Paren(tp)
-        }
-        Type::Group(mut tg) => {
-            tg.elem = Box::new(rewrite_type(*tg.elem, registry, module_ctx, guard));
-            Type::Group(tg)
         }
         other => other,
     }
@@ -1503,24 +1577,9 @@ fn rewrite_path(
     // import resolves it. Otherwise, rewrite to an absolute mirror path.
     if segs.len() == 2 && leading_colon.is_none() {
         if let Some(def_module) = registry.qualifier_route(module_ctx, &head) {
-            // Check if we've recorded a module-alias route for this qualifier in
-            // this module context. The key is slash-separated (e.g.,
-            // `sys/sync/mutex/pthread`), but `module_ctx` here is colon-separated
-            // (e.g., `sys::sync::mutex::pthread`), so normalize before looking up.
-            let slash_key = module_ctx.replace("::", "/");
-            let has_alias_import = registry
-                .module_alias_routes(&slash_key)
-                .iter()
-                .any(|(alias, _)| alias == &head);
-            if has_alias_import {
-                // Keep the original qualified path (e.g., `pal::Mutex`) — the
-                // alias import at the top of the file makes it resolvable.
-                return syn::Path {
-                    leading_colon,
-                    segments: segs.into_iter().collect(),
-                };
-            }
-            // No alias import recorded — rewrite to absolute mirror path.
+            // Always rewrite to an absolute mirror path. Even when a
+            // module-alias import is recorded, the user directive requires
+            // fully qualifying paths rather than relying on ambient imports.
             let leaf = segs[1].ident.to_string();
             let def_colons = def_module.replace('/', "::");
             let abs = format!("crate::{}::{def_colons}::{leaf}", registry.wrapper_mod());
@@ -1537,20 +1596,42 @@ fn rewrite_path(
             // Parsing failed unexpectedly; fall through to default resolution.
         }
     }
-    // Multi-segment, non-leading-colon paths are treated as module-relative
-    // references (e.g. `futex::SmallFutex` inside a file whose module is
-    // `sys::sync::mutex`). Resolve the full path against the registry so the
-    // reference can be routed to its mirror or original home. Single-segment
-    // paths fall through to the leaf-based resolution below.
-    if segs.len() > 1 && leading_colon.is_none() {
+    // Module-relative paths (both multi-segment qualifiers like
+    // `futex::SmallFutex` and bare import-bound names like `Root`) are
+    // resolved against the registry with the current module as context, so
+    // every aliased name unwraps to its fully qualifying mirror path instead
+    // of relying on an ambient `use` binding that may shadow or dangle.
+    // `Self` is never rewritten (it refers to the enclosing type).
+    if leading_colon.is_none() && head != "Self" {
+        // Local-first: if this bare name is a file-local type or a generic
+        // type parameter of the enclosing item, leave it untouched. Without
+        // this check, `resolve_module_relative` would route e.g. `Leaf` in
+        // `ForceResult<Leaf, Internal>` to a same-named marker type.
+        if segs.len() == 1 && guard.contains(&head) {
+            return syn::Path {
+                leading_colon,
+                segments: segs.into_iter().collect(),
+            };
+        }
         let all_segs: Vec<String> = segs.iter().map(|s| s.ident.to_string()).collect();
+        // Only claim the path when the resolver produced a routable target.
+        // `Some(Unknown)` / `Some(UndeclaredPrivate)` mean the name is not a
+        // known std type (primitive, generic parameter, external crate item) —
+        // those must fall through to the leaf-based pass below, which still
+        // unwraps nested generic arguments.
         if let Some(res) = registry.resolve_module_relative(&all_segs, module_ctx) {
-            return build_abs_path(res, registry, &segs, module_ctx, guard);
+            match res {
+                FieldRefResolution::Mirrored(_) | FieldRefResolution::Original(_) => {
+                    return build_abs_path(res, registry, &segs, module_ctx, guard, 0);
+                }
+                _ => {}
+            }
         }
     }
-    // Resolve the leading segment against the registry. `Self` is never
-    // rewritten (it refers to the enclosing type); everything else goes
-    // through the registry lookup with module context and the local-name guard.
+    // Fall back to leaf-based resolution for paths the module-relative
+    // resolver did not claim (leading-colon absolute paths, `Self`, and
+    // unknown names). The local-name guard keeps file-local types and generic
+    // parameters bare.
     let resolved: Option<FieldRefResolution> = if head == "Self" {
         None
     } else {
@@ -1588,14 +1669,20 @@ fn rewrite_path(
         Some(FieldRefResolution::UndeclaredPrivate(_))
         | Some(FieldRefResolution::Unknown(_))
         | None => {
-            // Not a routable reference — restore the original path unchanged.
-            // Unknown references include primitives, generic parameters, and
-            // types from crates we don't mirror. They are resolved through the
-            // preamble glob import (which re-exports from the builtin crates)
-            // or through the language prelude.
+            // Not a routable reference — keep the head as-is, but still unwrap
+            // any nested type arguments to their fully qualifying paths. An
+            // unknown head (a primitive, a generic parameter, or a type from a
+            // crate we don't mirror) may carry registered types in its generic
+            // args (e.g., `RawEntry<Entry>` where `Entry` is declared), and
+            // those must be absolute regardless of how the head resolves.
+            let mut kept = segs;
+            if let Some(last) = kept.last_mut() {
+                last.arguments =
+                    rewrite_generic_args(&last.arguments, registry, module_ctx, guard);
+            }
             return syn::Path {
                 leading_colon,
-                segments: segs.into_iter().collect(),
+                segments: kept.into_iter().collect(),
             };
         }
     };
@@ -1636,6 +1723,7 @@ fn build_abs_path(
     segs: &[syn::PathSegment],
     module_ctx: &str,
     guard: &LocalNameGuard<'_>,
+    assoc_tail: usize,
 ) -> syn::Path {
     let Some(abs_path) = abs_path_for(&res, registry) else {
         // Should not happen for Mirrored/Original; defensive fallback.
@@ -1644,7 +1732,7 @@ fn build_abs_path(
             segments: segs.iter().cloned().collect(),
         };
     };
-    assemble_abs_path(abs_path, segs, 0, registry, module_ctx, guard)
+    assemble_abs_path(abs_path, segs, assoc_tail, registry, module_ctx, guard)
 }
 
 fn build_abs_path_from_str(
@@ -1693,20 +1781,16 @@ fn assemble_abs_path(
         .collect();
     let last_idx = all_parts.len().saturating_sub(1);
     // Determine which original segment's generic args belong on the last
-    // emitted segment. For single-segment heads (assoc_tail < segs.len()),
-    // the head segment's args carry the generics. For fully-consumed
-    // multi-segment paths (assoc_tail == 0, e.g. `marker::Mut<'a>` →
-    // `crate::std::collections::btree::node::marker::Mut`), the LAST original
-    // segment carried the generics, so use its args instead.
-    // Determine which original segment's generic args belong on the last
     // emitted segment. The last emitted segment is either:
-    //   (a) the head segment itself (single-segment path, assoc_tail >= 1), or
-    //   (b) a trailing associated-item segment from `segs`.
-    // In case (b), the last original segment carried the generics, so use its
-    // args. In case (a), use `segs[0]`'s args (the conventional behavior).
+    //   (a) a trailing associated-item segment chained from `segs` — in which
+    //       case that segment carried the generics, or
+    //   (b) the resolved type itself (within the abs_path string). Then the
+    //       original *last* segment carried the generics: for a bare name
+    //       (`Box<T>`) that is `segs[0]`; for a fully-consumed multi-segment
+    //       path (`map::OccupiedEntry<'a, T, V, A>` with assoc_tail == 0) it
+    //       is the leaf, whose qualifier segments contributed no args.
     let n_parts = all_parts.len();
     let orig_last_idx = n_parts.saturating_sub(1);
-    // Map the last emitted part back to its source segment index.
     // Parts [0..abs_parts_len) come from the abs_path string; parts
     // [abs_parts_len..) are chained from segs starting at (segs.len()-assoc_tail).
     let abs_parts_len = abs_path.split("::").filter(|p| !p.is_empty()).count();
@@ -1715,8 +1799,11 @@ fn assemble_abs_path(
         let chain_offset = orig_last_idx - abs_parts_len;
         let seg_start = segs.len().saturating_sub(assoc_tail);
         seg_start + chain_offset
+    } else if assoc_tail == 0 && segs.len() > 1 {
+        // Fully-consumed multi-segment path → the leaf carried the args.
+        segs.len() - 1
     } else {
-        // Last part is within the abs_path → use segs[0]'s args.
+        // Bare-name head → `segs[0]` carries the args.
         0
     };
 
@@ -1888,6 +1975,8 @@ const PREAMBLE_CORE_CONTENT: &str = r#"// Auto-generated prelude by rustyfill-sy
   pub use ::__rustyfill_builtin_core::ptr::NonNull;
   #[allow(unused_imports)]
   pub use ::__rustyfill_builtin_core::slice::SliceIndex;
+  #[allow(unused_imports)]
+  pub use ::__rustyfill_builtin_core::sync::atomic::{AtomicU8, AtomicU16, AtomicU32, AtomicU64, AtomicUsize, AtomicBool, AtomicPtr};
   #[allow(unused_imports)]
   pub use crate::std::boxed::Box;
   #[allow(unused_imports)]
@@ -2192,21 +2281,31 @@ pub fn emit_parsed_items(
     let guard = LocalNameGuard::new(Some(&local_names));
 
     for item in items {
-        // Constants are always emitted: file-level consts (e.g., `const B` in
-        // btree/node.rs) are referenced by bare name from the data structures
-        // that follow them, so dropping one would leave its dependents dangling.
-        // They carry no cross-module surface, so they're safe to keep wholesale.
+        // Constants are emitted when their type annotation resolves to a
+        // declared type in this module (or when the const has no type
+        // annotation). Consts whose type references an undeclared struct
+        // (e.g., `ONCE_INIT: Once` where `Once` isn't mirrored) are skipped
+        // to avoid dangling references.
         let is_const = item.kind == ItemKind::Const;
-        // For data structures, restrict output to types explicitly declared in
-        // the loader spec. This keeps peripheral public items that live
-        // alongside the core data structures (iterators, cursors, range views,
-        // set-algebra engines, …) out of the mirrored tree unless they are
-        // needed by the polyfill. Any reference to such an undeclared type
-        // routes back to the original builtin crate instead.
-        if !is_const
-            && !config
-                .type_registry
-                .is_declared_in_module(config.lib_name, module_path, &item.name)
+        if is_const {
+            // Skip consts whose type annotation names a non-primitive type
+            // that is not declared in this module. This catches cases like
+            // `ONCE_INIT: Once` where `Once` isn't mirrored. Primitive types
+            // (usize, u32, bool, etc.) are allowed through since they're
+            // language builtins available everywhere.
+            if let Some(type_name) = extract_const_type_name(item) {
+                if !is_primitive_type(&type_name) {
+                    let is_declared_here = config
+                        .type_registry
+                        .is_declared_in_module(config.lib_name, module_path, &type_name);
+                    if !is_declared_here {
+                        continue;
+                    }
+                }
+            }
+        } else if !config
+            .type_registry
+            .is_declared_in_module(config.lib_name, module_path, &item.name)
         {
             continue;
         }
@@ -2373,7 +2472,10 @@ fn find_declared_alias_info<'a>(
 /// Emit a declared type alias whose RHS has been routed through the registry.
 /// The alias's own generic parameters (e.g., `<K, V>` on `BoxedNode<K, V>`)
 /// are recovered from the original item's full tokens, since the stored RHS
-/// alone does not carry them.
+/// alone does not carry them. Aliased names are unwrapped to their fully
+/// qualifying paths, including recursive self-references (`pub type Entry =
+/// RawEntry<Entry>` expands `Entry` to the alias's own absolute mirror path),
+/// so no reference in the emitted tree depends on an ambient import binding.
 fn emit_declared_type_alias(
     name: &str,
     rhs: &TokenStream,
@@ -2383,6 +2485,28 @@ fn emit_declared_type_alias(
     guard: &LocalNameGuard<'_>,
     out: &mut TokenStream,
 ) {
+    // Per the design directive that aliased names are unwrapped to their fully
+    // qualifying paths, a recursive alias (`type Entry = RawEntry<Entry>`)
+    // must expand its self-reference to the alias's own absolute mirror path.
+    // The caller's guard marks every file-local type name — including this
+    // alias — as local, which would otherwise leave the self-reference bare.
+    // Drop just this name so the RHS routes through the registry like any
+    // other declared reference.
+    let stripped_names: Vec<&str> = guard
+        .file_local
+        .unwrap_or(&[])
+        .iter()
+        .copied()
+        .filter(|n| *n != name)
+        .collect();
+    let self_stripped_guard = LocalNameGuard {
+        file_local: if stripped_names.is_empty() {
+            None
+        } else {
+            Some(&stripped_names)
+        },
+        generics: guard.generics.clone(),
+    };
     // Parse the original alias to recover its generic parameters and bounds.
     let original_node: syn::ItemType = match syn::parse2(item_full_tokens.clone()) {
         Ok(n) => n,
@@ -2395,7 +2519,11 @@ fn emit_declared_type_alias(
                     return;
                 }
             };
-            let routed = rewrite_type(ty, registry, module_ctx, guard);
+            // The plain rewriter is safe here: nested generic args are
+            // rewritten exactly once per path — either by `assemble_abs_path`
+            // (routable heads) or by the unknown-head fallback in
+            // `rewrite_path` (unroutable heads) — so no double-routing occurs.
+            let routed = rewrite_type(ty, registry, module_ctx, &self_stripped_guard);
             let mut ts = TokenStream::new();
             ts.extend(
                 format!("type {} = ", name)
@@ -2420,7 +2548,10 @@ fn emit_declared_type_alias(
             return;
         }
     };
-    let routed = rewrite_type(ty, registry, module_ctx, guard);
+    // The plain rewriter is safe here: nested generic args are rewritten
+    // exactly once per path — either by `assemble_abs_path` (routable heads)
+    // or by the unknown-head fallback in `rewrite_path` (unroutable heads).
+    let routed = rewrite_type(ty, registry, module_ctx, &self_stripped_guard);
 
     let mut cloned = original_node;
     *cloned.ty = routed;
@@ -3250,15 +3381,9 @@ pub fn emit_binding_file(output_path: &Path, items: &[ParsedItem], config: &Emit
             }
         }
     }
-    for sib in config.sibling_modules {
-        if !imported_names.contains(sib) {
-            all_uses.push(format!("#[allow(unused_imports)] use super::{sib};"));
-        }
-    }
-
     // Compute the module path from the relative file path
     // (e.g., "collections/btree/set.rs" -> "collections::btree::set").
-    let module_path = config
+    let file_module_path = config
         .relative_file_path
         .strip_suffix(".rs")
         .unwrap_or(config.relative_file_path)
@@ -3266,7 +3391,34 @@ pub fn emit_binding_file(output_path: &Path, items: &[ParsedItem], config: &Emit
         .unwrap_or(config.relative_file_path.strip_suffix(".rs").unwrap_or(""))
         .replace('/', "::");
 
-    let mut content = emit_parsed_items(items, config, &preamble_use_path, &all_uses, &module_path);
+    // Sibling submodule imports are absolute (`crate::std::<parent>::{sib}`)
+    // so they resolve regardless of include! nesting depth. The manifest merges
+    // all libraries into a single `crate::std::` wrapper, so every import is
+    // rooted there. Top-level files (empty `file_module_path`) have no parent
+    // module to qualify through — their siblings live directly under the
+    // wrapper root, so emit `crate::std::{sib}` there instead of a malformed
+    // empty segment.
+    let parent_module = file_module_path.rsplit_once("::").map(|(p, _)| p).unwrap_or("");
+    for sib in config.sibling_modules {
+        if imported_names.contains(sib) {
+            continue;
+        }
+        let path = if parent_module.is_empty() {
+            format!("crate::{WRAPPER_MOD}::{sib}")
+        } else {
+            format!("crate::{WRAPPER_MOD}::{parent_module}::{sib}")
+        };
+        all_uses.push(format!("#[allow(unused_imports)] use {path};"));
+    }
+
+    // Filter out imports whose bound name is not referenced by any item that
+    // will actually be emitted (consts + spec-declared data types). This
+    // prevents emitting `use crate::std::...::search;` when no emitted type
+    // in this file references `search`.
+    let all_uses = filter_used_imports(all_uses, items, config, &file_module_path);
+
+    let mut content =
+        emit_parsed_items(items, config, &preamble_use_path, &all_uses, &file_module_path);
 
     // Append manual trait impls for types whose derives were stripped or
     // whose inner types lack the required impls in our mirrored tree.
@@ -3280,6 +3432,270 @@ pub fn emit_binding_file(output_path: &Path, items: &[ParsedItem], config: &Emit
     std::fs::write(output_path, content)
         .unwrap_or_else(|e| panic!("Failed to write {}: {}", output_path.display(), e));
     true
+}
+
+/// Returns true if the given type name is a Rust primitive or builtin that
+/// doesn't need to be declared in the registry.
+fn is_primitive_type(name: &str) -> bool {
+    matches!(
+        name,
+        "bool"
+            | "char"
+            | "str"
+            | "f16"
+            | "f32"
+            | "f64"
+            | "i8"
+            | "i16"
+            | "i32"
+            | "i64"
+            | "i128"
+            | "isize"
+            | "u8"
+            | "u16"
+            | "u32"
+            | "u64"
+            | "u128"
+            | "usize"
+            | "()"
+            | "_"
+    )
+}
+
+/// Extract the type annotation's head identifier from a const item's token
+/// stream. For `pub const ONCE_INIT: Once = ...` returns `Some("Once")`.
+/// Returns `None` when the const has no type annotation or parsing fails.
+fn extract_const_type_name(item: &ParsedItem) -> Option<String> {
+    let ts_str = item.full_tokens.to_string();
+    // Find the `const` keyword to anchor our search past any attributes.
+    let const_kw_pos = ts_str.find("const")?;
+    // After "const", find the const name (first identifier), then look for
+    // `: TYPE =` pattern.
+    let after_const = &ts_str[const_kw_pos + 5..];
+    // Skip whitespace to get the const name.
+    let name_start = after_const.find(|c: char| c.is_alphabetic() || c == '_')?;
+    let name_end = after_const[name_start..]
+        .find(|c: char| !(c.is_alphanumeric() || c == '_'))
+        .unwrap_or(after_const.len() - name_start);
+    let _name = &after_const[name_start..name_start + name_end];
+    // After the name, expect optional whitespace then `:` then type then `=`.
+    let after_name = &after_const[name_start + name_end..];
+    let colon_offset = after_name.find(':')?;
+    let after_colon = &after_name[colon_offset + 1..];
+    // The type extends until the next top-level `=`. Since token streams from
+    // syn don't nest `=` inside identifiers, the first `=` after the colon
+    // that's not inside angle brackets is our target.
+    let mut depth = 0usize;
+    let mut eq_idx = None;
+    for (i, ch) in after_colon.char_indices() {
+        match ch {
+            '<' => depth += 1,
+            '>' => depth = depth.saturating_sub(1),
+            '=' if depth == 0 => {
+                eq_idx = Some(i);
+                break;
+            }
+            _ => {}
+        }
+    }
+    let eq_idx = eq_idx?;
+    let type_text = after_colon[..eq_idx].trim();
+    if type_text.is_empty() {
+        return None;
+    }
+    // Take the first identifier (handles generics like `Option<Once>` → "Option").
+    let head: String = type_text
+        .chars()
+        .take_while(|c| c.is_alphanumeric() || *c == '_')
+        .collect();
+    if head.is_empty() {
+        None
+    } else {
+        Some(head)
+    }
+}
+
+/// Determine which use statements are needed by the items that will actually
+/// be emitted. An import is kept when its locally-bound name appears as an
+/// identifier token in the token stream of any emitted item (constants are
+/// always emitted; data types are emitted only when spec-declared). Glob
+/// imports and imports whose bound name cannot be determined are always kept.
+fn filter_used_imports(
+    uses: Vec<String>,
+    items: &[ParsedItem],
+    config: &EmitConfig,
+    module_path: &str,
+) -> Vec<String> {
+    // Build a corpus of code-only text from items that will be emitted.
+    // Attributes (doc comments, repr, derive, etc.) are stripped via a
+    // bracket-depth state machine so their string-literal contents never
+    // pollute the identifier set.
+    let mut corpus = String::new();
+    for item in items {
+        let is_const = item.kind == ItemKind::Const;
+        if !is_const
+            && !config
+                .type_registry
+                .is_declared_in_module(config.lib_name, module_path, &item.name)
+        {
+            continue;
+        }
+        let ts_str = item.full_tokens.to_string();
+        corpus.push_str(&strip_attrs_from_token_text(&ts_str));
+        corpus.push('\n');
+    }
+
+    uses.into_iter()
+        .filter(|line| {
+            let t = line.trim();
+            if !(t.starts_with("use ") || t.starts_with("pub use ")) {
+                return true; // Not an import line — keep.
+            }
+            match extract_bound_name(t) {
+                Some(bound) => contains_code_identifier(&corpus, &bound),
+                None => true, // Glob or undeterminable — keep.
+            }
+        })
+        .collect()
+}
+
+/// Strip `#[...]` and `#![...]` attribute groups from a token-stream string
+/// representation. Uses a bracket-depth counter: when we see `#[` at depth 0,
+/// we skip until the matching `]`. This removes doc comments, derive macros,
+/// cfg gates, and all other attributes whose contents might contain words
+/// that look like identifiers.
+/// Strip `#[...]` and `#![...]` attribute groups from a token-stream string
+/// representation. The proc-macro2 `Display` impl renders attributes as
+/// `# [ ... ]` (space between `#` and `[`), so we account for optional
+/// whitespace and an optional `!` between the pound sign and the bracket.
+fn strip_attrs_from_token_text(input: &str) -> String {
+    let chars: Vec<char> = input.chars().collect();
+    let n = chars.len();
+    let mut out = String::with_capacity(n);
+    let mut i = 0;
+    while i < n {
+        // Detect attribute start: `#` followed by optional spaces, optional
+        // `!`, optional spaces, then `[`.
+        if chars[i] == '#' {
+            let mut j = i + 1;
+            // Skip whitespace.
+            while j < n && chars[j] == ' ' {
+                j += 1;
+            }
+            // Optional `!` (for inner attrs `#![...]`).
+            if j < n && chars[j] == '!' {
+                j += 1;
+                while j < n && chars[j] == ' ' {
+                    j += 1;
+                }
+            }
+            // Must be followed by `[`.
+            if j < n && chars[j] == '[' {
+                // Find matching closing bracket via depth counting.
+                let mut depth = 0usize;
+                let mut k = j;
+                while k < n {
+                    match chars[k] {
+                        '[' => depth += 1,
+                        ']' => {
+                            depth -= 1;
+                            if depth == 0 {
+                                break;
+                            }
+                        }
+                        _ => {}
+                    }
+                    k += 1;
+                }
+                i = k + 1; // Skip past the closing ']'.
+                out.push(' ');
+                continue;
+            }
+        }
+        out.push(chars[i]);
+        i += 1;
+    }
+    out
+}
+
+/// Check whether `name` appears as a standalone code identifier in `corpus`.
+/// Matches only when surrounded by non-identifier characters (word boundary).
+fn contains_code_identifier(corpus: &str, name: &str) -> bool {
+    if name.is_empty() {
+        return false;
+    }
+    let name_len = name.len();
+    for (idx, _) in corpus.match_indices(name) {
+        let before_ok = idx == 0
+            || !corpus[..idx]
+                .chars()
+                .next_back()
+                .map(|c| c.is_ascii_alphanumeric() || c == '_')
+                .unwrap_or(false);
+        let after_start = idx + name_len;
+        if after_start >= corpus.len() {
+            if before_ok {
+                return true;
+            }
+            continue;
+        }
+        let after_ok = !corpus[after_start..]
+            .chars()
+            .next()
+            .map(|c| c.is_ascii_alphanumeric() || c == '_')
+            .unwrap_or(false);
+        if before_ok && after_ok {
+            return true;
+        }
+    }
+    false
+}
+
+/// Extract the locally-bound identifier from a use statement line.
+/// Handles: `use a::b::C;` → "C", `use a::b as c;` → "c",
+/// `use a::b::*;` → None (glob: can't enumerate names),
+/// `pub use ...` variants. Returns None when the bound can't be determined.
+fn extract_bound_name(line: &str) -> Option<String> {
+    let stripped = line
+        .trim()
+        .strip_prefix("#[allow(unused_imports)]")
+        .unwrap_or(line)
+        .trim();
+    let body = stripped
+        .strip_prefix("pub use ")
+        .or_else(|| stripped.strip_prefix("use "))?;
+    let body = body.strip_suffix(';').unwrap_or(body);
+
+    // Glob import — no single bound name.
+    if body.ends_with("::*") {
+        return None;
+    }
+
+    // Aliased import: `... as Name`
+    if let Some((_, alias)) = body.rsplit_once(" as ") {
+        let name = alias.trim();
+        if is_ident(name) {
+            return Some(name.to_string());
+        }
+        return None;
+    }
+
+    // Plain import: last path segment is the bound name.
+    let last_seg = body.rsplit("::").next().unwrap_or(body).trim();
+    if is_ident(last_seg) {
+        Some(last_seg.to_string())
+    } else {
+        None
+    }
+}
+
+fn is_ident(s: &str) -> bool {
+    let mut chars = s.chars();
+    match chars.next() {
+        Some(c) if c.is_ascii_alphabetic() || c == '_' => {}
+        _ => return false,
+    }
+    chars.all(|c| c.is_ascii_alphanumeric() || c == '_')
 }
 
 /// Append hand-written trait impls that the mirrored types need but can't
@@ -3306,26 +3722,29 @@ pub fn emit_preamble_module(out_dir: &Path, lib_name: &str) -> String {
     filename
 }
 
-/// Emit a standalone binding file for a spec-declared known external type at its
-/// canonical module location.
+/// Emit a standalone binding file carrying the stub definitions of one or more
+/// spec-declared known external types that share a canonical module.
 ///
-/// The file is written to `<out_dir>/<module_path>.rs` where `module_path` is
-/// the known type's path with the leaf stripped (e.g. `sync::atomic::Atomic` →
-/// `sync/atomic.rs`). It carries the correct `super::` hop count back to the
-/// preamble plus the verbatim stub definition from the spec. This makes the
-/// type resolvable at its original location — references route here through the
-/// registry rather than to a bare prelude name.
+/// All `kts` must belong to the same enclosing module (the caller groups them
+/// via [`pipeline`](super::pipeline)). The file is written to
+/// `<out_dir>/<module_path>.rs` where `module_path` is the shared module path
+/// (e.g. `sync/atomic.rs`). It carries the correct `super::` hop count back to
+/// the preamble followed by every stub definition concatenated, so multiple
+/// known types in one module (e.g. `Atomic`, `AtomicBool`, `AtomicPtr` all in
+/// `sync::atomic`) coexist instead of clobbering each other. References route
+/// here through the registry rather than to a bare prelude name.
 ///
 /// Returns the relative file path (e.g. `"sync/atomic.rs"`) so the caller can
-/// register it in the manifest, or `None` if the module path was empty.
-pub fn emit_known_type_stub(
+/// register it in the manifest, or `None` if the group was empty.
+pub fn emit_known_type_stubs(
     out_dir: &Path,
-    kt: &crate::loader_spec::KnownExternalType,
+    kts: &[&crate::loader_spec::KnownExternalType],
 ) -> Option<String> {
+    let first = kts.first()?;
     // Module path = everything before the leaf, converted to slash form. A
     // known type must live in at least one module (e.g. `sync::atomic`), so a
     // bare single-segment path has no enclosing module and is rejected.
-    let segments: Vec<&str> = kt.path.split("::").collect();
+    let segments: Vec<&str> = first.path.split("::").collect();
     if segments.len() < 2 {
         return None;
     }
@@ -3348,8 +3767,10 @@ pub fn emit_known_type_stub(
         ));
     }
     content.push('\n');
-    content.push_str(&kt.definition);
-    content.push('\n');
+    for kt in kts {
+        content.push_str(&kt.definition);
+        content.push('\n');
+    }
 
     let path = out_dir.join(&rel_path);
     if let Some(parent) = path.parent() {
@@ -3798,7 +4219,7 @@ mod known_type_stub_tests {
             path: "sync::atomic::Atomic".to_string(),
             definition: "#[repr(transparent)] pub struct Atomic<T>(X<T>);".to_string(),
         };
-        let rel = emit_known_type_stub(&tmp.0, &kt).expect("should emit");
+        let rel = emit_known_type_stubs(&tmp.0, &[&kt]).expect("should emit");
         assert_eq!(rel, "sync/atomic.rs");
 
         let content = std::fs::read_to_string(tmp.0.join("sync/atomic.rs")).unwrap();
@@ -3822,6 +4243,181 @@ mod known_type_stub_tests {
             path: "Foo".to_string(),
             definition: "pub struct Foo;".to_string(),
         };
-        assert!(emit_known_type_stub(&tmp.0, &kt).is_none());
+        assert!(emit_known_type_stubs(&tmp.0, &[&kt]).is_none());
     }
+}
+
+#[cfg(test)]
+mod module_relative_tie_break_tests {
+    use super::*;
+
+    /// `Root<K, V>` seen from `collections/btree/map`: the bare name has two
+    /// `Root` seen from `collections::btree::map`: when a same-named item
+    /// lives in a child module of the referring module (`map::inner::Root`)
+    /// and another sits in a sibling module (`node::Root`), the child-module
+    /// item wins — it is textually closer to the reference site, matching
+    /// how a `mod inner;` declaration shadows imported names at the use site.
+    #[test]
+    fn prefers_child_module_item_over_sibling_on_proximity_tie() {
+        let mut registry = TypeRegistry::empty();
+        // Closer candidate: an item inside a child module of the context.
+        registry.register(
+            "alloc::collections::btree::map::inner::Root",
+            ItemVisibility::Public,
+            true,
+            "inner.rs",
+        );
+        // Farther candidate: an alias in a sibling module, bound via import.
+        registry.register(
+            "alloc::collections::btree::node::Root",
+            ItemVisibility::Public,
+            true,
+            "node.rs",
+        );
+
+        let res = registry.resolve_module_relative(
+            &["Root".to_string()],
+            "collections::btree::map",
+        );
+        match res {
+            Some(FieldRefResolution::Mirrored(p)) | Some(FieldRefResolution::Original(p)) => {
+                assert_eq!(p, "alloc::collections::btree::map::inner::Root");
+            }
+            other => panic!(
+                "expected a routed resolution to the child-module item, got {:?}",
+                other
+            ),
+        }
+    }
+
+    /// With no competing candidate at all, the sole candidate is chosen as
+    /// before — the tie-break only applies when scores are equal.
+    #[test]
+    fn keeps_sole_candidate_when_uncontested() {
+        let mut registry = TypeRegistry::empty();
+        registry.register(
+            "alloc::collections::btree::node::marker::Owned",
+            ItemVisibility::Public,
+            true,
+            "marker/mod.rs",
+        );
+
+        let res = registry.resolve_module_relative(
+            &["Owned".to_string()],
+            "collections::btree::node::marker",
+        );
+        match res {
+            Some(FieldRefResolution::Mirrored(p)) | Some(FieldRefResolution::Original(p)) => {
+                assert_eq!(p, "alloc::collections::btree::node::marker::Owned");
+            }
+            other => panic!("expected a routed resolution, got {:?}", other),
+        }
+    }
+
+    /// A declared candidate wins the tie outright, regardless of depth.
+    #[test]
+    fn declared_candidate_wins_tie_regardless_of_depth() {
+        let mut registry = TypeRegistry::empty();
+        registry.register(
+            "alloc::a::b::c::inner::Thing",
+            ItemVisibility::Public,
+            true,
+            "inner.rs",
+        );
+        registry.insert_declared("alloc::a::b::Thing", "b.rs");
+
+        let res = registry.resolve_module_relative(
+            &["Thing".to_string()],
+            "a::b::c",
+        );
+        match res {
+            Some(FieldRefResolution::Mirrored(p)) => {
+                assert_eq!(p, "alloc::a::b::Thing");
+            }
+            other => panic!("expected Mirrored to declared path, got {:?}", other),
+        }
+    }
+}
+
+#[cfg(test)]
+mod declared_alias_emission_tests {
+    use super::*;
+
+    fn make_registry(alias_canonical: &str, rhs: &str) -> TypeRegistry {
+        let mut registry = TypeRegistry::empty();
+        registry.insert_declared(alias_canonical, "node.rs");
+        registry.set_alias_rhs(
+            alias_canonical,
+            rhs.parse::<TokenStream>().unwrap(),
+        );
+        registry
+    }
+
+    /// Per the design directive that aliased names are unwrapped to their fully
+    /// qualifying paths, a recursive alias (`pub type Entry = RawEntry<Entry>`)
+    /// must expand its self-reference to the alias's own absolute mirror path
+    /// rather than leaving a bare name behind.
+    #[test]
+    fn recursive_alias_expands_self_reference_to_absolute_path() {
+        let registry = make_registry("alloc::m::Entry", "RawEntry<Entry>");
+        let item_full: TokenStream =
+            "pub type Entry<K, V> = RawEntry<Entry<K, V>>;".parse().unwrap();
+        let rhs: TokenStream = "RawEntry<Entry>".parse().unwrap();
+        let guard = LocalNameGuard::new(None);
+        let mut out = TokenStream::new();
+        emit_declared_type_alias(
+            "Entry",
+            &rhs,
+            &item_full,
+            &registry,
+            "m",
+            &guard,
+            &mut out,
+        );
+        let text = out.to_string();
+        assert!(
+            text.contains("crate :: std :: m :: Entry"),
+            "self reference must unwrap to the absolute mirror path, got: {text}"
+        );
+    }
+
+    /// Non-self references in the RHS still route through the registry when
+    /// the referenced type is declared (e.g., `Root` → mirrored `NodeRef`).
+    #[test]
+    fn alias_rhs_non_self_references_are_routed() {
+        let mut registry = make_registry("alloc::m::Root", "NodeRef<Owned, K, V>");
+        registry.insert_declared("alloc::m::NodeRef", "node.rs");
+        let item_full: TokenStream =
+            "pub type Root<K, V> = NodeRef<Owned, K, V>;".parse().unwrap();
+        let rhs: TokenStream = "NodeRef<Owned, K, V>".parse().unwrap();
+        let guard = LocalNameGuard::new(None);
+        let mut out = TokenStream::new();
+        emit_declared_type_alias(
+            "Root",
+            &rhs,
+            &item_full,
+            &registry,
+            "m",
+            &guard,
+            &mut out,
+        );
+        let text = out.to_string();
+        assert!(
+            text.contains("crate :: std :: m :: NodeRef"),
+            "RHS reference should route to the mirror, got: {text}"
+        );
+    }
+}
+
+
+
+
+
+
+#[cfg(test)]
+mod dbg_const_extract {
+    use super::*;
+
+    #[test]
+    fn noop() {}
 }

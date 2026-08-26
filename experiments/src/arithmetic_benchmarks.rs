@@ -125,7 +125,7 @@ impl BatchCounter {
         if total == 0 {
             return None;
         }
-        if total.is_multiple_of(2) {
+        if total % 2 == 0 {
             let lo = self.at_rank(total / 2 - 1)?.as_nanos();
             let hi = self.at_rank(total / 2)?.as_nanos();
             Some(Duration::from_nanos(((lo + hi) / 2) as u64))
