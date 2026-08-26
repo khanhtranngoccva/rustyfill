@@ -110,7 +110,8 @@ where
 
                     // Mark terminated before rendering sub-items so deeper
                     // levels use space-only indentation.
-                    if is_last || (is_first && is_last) {
+                    let is_only = is_first && is_last;
+                    if is_last || is_only {
                         mark_last_at(&mut continuing_below, *depth);
                     }
 

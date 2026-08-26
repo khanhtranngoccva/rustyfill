@@ -258,9 +258,9 @@ const fn assert_vacant_layout_compat<K: Ord, V>() {
 /// # Safety
 /// - Caller must ensure `assert_vacant_layout_compat` passes for these `K, V`.
 /// - After calling, the original `VacantEntry` must not be used or dropped.
-unsafe fn extract_to_sys<'a, K: Ord, V>(
-    ve: VacantEntry<'a, K, V>,
-) -> sys::SysVacantEntry<'a, K, V, ()> {
+unsafe fn extract_to_sys<K: Ord, V>(
+    ve: VacantEntry<'_, K, V>,
+) -> sys::SysVacantEntry<'_, K, V, ()> {
     assert_vacant_layout_compat::<K, V>();
     let sys_ve = unsafe { mem::transmute_copy(&ve) };
     mem::forget(ve);

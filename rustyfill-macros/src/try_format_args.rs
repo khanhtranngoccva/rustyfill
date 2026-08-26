@@ -358,12 +358,10 @@ impl TryFormatArgsInput {
                         #name_ident = #expr_ts
                     });
                 }
+            } else if let Some(wrapped) = wrapper_call {
+                formatted_args.push(wrapped);
             } else {
-                if let Some(wrapped) = wrapper_call {
-                    formatted_args.push(wrapped);
-                } else {
-                    formatted_args.push(expr_ts.clone());
-                }
+                formatted_args.push(expr_ts.clone());
             }
         }
 

@@ -244,7 +244,7 @@ struct Variant<'f, R> {
 /// drifting conditions within each cycle, so the drift cancels out of their
 /// pairwise ratios. This is what makes comparisons like wrapping-vs-saturating
 /// trustworthy enough to settle whether a gap is real.
-fn bench_set<'f, R>(mut variants: Vec<Variant<'f, R>>, a: u32, b: u32) -> Vec<BenchmarkResult>
+fn bench_set<R>(mut variants: Vec<Variant<'_, R>>, a: u32, b: u32) -> Vec<BenchmarkResult>
 where
     R: Copy,
 {

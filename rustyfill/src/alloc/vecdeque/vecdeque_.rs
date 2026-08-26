@@ -54,7 +54,7 @@ impl<'a, T> TruncateGuard<'a, T> {
     }
 }
 
-impl<'a, T> Drop for TruncateGuard<'a, T> {
+impl<T> Drop for TruncateGuard<'_, T> {
     fn drop(&mut self) {
         self.deque.truncate(self.len_before);
     }

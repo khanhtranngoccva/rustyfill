@@ -105,7 +105,7 @@ impl<'a, T> TruncateGuard<'a, T> {
     }
 }
 
-impl<'a, T> Drop for TruncateGuard<'a, T> {
+impl<T> Drop for TruncateGuard<'_, T> {
     fn drop(&mut self) {
         while self.list.len() > self.len_before {
             self.list.pop_back();

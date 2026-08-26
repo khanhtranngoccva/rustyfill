@@ -114,8 +114,8 @@ fn extract_inner_cfg_predicate(source: &str) -> String {
     for line in cleaned.lines() {
         let trimmed = line.trim();
         if let Some(rest) = trimmed.strip_prefix("#![cfg(") {
-            if rest.ends_with(')') {
-                return format!("#![cfg({})]", &rest[..rest.len() - 1]);
+            if let Some(suffix) = rest.strip_suffix(')') {
+                return format!("#![cfg({})]", suffix);
             }
         }
     }

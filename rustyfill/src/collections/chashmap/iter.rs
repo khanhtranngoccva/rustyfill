@@ -211,7 +211,7 @@ where
     }
 }
 
-impl<'a, K, V, S: BuildHasher> Stallable for Iter<'a, K, V, S>
+impl<K, V, S: BuildHasher> Stallable for Iter<'_, K, V, S>
 where
     K: Eq + Hash,
 {
@@ -362,20 +362,18 @@ where
     }
 }
 
-impl<'a, K, V, S: BuildHasher> Stallable for IterMut<'a, K, V, S>
+impl<K, V, S: BuildHasher> Stallable for IterMut<'_, K, V, S>
 where
     K: Eq + Hash,
 {
     fn unstall(&mut self) -> bool {
         if let Some(ref mut li) = self.current {
             li.pending_bucket.take().is_some()
+        } else if self.shard_idx < self.map.shard_count() {
+            self.advance_shard();
+            true
         } else {
-            if self.shard_idx < self.map.shard_count() {
-                self.advance_shard();
-                true
-            } else {
-                false
-            }
+            false
         }
     }
 

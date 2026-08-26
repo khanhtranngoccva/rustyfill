@@ -516,7 +516,7 @@ pub trait TryDashMap<K, V, S = RandomState>: Sized {
     ///
     /// Blocks waiting for the shard lock. Returns [`TryReserveError`] if the
     /// shard cannot grow.
-    fn try_entry<'a>(&'a self, key: K) -> Result<Entry<'a, K, V>, TryReserveError>
+    fn try_entry(&self, key: K) -> Result<Entry<'_, K, V>, TryReserveError>
     where
         K: Eq + Hash;
 
@@ -524,7 +524,7 @@ pub trait TryDashMap<K, V, S = RandomState>: Sized {
     ///
     /// Returns `Err(TryDashMapNonblockError::Locked)` if the shard is
     /// currently locked by another writer.
-    fn try_entry_nonblock<'a>(&'a self, key: K) -> Result<Entry<'a, K, V>, TryDashMapNonblockError>
+    fn try_entry_nonblock(&self, key: K) -> Result<Entry<'_, K, V>, TryDashMapNonblockError>
     where
         K: Eq + Hash;
 
@@ -532,15 +532,15 @@ pub trait TryDashMap<K, V, S = RandomState>: Sized {
     ///
     /// Use this when you need the key available in the error path (e.g. for
     /// give-back insertion variants) so as to not require `K: Clone`.
-    fn try_entry_give_back<'a>(&'a self, key: K) -> Result<Entry<'a, K, V>, (K, TryReserveError)>
+    fn try_entry_give_back(&self, key: K) -> Result<Entry<'_, K, V>, (K, TryReserveError)>
     where
         K: Eq + Hash;
 
     /// Non-blocking variant of [`Self::try_entry_give_back`].
-    fn try_entry_give_back_nonblock<'a>(
-        &'a self,
+    fn try_entry_give_back_nonblock(
+        &self,
         key: K,
-    ) -> Result<Entry<'a, K, V>, (K, TryDashMapNonblockError)>
+    ) -> Result<Entry<'_, K, V>, (K, TryDashMapNonblockError)>
     where
         K: Eq + Hash;
 
@@ -662,7 +662,7 @@ pub trait TryDashMap<K, V, S = RandomState>: Sized {
     }
 
     /// Alias for [`Self::try_entry`].
-    fn fallible_entry<'a>(&'a self, key: K) -> Result<Entry<'a, K, V>, TryReserveError>
+    fn fallible_entry(&self, key: K) -> Result<Entry<'_, K, V>, TryReserveError>
     where
         K: Eq + Hash,
     {
@@ -670,10 +670,10 @@ pub trait TryDashMap<K, V, S = RandomState>: Sized {
     }
 
     /// Alias for [`Self::try_entry_nonblock`].
-    fn fallible_entry_nonblock<'a>(
-        &'a self,
+    fn fallible_entry_nonblock(
+        &self,
         key: K,
-    ) -> Result<Entry<'a, K, V>, TryDashMapNonblockError>
+    ) -> Result<Entry<'_, K, V>, TryDashMapNonblockError>
     where
         K: Eq + Hash,
     {
@@ -681,10 +681,10 @@ pub trait TryDashMap<K, V, S = RandomState>: Sized {
     }
 
     /// Alias for [`Self::try_entry_give_back`].
-    fn fallible_entry_give_back<'a>(
-        &'a self,
+    fn fallible_entry_give_back(
+        &self,
         key: K,
-    ) -> Result<Entry<'a, K, V>, (K, TryReserveError)>
+    ) -> Result<Entry<'_, K, V>, (K, TryReserveError)>
     where
         K: Eq + Hash,
     {
@@ -692,10 +692,10 @@ pub trait TryDashMap<K, V, S = RandomState>: Sized {
     }
 
     /// Alias for [`Self::try_entry_give_back_nonblock`].
-    fn fallible_entry_give_back_nonblock<'a>(
-        &'a self,
+    fn fallible_entry_give_back_nonblock(
+        &self,
         key: K,
-    ) -> Result<Entry<'a, K, V>, (K, TryDashMapNonblockError)>
+    ) -> Result<Entry<'_, K, V>, (K, TryDashMapNonblockError)>
     where
         K: Eq + Hash,
     {
@@ -928,7 +928,7 @@ impl<K: Eq + Hash, V, S: BuildHasher + TryClone> TryDashMap<K, V, S> for DashMap
         }
     }
 
-    fn try_entry<'a>(&'a self, key: K) -> Result<Entry<'a, K, V>, TryReserveError>
+    fn try_entry(&self, key: K) -> Result<Entry<'_, K, V>, TryReserveError>
     where
         K: Eq + Hash,
     {
@@ -958,7 +958,7 @@ impl<K: Eq + Hash, V, S: BuildHasher + TryClone> TryDashMap<K, V, S> for DashMap
         }
     }
 
-    fn try_entry_give_back<'a>(&'a self, key: K) -> Result<Entry<'a, K, V>, (K, TryReserveError)>
+    fn try_entry_give_back(&self, key: K) -> Result<Entry<'_, K, V>, (K, TryReserveError)>
     where
         K: Eq + Hash,
     {
@@ -985,7 +985,7 @@ impl<K: Eq + Hash, V, S: BuildHasher + TryClone> TryDashMap<K, V, S> for DashMap
         }
     }
 
-    fn try_entry_nonblock<'a>(&'a self, key: K) -> Result<Entry<'a, K, V>, TryDashMapNonblockError>
+    fn try_entry_nonblock(&self, key: K) -> Result<Entry<'_, K, V>, TryDashMapNonblockError>
     where
         K: Eq + Hash,
     {
@@ -1018,10 +1018,10 @@ impl<K: Eq + Hash, V, S: BuildHasher + TryClone> TryDashMap<K, V, S> for DashMap
         }
     }
 
-    fn try_entry_give_back_nonblock<'a>(
-        &'a self,
+    fn try_entry_give_back_nonblock(
+        &self,
         key: K,
-    ) -> Result<Entry<'a, K, V>, (K, TryDashMapNonblockError)>
+    ) -> Result<Entry<'_, K, V>, (K, TryDashMapNonblockError)>
     where
         K: Eq + Hash,
     {
@@ -1510,10 +1510,10 @@ mod tests {
     use crate::dashmap::mapref::Entry;
 
     /// Disambiguates our `TryDashMap::try_entry` from `DashMap::try_entry`.
-    fn __try_entry<'a, K, V, S>(
-        m: &'a DashMap<K, V, S>,
+    fn __try_entry<K, V, S>(
+        m: &DashMap<K, V, S>,
         key: K,
-    ) -> Result<Entry<'a, K, V>, TryReserveError>
+    ) -> Result<Entry<'_, K, V>, TryReserveError>
     where
         K: Eq + Hash,
         S: BuildHasher + TryClone,
@@ -1522,10 +1522,10 @@ mod tests {
     }
 
     /// Disambiguates our `TryDashMap::try_entry_nonblock` from `DashMap::try_entry`.
-    fn __try_entry_nonblock<'a, K, V, S>(
-        m: &'a DashMap<K, V, S>,
+    fn __try_entry_nonblock<K, V, S>(
+        m: &DashMap<K, V, S>,
         key: K,
-    ) -> Result<Entry<'a, K, V>, TryDashMapNonblockError>
+    ) -> Result<Entry<'_, K, V>, TryDashMapNonblockError>
     where
         K: Eq + Hash,
         S: BuildHasher + TryClone,

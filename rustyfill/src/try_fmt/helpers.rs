@@ -203,7 +203,7 @@ pub struct TryDebugMap<'b, 'f> {
     inner: fmt::DebugMap<'b, 'f>,
 }
 
-impl<'d, 'b, 'f> TryDebugMap<'b, 'f> {
+impl<'d> TryDebugMap<'_, '_> {
     /// Add a single key-value entry to the map.
     #[inline]
     pub fn entry<K: TryDebug, V: TryDebug>(&mut self, key: &'d K, value: &'d V) -> &mut Self {
@@ -237,10 +237,10 @@ pub struct TryDebugStruct<'b, 'f> {
     inner: fmt::DebugStruct<'b, 'f>,
 }
 
-impl<'d, 'b, 'f> TryDebugStruct<'b, 'f> {
+impl TryDebugStruct<'_, '_> {
     /// Add a field with the given name and a [`TryDebug`] value.
     #[inline]
-    pub fn field<T: TryDebug>(&mut self, name: &str, value: &'d T) -> &mut Self {
+    pub fn field<T: TryDebug>(&mut self, name: &str, value: &T) -> &mut Self {
         self.inner.field(name, &D(value));
         self
     }
@@ -265,10 +265,10 @@ pub struct TryDebugTuple<'b, 'f> {
     inner: fmt::DebugTuple<'b, 'f>,
 }
 
-impl<'d, 'b, 'f> TryDebugTuple<'b, 'f> {
+impl TryDebugTuple<'_, '_> {
     /// Add a field to the tuple.
     #[inline]
-    pub fn field<T: TryDebug>(&mut self, value: &'d T) -> &mut Self {
+    pub fn field<T: TryDebug>(&mut self, value: &T) -> &mut Self {
         self.inner.field(&D(value));
         self
     }

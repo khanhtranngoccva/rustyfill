@@ -201,7 +201,7 @@ impl CfgContext {
                     let seg2 = parts.get(2).copied();
                     let last = parts.last().copied();
                     let traditional =
-                        seg1.is_some_and(&is_known_vendor) && !seg2.is_some_and(is_env_suffix);
+                        seg1.is_some_and(is_known_vendor) && !seg2.is_some_and(is_env_suffix);
                     if traditional {
                         // arch-vendor-os[-env]: vendor in slot 2, OS in slot 3,
                         // trailing env when present.
@@ -1116,11 +1116,9 @@ fn scan_cfg_select_branches(body: &str, cfg: &CfgContext) -> Vec<ModDeclaration>
         if predicate == "_" || predicate == ".." {
             // Fallback branch.
             fallback.get_or_insert(mods);
-        } else {
-            if cfg.eval_predicate(predicate) {
-                best_match = Some(mods);
-                break; // First match wins, same as cfg_select!.
-            }
+        } else if cfg.eval_predicate(predicate) {
+            best_match = Some(mods);
+            break; // First match wins, same as cfg_select!.
         }
     }
 

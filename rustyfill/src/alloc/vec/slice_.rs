@@ -162,7 +162,7 @@ impl<'a, T> SliceInitGuard<'a, T> {
     }
 }
 
-impl<'a, T> Drop for SliceInitGuard<'a, T> {
+impl<T> Drop for SliceInitGuard<'_, T> {
     fn drop(&mut self) {
         unsafe {
             for slot in self.slots.iter_mut().take(self.count) {

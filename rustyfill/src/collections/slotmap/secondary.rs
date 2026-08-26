@@ -802,7 +802,7 @@ pub struct ValuesMut<'a, K: Key + 'a, V: 'a> {
     inner: IterMut<'a, K, V>,
 }
 
-impl<'a, K: Key, V> Iterator for Drain<'a, K, V> {
+impl<K: Key, V> Iterator for Drain<'_, K, V> {
     type Item = (K, V);
 
     fn next(&mut self) -> Option<(K, V)> {
@@ -831,7 +831,7 @@ impl<'a, K: Key, V> Iterator for Drain<'a, K, V> {
     }
 }
 
-impl<'a, K: Key, V> Drop for Drain<'a, K, V> {
+impl<K: Key, V> Drop for Drain<'_, K, V> {
     fn drop(&mut self) {
         self.for_each(|_| {});
     }
@@ -909,7 +909,7 @@ impl<'a, K: Key, V> Iterator for IterMut<'a, K, V> {
     }
 }
 
-impl<'a, K: Key, V> Iterator for Keys<'a, K, V> {
+impl<K: Key, V> Iterator for Keys<'_, K, V> {
     type Item = K;
 
     fn next(&mut self) -> Option<K> {
@@ -979,20 +979,20 @@ impl<K: Key, V> IntoIterator for SecondaryMap<K, V> {
     }
 }
 
-impl<'a, K: Key, V> FusedIterator for Iter<'a, K, V> {}
-impl<'a, K: Key, V> FusedIterator for IterMut<'a, K, V> {}
-impl<'a, K: Key, V> FusedIterator for Keys<'a, K, V> {}
-impl<'a, K: Key, V> FusedIterator for Values<'a, K, V> {}
-impl<'a, K: Key, V> FusedIterator for ValuesMut<'a, K, V> {}
-impl<'a, K: Key, V> FusedIterator for Drain<'a, K, V> {}
+impl<K: Key, V> FusedIterator for Iter<'_, K, V> {}
+impl<K: Key, V> FusedIterator for IterMut<'_, K, V> {}
+impl<K: Key, V> FusedIterator for Keys<'_, K, V> {}
+impl<K: Key, V> FusedIterator for Values<'_, K, V> {}
+impl<K: Key, V> FusedIterator for ValuesMut<'_, K, V> {}
+impl<K: Key, V> FusedIterator for Drain<'_, K, V> {}
 impl<K: Key, V> FusedIterator for IntoIter<K, V> {}
 
-impl<'a, K: Key, V> ExactSizeIterator for Iter<'a, K, V> {}
-impl<'a, K: Key, V> ExactSizeIterator for IterMut<'a, K, V> {}
-impl<'a, K: Key, V> ExactSizeIterator for Keys<'a, K, V> {}
-impl<'a, K: Key, V> ExactSizeIterator for Values<'a, K, V> {}
-impl<'a, K: Key, V> ExactSizeIterator for ValuesMut<'a, K, V> {}
-impl<'a, K: Key, V> ExactSizeIterator for Drain<'a, K, V> {}
+impl<K: Key, V> ExactSizeIterator for Iter<'_, K, V> {}
+impl<K: Key, V> ExactSizeIterator for IterMut<'_, K, V> {}
+impl<K: Key, V> ExactSizeIterator for Keys<'_, K, V> {}
+impl<K: Key, V> ExactSizeIterator for Values<'_, K, V> {}
+impl<K: Key, V> ExactSizeIterator for ValuesMut<'_, K, V> {}
+impl<K: Key, V> ExactSizeIterator for Drain<'_, K, V> {}
 impl<K: Key, V> ExactSizeIterator for IntoIter<K, V> {}
 
 // ── Tests ───────────────────────────────────────────────────────────────────────

@@ -394,10 +394,7 @@ impl TypeRegistry {
                         top.iter()
                             .find(|p| self.by_path.get(p.as_str()).is_some_and(|t| t.is_exported))
                     })
-                    .or_else(|| {
-                        top.iter()
-                            .min_by_key(|p| p.split("::").count())
-                    });
+                    .or_else(|| top.iter().min_by_key(|p| p.split("::").count()));
                 winner.map(|p| (*p).clone())
             })?;
         Some(match self.by_path.get(chosen_owned.as_str()) {
@@ -471,10 +468,7 @@ impl TypeRegistry {
                 top.iter()
                     .find(|p| self.by_path.get(p.as_str()).is_some_and(|t| t.is_exported))
             })
-            .or_else(|| {
-                top.iter()
-                    .min_by_key(|p| p.split("::").count())
-            })
+            .or_else(|| top.iter().min_by_key(|p| p.split("::").count()))
             .copied()
             .unwrap_or(top[0]);
 
@@ -1677,8 +1671,7 @@ fn rewrite_path(
             // those must be absolute regardless of how the head resolves.
             let mut kept = segs;
             if let Some(last) = kept.last_mut() {
-                last.arguments =
-                    rewrite_generic_args(&last.arguments, registry, module_ctx, guard);
+                last.arguments = rewrite_generic_args(&last.arguments, registry, module_ctx, guard);
             }
             return syn::Path {
                 leading_colon,
@@ -2190,11 +2183,10 @@ fn strip_ignored_identifiers(tokens: TokenStream, ignored_names: &[&str]) -> Tok
             // Advance past the identifier.
             i += 1;
             // Skip trailing separator if present.
-            if i < trees.len() {
-                if matches!(&trees[i], TokenTree::Punct(p) if p.as_char() == '+' || p.as_char() == ',')
-                {
-                    i += 1;
-                }
+            if i < trees.len()
+                && matches!(&trees[i], TokenTree::Punct(p) if p.as_char() == '+' || p.as_char() == ',')
+            {
+                i += 1;
             }
             // If previous token is now `:`, check if there are any remaining bounds after us.
             // If not, remove the colon too (was `A: IgnoredTrait`, becoming just `A`).
@@ -2295,18 +2287,21 @@ pub fn emit_parsed_items(
             // language builtins available everywhere.
             if let Some(type_name) = extract_const_type_name(item) {
                 if !is_primitive_type(&type_name) {
-                    let is_declared_here = config
-                        .type_registry
-                        .is_declared_in_module(config.lib_name, module_path, &type_name);
+                    let is_declared_here = config.type_registry.is_declared_in_module(
+                        config.lib_name,
+                        module_path,
+                        &type_name,
+                    );
                     if !is_declared_here {
                         continue;
                     }
                 }
             }
-        } else if !config
-            .type_registry
-            .is_declared_in_module(config.lib_name, module_path, &item.name)
-        {
+        } else if !config.type_registry.is_declared_in_module(
+            config.lib_name,
+            module_path,
+            &item.name,
+        ) {
             continue;
         }
         // Skip items whose fully qualified path matches an ignored struct.
@@ -2574,12 +2569,13 @@ fn strip_const_trait_modifier(tokens: TokenStream) -> TokenStream {
     let mut i = 0;
     while i < n {
         // Look for the sequence: [attrs] ... 'const' 'trait'.
-        if matches!(&trees[i], TokenTree::Ident(id) if id == "const") && i + 1 < n {
-            if matches!(&trees[i + 1], TokenTree::Ident(next) if next == "trait") {
-                // Drop the `const` token; keep `trait` and everything after.
-                i += 1;
-                continue;
-            }
+        if matches!(&trees[i], TokenTree::Ident(id) if id == "const")
+            && i + 1 < n
+            && matches!(&trees[i + 1], TokenTree::Ident(next) if next == "trait")
+        {
+            // Drop the `const` token; keep `trait` and everything after.
+            i += 1;
+            continue;
         }
         result.push(trees[i].clone());
         i += 1;
@@ -2973,15 +2969,15 @@ fn widen_visibility(tokens: TokenStream) -> TokenStream {
     let mut struct_body_widened = false;
     while i < tts.len() {
         // Strip scope parens from `pub(X)` → `pub` everywhere in the item.
-        if matches!(&tts[i], TokenTree::Ident(id) if id == "pub") && i + 1 < tts.len() {
-            if matches!(&tts[i + 1], TokenTree::Group(g) if g.delimiter() == proc_macro2::Delimiter::Parenthesis)
-            {
-                // Emit just `pub`, skip the scope parens.
-                result.extend(Some(tts[i].clone()));
-                i += 1;
-                i += 1; // skip parenthesized scope
-                continue;
-            }
+        if matches!(&tts[i], TokenTree::Ident(id) if id == "pub")
+            && i + 1 < tts.len()
+            && matches!(&tts[i + 1], TokenTree::Group(g) if g.delimiter() == proc_macro2::Delimiter::Parenthesis)
+        {
+            // Emit just `pub`, skip the scope parens.
+            result.extend(Some(tts[i].clone()));
+            i += 1;
+            i += 1; // skip parenthesized scope
+            continue;
         }
 
         // For struct/union, widen the first braced body.
@@ -3026,15 +3022,15 @@ fn widen_struct_field_visibility(tokens: TokenStream) -> TokenStream {
 
     while i < tts.len() {
         // Skip attributes: `#` followed by `[...]`.
-        if matches!(&tts[i], TokenTree::Punct(p) if p.as_char() == '#') && i + 1 < tts.len() {
-            if matches!(&tts[i + 1], TokenTree::Group(g) if g.delimiter() == proc_macro2::Delimiter::Bracket)
-            {
-                result.extend(Some(tts[i].clone()));
-                i += 1;
-                result.extend(Some(tts[i].clone()));
-                i += 1;
-                continue;
-            }
+        if matches!(&tts[i], TokenTree::Punct(p) if p.as_char() == '#')
+            && i + 1 < tts.len()
+            && matches!(&tts[i + 1], TokenTree::Group(g) if g.delimiter() == proc_macro2::Delimiter::Bracket)
+        {
+            result.extend(Some(tts[i].clone()));
+            i += 1;
+            result.extend(Some(tts[i].clone()));
+            i += 1;
+            continue;
         }
 
         // Pass through nested groups (they're inside field types).
@@ -3243,11 +3239,10 @@ fn rewrite_crate_paths_recursive(
                                     if let Some(replacement) = repl_map.get(&leaf) {
                                         i += 7; // skip `crate :: <mod> :: <leaf>`
                                         // Skip `< ... >` generic arguments if present.
-                                        if i < trees.len() {
-                                            if matches!(&trees[i], TokenTree::Punct(p) if p.as_char() == '<')
-                                            {
-                                                i = skip_angle_brackets(&trees, i);
-                                            }
+                                        if i < trees.len()
+                                            && matches!(&trees[i], TokenTree::Punct(p) if p.as_char() == '<')
+                                        {
+                                            i = skip_angle_brackets(&trees, i);
                                         }
                                         if let Some(repl_text) = replacement {
                                             result.extend(token_stream_from_str(repl_text));
@@ -3398,7 +3393,10 @@ pub fn emit_binding_file(output_path: &Path, items: &[ParsedItem], config: &Emit
     // module to qualify through — their siblings live directly under the
     // wrapper root, so emit `crate::std::{sib}` there instead of a malformed
     // empty segment.
-    let parent_module = file_module_path.rsplit_once("::").map(|(p, _)| p).unwrap_or("");
+    let parent_module = file_module_path
+        .rsplit_once("::")
+        .map(|(p, _)| p)
+        .unwrap_or("");
     for sib in config.sibling_modules {
         if imported_names.contains(sib) {
             continue;
@@ -3417,8 +3415,13 @@ pub fn emit_binding_file(output_path: &Path, items: &[ParsedItem], config: &Emit
     // in this file references `search`.
     let all_uses = filter_used_imports(all_uses, items, config, &file_module_path);
 
-    let mut content =
-        emit_parsed_items(items, config, &preamble_use_path, &all_uses, &file_module_path);
+    let mut content = emit_parsed_items(
+        items,
+        config,
+        &preamble_use_path,
+        &all_uses,
+        &file_module_path,
+    );
 
     // Append manual trait impls for types whose derives were stripped or
     // whose inner types lack the required impls in our mirrored tree.
@@ -3508,11 +3511,7 @@ fn extract_const_type_name(item: &ParsedItem) -> Option<String> {
         .chars()
         .take_while(|c| c.is_alphanumeric() || *c == '_')
         .collect();
-    if head.is_empty() {
-        None
-    } else {
-        Some(head)
-    }
+    if head.is_empty() { None } else { Some(head) }
 }
 
 /// Determine which use statements are needed by the items that will actually
@@ -4275,10 +4274,8 @@ mod module_relative_tie_break_tests {
             "node.rs",
         );
 
-        let res = registry.resolve_module_relative(
-            &["Root".to_string()],
-            "collections::btree::map",
-        );
+        let res =
+            registry.resolve_module_relative(&["Root".to_string()], "collections::btree::map");
         match res {
             Some(FieldRefResolution::Mirrored(p)) | Some(FieldRefResolution::Original(p)) => {
                 assert_eq!(p, "alloc::collections::btree::map::inner::Root");
@@ -4302,10 +4299,8 @@ mod module_relative_tie_break_tests {
             "marker/mod.rs",
         );
 
-        let res = registry.resolve_module_relative(
-            &["Owned".to_string()],
-            "collections::btree::node::marker",
-        );
+        let res = registry
+            .resolve_module_relative(&["Owned".to_string()], "collections::btree::node::marker");
         match res {
             Some(FieldRefResolution::Mirrored(p)) | Some(FieldRefResolution::Original(p)) => {
                 assert_eq!(p, "alloc::collections::btree::node::marker::Owned");
@@ -4326,10 +4321,7 @@ mod module_relative_tie_break_tests {
         );
         registry.insert_declared("alloc::a::b::Thing", "b.rs");
 
-        let res = registry.resolve_module_relative(
-            &["Thing".to_string()],
-            "a::b::c",
-        );
+        let res = registry.resolve_module_relative(&["Thing".to_string()], "a::b::c");
         match res {
             Some(FieldRefResolution::Mirrored(p)) => {
                 assert_eq!(p, "alloc::a::b::Thing");
@@ -4346,10 +4338,7 @@ mod declared_alias_emission_tests {
     fn make_registry(alias_canonical: &str, rhs: &str) -> TypeRegistry {
         let mut registry = TypeRegistry::empty();
         registry.insert_declared(alias_canonical, "node.rs");
-        registry.set_alias_rhs(
-            alias_canonical,
-            rhs.parse::<TokenStream>().unwrap(),
-        );
+        registry.set_alias_rhs(alias_canonical, rhs.parse::<TokenStream>().unwrap());
         registry
     }
 
@@ -4360,20 +4349,13 @@ mod declared_alias_emission_tests {
     #[test]
     fn recursive_alias_expands_self_reference_to_absolute_path() {
         let registry = make_registry("alloc::m::Entry", "RawEntry<Entry>");
-        let item_full: TokenStream =
-            "pub type Entry<K, V> = RawEntry<Entry<K, V>>;".parse().unwrap();
+        let item_full: TokenStream = "pub type Entry<K, V> = RawEntry<Entry<K, V>>;"
+            .parse()
+            .unwrap();
         let rhs: TokenStream = "RawEntry<Entry>".parse().unwrap();
         let guard = LocalNameGuard::new(None);
         let mut out = TokenStream::new();
-        emit_declared_type_alias(
-            "Entry",
-            &rhs,
-            &item_full,
-            &registry,
-            "m",
-            &guard,
-            &mut out,
-        );
+        emit_declared_type_alias("Entry", &rhs, &item_full, &registry, "m", &guard, &mut out);
         let text = out.to_string();
         assert!(
             text.contains("crate :: std :: m :: Entry"),
@@ -4387,20 +4369,13 @@ mod declared_alias_emission_tests {
     fn alias_rhs_non_self_references_are_routed() {
         let mut registry = make_registry("alloc::m::Root", "NodeRef<Owned, K, V>");
         registry.insert_declared("alloc::m::NodeRef", "node.rs");
-        let item_full: TokenStream =
-            "pub type Root<K, V> = NodeRef<Owned, K, V>;".parse().unwrap();
+        let item_full: TokenStream = "pub type Root<K, V> = NodeRef<Owned, K, V>;"
+            .parse()
+            .unwrap();
         let rhs: TokenStream = "NodeRef<Owned, K, V>".parse().unwrap();
         let guard = LocalNameGuard::new(None);
         let mut out = TokenStream::new();
-        emit_declared_type_alias(
-            "Root",
-            &rhs,
-            &item_full,
-            &registry,
-            "m",
-            &guard,
-            &mut out,
-        );
+        emit_declared_type_alias("Root", &rhs, &item_full, &registry, "m", &guard, &mut out);
         let text = out.to_string();
         assert!(
             text.contains("crate :: std :: m :: NodeRef"),
@@ -4409,14 +4384,8 @@ mod declared_alias_emission_tests {
     }
 }
 
-
-
-
-
-
 #[cfg(test)]
 mod dbg_const_extract {
-    use super::*;
 
     #[test]
     fn noop() {}

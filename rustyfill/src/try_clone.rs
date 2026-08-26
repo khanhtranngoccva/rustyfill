@@ -163,7 +163,7 @@ impl<'a, T, const N: usize> ArrayInitGuard<'a, T, N> {
     }
 }
 
-impl<'a, T, const N: usize> Drop for ArrayInitGuard<'a, T, N> {
+impl<T, const N: usize> Drop for ArrayInitGuard<'_, T, N> {
     fn drop(&mut self) {
         unsafe {
             for slot in self.slots.iter_mut().take(self.count) {

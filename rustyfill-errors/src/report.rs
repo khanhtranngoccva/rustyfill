@@ -854,7 +854,7 @@ pub enum FrameRef<'a, C> {
     LostFrames(usize),
 }
 
-impl<'a, C> FrameRef<'a, C>
+impl<C> FrameRef<'_, C>
 where
     C: Error + TryDebug + TryDisplay + Send + Sync + 'static,
 {
@@ -892,7 +892,7 @@ pub enum FrameRefMut<'a, C> {
     LostFrames(usize),
 }
 
-impl<'a, C> FrameRefMut<'a, C>
+impl<C> FrameRefMut<'_, C>
 where
     C: Error + TryDebug + TryDisplay + Send + Sync + 'static,
 {
@@ -1110,7 +1110,7 @@ where
     }
 }
 
-impl<'a, C> Stallable for Frames<'a, C>
+impl<C> Stallable for Frames<'_, C>
 where
     C: Error + Send + Sync + 'static,
 {
@@ -1241,7 +1241,7 @@ where
     }
 }
 
-impl<'a, C> Stallable for ChronoFrames<'a, C>
+impl<C> Stallable for ChronoFrames<'_, C>
 where
     C: Error + Send + Sync + 'static,
 {
