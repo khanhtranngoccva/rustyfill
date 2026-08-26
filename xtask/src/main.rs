@@ -2,6 +2,7 @@
 //!
 //! Usage:
 //! ```text
+//! cargo xtask clippy     # lint every supported cross target (-D warnings)
 //! cargo xtask sanitize   # run tests on nightly with leak sanitizer
 //! cargo xtask miri       # run tests under Miri for UB detection
 //! cargo xtask crap       # CRAP complexity report (coverage-aware)
@@ -97,8 +98,50 @@ impl ScopeArgs {
     }
 }
 
+/// Cross targets linted by `cargo xtask clippy`.
+///
+/// Clippy is a checker, not a linker, so it can validate code for targets we
+/// cannot actually build/run on the host. The set mirrors the OS families the
+/// project supports (Linux gnu + musl, Windows MSVC, macOS, Android, and the
+/// BSDs) across both common architectures. Each triple must have its `rust-std`
+/// component installed (`rustup target add <triple>`); missing ones are
+/// reported and cause a non-zero exit rather than being silently skipped.
+const CLIPPY_TARGETS: &[&str] = &[
+    // Linux
+    "x86_64-unknown-linux-gnu",
+    "aarch64-unknown-linux-gnu",
+    "x86_64-unknown-linux-musl",
+    "aarch64-unknown-linux-musl",
+    // Windows
+    "x86_64-pc-windows-msvc",
+    "aarch64-pc-windows-msvc",
+    // macOS
+    "x86_64-apple-darwin",
+    "aarch64-apple-darwin",
+    // Android
+    "x86_64-linux-android",
+    "aarch64-linux-android",
+    // BSDs
+    "x86_64-unknown-freebsd",
+    "aarch64-unknown-freebsd",
+    "x86_64-unknown-openbsd",
+    "aarch64-unknown-openbsd",
+    "x86_64-unknown-netbsd",
+    "aarch64-unknown-netbsd",
+];
+
 #[derive(Subcommand)]
 enum CommandKind {
+    /// Lint every supported cross target with `-D warnings`
+    Clippy {
+        /// Only lint these targets (comma-separated; default: all of them)
+        #[arg(short, long, value_delimiter = ',')]
+        targets: Vec<String>,
+        #[command(flatten)]
+        features: FeatureArgs,
+        #[command(flatten)]
+        scope: ScopeArgs,
+    },
     /// Run tests on nightly with -Zsanitizer=leak
     Sanitize {
         #[command(flatten)]
@@ -136,6 +179,11 @@ fn main() -> ExitCode {
     let cli = Cli::parse();
 
     match cli.command {
+        CommandKind::Clippy {
+            targets,
+            features,
+            scope,
+        } => cmd_clippy(targets, features, scope),
         CommandKind::Sanitize { features, scope } => cmd_sanitize(features, scope),
         CommandKind::Miri { features, scope } => cmd_miri(features, scope),
         CommandKind::Crap {
@@ -219,6 +267,81 @@ fn cmd_crap(
     match run("cargo", &args) {
         Ok(()) => ExitCode::SUCCESS,
         Err(code) => ExitCode::from(code),
+    }
+}
+
+/// Lint every supported cross target with `-D warnings`.
+///
+/// Clippy only type-checks (it never links), so a single Linux host can
+/// validate the codebase against every OS/architecture family at once — this
+/// is the local equivalent of the CI clippy matrix and catches target-specific
+/// regressions (wrong `cfg` gates, platform-conditional dead code, etc.) before
+/// they reach CI. Each target is checked independently; all are run even if an
+/// earlier one fails, and the process exits non-zero if any target produced a
+/// warning or error.
+fn cmd_clippy(targets: Vec<String>, features: FeatureArgs, scope: ScopeArgs) -> ExitCode {
+    let targets: Vec<&str> = if targets.is_empty() {
+        CLIPPY_TARGETS.to_vec()
+    } else {
+        targets.iter().map(String::as_str).collect()
+    };
+
+    // Verify each target's rust-std component is installed up front so a
+    // missing component is reported clearly instead of surfacing as a cryptic
+    // "target not found" mid-run. Query rustup once for all installed targets.
+    let output = match Command::new("rustup")
+        .args(["target", "list", "--installed"])
+        .output()
+    {
+        Ok(o) if o.status.success() => o,
+        _ => return ExitCode::FAILURE,
+    };
+    let installed = String::from_utf8_lossy(&output.stdout);
+    let installed_set: std::collections::HashSet<&str> =
+        installed.lines().map(str::trim).collect();
+    let missing: Vec<&str> = targets
+        .iter()
+        .copied()
+        .filter(|t| !installed_set.contains(t))
+        .collect();
+    if !missing.is_empty() {
+        eprintln!("Missing rust-std components for: {}", missing.join(", "));
+        eprintln!("Install them with: rustup target add {}", missing.join(" "));
+        return ExitCode::FAILURE;
+    }
+
+    let mut failures = 0usize;
+    for t in &targets {
+        println!("\n== clippy --target {} ==", t);
+        let mut args: Vec<String> = vec![
+            "clippy".into(),
+            "--all-targets".into(),
+            "--target".into(),
+            (*t).into(),
+        ];
+        if scope.use_workspace_flag() {
+            args.push("--workspace".into());
+        } else {
+            args.extend(scope.cargo_flags());
+        }
+        args.extend(features.cargo_flags());
+        args.extend(["--".into(), "-D".into(), "warnings".into()]);
+
+        match run("cargo", &args) {
+            Ok(()) => {}
+            Err(code) => {
+                failures += 1;
+                eprintln!("clippy FAILED for {} (exit {})", t, code);
+            }
+        }
+    }
+
+    if failures > 0 {
+        eprintln!("\n{} of {} targets failed clippy.", failures, targets.len());
+        ExitCode::FAILURE
+    } else {
+        println!("\nAll {} targets passed clippy cleanly.", targets.len());
+        ExitCode::SUCCESS
     }
 }
 

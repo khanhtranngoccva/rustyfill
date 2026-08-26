@@ -13,6 +13,7 @@ use crate::emitter::{QualifierResolver, TypeRegistry, collect_qualified_refs, em
 use crate::loader_spec::BindingTarget;
 use crate::parser::{CfgContext, ItemKind, ParsedSource, parse_source_with_cfg};
 use crate::resolver::{ModuleResolver, PathSegment, UseKind};
+use crate::syntaxes::ModulePath;
 
 use super::discover::locate_declared_struct;
 
@@ -241,10 +242,13 @@ pub(super) fn mirror_minimal_modules(
                     .unwrap_or(false)
             };
             if leaf_accessible {
+                // `import_target` is a pure module path; render it canonically.
+                let import_canonical = ModulePath::from_slash(&import_target)
+                    .map(|mp| mp.to_canonical())
+                    .unwrap_or_else(|| import_target.replace('/', "::"));
                 let crate_path = format!(
-                    "crate::{}::{}",
-                    sink.registry.wrapper_mod(),
-                    import_target.replace('/', "::")
+                    "crate::{}::{import_canonical}",
+                    sink.registry.wrapper_mod()
                 );
                 sink.registry
                     .set_module_alias_route(module_ctx, &lead, &crate_path);
@@ -266,7 +270,10 @@ pub(super) fn mirror_minimal_modules(
             continue;
         };
         let parsed = parse_source_with_cfg(&text, cfg);
-        let mod_path = def_mod.replace('/', "::");
+        // `def_mod` is a pure module path; render it canonically.
+        let mod_path = ModulePath::from_slash(def_mod)
+            .map(|mp| mp.to_canonical())
+            .unwrap_or_else(|| def_mod.replace('/', "::"));
         let def_file_abs = lib_src.join(&def_file).to_string_lossy().to_string();
         for item in &parsed.items {
             if !leaves.contains(&item.name) {

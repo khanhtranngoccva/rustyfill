@@ -90,3 +90,6 @@ This crate's license is being considered, but it is likely not going to be fully
 
 This crate borrows the implementation from a number of MIT-licensed crates like `std`/`alloc`/`core`, `dashmap`, and `error-stack`. To ensure compliance, copies of these licenses are left at the respective `licenses/originals` directory. These licenses are non-binding, however.
 
+## Miscellaneous
+
+This project is in prototyping. It may appear that CLAUDE is being used, but only Thaura is being used. 

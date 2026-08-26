@@ -10,6 +10,7 @@ use crate::emitter::TypeRegistry;
 use crate::loader_spec::LoaderSpec;
 use crate::parser::{CfgContext, ItemKind, ParsedSource};
 use crate::resolver::{ModuleResolver, PathSegment, UseKind, Visibility};
+use crate::syntaxes::ModulePath;
 
 use super::mirror::{EmitSink, mirror_minimal_modules};
 
@@ -46,15 +47,14 @@ pub(super) fn build_type_registry(
             let module_path = resolver.file_to_module_path(file_path);
             let exported_names = public_reexport_names(parsed, &module_path);
             for item in &parsed.items {
-                let canonical = if module_path.is_empty() {
+                // `module_path` is a pure module path; render it canonically.
+                let module_canonical = ModulePath::from_slash(&module_path)
+                    .map(|mp| mp.to_canonical())
+                    .unwrap_or_else(|| module_path.replace('/', "::"));
+                let canonical = if module_canonical.is_empty() {
                     format!("{}::{}", target.lib_name, item.name)
                 } else {
-                    format!(
-                        "{}::{}::{}",
-                        target.lib_name,
-                        module_path.replace('/', "::"),
-                        item.name
-                    )
+                    format!("{}::{}::{}", target.lib_name, module_canonical, item.name)
                 };
                 let is_exported = exported_names.contains(&item.name);
                 registry.register(&canonical, item.visibility, is_exported, file_path);
@@ -68,7 +68,10 @@ pub(super) fn build_type_registry(
                 } else {
                     format!("{}/{}", module_path, mod_name)
                 };
-                let inline_canonical_base = inline_module.replace('/', "::");
+                // `inline_module` is a pure module path (parent + child).
+                let inline_canonical_base = ModulePath::from_slash(&inline_module)
+                    .map(|mp| mp.to_canonical())
+                    .unwrap_or_else(|| inline_module.replace('/', "::"));
                 for item in mod_items {
                     let canonical = format!(
                         "{}::{}::{}",
@@ -137,10 +140,15 @@ pub(super) fn build_type_registry(
             if !parsed.items.iter().any(|i| i.name == leaf) {
                 continue;
             }
-            let mod_path = def_file
-                .strip_suffix(".rs")
-                .unwrap_or(def_file)
-                .replace('/', "::");
+            // `def_file` stem is a pure module path; render it canonically.
+            let mod_path = ModulePath::from_file_stem(def_file)
+                .map(|mp| mp.to_canonical())
+                .unwrap_or_else(|| {
+                    def_file
+                        .strip_suffix(".rs")
+                        .unwrap_or(def_file)
+                        .replace('/', "::")
+                });
             let alias_canonical = format!("{}::{}::{}", target.lib_name, mod_path, leaf);
             let def_file_abs = lib_src.join(def_file).to_string_lossy().to_string();
             registry.insert_declared_alias(&alias_canonical, &def_file_abs);

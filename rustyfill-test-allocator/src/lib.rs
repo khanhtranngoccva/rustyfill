@@ -103,8 +103,20 @@ impl FailPolicy {
 // ── Thread-local state ────────────────────────────────────────────────────────
 
 thread_local! {
+    #[allow(
+        clippy::missing_const_for_thread_local,
+        reason = "already fixed, some linters fail to detect"
+    )]
     static FAIL_POLICY: Cell<FailPolicy> = const { Cell::new(FailPolicy::nothing()) };
+    #[allow(
+        clippy::missing_const_for_thread_local,
+        reason = "already fixed, some linters fail to detect"
+    )]
     static ALLOC_INVOCATIONS: Cell<u64> = const { Cell::new(0) };
+    #[allow(
+        clippy::missing_const_for_thread_local,
+        reason = "already fixed, some linters fail to detect"
+    )]
     static REALLOC_INVOCATIONS: Cell<u64> = const { Cell::new(0) };
 }
 

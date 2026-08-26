@@ -120,6 +120,10 @@ impl TryClone for lang_std::hash::RandomState {
 // avoid re-invoking the platform random source. Each thread gets its own
 // cached instance after the first (potentially expensive) generation.
 thread_local! {
+    #[allow(
+        clippy::missing_const_for_thread_local,
+        reason = "already fixed, some linters fail to detect"
+    )]
     static CACHED_RANDOM_STATE: once_cell::unsync::OnceCell<lang_std::hash::RandomState>
         = const { once_cell::unsync::OnceCell::new() };
 }

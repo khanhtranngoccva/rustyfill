@@ -8,6 +8,8 @@
 
 use std::collections::{HashMap, HashSet};
 
+use crate::syntaxes::ModulePath;
+
 /// A parsed `use` statement extracted from a source file.
 #[derive(Clone, Debug)]
 pub struct UseStatement {
@@ -201,6 +203,19 @@ impl ModuleResolver {
     /// Check if a file is eligible for emission.
     pub fn is_emittable(&self, file_path: &str) -> bool {
         self.emittable_files.contains(file_path)
+    }
+
+    /// Check whether an emittable canonical module exists at the given
+    /// slash-separated module path (either as a directory `mod.rs` or a leaf
+    /// `.rs` file). Used to skip re-export aliases that would shadow a real
+    /// module and produce duplicate name definitions (E0255).
+    pub fn has_emittable_module(&self, module_path: &str) -> bool {
+        let mod_file = format!("{}/mod.rs", module_path);
+        if self.is_emittable(&mod_file) {
+            return true;
+        }
+        let leaf_file = format!("{}.rs", module_path);
+        self.is_emittable(&leaf_file)
     }
 
     /// All registered source files with their parsed content, keyed by relative
@@ -590,13 +605,9 @@ impl ModuleResolver {
 
     /// Convert a file path like "sys/pal/unix/sync/mod.rs" to its module path "sys/pal/unix/sync".
     pub fn file_to_module_path(&self, file_path: &str) -> String {
-        let stem = file_path.strip_suffix(".rs").unwrap_or(file_path);
-
-        if let Some(mod_path) = stem.strip_suffix("/mod") {
-            return mod_path.to_string();
-        }
-
-        stem.to_string()
+        ModulePath::from_file_stem(file_path)
+            .map(|mp| mp.to_slash())
+            .unwrap_or_else(|| file_path.to_string())
     }
 
     /// Find all registered files whose module path starts with the given prefix.
@@ -894,8 +905,9 @@ impl ModuleResolver {
 
     /// Convert a file path to a module path string (strip .rs, strip trailing /mod).
     fn file_to_module_path_str(file: &str) -> String {
-        let stem = file.strip_suffix(".rs").unwrap_or(file);
-        stem.strip_suffix("/mod").unwrap_or(stem).to_string()
+        ModulePath::from_file_stem(file)
+            .map(|mp| mp.to_slash())
+            .unwrap_or_else(|| file.to_string())
     }
 
     /// Generate `pub use` statements for a file's resolved imports that point
@@ -1121,14 +1133,21 @@ impl ModuleResolver {
     /// defense-in-depth measure so a malformed upstream path can never
     /// produce invalid syntax like `crate::std::::collections`.
     fn module_path_to_abs_chain(&self, to: &str, _lib_name: &str) -> String {
-        if to.is_empty() {
-            return String::new();
+        // A well-formed module path renders straight to its canonical chain;
+        // the empty/root case yields nothing to import. Malformed input (empty
+        // segments, non-identifier segments) falls back to the defensive
+        // filter so a bad upstream path can never produce `crate::std::::x`.
+        match ModulePath::from_slash(to) {
+            Some(mp) if !mp.is_root() => format!("crate::std::{}", mp.to_canonical()),
+            _ => {
+                let clean: Vec<&str> = to.split('/').filter(|s| !s.is_empty()).collect();
+                if clean.is_empty() {
+                    String::new()
+                } else {
+                    format!("crate::std::{}", clean.join("::"))
+                }
+            }
         }
-        let clean: Vec<&str> = to.split('/').filter(|s| !s.is_empty()).collect();
-        if clean.is_empty() {
-            return String::new();
-        }
-        format!("crate::std::{}", clean.join("::"))
     }
 }
 

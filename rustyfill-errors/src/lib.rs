@@ -57,6 +57,10 @@ pub(crate) use self::__force_forward_slashes::FORCE_FORWARD_SLASHES;
 #[cfg(feature = "std")]
 mod __force_forward_slashes {
     std::thread_local! {
+        #[allow(
+            clippy::missing_const_for_thread_local,
+            reason = "already fixed, some linters fail to detect"
+        )]
         pub static FORCE_FORWARD_SLASHES: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
     }
 }

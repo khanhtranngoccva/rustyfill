@@ -9,6 +9,7 @@ use crate::emitter::{EmitConfig, TypeRegistry, emit_binding_file, emit_glob_reex
 use crate::loader_spec::LoaderSpec;
 use crate::parser::{CfgContext, ParsedSource};
 use crate::resolver::ModuleResolver;
+use crate::syntaxes::ModulePath;
 use crate::validator::ValidationBuilder;
 
 use super::util::{compute_module_depth, get_sibling_modules};
@@ -48,6 +49,11 @@ pub(super) fn emit_all_binding_files(
             ));
         }
         let siblings = get_sibling_modules(file_path, all_files);
+        // Child module names for this file's manifest subtree. The manifest
+        // declares them as `pub mod` siblings of the included content, so any
+        // synthesized import binding one of these names would be a duplicate
+        // definition (E0255) and must be suppressed by the emitter.
+        let child_module_names = child_module_names_for(file_path, all_files);
         let emit_path = out_dir.join(file_path);
 
         let target_ignored_structs = ignored_structs_by_lib
@@ -67,6 +73,7 @@ pub(super) fn emit_all_binding_files(
                 file_module_depth: depth,
                 extra_uses: &extra_uses,
                 sibling_modules: &siblings,
+                child_module_names: &child_module_names,
                 path_replacements: replacement_entries_slice,
                 ignored_structs: &target_ignored_structs,
                 relative_file_path: file_path,
@@ -106,6 +113,7 @@ pub(super) fn emit_all_binding_files(
                 ));
             }
             let inline_siblings = get_sibling_modules(&inline_rel_path, all_files);
+            let inline_child_module_names = child_module_names_for(&inline_rel_path, all_files);
             let inline_has_content = emit_binding_file(
                 &inline_emit_path,
                 mod_items,
@@ -114,6 +122,7 @@ pub(super) fn emit_all_binding_files(
                     file_module_depth: inline_depth,
                     extra_uses: &inline_extra_uses,
                     sibling_modules: &inline_siblings,
+                    child_module_names: &inline_child_module_names,
                     path_replacements: replacement_entries_slice,
                     ignored_structs: &target_ignored_structs,
                     relative_file_path: &inline_rel_path,
@@ -130,6 +139,31 @@ pub(super) fn emit_all_binding_files(
             }
         }
     }
+}
+
+/// Compute the names of direct child modules in the manifest subtree rooted at
+/// the file's module path. The hierarchical manifest declares every descendant
+/// module as nested `pub mod`s; for a file whose content is included at
+/// `<module_path>/mod.rs`, its direct children become `pub mod` declarations
+/// sitting alongside the included items. Any synthesized import binding one of
+/// these names would be a duplicate definition (E0255).
+fn child_module_names_for(rel_path: &str, all_files: &[(String, String)]) -> Vec<String> {
+    let Some(my_module) = ModulePath::from_file_stem(rel_path) else {
+        return Vec::new();
+    };
+
+    let mut names = std::collections::BTreeSet::new();
+    for (fp, _) in all_files {
+        let Some(other) = ModulePath::from_file_stem(fp) else {
+            continue;
+        };
+        // Direct children of `my_module` are exactly one segment deeper and
+        // share it as their full parent.
+        if my_module.is_direct_parent_of(&other) {
+            names.insert(other.leaf().to_string());
+        }
+    }
+    names.into_iter().collect()
 }
 
 /// Extract the set of names already bound by a list of `use` statement lines,

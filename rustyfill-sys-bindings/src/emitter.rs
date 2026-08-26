@@ -24,6 +24,7 @@ use crate::parser::{
     cfg_select_reexport_targets, parse_source_with_cfg,
 };
 use crate::resolver::{ModuleResolver, PathSegment, UseKind, Visibility};
+use crate::syntaxes::ModulePath;
 
 // ── Type registry and field-type publicity checking ────────────────────────
 
@@ -1575,7 +1576,9 @@ fn rewrite_path(
             // module-alias import is recorded, the user directive requires
             // fully qualifying paths rather than relying on ambient imports.
             let leaf = segs[1].ident.to_string();
-            let def_colons = def_module.replace('/', "::");
+            let def_colons = ModulePath::from_slash(def_module)
+                .map(|mp| mp.to_canonical())
+                .unwrap_or_else(|| def_module.replace('/', "::"));
             let abs = format!("crate::{}::{def_colons}::{leaf}", registry.wrapper_mod());
             if let Ok(mut p) = syn::parse_str::<syn::Path>(&abs) {
                 // Preserve the generic arguments from the original last segment
@@ -1893,6 +1896,11 @@ pub struct EmitConfig<'a> {
     pub extra_uses: &'a [String],
     /// Sibling module names that need `use super::<name>;` aliases.
     pub sibling_modules: &'a [String],
+    /// Names of child modules declared in this file's manifest subtree (e.g.
+    /// `"sync"` for a file at `sys/pal`). Used to skip synthesized imports
+    /// whose bound name would collide with a `pub mod <name>` the manifest
+    /// declares as a sibling of this file's content (E0255).
+    pub child_module_names: &'a [String],
     /// Leaf-name → optional replacement token pairs from the spec's
     /// `path_replacements`.
     pub path_replacements: &'a [(String, Option<&'a str>)],
@@ -3349,7 +3357,11 @@ pub fn emit_binding_file(output_path: &Path, items: &[ParsedItem], config: &Emit
 
     // Build combined use statements: resolved imports + sibling module aliases.
     // Deduplicate by tracking which module names we've already imported.
-    let mut all_uses = config.extra_uses.to_vec();
+    // Drop any import whose bound name collides with a child module declared
+    // in this file's manifest subtree (E0255: duplicate definition).
+    let child_set: std::collections::HashSet<&str> =
+        config.child_module_names.iter().map(String::as_str).collect();
+    let mut all_uses: Vec<String> = Vec::with_capacity(config.extra_uses.len());
     let mut imported_names: HashSet<String> = HashSet::new();
     for line in config.extra_uses.iter() {
         // Extract the bound name from each use statement for dedup tracking.
@@ -3359,32 +3371,32 @@ pub fn emit_binding_file(output_path: &Path, items: &[ParsedItem], config: &Emit
             .strip_prefix("#[allow(unused_imports)]")
             .unwrap_or(line)
             .trim();
-        if let Some(use_body) = trimmed.strip_prefix("use ") {
+        let bound_name: Option<String> = if let Some(use_body) = trimmed.strip_prefix("use ") {
             let body = use_body.strip_suffix(';').unwrap_or(use_body);
-            // Check for "as NAME" suffix
             if let Some((_, alias_name)) = body.rsplit_once(" as ") {
-                imported_names.insert(alias_name.trim().to_string());
+                Some(alias_name.trim().to_string())
             } else if body.ends_with("::*") {
-                // Glob import — extract the module name
-                if let Some(mod_path) = body.strip_suffix("::*") {
-                    if let Some(last_seg) = mod_path.rsplit_once(':').map(|(_, n)| n.trim()) {
-                        imported_names.insert(last_seg.to_string());
-                    }
-                }
-            } else if let Some(last_seg) = body.rsplit_once(':').map(|(_, n)| n.trim()) {
-                imported_names.insert(last_seg.to_string());
+                None // glob — no single bound name
+            } else {
+                body.rsplit_once(':')
+                    .map(|(_, n)| n.trim().to_string())
+            }
+        } else {
+            None
+        };
+        if let Some(ref bn) = bound_name {
+            imported_names.insert(bn.clone());
+            // Skip imports that would bind a name already taken by a child
+            // module declaration in the manifest (E0255).
+            if child_set.contains(bn.as_str()) {
+                continue;
             }
         }
+        all_uses.push(line.clone());
     }
     // Compute the module path from the relative file path
     // (e.g., "collections/btree/set.rs" -> "collections::btree::set").
-    let file_module_path = config
-        .relative_file_path
-        .strip_suffix(".rs")
-        .unwrap_or(config.relative_file_path)
-        .strip_suffix("/mod")
-        .unwrap_or(config.relative_file_path.strip_suffix(".rs").unwrap_or(""))
-        .replace('/', "::");
+    let file_module_mp = ModulePath::from_file_stem(config.relative_file_path);
 
     // Sibling submodule imports are absolute (`crate::std::<parent>::{sib}`)
     // so they resolve regardless of include! nesting depth. The manifest merges
@@ -3393,12 +3405,28 @@ pub fn emit_binding_file(output_path: &Path, items: &[ParsedItem], config: &Emit
     // module to qualify through — their siblings live directly under the
     // wrapper root, so emit `crate::std::{sib}` there instead of a malformed
     // empty segment.
-    let parent_module = file_module_path
-        .rsplit_once("::")
-        .map(|(p, _)| p)
-        .unwrap_or("");
+    let parent_module = file_module_mp
+        .as_ref()
+        .and_then(|mp| {
+            let p = mp.parent_owned();
+            (!p.is_root()).then(|| p.to_canonical())
+        })
+        .unwrap_or_default();
+
+    let file_module_path = file_module_mp
+        .map(|mp| mp.to_canonical())
+        .unwrap_or_default();
     for sib in config.sibling_modules {
         if imported_names.contains(sib) {
+            continue;
+        }
+        // The manifest declares this file's children as `pub mod <name>`
+        // siblings of the included content. A synthesized import binding the
+        // same name would be a duplicate definition (E0255). Skip it — any
+        // reference to that module is already routed through its absolute
+        // mirror path, and items reachable via the child are available
+        // directly from the child module.
+        if config.child_module_names.iter().any(|c| c == sib) {
             continue;
         }
         let path = if parent_module.is_empty() {
@@ -3823,9 +3851,19 @@ pub fn emit_reexport_shim(
     };
 
     // Absolute mirror path to the concrete definition, dropping the library
-    // prefix exactly like the rest of the emitter does.
-    let canon_colons = canonical_module.replace('/', "::");
-    let sub_colons = def_submodule.replace('/', "::");
+    // prefix exactly like the rest of the emitter does. Both operands are
+    // pure module paths; an empty `def_submodule` stays empty (definition lives
+    // directly in `canonical_module`).
+    let canon_colons = ModulePath::from_slash(canonical_module)
+        .map(|mp| mp.to_canonical())
+        .unwrap_or_else(|| canonical_module.replace('/', "::"));
+    let sub_colons = if def_submodule.is_empty() {
+        String::new()
+    } else {
+        ModulePath::from_slash(def_submodule)
+            .map(|mp| mp.to_canonical())
+            .unwrap_or_else(|| def_submodule.replace('/', "::"))
+    };
     let abs_target = if sub_colons.is_empty() {
         format!("crate::{WRAPPER_MOD}::{canon_colons}::{leaf}")
     } else {
@@ -3893,6 +3931,35 @@ pub fn emit_glob_reexport_aliases(
         } else {
             format!("{}/{}", alias_module, relative)
         };
+
+        // Skip aliases that would shadow a canonical module already present in
+        // the emitted tree. A glob re-export (e.g. `pub use self::unix::*;` in
+        // `sys/pal/mod.rs`) places copies of everything under `unix` as siblings
+        // of `unix` itself — so `sys/pal/sync` would be declared alongside the
+        // real `sys/pal/unix/sync` and collide with it (E0255). The canonical
+        // modules remain reachable through their own paths, and any reference
+        // routed through the alias name is rewritten to an absolute path by the
+        // qualifier-route mechanism at emit time.
+        if resolver.has_emittable_module(&alias_path) {
+            continue;
+        }
+
+        // Skip aliases that duplicate a module already reachable within the
+        // alias module's own subtree. When a glob re-export (e.g.
+        // `pub use self::unix::*;` in `sys/pal/mod.rs`) targets a direct child
+        // (`sys/pal/unix`), every module under that child gets mirrored as a
+        // sibling of the child itself. Since the child is already declared in
+        // the manifest under the alias module, the sibling copies are
+        // redundant AND cause E0255 when the parent file also imports one of
+        // those names. Detect this by checking whether the canonical module
+        // is a direct child (or deeper descendant) of the alias module — if
+        // so, the alias just re-exposes what's already there.
+        let canon_starts_with_alias = canonical_module
+            .strip_prefix(&format!("{}/", alias_module))
+            .is_some();
+        if canon_starts_with_alias {
+            continue;
+        }
 
         if !discovered.insert(alias_path.clone()) {
             continue;

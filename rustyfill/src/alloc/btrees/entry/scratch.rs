@@ -120,11 +120,17 @@ mod storage {
     use lang_std::vec::Vec;
 
     thread_local! {
-        #[allow(clippy::vec_box)]
+        #[allow(
+            clippy::vec_box,
+            clippy::missing_const_for_thread_local,
+            reason = "already fixed, some linters fail to detect"
+        )]
         pub(super) static RESERVED_BUF: Cell<Option<Vec<Box<()>>>> = const { Cell::new(None) };
-    }
 
-    thread_local! {
+        #[allow(
+            clippy::missing_const_for_thread_local,
+            reason = "already fixed, some linters fail to detect"
+        )]
         pub(super) static PROBE_BUF: Cell<Option<Vec<ErasedCommitInternal>>> = const { Cell::new(None) };
     }
 }

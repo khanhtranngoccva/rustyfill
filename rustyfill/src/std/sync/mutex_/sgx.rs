@@ -164,9 +164,9 @@ impl<T: ?Sized> TryMutex<T> for Mutex<T> {
     }
 }
 
-/// Locate the `OnceBox` pointer cell backing a `Mutex<_>`'s SGX backend and view
-/// it as an [`lang_core::sync::atomic::AtomicPtr`] so we can perform the
-/// load/CAS that std's own `OnceBox::initialize` performs. Mirrors
+/// Locate the `OnceBox` pointer cell backing a `Mutex<_>`'s SGX backend as a
+/// real [`lang_core::sync::atomic::AtomicPtr`] so we can perform the load/CAS
+/// that std's own `OnceBox::initialize` performs. Mirrors
 /// [`super::pthread::oncebox_slot`], routed through the shared layout mirror.
 ///
 /// # Safety
@@ -185,20 +185,17 @@ unsafe fn oncebox_slot<T: ?Sized>(
     let mirror: &SysMutexMirror<T> = unsafe { mem::transmute(this) };
 
     // Step 2: walk the real mirror fields down to the OnceBox pointer cell. The
-    // mirror types this as `*mut <SGX SpinMutex>`; our [`SgxPayload`] is
-    // layout-identical, so we read the same word as `*mut SgxPayload`.
-    let slot_cell: &rustyfill_sys::std::sync::atomic::Atomic<*mut SysSgxSpinMutex> =
-        &mirror.inner.inner.ptr;
+    // mirror types this as `AtomicPtr<SysSgxSpinMutex>`; our [`SgxPayload`] is
+    // layout-identical, so the pointer word reads identically.
+    let slot: &lang_core::sync::atomic::AtomicPtr<SysSgxSpinMutex> = &mirror.inner.inner.ptr;
 
-    // Step 3: the mirror's atomic is a repr(transparent) wrapper over
-    // `UnsafeCell<*mut _>` — layout-identical to `AtomicPtr<_>` (a single
-    // machine-width pointer). Reinterpret the shared reference as a real
-    // `AtomicPtr<SgxPayload>` so we can call its atomic methods.
+    // Step 3: `AtomicPtr<SysSgxSpinMutex>` and `AtomicPtr<SgxPayload>` are both
+    // a single machine-width pointer, so reinterpreting the reference is sound.
     assert_layout::<
-        &rustyfill_sys::std::sync::atomic::Atomic<*mut SysSgxSpinMutex>,
+        &lang_core::sync::atomic::AtomicPtr<SysSgxSpinMutex>,
         &lang_core::sync::atomic::AtomicPtr<SgxPayload>,
     >();
-    unsafe { mem::transmute(slot_cell) }
+    unsafe { mem::transmute(slot) }
 }
 
 #[cfg(test)]

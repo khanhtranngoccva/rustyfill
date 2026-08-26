@@ -4,6 +4,7 @@
 use std::collections::HashMap;
 
 use crate::loader_spec::LoaderSpec;
+use crate::syntaxes::ModulePath;
 
 /// Build the stable-ordered `(leaf, optional_replacement)` list consumed by
 /// the emitter, from every target's `path_replacements`. Owned `String`s are
@@ -64,34 +65,31 @@ pub(crate) fn collect_ignored_names(
 /// Compute how many module levels deep a file is under its library root.
 /// e.g. "collections/btree/map.rs" -> 3 (collections / btree / map)
 pub fn compute_module_depth(rel_path: &str) -> usize {
-    let stem = rel_path.strip_suffix(".rs").unwrap_or(rel_path);
-    let module_path = stem.strip_suffix("/mod").unwrap_or(stem);
-    module_path.split('/').filter(|s| !s.is_empty()).count()
+    ModulePath::from_file_stem(rel_path)
+        .map(|mp| mp.depth())
+        .unwrap_or(0)
 }
 
 /// Get all sibling module names in the same parent directory.
 /// For "collections/btree/node.rs", returns ["borrow", "map", "marker", ...].
 pub fn get_sibling_modules(rel_path: &str, all_files: &[(String, String)]) -> Vec<String> {
-    let my_stem = rel_path.strip_suffix(".rs").unwrap_or(rel_path);
-    let my_module = my_stem.strip_suffix("/mod").unwrap_or(my_stem);
-    let my_parent = my_module.rsplit_once('/').map(|(p, _)| p).unwrap_or("");
+    let Some(my_module) = ModulePath::from_file_stem(rel_path) else {
+        return Vec::new();
+    };
+    let my_leaf = my_module.leaf().to_string();
 
     let mut siblings = std::collections::HashSet::new();
     for (fp, _) in all_files {
-        let stem = fp.strip_suffix(".rs").unwrap_or(fp.as_str());
-        let mod_path = stem.strip_suffix("/mod").unwrap_or(stem);
-        let parent = mod_path.rsplit_once('/').map(|(p, _)| p).unwrap_or("");
-        if parent == my_parent {
-            let name = mod_path
-                .rsplit_once('/')
-                .map(|(_, n)| n)
-                .unwrap_or(mod_path);
-            if name
-                != my_module
-                    .rsplit_once('/')
-                    .map(|(_, n)| n)
-                    .unwrap_or(my_module)
-            {
+        let Some(other) = ModulePath::from_file_stem(fp) else {
+            continue;
+        };
+        // Same parent directory ⇔ equal depth and identical leading segments.
+        if other.depth() == my_module.depth()
+            && other.segments()[..my_module.depth() - 1]
+                == my_module.segments()[..my_module.depth() - 1]
+        {
+            let name = other.leaf();
+            if name != my_leaf {
                 siblings.insert(name.to_string());
             }
         }
@@ -118,8 +116,12 @@ mod tests {
         // A `mod.rs` defines the module at its own directory depth: the `/mod`
         // suffix is stripped, leaving the directory's segment count.
         assert_eq!(compute_module_depth("sys/pal/unix/mod.rs"), 3);
-        // Root-level `mod.rs` strips to "" but still counts as one module level.
-        assert_eq!(compute_module_depth("mod.rs"), 1);
+        // Root-level `mod.rs` is the library-root module itself: zero path
+        // segments, hence depth 0. (The pre-migration implementation returned
+        // 1 here only because `"".split('/')` yields a single empty token; the
+        // emitter's super-hop invariant treats depth-0 as "crate root, omit the
+        // preamble glob", which is the correct behaviour for the root.)
+        assert_eq!(compute_module_depth("mod.rs"), 0);
     }
 
     #[test]

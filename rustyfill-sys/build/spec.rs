@@ -181,23 +181,6 @@ fn core_target() -> BindingTarget {
         ),
     );
 
-    // AtomicPtr<T>: transparent wrapper over a raw pointer. Referenced bare in
-    // sys/sync/once_box.rs (`pub ptr: AtomicPtr<T>`). Registered at its
-    // canonical core location so the emitter routes the bare name here.
-    target.add_known_type(
-        "sync::atomic::AtomicPtr",
-        concat!(
-            "#[repr(transparent)]\n",
-            "pub struct AtomicPtr<T>(::__rustyfill_builtin_core::cell::UnsafeCell<*mut T>);\n",
-            "impl<T> AtomicPtr<T> {\n",
-            "    #[inline]\n",
-            "    pub const fn new(p: *mut T) -> Self {\n",
-            "        Self(::__rustyfill_builtin_core::cell::UnsafeCell::new(p))\n",
-            "    }\n",
-            "}",
-        ),
-    );
-
     target
 }
 

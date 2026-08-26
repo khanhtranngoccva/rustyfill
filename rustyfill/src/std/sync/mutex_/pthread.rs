@@ -220,17 +220,18 @@ impl<T: ?Sized> TryMutex<T> for Mutex<T> {
     }
 }
 
-/// Locate the `OnceBox` pointer cell backing a `Mutex<_>`'s pthread backend and
-/// view it as an [`lang_core::sync::atomic::AtomicPtr`] so we can perform the
-/// load/CAS that std's own `OnceBox::initialize` performs.
+/// Locate the `OnceBox` pointer cell backing a `Mutex<_>`'s pthread backend as
+/// a real [`lang_core::sync::atomic::AtomicPtr`] so we can perform the load/CAS
+/// that std's own `OnceBox::initialize` performs.
 ///
 /// We route through the generated layout mirror first rather than casting the
 /// public type straight to a bare pointer: `&Mutex<T>` → `&SysMutexMirror<T>`
-/// (layout-identical) → the real mirror field path `.data.pal.ptr`. Only the
-/// final step — viewing the mirror's opaque `Atomic<*mut SysPalMutex>` word as a
-/// usable `AtomicPtr<PalMutex>` — is a raw reinterpretation, because the mirror's
-/// atomic stub exposes no operations. That keeps every intermediate hop anchored
-/// in the actual generated struct layout instead of an unstated offset guess.
+/// (layout-identical) → the real mirror field path `.inner.pal.ptr`. The mirror's
+/// `ptr` field is the genuine `core::sync::atomic::AtomicPtr<SysPalMutex>` (the
+/// bindings reference the original crate's type rather than mirroring it), so
+/// the only reinterpretation left is viewing `AtomicPtr<SysPalMutex>` as
+/// `AtomicPtr<PalMutex>` — both are a single machine-width pointer and
+/// layout-identical.
 ///
 /// # Safety
 ///
@@ -248,20 +249,17 @@ unsafe fn oncebox_slot<T: ?Sized>(
     let mirror: &SysMutexMirror<T> = unsafe { mem::transmute(this) };
 
     // Step 2: walk the real mirror fields down to the OnceBox pointer cell. The
-    // mirror types this as `*mut SysPalMutex`; our [`PalMutex`] is
-    // layout-identical, so we read the same word as `*mut PalMutex`.
-    let slot_cell: &rustyfill_sys::std::sync::atomic::Atomic<*mut SysPalMutex> =
-        &mirror.inner.pal.ptr;
+    // mirror types this as `AtomicPtr<SysPalMutex>`; our [`PalMutex`] is
+    // layout-identical to `SysPalMutex`, so the pointer word reads identically.
+    let slot: &lang_core::sync::atomic::AtomicPtr<SysPalMutex> = &mirror.inner.pal.ptr;
 
-    // Step 3: the mirror's atomic is a repr(transparent) wrapper over
-    // `UnsafeCell<*mut _>` — layout-identical to `AtomicPtr<_>` (a single
-    // machine-width pointer). Reinterpret the shared reference as a real
-    // `AtomicPtr<PalMutex>` so we can call its atomic methods.
+    // Step 3: `AtomicPtr<SysPalMutex>` and `AtomicPtr<PalMutex>` are both a
+    // single machine-width pointer, so reinterpreting the reference is sound.
     assert_layout::<
-        &rustyfill_sys::std::sync::atomic::Atomic<*mut SysPalMutex>,
+        &lang_core::sync::atomic::AtomicPtr<SysPalMutex>,
         &lang_core::sync::atomic::AtomicPtr<PalMutex>,
     >();
-    unsafe { mem::transmute(slot_cell) }
+    unsafe { mem::transmute(slot) }
 }
 
 #[cfg(test)]

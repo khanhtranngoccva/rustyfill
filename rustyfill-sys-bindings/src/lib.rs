@@ -13,7 +13,10 @@ pub mod loader_spec;
 pub mod parser;
 pub mod pipeline;
 pub mod resolver;
+pub mod syntaxes;
 pub mod validator;
+
+pub use syntaxes::ModulePath;
 
 pub use emitter::{
     EmitConfig, FieldRefResolution, TypeInfo, TypeRegistry, check_declared_struct_fields,
