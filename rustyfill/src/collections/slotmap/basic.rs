@@ -47,7 +47,7 @@ use self::SlotContentMut::{OccupiedMut, VacantMut};
 impl<T> Slot<T> {
     #[inline(always)]
     fn occupied(&self) -> bool {
-        !self.version.is_multiple_of(2)
+        self.version % 2 != 0
     }
 
     fn get(&self) -> SlotContent<'_, T> {

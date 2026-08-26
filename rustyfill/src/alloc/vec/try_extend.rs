@@ -44,25 +44,25 @@ impl<T> TryExtend<T> for lang_alloc::vec::Vec<T> {
         let (head, mut iter) = source.safe_into_iter();
 
         if let Some(h) = head {
-            if self.len() == self.capacity()
-                && let Err(e) = self.try_reserve(1)
-            {
-                return Err((Resumable::new(h, iter), e));
+            if self.len() == self.capacity() {
+                if let Err(e) = self.try_reserve(1) {
+                    return Err((Resumable::new(h, iter), e));
+                }
             }
             self.push(h);
         }
 
         let (lower, _) = iter.size_hint();
-        if lower > 0
-            && let Err(e) = self.try_reserve(lower)
-        {
-            return Err((Resumable::from_remainder(iter), e));
+        if lower > 0 {
+            if let Err(e) = self.try_reserve(lower) {
+                return Err((Resumable::from_remainder(iter), e));
+            }
         }
         while let Some(item) = iter.next() {
-            if self.len() == self.capacity()
-                && let Err(e) = self.try_reserve(1)
-            {
-                return Err((Resumable::new(item, iter), e));
+            if self.len() == self.capacity() {
+                if let Err(e) = self.try_reserve(1) {
+                    return Err((Resumable::new(item, iter), e));
+                }
             }
             self.push(item);
         }

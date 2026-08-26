@@ -59,25 +59,25 @@ where
         let (head, mut iter) = source.safe_into_iter();
 
         if let Some(value) = head {
-            if self.len() == self.capacity()
-                && let Err(e) = self.try_reserve(1)
-            {
-                return Err((Resumable::new(value, iter), e));
+            if self.len() == self.capacity() {
+                if let Err(e) = self.try_reserve(1) {
+                    return Err((Resumable::new(value, iter), e));
+                }
             }
             self.insert(value);
         }
 
         let (lower, _) = iter.size_hint();
-        if lower > 0
-            && let Err(e) = self.try_reserve(lower)
-        {
-            return Err((Resumable::from_remainder(iter), e));
+        if lower > 0 {
+            if let Err(e) = self.try_reserve(lower) {
+                return Err((Resumable::from_remainder(iter), e));
+            }
         }
         while let Some(value) = iter.next() {
-            if self.len() == self.capacity()
-                && let Err(e) = self.try_reserve(1)
-            {
-                return Err((Resumable::new(value, iter), e));
+            if self.len() == self.capacity() {
+                if let Err(e) = self.try_reserve(1) {
+                    return Err((Resumable::new(value, iter), e));
+                }
             }
             self.insert(value);
         }

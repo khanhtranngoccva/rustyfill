@@ -333,7 +333,7 @@ impl<T: ?Sized> TryClone for Arc<T> {
 
         let ok = inner
             .strong
-            .try_update(Ordering::Relaxed, Ordering::Relaxed, |cur| {
+            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |cur| {
                 // Safe: `cur < MAX_REFCOUNT <= isize::MAX`, so `+1` cannot overflow.
                 cur.checked_add(1).filter(|&next| next < MAX_REFCOUNT)
             });
@@ -357,7 +357,7 @@ impl<T: ?Sized> TryClone for Weak<T> {
 
         let ok = inner
             .weak
-            .try_update(Ordering::Relaxed, Ordering::Relaxed, |cur| {
+            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |cur| {
                 // Safe: `cur < MAX_REFCOUNT <= isize::MAX`, so `+1` cannot overflow.
                 cur.checked_add(1).filter(|&next| next < MAX_REFCOUNT)
             });
@@ -423,7 +423,7 @@ impl<T: ?Sized> TryWeak<T> for Weak<T> {
         // we have no expectations about the new state.
         let ok = inner
             .strong
-            .try_update(Ordering::Acquire, Ordering::Relaxed, |cur| {
+            .fetch_update(Ordering::Acquire, Ordering::Relaxed, |cur| {
                 if cur == 0 {
                     // Data has been dropped; don't increment.
                     return None;

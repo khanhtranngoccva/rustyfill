@@ -83,6 +83,7 @@ impl RawVecInnerView {
     }
 
     pub(crate) fn from_vec<T>(vec: Vec<T>) -> (Self, usize) {
+        // FIXME: should implement into_raw_parts inline
         let (ptr, len, cap) = vec.into_raw_parts();
         (
             RawVecInnerView {

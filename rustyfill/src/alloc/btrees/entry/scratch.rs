@@ -147,11 +147,11 @@ impl<K, V> CachedProbeBuffer<K, V> {
     pub(super) fn try_new(capacity: usize) -> Result<Self, AllocError> {
         #[cfg(feature = "std")]
         {
-            if let Some(cached) = storage::PROBE_BUF.with(|b| b.replace(None))
-                && cached.capacity() >= capacity
-            {
-                let typed = unsafe { erased_to_commit_internal_vec::<K, V>(cached) };
-                return Ok(Self { inner: typed });
+            if let Some(cached) = storage::PROBE_BUF.with(|b| b.replace(None)) {
+                if cached.capacity() >= capacity {
+                    let typed = unsafe { erased_to_commit_internal_vec::<K, V>(cached) };
+                    return Ok(Self { inner: typed });
+                }
             }
             // Capacity insufficient; fall through to fresh allocation.
         }
@@ -202,11 +202,12 @@ impl<K, V> CachedReserveBuffer<K, V> {
     pub(super) fn try_new(capacity: usize) -> Result<Self, AllocError> {
         #[cfg(feature = "std")]
         {
-            if let Some(cached) = storage::RESERVED_BUF.with(|b| b.replace(None))
-                && cached.capacity() >= capacity
-            {
-                let typed = unsafe { erased_to_box_vec::<super::sys::InternalNode<K, V>>(cached) };
-                return Ok(Self { inner: typed });
+            if let Some(cached) = storage::RESERVED_BUF.with(|b| b.replace(None)) {
+                if cached.capacity() >= capacity {
+                    let typed =
+                        unsafe { erased_to_box_vec::<super::sys::InternalNode<K, V>>(cached) };
+                    return Ok(Self { inner: typed });
+                }
             }
             // Capacity insufficient; fall through to fresh allocation.
         }

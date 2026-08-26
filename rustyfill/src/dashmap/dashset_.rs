@@ -414,10 +414,10 @@ impl<T: Eq + Hash, S: BuildHasher + TryClone> TryDashSet<T, S> for DashSet<T, S>
 
         let (head, mut iter) = source.safe_into_iter();
 
-        if let Some(value) = head
-            && let Err((v, e)) = Self::try_insert_give_back(self, value)
-        {
-            return Err((Resumable::new(v, iter), e));
+        if let Some(value) = head {
+            if let Err((v, e)) = Self::try_insert_give_back(self, value) {
+                return Err((Resumable::new(v, iter), e));
+            }
         }
 
         while let Some(value) = iter.next() {

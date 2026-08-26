@@ -24,7 +24,7 @@ impl<T: crate::try_fmt::TryDebug> TryDebug for LazyCell<T> {
 // bound mirrors the pattern used by RefCell so that callers can uniformly
 // construct default cells across interior-mutability types.
 
-impl<T: TryDefault + Default> TryDefault for LazyCell<T> {
+impl<T: TryDefault> TryDefault for LazyCell<T> {
     fn try_default() -> Result<Self, TryDefaultError> {
         // Uninitialized — no allocation. The initializer runs lazily on first
         // access; if `T::try_default` fails at that point the cell panics,
@@ -60,7 +60,7 @@ mod tests {
     fn lazy_cell_try_default_uninitialized() {
         let cell: LazyCell<i32> = LazyCell::try_default().unwrap();
         // Not yet accessed — deref would initialize it.
-        assert_eq!(core::cell::LazyCell::<i32>::get(&cell), None);
+        assert_eq!(cell, None);
     }
 
     #[test]

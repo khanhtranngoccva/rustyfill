@@ -285,16 +285,16 @@ impl<K: Key, V> SecondaryMap<K, V> {
     /// Removes a key, returning the value if present.
     pub fn remove(&mut self, key: K) -> Option<V> {
         let kd = key.data();
-        if let Some(slot) = self.slots.get_mut(kd.idx() as usize)
-            && slot.version() == kd.version_raw()
-        {
-            // Safe: the key exists, so at least one element is present.
-            let num_elems = self
-                .num_elems
-                .checked_sub(1)
-                .expect("at least one element present");
-            self.num_elems = num_elems;
-            return replace(slot, Slot::new_vacant()).into_option();
+        if let Some(slot) = self.slots.get_mut(kd.idx() as usize) {
+            if slot.version() == kd.version_raw() {
+                // Safe: the key exists, so at least one element is present.
+                let num_elems = self
+                    .num_elems
+                    .checked_sub(1)
+                    .expect("at least one element present");
+                self.num_elems = num_elems;
+                return replace(slot, Slot::new_vacant()).into_option();
+            }
         }
         None
     }

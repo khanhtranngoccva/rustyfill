@@ -347,12 +347,10 @@ pub(crate) fn inner_push(target: &mut PathBuf, path: &Path) -> Result<(), TryRes
         target.as_mut_os_string().clear();
 
     // verbatim paths need . and .. removed
-    } else if let Some(ref p) = prefix
-        && prefix_is_verbatim(p)
-        && !path.as_os_str().is_empty()
-    {
-        return push_verbatim_normalized(target, path);
-
+    } else if let Some(ref p) = prefix {
+        if prefix_is_verbatim(p) && !path.as_os_str().is_empty() {
+            return push_verbatim_normalized(target, path);
+        }
     // `path` has a root but no prefix, e.g., `\windows` (Windows only)
     } else if path.has_root() {
         truncate_to_prefix(target, prefix.as_ref().map(prefix_len).unwrap_or(0));

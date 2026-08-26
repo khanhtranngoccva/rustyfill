@@ -50,7 +50,7 @@ impl<T: TryClone + Ord> TryClone for BinaryHeap<T> {
 
 // ── TryDefault for BinaryHeap<T> ──────────────────────────────────────────────
 
-impl<T: TryDefault> TryDefault for BinaryHeap<T> {
+impl<T: TryDefault + Ord> TryDefault for BinaryHeap<T> {
     fn try_default() -> Result<Self, TryDefaultError> {
         // An empty heap requires no allocation.
         Ok(BinaryHeap::new())
@@ -345,25 +345,25 @@ impl<T: Ord> TryExtend<T> for BinaryHeap<T> {
         let (head, mut iter) = source.safe_into_iter();
 
         if let Some(item) = head {
-            if self.len() == self.capacity()
-                && let Err(e) = self.try_reserve(1)
-            {
-                return Err((Resumable::new(item, iter), e));
+            if self.len() == self.capacity() {
+                if let Err(e) = self.try_reserve(1) {
+                    return Err((Resumable::new(item, iter), e));
+                }
             }
             self.push(item);
         }
 
         let (lower, _) = iter.size_hint();
-        if lower > 0
-            && let Err(e) = self.try_reserve(lower)
-        {
-            return Err((Resumable::from_remainder(iter), e));
+        if lower > 0 {
+            if let Err(e) = self.try_reserve(lower) {
+                return Err((Resumable::from_remainder(iter), e));
+            }
         }
         while let Some(item) = iter.next() {
-            if self.len() == self.capacity()
-                && let Err(e) = self.try_reserve(1)
-            {
-                return Err((Resumable::new(item, iter), e));
+            if self.len() == self.capacity() {
+                if let Err(e) = self.try_reserve(1) {
+                    return Err((Resumable::new(item, iter), e));
+                }
             }
             self.push(item);
         }

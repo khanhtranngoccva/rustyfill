@@ -274,7 +274,7 @@ static INTERN_CALL_COUNTER: AtomicUsize = AtomicUsize::new(0);
 /// Prune unlocked shards across all four interner maps if sufficient interning operations are reached.
 fn maybe_prune_all_maps() {
     let prev_total = INTERN_CALL_COUNTER.fetch_add(1, Ordering::Relaxed);
-    if !prev_total.is_multiple_of(PRUNE_INTERVAL) {
+    if prev_total % PRUNE_INTERVAL != 0 {
         return;
     }
 

@@ -46,11 +46,12 @@ impl<K: Ord, V> TryExtend<(K, V)> for lang_alloc::collections::BTreeMap<K, V> {
     {
         let (head, mut iter) = source.safe_into_iter();
 
-        if let Some((key, value)) = head
-            && let Err((k, v, e)) =
+        if let Some((key, value)) = head {
+            if let Err((k, v, e)) =
                 <Self as TryBTreeMap<K, V>>::try_insert_give_back(self, key, value)
-        {
-            return Err((Resumable::new((k, v), iter), e));
+            {
+                return Err((Resumable::new((k, v), iter), e));
+            }
         }
 
         while let Some((key, value)) = iter.next() {
@@ -99,10 +100,10 @@ impl<T: Ord> TryExtend<T> for lang_alloc::collections::BTreeSet<T> {
     {
         let (head, mut iter) = source.safe_into_iter();
 
-        if let Some(value) = head
-            && let Err((v, e)) = <Self as TryBTreeSet<T>>::try_insert_give_back(self, value)
-        {
-            return Err((Resumable::new(v, iter), e));
+        if let Some(value) = head {
+            if let Err((v, e)) = <Self as TryBTreeSet<T>>::try_insert_give_back(self, value) {
+                return Err((Resumable::new(v, iter), e));
+            }
         }
 
         while let Some(value) = iter.next() {

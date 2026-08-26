@@ -516,10 +516,10 @@ impl<T> TryExtend<T> for LinkedList<T> {
     {
         let (head, mut iter) = source.safe_into_iter();
 
-        if let Some(item) = head
-            && let Err((item, e)) = self.try_push_back_mut_give_back(item)
-        {
-            return Err((Resumable::new(item, iter), e));
+        if let Some(item) = head {
+            if let Err((item, e)) = self.try_push_back_mut_give_back(item) {
+                return Err((Resumable::new(item, iter), e));
+            }
         }
 
         while let Some(item) = iter.next() {

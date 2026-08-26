@@ -57,10 +57,10 @@ where
         let this: &Self = self;
         let (head, mut iter) = source.safe_into_iter();
 
-        if let Some(pair) = head
-            && let Err((k, v, e)) = Self::try_insert_give_back(this, pair.0, pair.1)
-        {
-            return Err((Resumable::new((k, v), iter), e));
+        if let Some(pair) = head {
+            if let Err((k, v, e)) = Self::try_insert_give_back(this, pair.0, pair.1) {
+                return Err((Resumable::new((k, v), iter), e));
+            }
         }
 
         while let Some(pair) = iter.next() {
