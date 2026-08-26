@@ -13,7 +13,6 @@ use lang_alloc::boxed::Box;
 use lang_core::alloc::Layout;
 use lang_core::fmt;
 use lang_core::ptr;
-use lang_std::ffi::os_str::Display;
 use lang_std::ffi::{OsStr, OsString};
 
 /// A trait for fallibly converting an `OsStr` slice into owned variants.
@@ -112,24 +111,6 @@ impl crate::try_fmt::TryDebug for OsStr {
     fn try_fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         // Mirrors std's Debug impl for OsStr which shows encoded bytes.
         fmt::Debug::fmt(self, f)
-    }
-}
-
-// ---------------------------------------------------------------------------
-// TryDebug + TryDisplay for ::lang_std::ffi::os_str::Display<'_>
-// ---------------------------------------------------------------------------
-// ::lang_std::ffi::os_str::Display's canonical Debug and Display impls write the OsStr
-// to the formatter without allocating. Safe to passthrough.
-
-impl crate::try_fmt::TryDebug for Display<'_> {
-    fn try_fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        fmt::Debug::fmt(self, f)
-    }
-}
-
-impl crate::try_fmt::TryDisplay for Display<'_> {
-    fn try_fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        fmt::Display::fmt(self, f)
     }
 }
 

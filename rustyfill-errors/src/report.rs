@@ -373,10 +373,10 @@ impl<C> Report<C> {
             return Err((self, sf));
         }
 
-        if let Some(cap) = self.capacity
-            && self.peer_count() >= cap
-        {
-            return Err((self, sf));
+        if let Some(cap) = self.capacity {
+            if self.peer_count() >= cap {
+                return Err((self, sf));
+            }
         }
 
         match TryVecDeque::try_push_front_give_back(&mut self.peers, sf) {

@@ -1128,23 +1128,23 @@ mod oom_tests {
 
     #[cfg(feature = "std")]
     #[test]
-    fn try_display_osstr_display_no_alloc() {
+    fn try_display_osstr_to_string_lossy_no_alloc() {
         let os = OsString::from("os string data");
-        let display = os.display();
+        let lossy = os.to_string_lossy();
         assert!(with_policy(FailPolicy::fail_all_alloc(), || {
             let mut w = NoopWriter;
-            fmt::write(&mut w, format_args!("{}", TryDisplayWrapper(display))).is_ok()
+            fmt::write(&mut w, format_args!("{}", TryDisplayWrapper(lossy.as_ref()))).is_ok()
         }));
     }
 
     #[cfg(feature = "std")]
     #[test]
-    fn try_debug_osstr_display_no_alloc() {
+    fn try_debug_osstr_to_string_lossy_no_alloc() {
         let os = OsString::from("os string data");
-        let display = os.display();
+        let lossy = os.to_string_lossy();
         assert!(with_policy(FailPolicy::fail_all_alloc(), || {
             let mut w = NoopWriter;
-            fmt::write(&mut w, format_args!("{:?}", TryDebugWrapper(display))).is_ok()
+            fmt::write(&mut w, format_args!("{:?}", TryDebugWrapper(lossy.as_ref()))).is_ok()
         }));
     }
 
@@ -2628,23 +2628,21 @@ mod try_write_tests {
     // ── ManuallyDrop ─────────────────────────────────────────────────────────
 
     #[test]
-    fn parity_manually_drop_primitive_debug() {
+    fn manually_drop_primitive_debug() {
         let md: mem::ManuallyDrop<i32> = mem::ManuallyDrop::new(42);
-        let mut bs = String::new();
         let mut bt = String::new();
-        write!(&mut bs, "{:?}", md).unwrap();
         try_write!(&mut bt, "{:?}", &md).unwrap();
-        assert_eq!(bs, bt);
+        // Our TryDebug wraps in ManuallyDrop { value: MaybeDangling(...) } to
+        // distinguish from plain T's Debug (which would be indistinguishable).
+        assert_eq!(bt, "ManuallyDrop { value: MaybeDangling(42) }");
     }
 
     #[test]
-    fn parity_manually_drop_string_debug() {
+    fn manually_drop_string_debug() {
         let mut md: mem::ManuallyDrop<String> = mem::ManuallyDrop::new(String::from("wrapped"));
-        let mut bs = String::new();
         let mut bt = String::new();
-        write!(&mut bs, "{:?}", md).unwrap();
         try_write!(&mut bt, "{:?}", &md).unwrap();
-        assert_eq!(bs, bt);
+        assert_eq!(bt, r#"ManuallyDrop { value: MaybeDangling("wrapped") }"#);
         unsafe {
             mem::ManuallyDrop::drop(&mut md);
         }

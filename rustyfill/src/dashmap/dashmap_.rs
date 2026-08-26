@@ -1929,7 +1929,7 @@ mod tests {
     fn try_insert_unique_nonblock_vacant_and_occupied() {
         let map: DashMap<&str, i32> = DashMap::new();
         // Vacant arm — freshly inserted.
-        assert_eq!(map.try_insert_unique_nonblock("u", 1).unwrap(), ());
+        map.try_insert_unique_nonblock("u", 1).unwrap();
         // Occupied arm — returns the key/value back with an Other error.
         let err = map.try_insert_unique_nonblock("u", 2).unwrap_err();
         assert_eq!(err.0, "u");

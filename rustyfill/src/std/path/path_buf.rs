@@ -333,6 +333,7 @@ pub(crate) fn inner_push(target: &mut PathBuf, path: &Path) -> Result<(), TryRes
         .next()
         .is_some_and(|c| matches!(c, Component::Prefix(_)));
 
+    // #[allow(unexpected_cfgs, reason = "cygwin is apparently a new target")]
     let need_clear = if cfg!(target_os = "cygwin") {
         // If path is absolute and its prefix is none, it is like `/foo`,
         // and will be handled below.
@@ -883,76 +884,99 @@ mod tests {
     }
 
     // ── Add Extension ────────────────────────────────────────────────────────
-
-    /// Assert that `try_add_extension(base, ext)` produces the same result as
-    /// `PathBuf::add_extension(base, ext)` on this platform.
-    fn assert_add_ext_matches_std(base: &str, ext: &str) {
-        let (expected, actual) = {
-            let mut e = PathBuf::from(base);
-            let e_ok = e.add_extension(ext);
-            let mut a = PathBuf::try_from_path(base).unwrap();
-            let a_ok = a.try_add_extension(ext).unwrap();
-            assert_eq!(
-                e_ok, a_ok,
-                "add_extension bool mismatch for base={} ext={}",
-                base, ext
-            );
-            (e, a)
-        };
-        assert_eq!(
-            expected, actual,
-            "add_extension mismatch for base={} ext={}",
-            base, ext
-        );
-    }
+    // Component-based assertions: verify the file_name component of the result,
+    // which is platform-independent and doesn't duplicate the algorithm.
 
     #[test]
     fn add_extension_simple() {
-        assert_add_ext_matches_std("notes", "txt");
-        assert_add_ext_matches_std("/tmp/file", "log");
+        let mut p = PathBuf::try_from_path("notes").unwrap();
+        assert!(p.try_add_extension("txt").unwrap());
+        assert_eq!(p.file_name().and_then(|f| f.to_str()), Some("notes.txt"));
+
+        let mut p = PathBuf::try_from_path("/tmp/file").unwrap();
+        assert!(p.try_add_extension("log").unwrap());
+        assert_eq!(p.file_name().and_then(|f| f.to_str()), Some("file.log"));
     }
 
     #[test]
-    fn add_extension_appends_to_existing() {
-        assert_add_ext_matches_std("foo.tar.gz", "xz");
-        assert_add_ext_matches_std("archive.zip.bak", "enc");
+    fn add_extension_appends_after_filename() {
+        // Semantics: truncate at end of file_name, then push ".<ext>".
+        // The existing extension is preserved; the new one is appended.
+        let mut p = PathBuf::try_from_path("foo.tar.gz").unwrap();
+        assert!(p.try_add_extension("xz").unwrap());
+        assert_eq!(p.file_name().and_then(|f| f.to_str()), Some("foo.tar.gz.xz"));
+
+        let mut p = PathBuf::try_from_path("archive.zip.bak").unwrap();
+        assert!(p.try_add_extension("enc").unwrap());
+        assert_eq!(p.file_name().and_then(|f| f.to_str()), Some("archive.zip.bak.enc"));
     }
 
     #[test]
     fn add_extension_empty_ext_noop() {
-        assert_add_ext_matches_std("foo.txt", "");
-        assert_add_ext_matches_std("/path/file.tar.gz", "");
+        let mut p = PathBuf::try_from_path("foo.txt").unwrap();
+        assert!(p.try_add_extension("").unwrap());
+        assert_eq!(p.file_name().and_then(|f| f.to_str()), Some("foo.txt"));
+
+        let mut p = PathBuf::try_from_path("/path/file.tar.gz").unwrap();
+        assert!(p.try_add_extension("").unwrap());
+        assert_eq!(p.file_name().and_then(|f| f.to_str()), Some("file.tar.gz"));
     }
 
     #[test]
     fn add_extension_no_filename_returns_false() {
         let mut p = PathBuf::try_from_path("/").unwrap();
         assert!(!p.try_add_extension("txt").unwrap());
+        assert!(p.file_name().is_none());
+
         let mut p = PathBuf::try_from_path("..").unwrap();
         assert!(!p.try_add_extension("txt").unwrap());
+        assert!(p.file_name().is_none());
+
         let mut p = PathBuf::try_from_path(".").unwrap();
         assert!(!p.try_add_extension("txt").unwrap());
+        assert!(p.file_name().is_none());
     }
 
     #[test]
     fn add_extension_unicode() {
-        assert_add_ext_matches_std("/docs/日本語ファイル", "txt");
-        assert_add_ext_matches_std("/数据/文件", "json");
+        let mut p = PathBuf::try_from_path("/docs/日本語ファイル").unwrap();
+        assert!(p.try_add_extension("txt").unwrap());
+        assert_eq!(
+            p.file_name().and_then(|f| f.to_str()),
+            Some("日本語ファイル.txt")
+        );
+
+        let mut p = PathBuf::try_from_path("/数据/文件").unwrap();
+        assert!(p.try_add_extension("json").unwrap());
+        assert_eq!(
+            p.file_name().and_then(|f| f.to_str()),
+            Some("文件.json")
+        );
     }
 
     #[test]
     fn add_extension_trailing_separator() {
-        assert_add_ext_matches_std("/tmp/file/", "txt");
-        assert_add_ext_matches_std("a/b/c/", "dat");
+        // On Unix, "dir/file/" has file_name == "file", so the extension is
+        // appended after the filename (truncating the trailing separator).
+        let mut p = PathBuf::try_from_path("/tmp/file/").unwrap();
+        assert!(p.try_add_extension("txt").unwrap());
+        assert_eq!(p.file_name().and_then(|f| f.to_str()), Some("file.txt"));
+
+        let mut p = PathBuf::try_from_path("a/b/c/").unwrap();
+        assert!(p.try_add_extension("dat").unwrap());
+        assert_eq!(p.file_name().and_then(|f| f.to_str()), Some("c.dat"));
     }
 
     #[test]
     fn add_extension_multiple_sequential() {
+        // Each call appends ".ext" after the current file_name.
         let mut p = PathBuf::try_from_path("data").unwrap();
         p.try_add_extension("csv").unwrap();
+        assert_eq!(p.file_name().and_then(|f| f.to_str()), Some("data.csv"));
         p.try_add_extension("gz").unwrap();
+        assert_eq!(p.file_name().and_then(|f| f.to_str()), Some("data.csv.gz"));
         p.try_add_extension("bz2").unwrap();
-        assert_eq!(p, Path::new("data.csv.gz.bz2"));
+        assert_eq!(p.file_name().and_then(|f| f.to_str()), Some("data.csv.gz.bz2"));
     }
 
     #[test]

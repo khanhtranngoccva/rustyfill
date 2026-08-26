@@ -27,10 +27,9 @@ use crate::std::arc::{TryArc, TryWeak};
 use crate::try_clone::TryClone;
 use crate::try_clone::TryCloneError;
 use crate::try_default::{TryDefault, TryDefaultError};
-use crate::try_fmt::FormatterExt;
-use crate::try_fmt::TryDebug;
+use crate::try_fmt::{FormatterExt, TryDebug, TryDisplay};
 use crate::try_to_owned::{TryToOwned, TryToOwnedError};
-use lang_alloc::borrow::ToOwned;
+use lang_alloc::borrow::{Borrow, ToOwned};
 use lang_alloc::string::String;
 use lang_core::fmt;
 use lang_core::hash::Hash;
@@ -52,11 +51,7 @@ const PRUNE_INTERVAL: usize = 1024;
 /// Mirrors the `ToOwned` relationship with stronger fallible
 /// semantics: the borrowed type must also implement [`TryToOwned`], and the
 /// owned type must be clonable so we can build the Arc before acquiring locks.
-pub trait InternKind: TryToOwned + Hash + Eq + 'static
-where
-    <Self as ToOwned>::Owned: Hash + Eq + PartialEq<Self> + TryClone,
-{
-}
+pub trait InternKind: TryToOwned + Hash + Eq + 'static {}
 
 impl InternKind for str {}
 
@@ -72,10 +67,7 @@ impl InternKind for Path {}
 /// The owned form is provided by `<B as ToOwned>::Owned`.
 ///
 /// Supported types: `Intern<str>`, `Intern<OsStr>`, `Intern<CStr>`, `Intern<Path>`.
-pub enum Intern<B: InternKind + ?Sized>
-where
-    <B as ToOwned>::Owned: Hash + Eq + PartialEq<B> + TryClone,
-{
+pub enum Intern<B: InternKind + ?Sized> {
     /// An owned value, not yet interned.
     Owned(<B as ToOwned>::Owned),
     /// A shared reference to a globally-interned value.
@@ -90,19 +82,25 @@ pub type InternPath = Intern<Path>;
 
 impl<B: InternKind + ?Sized> Clone for Intern<B>
 where
-    <B as ToOwned>::Owned: Hash + Eq + PartialEq<B> + TryClone,
+    <B as ToOwned>::Owned: TryClone,
 {
     fn clone(&self) -> Self {
         match self {
-            Self::Owned(s) => Self::Owned(s.clone()),
-            Self::Shared(a) => Self::Shared(a.clone()),
+            Self::Owned(s) => Self::Owned(
+                s.try_clone()
+                    .expect("Intern::clone failed to try_clone owned value"),
+            ),
+            Self::Shared(a) => Self::Shared(
+                a.try_clone()
+                    .expect("Intern::clone failed to try_clone Arc"),
+            ),
         }
     }
 }
 
 impl<B: InternKind + ?Sized> TryClone for Intern<B>
 where
-    <B as ToOwned>::Owned: Hash + Eq + PartialEq<B> + TryClone,
+    <B as ToOwned>::Owned: TryClone,
 {
     fn try_clone(&self) -> Result<Self, TryCloneError> {
         Ok(match self {
@@ -112,10 +110,7 @@ where
     }
 }
 
-impl<B: InternKind + ?Sized> From<Arc<<B as ToOwned>::Owned>> for Intern<B>
-where
-    <B as ToOwned>::Owned: Hash + Eq + PartialEq<B> + TryClone,
-{
+impl<B: InternKind + ?Sized> From<Arc<<B as ToOwned>::Owned>> for Intern<B> {
     fn from(value: Arc<<B as ToOwned>::Owned>) -> Self {
         Self::Shared(value)
     }
@@ -127,10 +122,7 @@ where
 // for all possible B. Use Intern::from_owned() instead.
 
 // Common impls for all Intern variants
-impl<B: InternKind + ?Sized> Intern<B>
-where
-    <B as ToOwned>::Owned: Hash + Eq + PartialEq<B> + TryClone,
-{
+impl<B: InternKind + ?Sized> Intern<B> {
     /// Returns true if this is the `Shared` variant.
     pub fn is_shared(&self) -> bool {
         matches!(self, Self::Shared(_))
@@ -155,28 +147,33 @@ where
     }
 }
 
-impl<B: InternKind + ?Sized> PartialEq for Intern<B>
-where
-    <B as ToOwned>::Owned: Hash + Eq + PartialEq<B> + TryClone,
-{
+impl<B: InternKind + ?Sized> PartialEq for Intern<B> {
     fn eq(&self, other: &Self) -> bool {
         match (self, other) {
-            (Self::Owned(a), Self::Owned(b)) => a == b,
-            (Self::Shared(a), Self::Shared(b)) => Arc::ptr_eq(a, b) || (**a) == (**b),
-            (Self::Owned(a), Self::Shared(b)) => a == b.as_ref(),
-            (Self::Shared(a), Self::Owned(b)) => a.as_ref() == b,
+            (Self::Owned(a), Self::Owned(b)) => a.borrow() == b.borrow(),
+            (Self::Shared(a), Self::Shared(b)) => {
+                Arc::ptr_eq(a, b) || a.deref().borrow() == b.deref().borrow()
+            }
+            (Self::Owned(a), Self::Shared(b)) => a.borrow() == b.deref().borrow(),
+            (Self::Shared(a), Self::Owned(b)) => a.deref().borrow() == b.borrow(),
         }
     }
 }
 
-impl<B: InternKind + ?Sized> Eq for Intern<B> where
-    <B as ToOwned>::Owned: Hash + Eq + PartialEq<B> + TryClone
-{
+impl<B: InternKind + ?Sized> PartialEq<B> for Intern<B> {
+    fn eq(&self, other: &B) -> bool {
+        match self {
+            Self::Owned(a) => a.borrow() == other,
+            Self::Shared(a) => a.deref().borrow() == other,
+        }
+    }
 }
+
+impl<B: InternKind + ?Sized> Eq for Intern<B> {}
 
 impl<B: InternKind + ?Sized> Deref for Intern<B>
 where
-    <B as ToOwned>::Owned: Hash + Eq + PartialEq<B> + TryClone + Deref<Target = B>,
+    <B as ToOwned>::Owned: Deref<Target = B>,
 {
     type Target = B;
 
@@ -190,7 +187,7 @@ where
 
 impl<B: InternKind + ?Sized> AsRef<B> for Intern<B>
 where
-    <B as ToOwned>::Owned: Hash + Eq + PartialEq<B> + TryClone + AsRef<B>,
+    <B as ToOwned>::Owned: AsRef<B>,
 {
     fn as_ref(&self) -> &B {
         match self {
@@ -202,7 +199,7 @@ where
 
 impl<B: InternKind + ?Sized> fmt::Debug for Intern<B>
 where
-    <B as ToOwned>::Owned: Hash + Eq + PartialEq<B> + TryClone + fmt::Debug,
+    <B as ToOwned>::Owned: TryDebug,
 {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
@@ -214,7 +211,7 @@ where
 
 impl<B: InternKind + ?Sized> TryDebug for Intern<B>
 where
-    <B as ToOwned>::Owned: Hash + Eq + PartialEq<B> + TryClone + TryDebug,
+    <B as ToOwned>::Owned: TryDebug,
 {
     fn try_fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
@@ -224,9 +221,33 @@ where
     }
 }
 
+impl<B: InternKind + ?Sized> fmt::Display for Intern<B>
+where
+    B: fmt::Display,
+{
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Owned(o) => o.borrow().fmt(f),
+            Self::Shared(a) => a.deref().borrow().fmt(f),
+        }
+    }
+}
+
+impl<B: InternKind + ?Sized> TryDisplay for Intern<B>
+where
+    B: TryDisplay,
+{
+    fn try_fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Owned(o) => o.borrow().try_fmt(f),
+            Self::Shared(a) => a.deref().borrow().try_fmt(f),
+        }
+    }
+}
+
 impl<B: InternKind + ?Sized> Default for Intern<B>
 where
-    <B as ToOwned>::Owned: Hash + Eq + PartialEq<B> + TryClone + Default,
+    <B as ToOwned>::Owned: Default,
 {
     fn default() -> Self {
         Intern::Owned(Default::default())
@@ -235,7 +256,7 @@ where
 
 impl<B: InternKind + ?Sized> TryDefault for Intern<B>
 where
-    <B as ToOwned>::Owned: Hash + Eq + PartialEq<B> + TryClone + TryDefault,
+    <B as ToOwned>::Owned: TryDefault,
 {
     fn try_default() -> Result<Self, TryDefaultError> {
         Ok(Intern::Owned(TryDefault::try_default()?))
@@ -340,7 +361,7 @@ fn do_intern_with_key<B>(
 ) -> Result<Arc<B::Owned>, TryToOwnedError>
 where
     B: InternKind + ?Sized,
-    <B as ToOwned>::Owned: Hash + Eq + PartialEq<B> + Clone + TryClone,
+    <B as ToOwned>::Owned: Clone,
 {
     // ── Compute hash (infallible, no locks) ──────────────────────────────────
     let hash = map.compute_hash_internal(borrowed);
@@ -358,7 +379,7 @@ where
                 Some(Err(_)) | None => return false,
                 Some(Ok(s)) => s,
             };
-            inner.as_ref() == borrowed
+            <<B as ToOwned>::Owned as Borrow<B>>::borrow(inner.deref()) == borrowed
         }) {
             let weak = unsafe { &bucket.as_ref().1 };
             if let Some(Ok(arc)) = weak.try_upgrade() {
@@ -397,7 +418,7 @@ where
             Some(Err(_)) | None => return false,
             Some(Ok(s)) => s,
         };
-        inner.as_ref() == borrowed
+        <<B as ToOwned>::Owned as Borrow<B>>::borrow(inner.deref()) == borrowed
     }) {
         let weak = unsafe { &bucket.as_ref().1 };
         if let Some(Ok(upgraded)) = weak.try_upgrade() {
@@ -424,10 +445,7 @@ where
 // ── InternExt trait ────────────────────────────────────────────────────────────
 
 /// Extension methods for internable borrowed types.
-pub trait InternExt: InternKind
-where
-    <Self as ToOwned>::Owned: Hash + Eq + PartialEq<Self> + TryClone,
-{
+pub trait InternExt: InternKind {
     /// Fallibly intern this value via the global interner.
     fn intern(&self) -> Result<Intern<Self>, TryToOwnedError>;
 
@@ -475,24 +493,9 @@ impl PartialEq<String> for InternStr {
     }
 }
 
-impl PartialEq<str> for InternStr {
-    fn eq(&self, other: &str) -> bool {
-        match self {
-            Self::Owned(a) => a.as_str() == other,
-            Self::Shared(a) => a.as_ref() == other,
-        }
-    }
-}
-
 impl PartialEq<&str> for InternStr {
     fn eq(&self, other: &&str) -> bool {
         PartialEq::eq(self, *other)
-    }
-}
-
-impl fmt::Display for InternStr {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}", self.deref())
     }
 }
 
@@ -534,21 +537,6 @@ impl PartialEq<OsString> for InternOsStr {
     }
 }
 
-impl PartialEq<OsStr> for InternOsStr {
-    fn eq(&self, other: &OsStr) -> bool {
-        match self {
-            Self::Owned(a) => a.as_os_str() == other,
-            Self::Shared(a) => a.as_ref() == other,
-        }
-    }
-}
-
-impl fmt::Display for InternOsStr {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}", self.deref().to_string_lossy())
-    }
-}
-
 // ── CStr implementation ────────────────────────────────────────────────────────
 
 impl InternExt for CStr {
@@ -574,24 +562,6 @@ impl InternCStr {
                     Err(_) => Self::Owned(owned),
                 }
             }
-        }
-    }
-}
-
-impl PartialEq<CStr> for InternCStr {
-    fn eq(&self, other: &CStr) -> bool {
-        match self {
-            Self::Owned(a) => a.as_c_str() == other,
-            Self::Shared(a) => a.as_ref() == other,
-        }
-    }
-}
-
-impl fmt::Display for InternCStr {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self.deref().to_str() {
-            Ok(s) => write!(f, "{}", s),
-            Err(_) => write!(f, "<invalid utf-8 cstr>"),
         }
     }
 }
@@ -631,21 +601,6 @@ impl PartialEq<PathBuf> for InternPath {
             Self::Owned(a) => a == other,
             Self::Shared(a) => a.as_ref() == other.as_path(),
         }
-    }
-}
-
-impl PartialEq<Path> for InternPath {
-    fn eq(&self, other: &Path) -> bool {
-        match self {
-            Self::Owned(a) => a.as_path() == other,
-            Self::Shared(a) => a.as_ref() == other,
-        }
-    }
-}
-
-impl fmt::Display for InternPath {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}", self.deref().display())
     }
 }
 

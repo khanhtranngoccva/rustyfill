@@ -2,6 +2,7 @@ use crate::alloc::AllocError;
 use lang_alloc::alloc;
 use lang_alloc::vec::Vec;
 use lang_core::alloc::Layout;
+use lang_core::mem;
 use lang_core::ptr::{self, NonNull};
 
 /// # Safety
@@ -83,8 +84,14 @@ impl RawVecInnerView {
     }
 
     pub(crate) fn from_vec<T>(vec: Vec<T>) -> (Self, usize) {
-        // FIXME: should implement into_raw_parts inline
-        let (ptr, len, cap) = vec.into_raw_parts();
+        // Extract raw parts without `into_raw_parts` (unstable in 1.85).
+        // Wrap in ManuallyDrop so the Vec's Drop doesn't free the buffer.
+        let mut vec = mem::ManuallyDrop::new(vec);
+        let len = vec.len();
+        let cap = vec.capacity();
+        // SAFETY: ManuallyDrop guarantees the Vec won't be dropped, so its
+        // internal pointer remains valid. We only read it here.
+        let ptr = vec.as_mut_ptr();
         (
             RawVecInnerView {
                 ptr: unsafe { NonNull::new_unchecked(ptr.cast()) },
