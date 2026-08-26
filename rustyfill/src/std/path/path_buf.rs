@@ -333,7 +333,10 @@ pub(crate) fn inner_push(target: &mut PathBuf, path: &Path) -> Result<(), TryRes
         .next()
         .is_some_and(|c| matches!(c, Component::Prefix(_)));
 
-    // #[allow(unexpected_cfgs, reason = "cygwin is apparently a new target")]
+    #[allow(
+        unexpected_cfgs,
+        reason = "mirrors std; cygwin is not yet in rustc's known target list"
+    )]
     let need_clear = if cfg!(target_os = "cygwin") {
         // If path is absolute and its prefix is none, it is like `/foo`,
         // and will be handled below.
@@ -904,11 +907,17 @@ mod tests {
         // The existing extension is preserved; the new one is appended.
         let mut p = PathBuf::try_from_path("foo.tar.gz").unwrap();
         assert!(p.try_add_extension("xz").unwrap());
-        assert_eq!(p.file_name().and_then(|f| f.to_str()), Some("foo.tar.gz.xz"));
+        assert_eq!(
+            p.file_name().and_then(|f| f.to_str()),
+            Some("foo.tar.gz.xz")
+        );
 
         let mut p = PathBuf::try_from_path("archive.zip.bak").unwrap();
         assert!(p.try_add_extension("enc").unwrap());
-        assert_eq!(p.file_name().and_then(|f| f.to_str()), Some("archive.zip.bak.enc"));
+        assert_eq!(
+            p.file_name().and_then(|f| f.to_str()),
+            Some("archive.zip.bak.enc")
+        );
     }
 
     #[test]
@@ -948,10 +957,7 @@ mod tests {
 
         let mut p = PathBuf::try_from_path("/数据/文件").unwrap();
         assert!(p.try_add_extension("json").unwrap());
-        assert_eq!(
-            p.file_name().and_then(|f| f.to_str()),
-            Some("文件.json")
-        );
+        assert_eq!(p.file_name().and_then(|f| f.to_str()), Some("文件.json"));
     }
 
     #[test]
@@ -976,7 +982,10 @@ mod tests {
         p.try_add_extension("gz").unwrap();
         assert_eq!(p.file_name().and_then(|f| f.to_str()), Some("data.csv.gz"));
         p.try_add_extension("bz2").unwrap();
-        assert_eq!(p.file_name().and_then(|f| f.to_str()), Some("data.csv.gz.bz2"));
+        assert_eq!(
+            p.file_name().and_then(|f| f.to_str()),
+            Some("data.csv.gz.bz2")
+        );
     }
 
     #[test]

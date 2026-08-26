@@ -394,10 +394,7 @@ pub trait TryHashMap<K, V, S = RandomState>: Sized {
     }
 
     /// Alias for [`Self::try_entry`].
-    fn fallible_entry(
-        &mut self,
-        key: K,
-    ) -> Result<hash_map::Entry<'_, K, V>, TryReserveError>
+    fn fallible_entry(&mut self, key: K) -> Result<hash_map::Entry<'_, K, V>, TryReserveError>
     where
         K: Eq + Hash,
     {

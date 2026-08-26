@@ -279,7 +279,8 @@ mod tests {
     #[test]
     fn try_new_zst() {
         let b = <Box<()> as TryBox<()>>::try_new(()).unwrap();
-        assert_eq!(*b, ());
+        // ZST — nothing to compare; successful allocation is the assertion.
+        drop(b);
     }
 
     #[test]

@@ -506,7 +506,9 @@ mod tests {
         let p = Path::new("notes").try_with_added_extension("txt").unwrap();
         assert_eq!(p.file_name().and_then(|f| f.to_str()), Some("notes.txt"));
 
-        let p = Path::new("/tmp/file").try_with_added_extension("log").unwrap();
+        let p = Path::new("/tmp/file")
+            .try_with_added_extension("log")
+            .unwrap();
         assert_eq!(p.file_name().and_then(|f| f.to_str()), Some("file.log"));
     }
 
@@ -514,11 +516,21 @@ mod tests {
     fn with_added_ext_appends_after_filename() {
         // Semantics: truncate at end of file_name, then push ".<ext>".
         // The existing extension is preserved; the new one is appended.
-        let p = Path::new("foo.tar.gz").try_with_added_extension("xz").unwrap();
-        assert_eq!(p.file_name().and_then(|f| f.to_str()), Some("foo.tar.gz.xz"));
+        let p = Path::new("foo.tar.gz")
+            .try_with_added_extension("xz")
+            .unwrap();
+        assert_eq!(
+            p.file_name().and_then(|f| f.to_str()),
+            Some("foo.tar.gz.xz")
+        );
 
-        let p = Path::new("archive.zip.bak").try_with_added_extension("enc").unwrap();
-        assert_eq!(p.file_name().and_then(|f| f.to_str()), Some("archive.zip.bak.enc"));
+        let p = Path::new("archive.zip.bak")
+            .try_with_added_extension("enc")
+            .unwrap();
+        assert_eq!(
+            p.file_name().and_then(|f| f.to_str()),
+            Some("archive.zip.bak.enc")
+        );
     }
 
     #[test]
@@ -538,7 +550,9 @@ mod tests {
 
     #[test]
     fn with_added_ext_unicode() {
-        let p = Path::new("/docs/日本語ファイル").try_with_added_extension("txt").unwrap();
+        let p = Path::new("/docs/日本語ファイル")
+            .try_with_added_extension("txt")
+            .unwrap();
         assert_eq!(
             p.file_name().and_then(|f| f.to_str()),
             Some("日本語ファイル.txt")

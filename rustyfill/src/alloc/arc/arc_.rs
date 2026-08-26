@@ -514,7 +514,8 @@ mod tests {
     #[test]
     fn try_new_zst() {
         let arc = <Arc<()> as TryArc<()>>::try_new(()).unwrap();
-        assert_eq!(*arc, ());
+        // ZST — nothing to compare; successful allocation is the assertion.
+        drop(arc);
     }
 
     #[test]

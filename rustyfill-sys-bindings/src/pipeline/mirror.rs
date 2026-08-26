@@ -275,7 +275,8 @@ pub(super) fn mirror_minimal_modules(
             let canonical = format!("{}::{}::{}", target.lib_name, mod_path, item.name);
             match item.kind {
                 ItemKind::TypeAlias => {
-                    sink.registry.insert_declared_alias(&canonical, &def_file_abs);
+                    sink.registry
+                        .insert_declared_alias(&canonical, &def_file_abs);
                     if let Some(rhs) = &item.alias_rhs {
                         sink.registry.set_alias_rhs(&canonical, rhs.clone());
                     }

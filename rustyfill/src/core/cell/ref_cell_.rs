@@ -102,8 +102,8 @@ mod tests {
     #[test]
     fn refcell_try_clone_zst() {
         let cell = RefCell::new(());
-        let cloned = cell.try_clone().unwrap();
-        assert_eq!(*cloned.borrow(), ());
+        // ZST — nothing to compare; successful clone is the assertion.
+        cell.try_clone().unwrap();
     }
 
     // ── TryDefault tests ──────────────────────────────────────────────────────

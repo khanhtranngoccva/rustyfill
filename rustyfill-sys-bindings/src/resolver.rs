@@ -133,12 +133,16 @@ impl ModuleResolver {
     /// Remember which library a registered file belongs to, so emitted imports
     /// can be written as absolute `crate::{lib}::...` paths.
     pub fn set_file_lib(&mut self, file_path: &str, lib_name: &str) {
-        self.lib_by_file.insert(file_path.to_string(), lib_name.to_string());
+        self.lib_by_file
+            .insert(file_path.to_string(), lib_name.to_string());
     }
 
     /// Library name for a file (falls back to `"std"` when unknown).
     pub fn lib_of_file(&self, file_path: &str) -> &str {
-        self.lib_by_file.get(file_path).map(String::as_str).unwrap_or("std")
+        self.lib_by_file
+            .get(file_path)
+            .map(String::as_str)
+            .unwrap_or("std")
     }
 
     /// Populate the set of spec-declared canonical paths. Called once after the
@@ -962,9 +966,7 @@ impl ModuleResolver {
                                 lines.push(format!(
                                     "#[allow(unused_imports)] use {abs_path} as {bind_name};"
                                 ));
-                                lines.push(format!(
-                                    "#[allow(unused_imports)] use {abs_path}::*;"
-                                ));
+                                lines.push(format!("#[allow(unused_imports)] use {abs_path}::*;"));
                                 // Mark this module as glob-imported so individual items
                                 // from it are skipped below.
                                 globbed_modules.insert(abs_path.clone());

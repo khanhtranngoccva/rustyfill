@@ -500,7 +500,8 @@ mod tests {
     #[test]
     fn try_new_zst() {
         let rc = <Rc<()> as TryRc<()>>::try_new(()).unwrap();
-        assert_eq!(*rc, ());
+        // ZST — nothing to compare; successful allocation is the assertion.
+        drop(rc);
     }
 
     #[test]

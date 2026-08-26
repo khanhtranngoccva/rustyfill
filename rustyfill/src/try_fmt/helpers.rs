@@ -137,7 +137,7 @@ pub struct TryDebugList<'b, 'f> {
     inner: fmt::DebugList<'b, 'f>,
 }
 
-impl<'d, 'b, 'f> TryDebugList<'b, 'f> {
+impl<'d> TryDebugList<'_, '_> {
     /// Add a single entry to the list.
     #[inline]
     pub fn entry<T: TryDebug>(&mut self, value: &'d T) -> &mut Self {
@@ -170,7 +170,7 @@ pub struct TryDebugSet<'b, 'f> {
     inner: fmt::DebugSet<'b, 'f>,
 }
 
-impl<'d, 'b, 'f> TryDebugSet<'b, 'f> {
+impl<'d> TryDebugSet<'_, '_> {
     /// Add a single entry to the set.
     #[inline]
     pub fn entry<T: TryDebug>(&mut self, value: &'d T) -> &mut Self {

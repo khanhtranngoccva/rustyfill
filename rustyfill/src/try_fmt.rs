@@ -1133,7 +1133,11 @@ mod oom_tests {
         let lossy = os.to_string_lossy();
         assert!(with_policy(FailPolicy::fail_all_alloc(), || {
             let mut w = NoopWriter;
-            fmt::write(&mut w, format_args!("{}", TryDisplayWrapper(lossy.as_ref()))).is_ok()
+            fmt::write(
+                &mut w,
+                format_args!("{}", TryDisplayWrapper(lossy.as_ref())),
+            )
+            .is_ok()
         }));
     }
 
@@ -1144,7 +1148,11 @@ mod oom_tests {
         let lossy = os.to_string_lossy();
         assert!(with_policy(FailPolicy::fail_all_alloc(), || {
             let mut w = NoopWriter;
-            fmt::write(&mut w, format_args!("{:?}", TryDebugWrapper(lossy.as_ref()))).is_ok()
+            fmt::write(
+                &mut w,
+                format_args!("{:?}", TryDebugWrapper(lossy.as_ref())),
+            )
+            .is_ok()
         }));
     }
 

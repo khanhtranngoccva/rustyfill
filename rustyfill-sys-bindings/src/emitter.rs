@@ -3701,6 +3701,7 @@ fn is_ident(s: &str) -> bool {
 /// derive (because their inner types lack the corresponding impls in our
 /// synthetic tree). These are stubs sufficient for type-checking; the polyfill
 /// provides real implementations where needed.
+#[allow(clippy::ptr_arg)]
 fn append_manual_impls(_content: &mut String, _relative_file_path: &str) {
     // No hand-written trait impls are currently required. The mirrored B-tree
     // node types that once needed stub `Iterator`/`Debug`/`Clone` impls have

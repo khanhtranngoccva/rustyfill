@@ -344,8 +344,10 @@ pub fn generate(input: &PipelineInput<'_>) -> GenerateOutcome {
     // Group by (lib, module path) so multiple known types sharing a module
     // (e.g. `Atomic`, `AtomicBool`, `AtomicPtr` all in `sync::atomic`) are
     // merged into a single file instead of clobbering each other.
-    let mut kt_by_module: std::collections::BTreeMap<(String, String), Vec<&crate::loader_spec::KnownExternalType>> =
-        std::collections::BTreeMap::new();
+    let mut kt_by_module: std::collections::BTreeMap<
+        (String, String),
+        Vec<&crate::loader_spec::KnownExternalType>,
+    > = std::collections::BTreeMap::new();
     for target in &spec.targets {
         for kt in &target.known_external_types {
             let segments: Vec<&str> = kt.path.split("::").collect();

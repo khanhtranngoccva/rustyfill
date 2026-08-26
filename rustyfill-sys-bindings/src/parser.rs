@@ -2674,4 +2674,3 @@ mod child;
         assert!(bases.iter().any(|b| b == &vec!["pthread", "Mutex"]));
     }
 }
-

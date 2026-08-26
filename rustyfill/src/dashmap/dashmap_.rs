@@ -670,10 +670,7 @@ pub trait TryDashMap<K, V, S = RandomState>: Sized {
     }
 
     /// Alias for [`Self::try_entry_nonblock`].
-    fn fallible_entry_nonblock(
-        &self,
-        key: K,
-    ) -> Result<Entry<'_, K, V>, TryDashMapNonblockError>
+    fn fallible_entry_nonblock(&self, key: K) -> Result<Entry<'_, K, V>, TryDashMapNonblockError>
     where
         K: Eq + Hash,
     {
@@ -681,10 +678,7 @@ pub trait TryDashMap<K, V, S = RandomState>: Sized {
     }
 
     /// Alias for [`Self::try_entry_give_back`].
-    fn fallible_entry_give_back(
-        &self,
-        key: K,
-    ) -> Result<Entry<'_, K, V>, (K, TryReserveError)>
+    fn fallible_entry_give_back(&self, key: K) -> Result<Entry<'_, K, V>, (K, TryReserveError)>
     where
         K: Eq + Hash,
     {

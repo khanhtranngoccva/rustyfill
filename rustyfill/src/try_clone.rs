@@ -355,8 +355,8 @@ mod tests {
 
     #[test]
     fn unit_try_clone() {
-        // FIXME: cmp clippy lint hit
-        assert!(().try_clone().unwrap() == ());
+        // Unit has no data to compare; successful clone is the assertion.
+        ().try_clone().unwrap();
     }
 
     // ── Tuples ─────────────────────────────────────────────────────────────────
