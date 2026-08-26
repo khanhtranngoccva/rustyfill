@@ -87,14 +87,22 @@ fn std_target() -> BindingTarget {
     target.declare_struct_cfg("sys::sync::mutex::futex::Mutex", FUTEX_ACTIVE);
     target.declare_struct_cfg("sys::sync::mutex::futex::Futex", FUTEX_ACTIVE);
     target.declare_struct_cfg("sys::sync::mutex::futex::State", FUTEX_ACTIVE);
-    // The futex primitive type aliases in the PAL layer. `SmallFutex` is a
-    // `pub type` alias (e.g., `AtomicU32` on unix, `AtomicU8` on Windows),
-    // not a struct, but declaring it pulls the defining module
-    // (`sys/pal/unix/futex.rs`) into the mirror so that the private aliases
-    // in `sys/sync/mutex/futex.rs` (`type Futex = futex::SmallFutex;`)
-    // resolve to the correct platform-specific definition.
-    target.declare_struct_cfg("sys::pal::unix::futex::SmallFutex", FUTEX_ACTIVE);
-    target.declare_struct_cfg("sys::pal::unix::futex::SmallPrimitive", FUTEX_ACTIVE);
+    // The futex primitive type aliases. `SmallFutex` is a `pub type` alias
+    // (e.g., `AtomicU32` on unix, `AtomicU8` on Windows), not a struct, but
+    // declaring it pulls the defining module into the mirror so that the
+    // private aliases in `sys/sync/mutex/futex.rs`
+    // (`type Futex = futex::SmallFutex;`) resolve to the correct
+    // platform-specific definition. Declared through the import binding:
+    // `sys/sync/mutex/futex.rs` carries `use crate::sys::<futex-home>::{self,
+    // ..}`, so the trailing `futex` segment names the aliased module rather
+    // than a directory. This path is stable across toolchains even though the
+    // physical home of the aliases has moved (1.85: `sys/pal/unix/futex`;
+    // newer std: `sys/sync/futex/unix`).
+    target.declare_struct_cfg("sys::sync::mutex::futex::futex::SmallFutex", FUTEX_ACTIVE);
+    target.declare_struct_cfg(
+        "sys::sync::mutex::futex::futex::SmallPrimitive",
+        FUTEX_ACTIVE,
+    );
     // The lazy-allocation helper used by the pthread backend (active on
     // macOS/iOS). Mirrored so the polyfill can interact with its pointer slot.
     target.declare_struct("sys::sync::once_box::OnceBox");

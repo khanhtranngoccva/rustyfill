@@ -1911,14 +1911,14 @@ pub struct EmitConfig<'a> {
 
 /// Mangled name for the per-target preamble module. Unlikely to collide with
 /// any real std/core/alloc module name.
-const PREAMBLE_MOD: &str = "__rustyfill_prelude";
+pub(crate) const PREAMBLE_MOD: &str = "__rustyfill_prelude";
 
 /// Name of the single wrapper module that the manifest emits around all
 /// generated bindings. Every library's files merge into this one hierarchy,
 /// so a mirrored type from *any* library is addressed as
 /// `crate::{WRAPPER_MOD::<path-without-lib-prefix>}`. Kept in sync with the
 /// literal used by [`emit_hierarchical_manifest`].
-const WRAPPER_MOD: &str = "std";
+pub(crate) const WRAPPER_MOD: &str = "std";
 
 /// Std-internal marker traits that are private to core and therefore cannot
 /// be named from a downstream crate. When they appear as trait bounds on a

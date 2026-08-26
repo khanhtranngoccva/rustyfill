@@ -8,7 +8,8 @@ use std::path::Path;
 
 use crate::loader_spec::LoaderSpec;
 use crate::parser::{
-    CfgContext, ItemKind, ParsedSource, cfg_select_reexport_targets, parse_source_with_cfg,
+    CfgContext, ItemKind, ParsedSource, cfg_if_reexport_targets, cfg_select_reexport_targets,
+    parse_source_with_cfg,
 };
 use crate::resolver::{ModuleResolver, PathSegment, UseKind};
 use crate::validator::ValidationBuilder;
@@ -102,8 +103,301 @@ pub(super) fn locate_declared_struct(
         }
     }
 
+    // Fallback: the declaration path may route through an *import binding*
+    // rather than a module on disk. For example, `sys/sync/mutex/futex.rs`
+    // carries `use crate::sys::sync::futex::{self, ...}`, so the spec can
+    // declare `sys::sync::mutex::futex::futex::SmallFutex` — the trailing
+    // `futex` segment is the import alias, not a directory. This keeps spec
+    // paths stable across toolchains even when std relocates the underlying
+    // definition (e.g., futex types moving from `sys/pal/unix/futex` to
+    // `sys/sync/futex/unix`). Walk the prefixes longest-first, and at each
+    // existing module file try to resolve the remaining non-leaf segments as
+    // a chain of import bindings, then locate the leaf under the final
+    // target with re-export descent.
+    for cut in (1..parts.len()).rev() {
+        let prefix: Vec<&str> = parts[..cut].to_vec();
+        let rel_prefix = prefix.join("/");
+        let candidates = [format!("{rel_prefix}.rs"), format!("{rel_prefix}/mod.rs")];
+        for cand in &candidates {
+            let full = lib_src.join(cand);
+            if !full.exists() {
+                continue;
+            }
+            let Ok(text) = fs::read_to_string(&full) else {
+                continue;
+            };
+            let parsed = parse_source_with_cfg(&text, cfg);
+            // Both candidate shapes declare the same module: `foo/bar.rs` and
+            // `foo/bar/mod.rs` are both module `foo/bar`. Import bindings
+            // inside the anchor file resolve relative to that path.
+            let mut cur_module = rel_prefix.clone();
+            let mut ok = true;
+            for seg in &parts[cut..parts.len() - 1] {
+                let Some(target) =
+                    resolve_import_binding_for_segment(&parsed, seg, &cur_module)
+                else {
+                    ok = false;
+                    break;
+                };
+                cur_module = target.join("/");
+            }
+            if !ok {
+                continue;
+            }
+            if let Some(def_file) = find_leaf_under_module(lib_src, cfg, &cur_module, leaf) {
+                return LocatedStruct::Found(def_file);
+            }
+        }
+    }
+
     let hint = parts[..parts.len()].join("/");
     LocatedStruct::NotDefinedOnDisk(hint + ".rs")
+}
+
+/// Does a module file exist at `<lib_src>/<mod_path>.rs` or
+/// `<lib_src>/<mod_path>/mod.rs`?
+fn module_file_exists(lib_src: &Path, mod_path: &str) -> bool {
+    lib_src.join(format!("{mod_path}.rs")).exists()
+        || lib_src.join(format!("{mod_path}/mod.rs")).exists()
+}
+
+/// Is `mod_path` a directory-style module: a directory that contains at
+/// least one `.rs` file (Rust allows `foo/` as a module when it holds child
+/// modules like `foo/bar.rs`, even without a `foo/mod.rs`). Used only by the
+/// import-binding fallback where we must recognise namespace directories
+/// that have no own file.
+fn is_directory_module(lib_src: &Path, mod_path: &str) -> bool {
+    let dir = lib_src.join(mod_path);
+    if !dir.is_dir() {
+        return false;
+    }
+    let Ok(entries) = fs::read_dir(&dir) else {
+        return false;
+    };
+    for entry in entries.flatten() {
+        if entry.file_name().to_str().is_some_and(|n| n.ends_with(".rs")) {
+            return true;
+        }
+    }
+    false
+}
+
+/// Locate the file under `mod_path`'s subtree that defines `leaf`. Checks
+/// the module's own file, its inline modules, active `cfg_select!`/`cfg_if!`
+/// backend submodules, and — when the named module has no direct file —
+/// glob-reexport descent from existing ancestors (covering toolchains where
+/// the import target is a virtual path forwarded to a relocated physical
+/// home). Returns the relative file path (`foo/bar.rs` or `foo/bar/mod.rs`).
+fn find_leaf_under_module(
+    lib_src: &Path,
+    cfg: &CfgContext,
+    mod_path: &str,
+    leaf: &str,
+) -> Option<String> {
+    let file = if lib_src.join(format!("{mod_path}.rs")).exists() {
+        format!("{mod_path}.rs")
+    } else if lib_src.join(format!("{mod_path}/mod.rs")).exists() {
+        format!("{mod_path}/mod.rs")
+    } else {
+        // The import target may name a module that has no direct file of its
+        // own but is forwarded via glob re-exports from a sibling. Try each
+        // existing ancestor and descend.
+        let mut ancestors: Vec<&str> = Vec::new();
+        let mut cur = mod_path;
+        while let Some(parent) = cur.split_once('/') {
+            ancestors.push(parent.0);
+            cur = parent.0;
+        }
+        for anc in ancestors {
+            if !module_file_exists(lib_src, anc) && !is_directory_module(lib_src, anc) {
+                continue;
+            }
+            let first_seg = mod_path[anc.len() + 1..].split('/').next().unwrap_or("");
+            if let Some(trail) = descend_through_reexports(lib_src, cfg, anc, first_seg) {
+                let resolved = format!("{anc}/{trail}");
+                if let Some(f) = find_leaf_under_module(lib_src, cfg, &resolved, leaf) {
+                    return Some(f);
+                }
+            }
+        }
+        return None;
+    };
+    let Ok(text) = fs::read_to_string(lib_src.join(&file)) else {
+        return None;
+    };
+    let parsed = parse_source_with_cfg(&text, cfg);
+    if parsed.items.iter().any(|i| i.name == leaf) {
+        return Some(file);
+    }
+    if parsed
+        .inline_modules
+        .iter()
+        .any(|(_, items)| items.iter().any(|i| i.name == leaf))
+    {
+        return Some(file);
+    }
+    let mut targets = cfg_select_reexport_targets(&text, cfg);
+    if targets.is_empty() {
+        targets = cfg_if_reexport_targets(&text, cfg);
+    }
+    for tgt in targets {
+        let sub = format!("{mod_path}/{tgt}");
+        if let Some(f) = find_leaf_under_module(lib_src, cfg, &sub, leaf) {
+            return Some(f);
+        }
+    }
+    None
+}
+
+/// BFS-descent through public glob re-exports (`pub use <name>::*;`) of
+/// `mod_path` until a layer whose direct children include `segment`. Returns
+/// the slash-joined trail of intermediate names followed by `segment`, or
+/// `None` when no such child exists within the re-export closure. Mirrors the
+/// emitter's `QualifierResolver::descend_through_reexport`, but operates
+/// directly on disk (the locator runs before the resolver's module tree is
+/// populated).
+fn descend_through_reexports(
+    lib_src: &Path,
+    cfg: &CfgContext,
+    mod_path: &str,
+    segment: &str,
+) -> Option<String> {
+    let mut queue: Vec<String> = vec![mod_path.to_string()];
+    let mut visited: std::collections::HashSet<String> = std::collections::HashSet::new();
+    while let Some(cur) = queue.pop() {
+        if !visited.insert(cur.clone()) {
+            continue;
+        }
+        let direct = format!("{cur}/{segment}");
+        if module_file_exists(lib_src, &direct) || is_directory_module(lib_src, &direct) {
+            // Return the full absolute path from the root of `mod_path` to
+            // the found module (e.g., mod_path="home", found at "home/deep"
+            // → "deep"; found at "home/deep/thing" → "deep/thing").
+            let prefix_len = mod_path.len() + 1;
+            if cur == mod_path {
+                return Some(segment.to_string());
+            }
+            let trail = &cur[prefix_len..];
+            return Some(format!("{trail}/{segment}"));
+        }
+        // Read the module's own file if it has one and follow its glob
+        // re-exports. Directory-only modules (no `mod.rs`, no `<name>.rs`)
+        // have no own file, so additionally enqueue their `.rs` children —
+        // a child like `foo/bar.rs` may itself carry the re-export chain we
+        // need (e.g., `pal/unix/mod.rs` globbing into `pal/unix/futex`).
+        let file = if lib_src.join(format!("{cur}.rs")).exists() {
+            Some(format!("{cur}.rs"))
+        } else if lib_src.join(format!("{cur}/mod.rs")).exists() {
+            Some(format!("{cur}/mod.rs"))
+        } else {
+            None
+        };
+        if let Some(file) = file {
+            let Ok(src) = fs::read_to_string(lib_src.join(&file)) else {
+                continue;
+            };
+            let parsed = parse_source_with_cfg(&src, cfg);
+            for stmt in &parsed.use_statements {
+                let UseKind::Glob(pl) = &stmt.kind else {
+                    continue;
+                };
+                let rn = pl.segments.iter().find_map(|s| match s {
+                    PathSegment::Named(n) => Some(n.clone()),
+                    _ => None,
+                });
+                if let Some(rn) = rn {
+                    let next = format!("{cur}/{rn}");
+                    if module_file_exists(lib_src, &next)
+                        || is_directory_module(lib_src, &next)
+                    {
+                        queue.push(next);
+                    }
+                }
+            }
+        } else if is_directory_module(lib_src, &cur) {
+            // No own file — descend into `.rs` children directly.
+            let dir = lib_src.join(&cur);
+            if let Ok(entries) = fs::read_dir(&dir) {
+                for entry in entries.flatten() {
+                    let name = match entry.file_name().to_str() {
+                        Some(n) if n.ends_with(".rs") => n.to_string(),
+                        _ => continue,
+                    };
+                    let stem = name.strip_suffix(".rs").unwrap();
+                    let next = format!("{cur}/{stem}");
+                    if module_file_exists(lib_src, &next)
+                        || is_directory_module(lib_src, &next)
+                    {
+                        queue.push(next);
+                    }
+                }
+            }
+        }
+    }
+    None
+}
+
+/// Resolve a single path segment against the import bindings of a parsed
+/// source file. Returns the named segments of the binding's target path
+/// (crate-relative anchors like `crate::` dropped), or `None` when no import
+/// binds that name. Handles explicit `as` aliases, `use X::{self, ..}`
+/// module-self bindings, and plain `use X::Name;` imports.
+fn resolve_import_binding_for_segment(
+    parsed: &ParsedSource,
+    segment: &str,
+    current_module: &str,
+) -> Option<Vec<String>> {
+    for stmt in &parsed.use_statements {
+        let (segs, alias) = match &stmt.kind {
+            UseKind::Single(pl, alias) => (&pl.segments, alias.as_deref()),
+            _ => continue,
+        };
+        let bound_name: String = match alias {
+            Some(a) => a.to_string(),
+            None => {
+                let last_named = segs.iter().rev().find_map(|s| match s {
+                    PathSegment::Named(n) => Some(n.clone()),
+                    _ => None,
+                });
+                match last_named.as_deref() {
+                    Some("self") => segs
+                        .iter()
+                        .rev()
+                        .find_map(|s| match s {
+                            PathSegment::Named(n) if n != "self" => Some(n.clone()),
+                            _ => None,
+                        })?,
+                    other => other?.to_string(),
+                }
+            }
+        };
+        if bound_name != segment {
+            continue;
+        }
+        // Compute the absolute module path the binding points at, walking the
+        // segments against the declaring module (mirrors the resolver's
+        // cursor logic).
+        let mut base: Vec<String> = current_module
+            .split('/')
+            .filter(|s| !s.is_empty())
+            .map(String::from)
+            .collect();
+        for seg in segs {
+            match seg {
+                PathSegment::Crate => base.clear(),
+                PathSegment::Super => {
+                    base.pop();
+                }
+                PathSegment::Self_ => {}
+                PathSegment::Named(n) => base.push(n.clone()),
+            }
+        }
+        if base.is_empty() {
+            continue;
+        }
+        return Some(base);
+    }
+    None
 }
 
 /// Extract the raw text of the first inner `#![cfg(...)]` attribute from a
@@ -689,5 +983,104 @@ mod tests {
             newly.is_empty(),
             "cross-library refs must never be discovered"
         );
+    }
+
+    #[test]
+    fn locate_unwraps_import_binding_to_relocated_definition() {
+        // Models the real futex case: `sys/sync/mutex/futex.rs` carries
+        // `use crate::sys::sync::futex::{self, ...}`, so declaring
+        // `sys::sync::mutex::futex::futex::SmallFutex` names the *import
+        // binding* `futex`, not a directory. The definition physically lives
+        // behind a cfg_select! shim (`sys/sync/futex/mod.rs` re-exports the
+        // active backend), mirroring std's relocation of the aliases from
+        // `sys/pal/unix/futex` (1.85) to `sys/sync/futex/unix` (nightly).
+        let tree = tmp_tree(&[
+            (
+                "std/src/sys/sync/mutex/futex.rs",
+                "use crate::sys::sync::futex::{self, futex_wait};\n\
+                 pub struct Mutex;\n",
+            ),
+            (
+                "std/src/sys/sync/futex/mod.rs",
+                "cfg_select! {\n    target_os = \"linux\" => {\n        mod unix;\n        \
+                 pub use unix::*;\n    }\n    _ => {}\n}\n",
+            ),
+            (
+                "std/src/sys/sync/futex/unix.rs",
+                "pub type SmallFutex = u32;\npub type SmallPrimitive = u32;\n",
+            ),
+        ]);
+        let lib_src = tree.0.join("std").join("src");
+        let cfg = CfgContext::from_target_triple("x86_64-unknown-linux-gnu");
+        match locate_declared_struct(
+            "sys::sync::mutex::futex::futex::SmallFutex",
+            &lib_src,
+            &cfg,
+        ) {
+            LocatedStruct::Found(f) => assert_eq!(f, "sys/sync/futex/unix.rs"),
+            other => panic!(
+                "expected Found(sys/sync/futex/unix.rs), got {}",
+                dbg_other(&other)
+            ),
+        }
+    }
+
+    #[test]
+    fn locate_unwraps_import_binding_through_cfg_if_reexport() {
+        // Models 1.85's `crate::sys::futures` → `pal/mod.rs` cfg_if glob
+        // re-export → `pal/unix/futures`. The import target IS a real module
+        // file, but the leaf lives behind a cfg_if!-guarded glob re-export in
+        // that module. The naive prefix loop finds `sys/futures/mod.rs` but
+        // not the leaf inside it; the import-binding fallback resolves the
+        // binding and `find_leaf_under_module` descends through the active
+        // cfg_if branch to the defining file.
+        let tree = tmp_tree(&[
+            (
+                "std/src/sys/sync/mutex/futex.rs",
+                "use crate::sys::futures::{self};\npub struct Mutex;\n",
+            ),
+            (
+                "std/src/sys/futures/mod.rs",
+                "cfg_if::cfg_if! {\n    if #[cfg(unix)] {\n        mod unix_impl;\n        \
+                 pub use unix_impl::*;\n    }\n}\n",
+            ),
+            (
+                "std/src/sys/futures/unix_impl.rs",
+                "pub type SmallFutex = u32;\n",
+            ),
+        ]);
+        let lib_src = tree.0.join("std").join("src");
+        let cfg = CfgContext::from_target_triple("x86_64-unknown-linux-gnu");
+        match locate_declared_struct(
+            "sys::sync::mutex::futex::futures::SmallFutex",
+            &lib_src,
+            &cfg,
+        ) {
+            LocatedStruct::Found(f) => assert_eq!(f, "sys/futures/unix_impl.rs"),
+            other => panic!(
+                "expected Found(sys/futures/unix_impl.rs), got {}",
+                dbg_other(&other)
+            ),
+        }
+    }
+
+    #[test]
+    fn locate_unwraps_import_binding_direct_module_target() {
+        // Same mechanism, simpler target: the import binding points at a
+        // plain module file that defines the leaf directly (no cfg_select!
+        // descent needed).
+        let tree = tmp_tree(&[
+            (
+                "core/src/foo/bar.rs",
+                "use crate::baz::qux::{self, Helper};\npub struct Bar;\n",
+            ),
+            ("core/src/baz/qux.rs", "pub struct Widget;\n"),
+        ]);
+        let lib_src = tree.0.join("core").join("src");
+        let cfg = CfgContext::from_target_triple("x86_64-unknown-linux-gnu");
+        match locate_declared_struct("foo::bar::qux::Widget", &lib_src, &cfg) {
+            LocatedStruct::Found(f) => assert_eq!(f, "baz/qux.rs"),
+            other => panic!("expected Found(baz/qux.rs), got {}", dbg_other(&other)),
+        }
     }
 }
