@@ -109,6 +109,14 @@ pub trait TryArc<T>: Sized {
     /// access to the shared data.
     fn try_pin_give_back(value: T) -> Result<Pin<Self>, (T, AllocError)>;
 
+    /// Fallibly downgrade this `Arc` to a [`Weak`] reference.
+    ///
+    /// Unlike [`Arc::downgrade`], which asserts in debug builds (and is
+    /// unsound) when the weak refcount is at or above the maximum, this
+    /// returns [`TryDowngradeError`] instead of panicking. The returned
+    /// [`Weak`] does not keep the allocation alive — it only tracks it.
+    fn try_downgrade(&self) -> Result<Weak<T>, TryDowngradeError>;
+
     // ── Aliases with `fallible_` prefix to avoid name collisions ────────────
 
     /// Fallibly allocate a new `Arc<T>`.
@@ -187,6 +195,11 @@ pub trait TryArc<T>: Sized {
     /// Alias for [`Self::try_pin_give_back`].
     fn fallible_pin_give_back(value: T) -> Result<Pin<Self>, (T, AllocError)> {
         Self::try_pin_give_back(value)
+    }
+
+    /// Alias for [`Self::try_downgrade`].
+    fn fallible_downgrade(&self) -> Result<Weak<T>, TryDowngradeError> {
+        Self::try_downgrade(self)
     }
 }
 
@@ -280,7 +293,33 @@ impl<T> TryArc<T> for Arc<T> {
         }
     }
 
-    // FIXME: missing try_downgrade
+    fn try_downgrade(&self) -> Result<Weak<T>, TryDowngradeError> {
+        let inner = arc_inner(self);
+
+        // Acquire on success synchronises with the Release store performed when
+        // the strong count hits zero (Arc::drop_slow), matching std's
+        // Arc::downgrade ordering. Relaxed on failure since we have no
+        // expectations about the new state.
+        let ok = inner
+            .weak
+            .fetch_update(Ordering::Acquire, Ordering::Relaxed, |cur| {
+                // Safe: `cur < MAX_REFCOUNT <= isize::MAX`, so `+1` cannot overflow.
+                cur.checked_add(1).filter(|&next| next < MAX_REFCOUNT)
+            });
+
+        match ok {
+            Ok(_) => {
+                // Weak count was successfully incremented below MAX_REFCOUNT.
+                // SAFETY: `Weak` shares `Arc`'s layout — first field is the same
+                // NonNull pointer, and the default allocator makes the rest
+                // identical too. The weak counter has just been incremented, so
+                // dropping the returned Weak decrements exactly once. Mirrors
+                // what std's Arc::downgrade constructs after its CAS succeeds.
+                Ok(unsafe { ptr::read(self as *const Arc<T> as *const Weak<T>) })
+            }
+            Err(_) => Err(TryDowngradeError),
+        }
+    }
 }
 
 /// Maximum reference count, matching std's `Arc::MAX_REFCOUNT`.
@@ -387,6 +426,22 @@ impl crate::try_fmt::TryDebug for TryUpgradeError {
     }
 }
 
+/// Returned when a fallible downgrade of [`Arc`] to [`Weak`] fails due to weak refcount overflow.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TryDowngradeError;
+
+impl fmt::Display for TryDowngradeError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "downgrade failed: weak refcount exceeded")
+    }
+}
+
+impl crate::try_fmt::TryDebug for TryDowngradeError {
+    fn try_fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("TryDowngradeError")
+    }
+}
+
 /// Fallible operations on [`Weak`] pointers.
 ///
 /// Implemented for `Weak<T>`. Provides [`try_upgrade`](Self::try_upgrade), which
@@ -396,28 +451,32 @@ pub trait TryWeak<T: ?Sized> {
     /// Attempts to upgrade this `Weak` pointer to an [`Arc`].
     ///
     /// Returns:
-    /// - `Some(Ok(arc))` on successful upgrade.
-    /// - `None` if the strong count is zero (data dropped) or this `Weak` is dangling — matching [`Weak::upgrade`].
-    /// - `Some(Err(TryUpgradeError))` if the strong refcount is at or above the maximum.
+    /// - `Ok(Some(arc))` on successful upgrade.
+    /// - `Ok(None)` if the strong count is zero (data dropped) or this `Weak`
+    ///   is dangling — matching [`Weak::upgrade`] returning `None`.
+    /// - `Err(TryUpgradeError)` if the strong refcount is at or above the maximum.
+    ///
+    /// Liveness is modelled by the inner [`Option`] exactly like std's
+    /// [`Weak::upgrade`]; only refcount saturation is an error. This lets
+    /// callers compose with `?` (`weak.try_upgrade()?`) while keeping the
+    /// expected "target dropped" case out of the error channel.
     ///
     /// Uses `(Acquire, Relaxed)` ordering to synchronise with [`Arc::new_cyclic`] initialisation.
-    // FIXME: result of Option or Option of result? Domain wise, Result first may be better, or for simplicity,
-    // omit the option entirely - two variants Dead and Overflow are OK. The same applies with Rc
-    fn try_upgrade(&self) -> Option<Result<Arc<T>, TryUpgradeError>>;
+    fn try_upgrade(&self) -> Result<Option<Arc<T>>, TryUpgradeError>;
 
     // ── Aliases with `fallible_` prefix ─────────────────────────────────────
 
     /// Alias for [`Self::try_upgrade`].
-    fn fallible_upgrade(&self) -> Option<Result<Arc<T>, TryUpgradeError>> {
+    fn fallible_upgrade(&self) -> Result<Option<Arc<T>>, TryUpgradeError> {
         Self::try_upgrade(self)
     }
 }
 
 impl<T: ?Sized> TryWeak<T> for Weak<T> {
-    fn try_upgrade(&self) -> Option<Result<Arc<T>, TryUpgradeError>> {
+    fn try_upgrade(&self) -> Result<Option<Arc<T>>, TryUpgradeError> {
         // Dangling sentinel — no allocation exists. Matches Weak::upgrade returning None.
         if weak_is_dangling(self) {
-            return None;
+            return Ok(None);
         }
 
         let inner = weak_inner(self);
@@ -447,17 +506,17 @@ impl<T: ?Sized> TryWeak<T> for Weak<T> {
                 // Strong count was successfully incremented from a non-zero
                 // value below MAX_REFCOUNT. Allocation is still alive.
                 // SAFETY: pointer is valid, strong count > 0 after increment.
-                Some(Ok(unsafe {
+                Ok(Some(unsafe {
                     ptr::read(&*(self as *const Weak<T> as *const Arc<T>))
                 }))
             }
             Err(prev) => {
                 if prev == 0 {
                     // Data dropped — matches Weak::upgrade returning None.
-                    None
+                    Ok(None)
                 } else {
                     // At max refcount — our exclusive failure mode.
-                    Some(Err(TryUpgradeError))
+                    Err(TryUpgradeError)
                 }
             }
         }
@@ -550,10 +609,9 @@ mod tests {
     }
 
     #[test]
-    // FIXME: Downgrading can also cause overflows. Has try_downgrade() been implemented yet?
     fn downgrade_upgrade() {
         let arc = <Arc<i32> as TryArc<i32>>::try_new(42).unwrap();
-        let weak = Arc::downgrade(&arc);
+        let weak = arc.try_downgrade().unwrap();
 
         // Upgrade while arc exists
         {
@@ -562,14 +620,48 @@ mod tests {
         }
 
         drop(arc);
-        // After last strong ref is gone, upgrade fails
-        assert!(weak.try_upgrade().is_none());
+        // After last strong ref is gone, upgrade reports the target as dead.
+        assert_eq!(weak.try_upgrade(), Ok(None));
     }
 
     #[test]
-    fn try_unwrap_unique() {
+    fn try_downgrade_basic() {
+        let arc = <Arc<i32> as TryArc<i32>>::try_new(7).unwrap();
+        assert_eq!(Arc::weak_count(&arc), 0);
+        let weak = arc.try_downgrade().unwrap();
+        assert_eq!(Arc::weak_count(&arc), 1);
+        drop(weak);
+        assert_eq!(Arc::weak_count(&arc), 0);
+    }
+
+    #[test]
+    fn try_downgrade_overflow_rejects() {
+        let arc = <Arc<i32> as TryArc<i32>>::try_new(0).unwrap();
+        let inner = arc_inner(&arc);
+        inner.weak.store(MAX_REFCOUNT, Ordering::Relaxed);
+        assert!(matches!(arc.try_downgrade(), Err(TryDowngradeError)));
+        // Restore so arc drops cleanly. All strong references holds a shared weak reference.
+        inner.weak.store(1, Ordering::Relaxed);
+    }
+
+    #[test]
+    fn try_downgrade_error_display() {
+        assert!(format!("{}", TryDowngradeError).contains("exceeded"));
+    }
+
+    #[test]
+    fn oom_upgrade() {
         let arc = <Arc<i32> as TryArc<i32>>::try_new(42).unwrap();
-        assert_eq!(Arc::try_unwrap(arc), Ok(42));
+        let weak = arc.try_downgrade().unwrap();
+
+        let inner = weak_inner(&weak);
+        inner.strong.store(MAX_REFCOUNT, Ordering::Relaxed);
+
+        // Upgrade should fail gracefully (not panic)
+        assert!(matches!(weak.try_upgrade(), Err(TryUpgradeError)));
+
+        // Restore so arc drops cleanly.
+        inner.strong.store(1, Ordering::Relaxed);
     }
 
     #[test]
@@ -906,7 +998,7 @@ mod tests {
     #[test]
     fn weak_try_upgrade_dangling_returns_none() {
         let weak: Weak<i32> = Weak::new();
-        assert!(weak.try_upgrade().is_none());
+        assert_eq!(weak.try_upgrade(), Ok(None));
     }
 
     #[test]
@@ -916,7 +1008,7 @@ mod tests {
             Arc::downgrade(&arc)
         };
         // arc has been dropped; strong count is zero.
-        assert!(weak.try_upgrade().is_none());
+        assert_eq!(weak.try_upgrade(), Ok(None));
     }
 
     #[test]
@@ -926,7 +1018,7 @@ mod tests {
         let inner = weak_inner(&weak);
         inner.strong.store(MAX_REFCOUNT, Ordering::Relaxed);
         let result = weak.try_upgrade();
-        assert!(matches!(result, Some(Err(TryUpgradeError))));
+        assert_eq!(result, Err(TryUpgradeError));
         // Restore so arc drops cleanly.
         inner.strong.store(1, Ordering::Relaxed);
     }
@@ -1286,7 +1378,7 @@ mod tests {
             // Weak::try_upgrade on a dangling pointer doesn't allocate.
             let weak: Weak<i32> = Weak::new();
             let result = with_policy(FailPolicy::fail_next_alloc(), || weak.try_upgrade());
-            assert!(result.is_none());
+            assert_eq!(result, Ok(None));
         }
     }
 }

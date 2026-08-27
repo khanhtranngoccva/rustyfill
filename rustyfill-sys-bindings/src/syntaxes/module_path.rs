@@ -318,10 +318,7 @@ mod tests {
                 .to_slash(),
             "collections/btree/map"
         );
-        assert_eq!(
-            ModulePath::from_file_stem("mod.rs").unwrap().is_root(),
-            true
-        );
+        assert!(ModulePath::from_file_stem("mod.rs").unwrap().is_root());
     }
 
     #[test]

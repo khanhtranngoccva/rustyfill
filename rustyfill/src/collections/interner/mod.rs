@@ -325,14 +325,14 @@ where
         let i = unsafe { guard.iter() };
         for bucket in i {
             let weak = unsafe { &bucket.as_ref().1 };
-            // Use try_upgrade for an atomic check-and-increment: if this succeeds,
-            // a strong reference still exists (or just came back), so we keep the
-            // entry and drop the temporary Arc. If it returns None, the Arc has
-            // been fully dropped and the entry is stale. Some(Err) means refcount
+            // Use try_upgrade for an atomic check-and-increment: if this yields
+            // an Arc, a strong reference still exists (or just came back), so we
+            // keep the entry and drop the temporary Arc. Ok(None) means the Arc
+            // has been fully dropped and the entry is stale. Err means refcount
             // overflow — also treat as stale since we can't verify liveness.
             match weak.try_upgrade() {
-                Some(Ok(_arc)) => { /* still alive */ }
-                None | Some(Err(_)) => unsafe {
+                Ok(Some(_arc)) => { /* still alive */ }
+                Ok(None) | Err(_) => unsafe {
                     let _removed = guard.remove(bucket);
                 },
             }
@@ -376,13 +376,13 @@ where
         if let Some(bucket) = guard.find(hash, |kv: &(u64, Weak<B::Owned>)| {
             let (_, weak) = kv;
             let inner: Arc<B::Owned> = match weak.try_upgrade() {
-                Some(Err(_)) | None => return false,
-                Some(Ok(s)) => s,
+                Err(_) | Ok(None) => return false,
+                Ok(Some(s)) => s,
             };
             <<B as ToOwned>::Owned as Borrow<B>>::borrow(inner.deref()) == borrowed
         }) {
             let weak = unsafe { &bucket.as_ref().1 };
-            if let Some(Ok(arc)) = weak.try_upgrade() {
+            if let Ok(Some(arc)) = weak.try_upgrade() {
                 return Ok(arc);
             }
         }
@@ -415,24 +415,30 @@ where
     if let Some(bucket) = guard.find(hash, |kv: &(u64, Weak<B::Owned>)| {
         let (_, weak) = kv;
         let inner: Arc<B::Owned> = match weak.try_upgrade() {
-            Some(Err(_)) | None => return false,
-            Some(Ok(s)) => s,
+            Err(_) | Ok(None) => return false,
+            Ok(Some(s)) => s,
         };
         <<B as ToOwned>::Owned as Borrow<B>>::borrow(inner.deref()) == borrowed
     }) {
         let weak = unsafe { &bucket.as_ref().1 };
-        if let Some(Ok(upgraded)) = weak.try_upgrade() {
+        if let Ok(Some(upgraded)) = weak.try_upgrade() {
             return Ok(upgraded);
         }
         let arc = create_new_arc()?;
-        // Downgrading here cannot cause overflow.
-        unsafe { bucket.as_mut().1 = Arc::downgrade(&arc) };
+        // Replacing the stale weak ref with a fresh one: the old entry is dead
+        // (strong count zero), so its weak slot is being recycled and no live
+        // weak count is lost. Fallible for uniformity; failure means we can't
+        // record liveness, in which case the entry stays stale until pruned.
+        if let Ok(w) = arc.try_downgrade() {
+            unsafe { bucket.as_mut().1 = w };
+        }
         return Ok(arc);
     }
 
     let arc = create_new_arc()?;
-    // Truly new — insert. Downgrading here cannot cause overflow.
-    let weak: Weak<B::Owned> = Arc::downgrade(&arc);
+    // Truly new — insert. A brand-new allocation has weak count 0, so this
+    // cannot fail.
+    let weak: Weak<B::Owned> = arc.try_downgrade().expect("fresh Arc has weak count 0");
 
     // SAFETY: We already reserved space above with try_reserve(1).
     unsafe {

@@ -14,4 +14,4 @@
 
 mod rc_;
 
-pub use rc_::{TryRc, TryUpgradeError, TryWeak};
+pub use rc_::{TryDowngradeError, TryRc, TryUpgradeError, TryWeak};

@@ -109,6 +109,14 @@ pub trait TryRc<T>: Sized {
     /// access to the shared data.
     fn try_pin_give_back(value: T) -> Result<Pin<Self>, (T, AllocError)>;
 
+    /// Fallibly downgrade this `Rc` to a [`Weak`] reference.
+    ///
+    /// Unlike [`Rc::downgrade`], which asserts in debug builds (and is
+    /// unsound) when the weak refcount is at or above the maximum, this
+    /// returns [`TryDowngradeError`] instead of panicking. The returned
+    /// [`Weak`] does not keep the allocation alive — it only tracks it.
+    fn try_downgrade(&self) -> Result<Weak<T>, TryDowngradeError>;
+
     // ── Aliases with `fallible_` prefix to avoid name collisions ────────────
 
     /// Fallibly allocate a new `Rc<T>`.
@@ -191,6 +199,11 @@ pub trait TryRc<T>: Sized {
     /// Alias for [`Self::try_pin_give_back`].
     fn fallible_pin_give_back(value: T) -> Result<Pin<Self>, (T, AllocError)> {
         Self::try_pin_give_back(value)
+    }
+
+    /// Alias for [`Self::try_downgrade`].
+    fn fallible_downgrade(&self) -> Result<Weak<T>, TryDowngradeError> {
+        Self::try_downgrade(self)
     }
 }
 
@@ -282,6 +295,31 @@ impl<T> TryRc<T> for Rc<T> {
             Ok(rc) => Ok(unsafe { Pin::new_unchecked(rc) }),
             Err((v, e)) => Err((v, e)),
         }
+    }
+
+    fn try_downgrade(&self) -> Result<Weak<T>, TryDowngradeError> {
+        let inner = rc_inner(self);
+        let weak = inner.weak.get();
+
+        // Single-threaded: plain access to the counter is fine as long as no
+        // other thread touches it (guaranteed by Rc's !Sync bound).
+        if weak >= MAX_REFCOUNT {
+            return Err(TryDowngradeError);
+        }
+
+        // We've confirmed weak < MAX_REFCOUNT <= isize::MAX above, so +1 cannot
+        // overflow. In single-threaded context, no race.
+        let weak = weak
+            .checked_add(1)
+            .expect("weak refcount below MAX_REFCOUNT");
+        inner.weak.set(weak);
+
+        // SAFETY: `Weak` shares `Rc`'s layout — first field is the same
+        // NonNull pointer, and the default allocator makes the rest identical
+        // too. The weak counter has just been incremented, so dropping the
+        // returned Weak decrements exactly once. Mirrors what std's
+        // Rc::downgrade constructs after bumping the counter.
+        Ok(unsafe { ptr::read(self as *const Rc<T> as *const Weak<T>) })
     }
 }
 
@@ -390,6 +428,22 @@ impl crate::try_fmt::TryDebug for TryUpgradeError {
     }
 }
 
+/// Returned when a fallible downgrade of [`Rc`] to [`Weak`] fails due to weak refcount overflow.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TryDowngradeError;
+
+impl fmt::Display for TryDowngradeError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "downgrade failed: weak refcount exceeded")
+    }
+}
+
+impl crate::try_fmt::TryDebug for TryDowngradeError {
+    fn try_fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("TryDowngradeError")
+    }
+}
+
 /// Fallible operations on [`Weak`] pointers.
 ///
 /// Implemented for `Weak<T>`. Provides [`try_upgrade`](Self::try_upgrade), which
@@ -399,24 +453,30 @@ pub trait TryWeak<T: ?Sized> {
     /// Attempts to upgrade this `Weak` pointer to an [`Rc`].
     ///
     /// Returns:
-    /// - `Some(Ok(rc))` on successful upgrade.
-    /// - `None` if the strong count is zero (data dropped) or this `Weak` is dangling — matching [`Weak::upgrade`].
-    /// - `Some(Err(TryUpgradeError))` if the strong refcount is at or above the maximum.
-    fn try_upgrade(&self) -> Option<Result<Rc<T>, TryUpgradeError>>;
+    /// - `Ok(Some(rc))` on successful upgrade.
+    /// - `Ok(None)` if the strong count is zero (data dropped) or this `Weak`
+    ///   is dangling — matching [`Weak::upgrade`] returning `None`.
+    /// - `Err(TryUpgradeError)` if the strong refcount is at or above the maximum.
+    ///
+    /// Liveness is modelled by the inner [`Option`] exactly like std's
+    /// [`Weak::upgrade`]; only refcount saturation is an error. This lets
+    /// callers compose with `?` (`weak.try_upgrade()?`) while keeping the
+    /// expected "target dropped" case out of the error channel.
+    fn try_upgrade(&self) -> Result<Option<Rc<T>>, TryUpgradeError>;
 
     // ── Aliases with `fallible_` prefix ─────────────────────────────────────
 
     /// Alias for [`Self::try_upgrade`].
-    fn fallible_upgrade(&self) -> Option<Result<Rc<T>, TryUpgradeError>> {
+    fn fallible_upgrade(&self) -> Result<Option<Rc<T>>, TryUpgradeError> {
         Self::try_upgrade(self)
     }
 }
 
 impl<T: ?Sized> TryWeak<T> for Weak<T> {
-    fn try_upgrade(&self) -> Option<Result<Rc<T>, TryUpgradeError>> {
+    fn try_upgrade(&self) -> Result<Option<Rc<T>>, TryUpgradeError> {
         // Dangling sentinel — no allocation exists. Matches Weak::upgrade returning None.
         if weak_is_dangling(self) {
-            return None;
+            return Ok(None);
         }
 
         let inner = weak_inner(self);
@@ -425,10 +485,10 @@ impl<T: ?Sized> TryWeak<T> for Weak<T> {
         let strong = inner.strong.get();
         if strong == 0 {
             // Data has been dropped; don't increment.
-            return None;
+            return Ok(None);
         } else if strong >= MAX_REFCOUNT {
             // Would overflow on next increment.
-            return Some(Err(TryUpgradeError));
+            return Err(TryUpgradeError);
         }
 
         // Increment strong count. We've confirmed strong < MAX_REFCOUNT <= isize::MAX
@@ -441,7 +501,7 @@ impl<T: ?Sized> TryWeak<T> for Weak<T> {
         // Strong count was successfully incremented from a non-zero
         // value below MAX_REFCOUNT. Allocation is still alive.
         // SAFETY: pointer is valid, strong count > 0 after increment.
-        Some(Ok(unsafe {
+        Ok(Some(unsafe {
             ptr::read(&*(self as *const Weak<T> as *const Rc<T>))
         }))
     }
@@ -818,7 +878,7 @@ mod tests {
     #[test]
     fn weak_try_upgrade_dangling_returns_none() {
         let weak: Weak<i32> = Weak::new();
-        assert!(weak.try_upgrade().is_none());
+        assert_eq!(weak.try_upgrade(), Ok(None));
     }
 
     #[test]
@@ -827,7 +887,7 @@ mod tests {
             let rc = <Rc<i32> as TryRc<i32>>::try_new(99).unwrap();
             Rc::downgrade(&rc)
         };
-        assert!(weak.try_upgrade().is_none());
+        assert_eq!(weak.try_upgrade(), Ok(None));
     }
 
     #[test]
@@ -837,7 +897,7 @@ mod tests {
         let inner = weak_inner(&weak);
         inner.strong.set(MAX_REFCOUNT);
         let result = weak.try_upgrade();
-        assert!(matches!(result, Some(Err(TryUpgradeError))));
+        assert_eq!(result, Err(TryUpgradeError));
         inner.strong.set(1);
     }
 
@@ -857,6 +917,33 @@ mod tests {
     #[test]
     fn weak_try_upgrade_error_display() {
         assert!(format!("{}", TryUpgradeError).contains("exceeded"));
+    }
+
+    // ── try_downgrade tests ─────────────────────────────────────────────────────
+
+    #[test]
+    fn try_downgrade_basic() {
+        let rc = <Rc<i32> as TryRc<i32>>::try_new(7).unwrap();
+        assert_eq!(Rc::weak_count(&rc), 0);
+        let weak = rc.try_downgrade().unwrap();
+        assert_eq!(Rc::weak_count(&rc), 1);
+        drop(weak);
+        assert_eq!(Rc::weak_count(&rc), 0);
+    }
+
+    #[test]
+    fn try_downgrade_overflow_rejects() {
+        let rc = <Rc<i32> as TryRc<i32>>::try_new(0).unwrap();
+        let inner = rc_inner(&rc);
+        inner.weak.set(MAX_REFCOUNT);
+        assert!(matches!(rc.try_downgrade(), Err(TryDowngradeError)));
+        // Restore so rc drops cleanly.
+        inner.weak.set(1);
+    }
+
+    #[test]
+    fn try_downgrade_error_display() {
+        assert!(format!("{}", TryDowngradeError).contains("exceeded"));
     }
 
     // ── Unsized Rc TryClone tests ──────────────────────────────────────────────
@@ -1091,7 +1178,7 @@ mod tests {
         fn weak_try_upgrade_dangling_no_alloc_needed() {
             let weak: Weak<i32> = Weak::new();
             let result = with_policy(FailPolicy::fail_next_alloc(), || weak.try_upgrade());
-            assert!(result.is_none());
+            assert_eq!(result, Ok(None));
         }
     }
 }
