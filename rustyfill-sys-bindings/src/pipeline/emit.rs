@@ -5,7 +5,7 @@
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
-use crate::emitter::{EmitConfig, TypeRegistry, emit_binding_file, emit_glob_reexport_aliases};
+use crate::emitter::{EmitConfig, emit_binding_file, emit_glob_reexport_aliases};
 use crate::loader_spec::LoaderSpec;
 use crate::parser::{CfgContext, ParsedSource};
 use crate::resolver::ModuleResolver;
@@ -21,7 +21,6 @@ pub(super) fn emit_all_binding_files(
     model: &mut BindingModel,
     parsed_cache: &HashMap<String, (ParsedSource, String)>,
     resolver: &mut ModuleResolver,
-    registry: &TypeRegistry,
     replacement_entries_slice: &[(String, Option<&str>)],
     ignored_name_refs: &[&str],
     ignored_structs_by_lib: &HashMap<String, Vec<String>>,
@@ -42,7 +41,7 @@ pub(super) fn emit_all_binding_files(
         let stem = file_path.strip_suffix(".rs").unwrap_or(file_path.as_str());
         let module_key = stem.strip_suffix("/mod").unwrap_or(stem);
         let already_bound = collect_bound_names(&extra_uses);
-        for (alias, crate_path) in registry.module_alias_routes(module_key) {
+        for (alias, crate_path) in model.module_alias_routes(module_key) {
             if already_bound.contains(alias) {
                 continue;
             }
@@ -79,7 +78,7 @@ pub(super) fn emit_all_binding_files(
                 path_replacements: replacement_entries_slice,
                 ignored_structs: &target_ignored_structs,
                 relative_file_path: file_path,
-                type_registry: registry,
+                model,
                 extra_derives: &target_extra_derives,
             },
         );
@@ -89,15 +88,7 @@ pub(super) fn emit_all_binding_files(
             emitted_paths.push(emit_path);
             emitted_canonicals.insert(file_path.clone());
             all_files.push((file_path.clone(), lib_name.clone()));
-            // Mark as manifest-visible only when the file was parsed from real
-            // source with items. Files discovered structurally (empty mod.rs
-            // placeholders for directory modules that have a leaf sibling)
-            // carry zero parsed items; their output is boilerplate-only
-            // (preamble glob + re-exports) whose self-referential paths cannot
-            // resolve when included alongside the leaf's children.
-            if !parsed.items.is_empty() {
-                model.mark_file_emitted(file_path);
-            }
+            model.mark_file_emitted(file_path);
             model.promote_to_emittable(lib_name, file_path);
         }
 
@@ -119,7 +110,7 @@ pub(super) fn emit_all_binding_files(
             let inline_depth = compute_module_depth(&inline_rel_path);
             let mut inline_extra_uses =
                 resolver.emit_use_statements_for_file(&inline_rel_path, ignored_name_refs);
-            for (alias, crate_path) in registry.module_alias_routes(&inline_rel_path) {
+            for (alias, crate_path) in model.module_alias_routes(&inline_rel_path) {
                 inline_extra_uses.push(format!(
                     "#[allow(unused_imports)] use {crate_path} as {alias};"
                 ));
@@ -138,7 +129,7 @@ pub(super) fn emit_all_binding_files(
                     path_replacements: replacement_entries_slice,
                     ignored_structs: &target_ignored_structs,
                     relative_file_path: &inline_rel_path,
-                    type_registry: registry,
+                    model,
                     extra_derives: &target_extra_derives,
                 },
             );

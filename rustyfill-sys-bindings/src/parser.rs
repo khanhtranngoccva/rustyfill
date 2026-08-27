@@ -614,7 +614,9 @@ pub fn parse_source_with_cfg(source: &str, cfg: &CfgContext) -> ParsedSource {
 
             // Recursively extract use statements from all scopes in the file,
             // not just top-level ones. This catches imports inside impl blocks,
-            // functions, inline modules, etc.
+            // functions, inline modules, etc. Macro-invocation bodies are
+            // handed the cfg context so platform-selection macros contribute
+            // only their active branch's imports.
             extract_all_uses_from_file(&file, &mut use_statements);
         }
     }
@@ -2275,7 +2277,8 @@ mod child;
     #[test]
     fn test_emitted_struct_with_preamble_types_parses() {
         use super::super::parser::ItemKind;
-        use crate::emitter::{EmitConfig, TypeRegistry, emit_parsed_items};
+        use crate::emitter::{EmitConfig, emit_parsed_items};
+        use crate::syntaxes::{BindingModel, ModulePath, QualifiedPath};
         use quote::quote;
 
         let item = ParsedItem {
@@ -2293,25 +2296,36 @@ mod child;
             alias_rhs: None,
         };
 
-        // Registry routing: both marker types are registered as public,
+        // Model routing: both marker types are registered as public,
         // undeclared core types, so references to them route straight at the
         // builtin crate (`__rustyfill_builtin_core`) instead of through the
         // synthetic tree or the preamble.
-        let mut registry = TypeRegistry::empty();
+        let mut model = BindingModel::new();
         // The struct under test must be declared for the emitter to keep it;
         // otherwise the declaration filter drops undeclared data structures.
-        registry.insert_declared("::alloc::TestStruct", "");
-        registry.register(
-            "::core::marker::PhantomData",
-            Visibility::Public,
-            true,
-            "core/marker.rs",
+        model.register_declared(
+            &QualifiedPath::item("alloc", ModulePath::root(), "TestStruct"),
+            String::new(),
         );
-        registry.register(
-            "::core::marker::PhantomPinned",
+        model.register_type(
+            &QualifiedPath::item(
+                "core",
+                ModulePath::from_canonical("marker").unwrap(),
+                "PhantomData",
+            ),
             Visibility::Public,
             true,
-            "core/marker.rs",
+            Some("core/marker.rs".to_string()),
+        );
+        model.register_type(
+            &QualifiedPath::item(
+                "core",
+                ModulePath::from_canonical("marker").unwrap(),
+                "PhantomPinned",
+            ),
+            Visibility::Public,
+            true,
+            Some("core/marker.rs".to_string()),
         );
 
         let output = emit_parsed_items(
@@ -2325,7 +2339,7 @@ mod child;
                 path_replacements: &[],
                 ignored_structs: &[],
                 relative_file_path: "",
-                type_registry: &registry,
+                model: &model,
                 extra_derives: &std::collections::HashMap::new(),
             },
             "crate::__prelude",
@@ -2343,9 +2357,19 @@ mod child;
         // Declared types are routed to their mirrored bindings via an absolute
         // `crate::std::` path into the merged synthetic tree (all libraries
         // merge under one `std` wrapper module in the manifest).
-        let mut registry_declared = TypeRegistry::empty();
-        registry_declared.insert_declared("::alloc::TestStruct", "");
-        registry_declared.insert_declared("::core::marker::PhantomData", "core/marker.rs");
+        let mut model_declared = BindingModel::new();
+        model_declared.register_declared(
+            &QualifiedPath::item("alloc", ModulePath::root(), "TestStruct"),
+            String::new(),
+        );
+        model_declared.register_declared(
+            &QualifiedPath::item(
+                "core",
+                ModulePath::from_canonical("marker").unwrap(),
+                "PhantomData",
+            ),
+            "core/marker.rs".to_string(),
+        );
         let declared_out = emit_parsed_items(
             std::slice::from_ref(&item),
             &EmitConfig {
@@ -2357,7 +2381,7 @@ mod child;
                 path_replacements: &[],
                 ignored_structs: &[],
                 relative_file_path: "",
-                type_registry: &registry_declared,
+                model: &model_declared,
                 extra_derives: &std::collections::HashMap::new(),
             },
             "crate::__prelude",
@@ -2391,7 +2415,8 @@ mod child;
     #[test]
     fn test_emitted_struct_with_trait_bounds_parses() {
         use super::super::parser::ItemKind;
-        use crate::emitter::{EmitConfig, TypeRegistry, emit_parsed_items};
+        use crate::emitter::{EmitConfig, emit_parsed_items};
+        use crate::syntaxes::{BindingModel, ModulePath, QualifiedPath};
         use quote::quote;
 
         let item = ParsedItem {
@@ -2407,8 +2432,9 @@ mod child;
             alias_rhs: None,
         };
 
-        // The struct is not declared in the (empty) registry, so the
+        // The struct is not declared in the (empty) model, so the
         // declaration filter drops it and no binding file is produced.
+        let empty_model = BindingModel::new();
         let output = emit_parsed_items(
             std::slice::from_ref(&item),
             &EmitConfig {
@@ -2420,7 +2446,7 @@ mod child;
                 path_replacements: &[],
                 ignored_structs: &[],
                 relative_file_path: "",
-                type_registry: &TypeRegistry::empty(),
+                model: &empty_model,
                 extra_derives: &std::collections::HashMap::new(),
             },
             "crate::__prelude",
@@ -2429,13 +2455,16 @@ mod child;
         );
         assert!(
             output.is_none(),
-            "Undeclared struct in empty registry must produce no output"
+            "Undeclared struct in empty model must produce no output"
         );
 
         // With the struct declared, emission proceeds and the trait-bound
         // generics survive intact.
-        let mut registry = TypeRegistry::empty();
-        registry.insert_declared("::alloc::Wrapper", "");
+        let mut model = BindingModel::new();
+        model.register_declared(
+            &QualifiedPath::item("alloc", ModulePath::root(), "Wrapper"),
+            String::new(),
+        );
         let output = emit_parsed_items(
             std::slice::from_ref(&item),
             &EmitConfig {
@@ -2447,7 +2476,7 @@ mod child;
                 path_replacements: &[],
                 ignored_structs: &[],
                 relative_file_path: "",
-                type_registry: &registry,
+                model: &model,
                 extra_derives: &std::collections::HashMap::new(),
             },
             "crate::__prelude",

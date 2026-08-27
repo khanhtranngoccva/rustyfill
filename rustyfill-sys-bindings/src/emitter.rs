@@ -24,7 +24,10 @@ use crate::parser::{
     cfg_select_reexport_targets, parse_source_with_cfg,
 };
 use crate::resolver::{ModuleResolver, PathSegment, UseKind};
-use crate::syntaxes::{ModulePath, Visibility};
+use crate::syntaxes::{BindingModel, ItemRecord, ModulePath, Visibility};
+
+#[cfg(test)]
+use crate::syntaxes::QualifiedPath;
 
 // ── Type registry and field-type publicity checking ────────────────────────
 
@@ -45,567 +48,47 @@ pub enum FieldRefResolution {
     Unknown(String),
 }
 
-/// Information about a single named type reachable from the registered
-/// source files.
-#[derive(Clone, Debug)]
-pub struct TypeInfo {
-    /// Serialized qualified path of the type: `::lib::module::Leaf`. The
-    /// leading `::` marks the path as absolute (rooted at the library), so the
-    /// library prefix is fully encoded in the string.
-    pub canonical_path: String,
-    /// Source visibility as written in std.
-    pub visibility: Visibility,
-    /// Whether the item is re-exported publicly through its module chain
-    /// (i.e., usable by name outside its defining module).
-    pub is_exported: bool,
-    /// File path (relative to the library src root) where the item is defined.
-    pub def_file: String,
-    /// Whether this type is explicitly declared in the loader spec.
-    pub declared: bool,
-    /// For type aliases: the right-hand-side type expression of the alias
-    /// (`type Root<K, V> = NodeRef<...>` → RHS tokens). Present only for
-    /// [`ItemKind::TypeAlias`] entries.
-    pub alias_rhs: Option<TokenStream>,
-}
 
-impl TypeInfo {
-    /// True when the type may legally be referred to from bindings: it is
-    /// either explicitly declared in the spec or public in the source.
-    pub fn is_usable(&self) -> bool {
-        self.visibility.is_public() || self.declared
-    }
-
-    /// True when the binding should point at the mirrored definition rather
-    /// than the original type.
-    pub fn is_declared(&self) -> bool {
-        self.declared
-    }
-
-    /// The leaf identifier of the type (the last segment of the serialized
-    /// qualified path).
-    pub fn leaf(&self) -> &str {
-        self.canonical_path
-            .split("::")
-            .filter(|s| !s.is_empty())
-            .last()
-            .unwrap_or(&self.canonical_path)
-    }
-}
-
-/// Registry of all named types discovered in the std source tree plus the set
-/// of types explicitly declared in the loader spec. Built once by the build
-/// script after discovery, then handed to the emitter for both field-type
-/// publicity checking and reference rewriting.
-pub struct TypeRegistry {
-    /// All known types indexed by serialized qualified path
-    /// (`::lib::module::Leaf`).
-    by_path: HashMap<String, TypeInfo>,
-    /// Known types indexed by leaf name.
-    by_leaf: HashMap<String, Vec<String>>,
-    /// Types explicitly declared in the spec, with their canonical paths.
-    declared: HashSet<String>,
-    /// Alternate canonical paths that should be treated as declared even though
-    /// they were not named in the spec. Used when a declared type is reachable
-    /// only through a `cfg_select!` re-export shim: the spec names the logical
-    /// path (e.g. `std::sys::sync::mutex::Mutex`) but the definition physically
-    /// lives in a cfg-selected submodule (e.g. `...::mutex::futex::Mutex`). The
-    /// emitter must accept the defining module's path so the struct isn't
-    /// filtered out before it can be mirrored.
-    declared_aliases: HashSet<String>,
-    /// Name of the manifest wrapper module that all mirrored bindings live
-    /// under (e.g., `std`). Mirror references are emitted as
-    /// `crate::{wrapper_mod}::<path-without-lib-prefix>`. Defaults to
-    /// [`WRAPPER_MOD`].
-    wrapper_mod: String,
-    /// Routes for preserved module qualifiers that resolve (via import /
-    /// re-export chains) to a mirrored module that is NOT a sibling of the
-    /// referring file. Keyed by `(referring_module_ctx, leading_qualifier)`;
-    /// value is the slash-separated defining module path. Consulted by
-    /// [`rewrite_path`] before falling back to module-relative resolution, so
-    /// e.g. `futures::SmallFutex` in `sys/sync/mutex/futures` routes to
-    /// `crate::{wrapper}::sys/pal/unix/futures::SmallFutex`.
-    qualifier_routes: HashMap<(String, String), String>,
-    /// Module-alias imports to emit at the top of a mirrored file so that
-    /// preserved qualifiers (e.g. `pal` in `sys/sync/mutex/pthread`) resolve
-    /// without being rewritten to absolute paths. Keyed by the slash-separated
-    /// referring module; value is `(alias_name, crate_absolute_path)`. The
-    /// emitted import is `use <crate_absolute_path> as <alias_name>;`.
-    module_alias_routes: HashMap<String, Vec<(String, String)>>,
-}
-
-impl Default for TypeRegistry {
-    fn default() -> Self {
-        Self {
-            by_path: HashMap::new(),
-            by_leaf: HashMap::new(),
-            declared: HashSet::new(),
-            declared_aliases: HashSet::new(),
-            wrapper_mod: WRAPPER_MOD.to_string(),
-            qualifier_routes: HashMap::new(),
-            module_alias_routes: HashMap::new(),
-        }
-    }
-}
-
-impl TypeRegistry {
-    pub fn empty() -> Self {
-        Self::default()
-    }
-
-    /// Set the manifest wrapper module name used when emitting mirror paths.
-    pub fn set_wrapper_mod(&mut self, name: &str) {
-        self.wrapper_mod = name.to_string();
-    }
-
-    /// The manifest wrapper module name for mirror-path emission.
-    pub fn wrapper_mod(&self) -> &str {
-        &self.wrapper_mod
-    }
-
-    /// Record that the qualifier `lead`, when written in `module_ctx`, resolves
-    /// to the mirrored module `def_module` (slash-separated). Used by
-    /// [`rewrite_path`] to rewrite preserved qualifiers to absolute mirror
-    /// paths.
-    pub fn set_qualifier_route(&mut self, module_ctx: &str, lead: &str, def_module: &str) {
-        // Normalize the referring-module key to `::`-separated form so it
-        // matches the emitter's `module_path` (which is built from the file
-        // path with `::`). The build script passes slash-separated paths.
-        let key_mod = module_ctx.replace('/', "::");
-        self.qualifier_routes
-            .insert((key_mod, lead.to_string()), def_module.to_string());
-    }
-
-    /// Look up the mirrored defining module for a qualifier `lead` written in
-    /// `module_ctx` (`::`-separated, as the emitter computes it), if one was
-    /// recorded.
-    pub fn qualifier_route(&self, module_ctx: &str, lead: &str) -> Option<&str> {
-        self.qualifier_routes
-            .get(&(module_ctx.to_string(), lead.to_string()))
-            .map(String::as_str)
-    }
-
-    /// Record a module-alias import that must be emitted at the top of the file
-    /// whose referring module is `referring_module` (slash-separated): bind
-    /// `alias_name` to `crate_path` (absolute, `::`-separated). The emitted
-    /// line is `use <crate_path> as <alias_name>;`. Deduplicated on emit.
-    pub fn set_module_alias_route(
-        &mut self,
-        referring_module: &str,
-        alias_name: &str,
-        crate_path: &str,
-    ) {
-        let entry = self
-            .module_alias_routes
-            .entry(referring_module.to_string())
-            .or_default();
-        // Avoid recording duplicate aliases for the same referring module.
-        if !entry.iter().any(|(a, _)| a == alias_name) {
-            entry.push((alias_name.to_string(), crate_path.to_string()));
-        }
-    }
-
-    /// The module-alias imports to emit for the file at `referring_module`
-    /// (slash-separated). Returns an empty slice when none are recorded.
-    pub fn module_alias_routes(&self, referring_module: &str) -> &[(String, String)] {
-        self.module_alias_routes
-            .get(referring_module)
-            .map_or(&[], Vec::as_slice)
-    }
-
-    /// Register a type discovered in a source file.
-    pub fn register(
-        &mut self,
-        canonical_path: &str,
-        visibility: Visibility,
-        is_exported: bool,
-        def_file: &str,
-    ) {
-        // Leaf is the last non-empty segment of the serialized qualified path.
-        let leaf = canonical_path
-            .split("::")
-            .filter(|s| !s.is_empty())
-            .last()
-            .unwrap_or(canonical_path);
-        self.by_leaf
-            .entry(leaf.to_string())
-            .or_default()
-            .push(canonical_path.to_string());
-        let info = self
-            .by_path
-            .entry(canonical_path.to_string())
-            .or_insert_with(|| TypeInfo {
-                canonical_path: canonical_path.to_string(),
-                visibility,
-                is_exported,
-                def_file: def_file.to_string(),
-                declared: false,
-                alias_rhs: None,
-            });
-        // If seen multiple times (e.g. via inline module + file), prefer the
-        // more informative record.
-        if !info.is_exported && is_exported {
-            info.is_exported = true;
-        }
-        if !matches!(info.visibility, Visibility::Public)
-            && matches!(visibility, Visibility::Public)
-        {
-            info.visibility = visibility;
-        }
-    }
-
-    /// Record the right-hand side of a type alias so that emission can mirror
-    /// the alias definition itself (rewriting its RHS through the registry).
-    pub fn set_alias_rhs(&mut self, canonical_path: &str, rhs: TokenStream) {
-        if let Some(info) = self.by_path.get_mut(canonical_path) {
-            info.alias_rhs = Some(rhs);
-        }
-    }
-
-    /// Mark a canonical path as explicitly declared in the spec.
-    ///
-    /// The `def_file` here is authoritative (typically an absolute path) and
-    /// overrides whatever def_file was recorded during discovery, because the
-    /// field-publicity check reads the source file from this path.
-    pub fn insert_declared(&mut self, canonical_path: &str, def_file: &str) {
-        self.register(canonical_path, Visibility::Public, true, def_file);
-        if let Some(info) = self.by_path.get_mut(canonical_path) {
-            info.declared = true;
-            // Force-update def_file: `register` uses or_insert_with, so a
-            // previously-discovered record (with a relative def_file) would
-            // otherwise win. The declared def_file is the one the checker needs.
-            info.def_file = def_file.to_string();
-        }
-        self.declared.insert(canonical_path.to_string());
-    }
-
-    /// Register an alternate canonical path that should be treated as declared
-    /// for emission purposes (see [`Self::declared_aliases`]). The path is also
-    /// registered in the symbol tables so field-reference resolution can find it.
-    pub fn insert_declared_alias(&mut self, canonical_path: &str, def_file: &str) {
-        self.register(canonical_path, Visibility::Public, true, def_file);
-        if let Some(info) = self.by_path.get_mut(canonical_path) {
-            info.declared = true;
-            info.def_file = def_file.to_string();
-        }
-        self.declared_aliases.insert(canonical_path.to_string());
-    }
-
-    /// Look up a type by canonical path.
-    pub fn get(&self, canonical_path: &str) -> Option<&TypeInfo> {
-        self.by_path.get(canonical_path)
-    }
-
-    /// Candidate canonical paths for a bare leaf name (may be ambiguous).
-    pub fn candidates_for_leaf(&self, leaf: &str) -> &[String] {
-        self.by_leaf.get(leaf).map(|v| v.as_slice()).unwrap_or(&[])
-    }
-
-    /// Resolve a type reference appearing in a declared struct's fields.
-    ///
-    /// Rules:
-    /// - Declared (in the spec) → `Mirrored`: bindings point at the mirror.
-    /// - Public in source and not declared → `Original`: refer to the real type.
-    /// - Private/restricted and not declared → `UndeclaredPrivate`: error.
-    /// - Unknown (primitive, generic param, foreign) → `Unknown`: leave alone.
-    pub fn resolve_field_ref(&self, leaf: &str) -> FieldRefResolution {
-        self.resolve_field_ref_in(leaf, "")
-    }
-
-    /// Resolve a type reference with module context. When multiple modules
-    /// declare the same leaf name (e.g., `map::entry::VacantEntry` and
-    /// `set::entry::VacantEntry`), the candidate whose canonical path shares
-    /// the longest suffix with `module_context` is preferred. This prevents
-    /// cross-module misrouting where a bare `VacantEntry` in map/entry.rs
-    /// would otherwise resolve to the set-side definition.
-    pub fn resolve_field_ref_in(&self, leaf: &str, module_context: &str) -> FieldRefResolution {
-        let guard = LocalNameGuard::new(None);
-        self.resolve_with_guard(leaf, module_context, &guard)
-    }
-
-    /// Resolve a module-relative path (e.g. `futex::SmallFutex`) written in a
-    /// file whose module is `module_context`. All but the last segment are
-    /// treated as module qualifiers relative to the current module, so the
-    /// full candidate path is built as
-    /// `<module_context>::<seg0>::…::<second-to-last>` with the last segment
-    /// as the leaf, and matched against known canonical paths. Returns the
-    /// resolution for the leaf when a match is found; `None` otherwise
-    /// (caller leaves the path untouched).
-    ///
-    /// When several candidates tie on suffix overlap — e.g. `Root` seen from
-    /// `collections/btree/map`, where both `map::inner::Root` (an item inside
-    /// a child module) and `node::Root` (an alias bound via import) share the
-    /// same longest suffix — the shortest candidate wins. That mirrors Rust's
-    /// own name-resolution preference for items over deeper same-named
-    /// descendants, which is what makes bare references like `Root<K, V>` in
-    /// `btree/map` bind to the `node::Root` alias rather than to a deeper
-    /// same-named definition.
-    pub fn resolve_module_relative(
-        &self,
-        segments: &[String],
-        module_context: &str,
-    ) -> Option<FieldRefResolution> {
-        if segments.is_empty() || module_context.is_empty() {
-            return None;
-        }
-        let mut full = String::from(module_context);
-        for s in &segments[..segments.len() - 1] {
-            full.push_str("::");
-            full.push_str(s);
-        }
-        let leaf = segments.last().unwrap();
-        // Bare names (single segment) are resolved against the module context
-        // via the guarded resolver, which scores every candidate by proximity
-        // and applies the declared/exported/shallowest tie-break cascade.
-        if segments.len() == 1 {
-            let guard = LocalNameGuard::new(None);
-            return Some(self.resolve_with_guard(leaf, module_context, &guard));
-        }
-        // Multi-segment paths: try exact match first, then fall back to
-        // proximity scoring among the leaf's candidates (also handles
-        // library-prefix differences).
-        let candidates = self.candidates_for_leaf(leaf);
-        let chosen_owned: String = candidates
-            .iter()
-            .find(|p| p.as_str() == full)
-            .cloned()
-            .or_else(|| {
-                // Score each candidate by how much its *prefix* (canonical
-                // path minus the leaf) overlaps with `full`: for multi-segment
-                // paths `full` ends at the second-to-last segment, and for
-                // bare names it equals the module context — so a candidate
-                // defined in (or nested under) the referring module scores
-                // highest either way.
-                let prefixes: Vec<String> = candidates
-                    .iter()
-                    .map(|p| {
-                        p.rsplit_once("::")
-                            .map(|(pre, _)| pre.to_string())
-                            .unwrap_or_default()
-                    })
-                    .collect();
-                let scored: Vec<(usize, &String)> = candidates
-                    .iter()
-                    .enumerate()
-                    .map(|(i, p)| (suffix_overlap(&prefixes[i], &full), p))
-                    .collect();
-                let max = scored.iter().map(|(s, _)| *s).max()?;
-                let top: Vec<&String> = scored
-                    .iter()
-                    .filter(|(s, _)| *s == max)
-                    .map(|(_, p)| *p)
-                    .collect();
-                // Tie-break: prefer declared candidates, then exported ones,
-                // then the shallowest canonical path (fewest segments) so an
-                // import-bound alias one level up beats a deeper same-named
-                // descendant of the referring module.
-                let winner = top
-                    .iter()
-                    .find(|p| self.declared.contains(p.as_str()))
-                    .or_else(|| {
-                        top.iter()
-                            .find(|p| self.by_path.get(p.as_str()).is_some_and(|t| t.is_exported))
-                    })
-                    .or_else(|| top.iter().min_by_key(|p| p.split("::").count()));
-                winner.map(|p| (*p).clone())
-            })?;
-        Some(match self.by_path.get(chosen_owned.as_str()) {
-            Some(info) if info.is_declared() => FieldRefResolution::Mirrored(chosen_owned),
-            Some(info) if info.is_usable() => FieldRefResolution::Original(chosen_owned),
-            Some(_) => FieldRefResolution::UndeclaredPrivate(chosen_owned),
-            None => FieldRefResolution::Unknown(leaf.to_string()),
-        })
-    }
-
-    /// Resolve a type reference with a [`LocalNameGuard`] that marks certain
-    /// names as "local" (should not be rewritten). Used by the emission
-    /// pipeline to prevent bare references to file-local types or generic
-    /// type parameters from being misrouted to cross-module mirrors.
-    fn resolve_with_guard(
-        &self,
-        leaf: &str,
-        module_context: &str,
-        guard: &LocalNameGuard<'_>,
-    ) -> FieldRefResolution {
-        let candidates = self.candidates_for_leaf(leaf);
-        if candidates.is_empty() {
-            // Not a known std type — primitive, generic parameter, or external
-            // crate item. Leave the reference untouched.
-            return FieldRefResolution::Unknown(leaf.to_string());
-        }
-
-        // Local-first: if this name is marked as local (defined in this file
-        // or is a generic type parameter), leave it bare.
-        if guard.contains(leaf) {
-            return FieldRefResolution::Unknown(leaf.to_string());
-        }
-
-        // Score each candidate by how much its *prefix* (canonical path minus
-        // the leaf) overlaps with the current module context. Scoring the full
-        // path would always fail for bare names whose leaf differs from the
-        // context's last segment, leaving valid candidates unrouted.
-        let prefixes: Vec<String> = candidates
-            .iter()
-            .map(|p| {
-                p.rsplit_once("::")
-                    .map(|(pre, _)| pre.to_string())
-                    .unwrap_or_default()
-            })
-            .collect();
-        let scored: Vec<(usize, &String)> = candidates
-            .iter()
-            .enumerate()
-            .map(|(i, p)| (suffix_overlap(&prefixes[i], module_context), p))
-            .collect();
-        let mut scored_sorted = scored;
-        scored_sorted.sort_by_key(|b| std::cmp::Reverse(b.0));
-
-        // Among the highest-scoring candidates, prefer declared, then
-        // exported, then the shallowest canonical path (fewest segments) so
-        // an import-bound alias one level up beats a deeper same-named
-        // descendant of the referring module. A zero score does not reject:
-        // when every candidate scores equally (including all-zero), the
-        // tie-break cascade still picks the best available reference.
-        let max_score = scored_sorted.first().map(|(s, _)| *s).unwrap_or(0);
-        let top: Vec<&String> = scored_sorted
-            .iter()
-            .filter(|(s, _)| *s == max_score)
-            .map(|(_, p)| *p)
-            .collect();
-
-        let chosen = top
-            .iter()
-            .find(|p| self.declared.contains(**p))
-            .or_else(|| {
-                top.iter()
-                    .find(|p| self.by_path.get(p.as_str()).is_some_and(|t| t.is_exported))
-            })
-            .or_else(|| top.iter().min_by_key(|p| p.split("::").count()))
-            .copied()
-            .unwrap_or(top[0]);
-
-        match self.by_path.get(chosen) {
-            Some(info) if info.is_declared() => FieldRefResolution::Mirrored(chosen.clone()),
-            Some(info) if info.is_usable() => FieldRefResolution::Original(chosen.clone()),
-            Some(_) => FieldRefResolution::UndeclaredPrivate(chosen.clone()),
-            None => FieldRefResolution::Unknown(leaf.to_string()),
-        }
-    }
-
-    /// Iterate over all declared types.
-    pub fn declared_paths(&self) -> impl Iterator<Item = &String> {
-        self.declared.iter()
-    }
-
-    /// True when a type at `::{lib_name}::{module_path}::{leaf}` (serialized
-    /// qualified path) is explicitly declared in the loader spec. Used by the
-    /// emitter to restrict output to
-    /// declared data structures only, so peripheral public items that merely sit
-    /// alongside them (iterators, cursors, range views, …) are not mirrored
-    /// unless they are part of the polyfill's core surface.
-    pub fn is_declared_in_module(&self, lib_name: &str, module_path: &str, leaf: &str) -> bool {
-        // Serialize the address as a qualified path: leading `::` marker, then
-        // lib, module (when non-empty), and leaf.
-        let mut canonical = format!("::{lib_name}");
-        if !module_path.is_empty() {
-            canonical.push_str("::");
-            canonical.push_str(module_path);
-        }
-        canonical.push_str("::");
-        canonical.push_str(leaf);
-        if self.declared.contains(&canonical) || self.declared_aliases.contains(&canonical) {
-            return true;
-        }
-        // A mirrored module may register only a subset of its items (the leaves
-        // actually referenced from declared types). Any item that the registry
-        // knows about at this exact location belongs to a materialized mirror,
-        // so it must be emitted alongside them — otherwise its own references
-        // are never routed through the registry and dangle in the output.
-        self.by_path.contains_key(&canonical)
-    }
-}
-
-/// Number of trailing `::`-separated segments that two paths share. Used to
-/// score candidate types by proximity to the current module context.
-fn suffix_overlap(a: &str, b: &str) -> usize {
-    if b.is_empty() {
-        return 0;
-    }
-    let a_segs: Vec<&str> = a.split("::").collect();
-    let b_segs: Vec<&str> = b.split("::").collect();
-    let mut count = 0;
-    for (x, y) in a_segs.iter().rev().zip(b_segs.iter().rev()) {
-        if x == y {
-            count += 1;
-        } else {
-            break;
-        }
-    }
-    count
-}
-
-impl TypeRegistry {
-    /// Total number of registered types.
-    #[allow(dead_code)]
-    pub fn len(&self) -> usize {
-        self.by_path.len()
-    }
-
-    #[allow(dead_code)]
-    pub fn is_empty(&self) -> bool {
-        self.by_path.is_empty()
-    }
-}
-
-/// Check every field type of every declared struct against the registry.
+/// Check every field type of every declared struct against the binding model.
 /// Returns a list of human-readable errors (empty when all checks pass).
-///
-/// The enumeration of *which* types are declared comes from the binding model
-/// (the tree), while reference resolution still consults the registry — the
-/// latter's retirement is a later migration step.
-pub fn check_declared_struct_fields(
-    model: &crate::syntaxes::BindingModel,
-    registry: &TypeRegistry,
-) -> Vec<String> {
+pub fn check_declared_struct_fields(model: &BindingModel) -> Vec<String> {
     let mut errors = Vec::new();
-    let mut canonicals: Vec<String> = Vec::new();
+    let mut entries: Vec<(String, String, String)> = Vec::new(); // (leaf, def_file, module_ctx)
     model.for_each_module(&mut |_lib, node| {
         for rec in node.items.values() {
             if rec.declared {
-                canonicals.push(
-                    rec.qualified_path(&node.lib, &node.module_path)
-                        .to_canonical(),
-                );
+                let Some(def_file) = &rec.def_file_abs else {
+                    continue;
+                };
+                let module_ctx = node.module_path.to_canonical();
+                entries.push((rec.name.clone(), def_file.clone(), module_ctx));
             }
         }
     });
-    canonicals.sort();
-    canonicals.dedup();
-    for canonical in &canonicals {
-        let Some(info) = registry.get(canonical) else {
+    entries.sort();
+    entries.dedup();
+    for (leaf, def_file, module_ctx) in &entries {
+        let Ok(text) = std::fs::read_to_string(def_file) else {
             continue;
         };
-        let Ok(text) = std::fs::read_to_string(&info.def_file) else {
-            continue;
-        };
-        let leaf = info.leaf();
         let Ok(file) = syn::parse_file(&text) else {
             continue;
         };
         for item in &file.items {
             match item {
                 syn::Item::Struct(s) if s.ident == leaf => {
-                    collect_fields(&s.fields, registry, canonical, &mut errors);
+                    collect_fields(&s.fields, model, leaf, module_ctx, &mut errors);
                 }
                 syn::Item::Enum(e) if e.ident == leaf => {
                     // Check variant payloads too.
                     for v in &e.variants {
-                        collect_fields(&v.fields, registry, canonical, &mut errors);
+                        collect_fields(&v.fields, model, leaf, module_ctx, &mut errors);
                     }
                 }
                 // A declared type alias is checked through its right-hand side:
                 // every type the alias expands to must itself be usable.
                 syn::Item::Type(t) if t.ident == leaf => {
-                    check_alias_rhs(&t.ty, registry, canonical, &mut errors);
+                    check_alias_rhs(&t.ty, model, module_ctx, leaf, &mut errors);
                 }
                 _ => {}
             }
@@ -615,11 +98,15 @@ pub fn check_declared_struct_fields(
 }
 
 /// Check that a declared type alias's RHS only references usable types.
-fn check_alias_rhs(ty: &syn::Type, registry: &TypeRegistry, owner: &str, errors: &mut Vec<String>) {
+fn check_alias_rhs(
+    ty: &syn::Type,
+    model: &BindingModel,
+    module_ctx: &str,
+    owner: &str,
+    errors: &mut Vec<String>,
+) {
     for ty_name in type_leaves(ty) {
-        if let FieldRefResolution::UndeclaredPrivate(resolved) =
-            registry.resolve_field_ref(&ty_name)
-        {
+        if let FieldRefResolution::UndeclaredPrivate(resolved) = model.resolve_bare(&ty_name, module_ctx) {
             errors.push(format!(
                 "[fields] type alias `{owner}` expands to `{ty_name}`, which resolves \
                  to `{resolved}` — a non-public, undeclared type. Declare it in the spec \
@@ -1111,13 +598,15 @@ fn field_iter(fields: &syn::Fields) -> Box<dyn Iterator<Item = &syn::Field> + '_
 
 fn collect_fields(
     fields: &syn::Fields,
-    registry: &TypeRegistry,
+    model: &BindingModel,
     owner: &str,
+    module_ctx: &str,
     errors: &mut Vec<String>,
 ) {
     for f in field_iter(fields) {
         for ty in type_leaves(&f.ty) {
-            if let FieldRefResolution::UndeclaredPrivate(resolved) = registry.resolve_field_ref(&ty)
+            if let FieldRefResolution::UndeclaredPrivate(resolved) =
+                model.resolve_bare(&ty, module_ctx)
             {
                 errors.push(format!(
                     "[fields] `{owner}` has a field of type `{ty}`, which resolves to \
@@ -1202,12 +691,13 @@ const DROP_MAYBE_NO: &str = "maybe-no";
 ///   parameter (always wins, since the concrete instantiation is unknown).
 fn classify_field_drop(
     ty: &syn::Type,
-    registry: &TypeRegistry,
+    model: &BindingModel,
+    module_ctx: &str,
     guard: &LocalNameGuard<'_>,
 ) -> &'static str {
     let mut has_polyfill = false;
     let mut has_generic = false;
-    visit_drop_classification(ty, registry, guard, &mut has_polyfill, &mut has_generic);
+    visit_drop_classification(ty, model, module_ctx, guard, &mut has_polyfill, &mut has_generic);
     if has_polyfill || has_generic {
         DROP_MAYBE_NO
     } else {
@@ -1221,7 +711,8 @@ fn classify_field_drop(
 /// guard); bare identifiers that resolve to neither stay neutral.
 fn visit_drop_classification(
     ty: &syn::Type,
-    registry: &TypeRegistry,
+    model: &BindingModel,
+    module_ctx: &str,
     guard: &LocalNameGuard<'_>,
     has_polyfill: &mut bool,
     has_generic: &mut bool,
@@ -1233,7 +724,7 @@ fn visit_drop_classification(
                 if guard.contains(&name) {
                     *has_generic = true;
                 } else if matches!(
-                    registry.resolve_field_ref(&name),
+                    model.resolve_bare(&name, module_ctx),
                     FieldRefResolution::Mirrored(_)
                 ) {
                     *has_polyfill = true;
@@ -1246,7 +737,8 @@ fn visit_drop_classification(
                         if let syn::GenericArgument::Type(inner) = arg {
                             visit_drop_classification(
                                 inner,
-                                registry,
+                                model,
+                                module_ctx,
                                 guard,
                                 has_polyfill,
                                 has_generic,
@@ -1257,27 +749,27 @@ fn visit_drop_classification(
             }
         }
         Type::Reference(tr) => {
-            visit_drop_classification(&tr.elem, registry, guard, has_polyfill, has_generic)
+            visit_drop_classification(&tr.elem, model, module_ctx, guard, has_polyfill, has_generic)
         }
         Type::Ptr(tp) => {
-            visit_drop_classification(&tp.elem, registry, guard, has_polyfill, has_generic)
+            visit_drop_classification(&tp.elem, model, module_ctx, guard, has_polyfill, has_generic)
         }
         Type::Tuple(tt) => {
             for elem in &tt.elems {
-                visit_drop_classification(elem, registry, guard, has_polyfill, has_generic);
+                visit_drop_classification(elem, model, module_ctx, guard, has_polyfill, has_generic);
             }
         }
         Type::Slice(ts) => {
-            visit_drop_classification(&ts.elem, registry, guard, has_polyfill, has_generic)
+            visit_drop_classification(&ts.elem, model, module_ctx, guard, has_polyfill, has_generic)
         }
         Type::Array(ta) => {
-            visit_drop_classification(&ta.elem, registry, guard, has_polyfill, has_generic)
+            visit_drop_classification(&ta.elem, model, module_ctx, guard, has_polyfill, has_generic)
         }
         Type::Paren(tp) => {
-            visit_drop_classification(&tp.elem, registry, guard, has_polyfill, has_generic)
+            visit_drop_classification(&tp.elem, model, module_ctx, guard, has_polyfill, has_generic)
         }
         Type::Group(tg) => {
-            visit_drop_classification(&tg.elem, registry, guard, has_polyfill, has_generic)
+            visit_drop_classification(&tg.elem, model, module_ctx, guard, has_polyfill, has_generic)
         }
         _ => {}
     }
@@ -1314,21 +806,27 @@ fn has_drop_annotation(attrs: &[syn::Attribute]) -> bool {
 /// since doc comments on tuple positions are less discoverable.
 fn annotate_fields_drop(
     fields: &mut syn::Fields,
-    registry: &TypeRegistry,
+    model: &BindingModel,
+    module_ctx: &str,
     guard: &LocalNameGuard<'_>,
 ) {
     if let syn::Fields::Named(named) = fields {
         for f in named.named.iter_mut() {
-            annotate_one_field(f, registry, guard);
+            annotate_one_field(f, model, module_ctx, guard);
         }
     }
 }
 
-fn annotate_one_field(f: &mut syn::Field, registry: &TypeRegistry, guard: &LocalNameGuard<'_>) {
+fn annotate_one_field(
+    f: &mut syn::Field,
+    model: &BindingModel,
+    module_ctx: &str,
+    guard: &LocalNameGuard<'_>,
+) {
     if !drop_annotations_enabled() {
         return;
     }
-    let value = classify_field_drop(&f.ty, registry, guard);
+    let value = classify_field_drop(&f.ty, model, module_ctx, guard);
     if !has_drop_annotation(&f.attrs) {
         f.attrs.push(drop_doc_comment(value));
     }
@@ -1337,26 +835,26 @@ fn annotate_one_field(f: &mut syn::Field, registry: &TypeRegistry, guard: &Local
 /// Rewrite the tokens of a single struct/enum/union item so that every
 fn rewrite_fields_named(
     fields: &mut syn::FieldsNamed,
-    registry: &TypeRegistry,
+    model: &BindingModel,
     module_ctx: &str,
     guard: &LocalNameGuard<'_>,
 ) {
     for f in fields.named.iter_mut() {
-        f.ty = rewrite_type(f.ty.clone(), registry, module_ctx, guard);
+        f.ty = rewrite_type(f.ty.clone(), model, module_ctx, guard);
     }
 }
 
 fn rewrite_fields(
     fields: &mut syn::Fields,
-    registry: &TypeRegistry,
+    model: &BindingModel,
     module_ctx: &str,
     guard: &LocalNameGuard<'_>,
 ) {
     match fields {
-        syn::Fields::Named(named) => rewrite_fields_named(named, registry, module_ctx, guard),
+        syn::Fields::Named(named) => rewrite_fields_named(named, model, module_ctx, guard),
         syn::Fields::Unnamed(unnamed) => {
             for f in unnamed.unnamed.iter_mut() {
-                f.ty = rewrite_type(f.ty.clone(), registry, module_ctx, guard);
+                f.ty = rewrite_type(f.ty.clone(), model, module_ctx, guard);
             }
         }
         syn::Fields::Unit => {}
@@ -1365,7 +863,7 @@ fn rewrite_fields(
 
 fn rewrite_struct_node(
     mut node: ItemStruct,
-    registry: &TypeRegistry,
+    model: &BindingModel,
     module_ctx: &str,
     base_guard: &LocalNameGuard<'_>,
 ) -> TokenStream {
@@ -1378,15 +876,15 @@ fn rewrite_struct_node(
         .map(|p| p.ident.to_string())
         .collect();
     let guard = LocalNameGuard::new(base_guard.file_local).with_generics(&gen_names);
-    node.generics = rewrite_generics(node.generics, registry, module_ctx, &guard);
+    node.generics = rewrite_generics(node.generics, model, module_ctx, &guard);
     if let syn::Fields::Named(named) = &mut node.fields {
-        rewrite_fields_named(named, registry, module_ctx, &guard);
+        rewrite_fields_named(named, model, module_ctx, &guard);
         for f in named.named.iter_mut() {
-            annotate_one_field(f, registry, &guard);
+            annotate_one_field(f, model, module_ctx, &guard);
         }
     } else {
         // Tuple/unit structs: no drop annotations possible on unnamed fields.
-        rewrite_fields(&mut node.fields, registry, module_ctx, &guard);
+        rewrite_fields(&mut node.fields, model, module_ctx, &guard);
     }
     let mut ts = TokenStream::new();
     node.to_tokens(&mut ts);
@@ -1395,7 +893,7 @@ fn rewrite_struct_node(
 
 fn rewrite_enum_node(
     mut node: syn::ItemEnum,
-    registry: &TypeRegistry,
+    model: &BindingModel,
     module_ctx: &str,
     base_guard: &LocalNameGuard<'_>,
 ) -> TokenStream {
@@ -1409,10 +907,10 @@ fn rewrite_enum_node(
         .map(|p| p.ident.to_string())
         .collect();
     let guard = LocalNameGuard::new(base_guard.file_local).with_generics(&gen_names);
-    node.generics = rewrite_generics(node.generics, registry, module_ctx, &guard);
+    node.generics = rewrite_generics(node.generics, model, module_ctx, &guard);
     for v in &mut node.variants {
-        rewrite_fields(&mut v.fields, registry, module_ctx, &guard);
-        annotate_fields_drop(&mut v.fields, registry, &guard);
+        rewrite_fields(&mut v.fields, model, module_ctx, &guard);
+        annotate_fields_drop(&mut v.fields, model, module_ctx, &guard);
     }
     let mut ts = TokenStream::new();
     node.to_tokens(&mut ts);
@@ -1452,7 +950,7 @@ impl<'a> LocalNameGuard<'a> {
 
 fn rewrite_union_node(
     mut node: syn::ItemUnion,
-    registry: &TypeRegistry,
+    model: &BindingModel,
     module_ctx: &str,
     base_guard: &LocalNameGuard<'_>,
 ) -> TokenStream {
@@ -1462,10 +960,10 @@ fn rewrite_union_node(
         .map(|p| p.ident.to_string())
         .collect();
     let guard = LocalNameGuard::new(base_guard.file_local).with_generics(&gen_names);
-    node.generics = rewrite_generics(node.generics, registry, module_ctx, &guard);
-    rewrite_fields_named(&mut node.fields, registry, module_ctx, &guard);
+    node.generics = rewrite_generics(node.generics, model, module_ctx, &guard);
+    rewrite_fields_named(&mut node.fields, model, module_ctx, &guard);
     for f in node.fields.named.iter_mut() {
-        annotate_one_field(f, registry, &guard);
+        annotate_one_field(f, model, module_ctx, &guard);
     }
     let mut ts = TokenStream::new();
     node.to_tokens(&mut ts);
@@ -1474,7 +972,7 @@ fn rewrite_union_node(
 
 fn rewrite_generics(
     generics: Generics,
-    registry: &TypeRegistry,
+    model: &BindingModel,
     module_ctx: &str,
     guard: &LocalNameGuard<'_>,
 ) -> Generics {
@@ -1490,7 +988,7 @@ fn rewrite_generics(
                 t.bounds = t
                     .bounds
                     .into_iter()
-                    .map(|b| rewrite_generic_bound(b, registry, module_ctx, guard))
+                    .map(|b| rewrite_generic_bound(b, model, module_ctx, guard))
                     .collect();
                 syn::GenericParam::Type(t)
             }
@@ -1503,11 +1001,11 @@ fn rewrite_generics(
         for pred in where_clause.predicates {
             let rewritten = match pred {
                 syn::WherePredicate::Type(mut pt) => {
-                    pt.bounded_ty = rewrite_type(pt.bounded_ty, registry, module_ctx, guard);
+                    pt.bounded_ty = rewrite_type(pt.bounded_ty, model, module_ctx, guard);
                     pt.bounds = pt
                         .bounds
                         .into_iter()
-                        .map(|b| rewrite_generic_bound(b, registry, module_ctx, guard))
+                        .map(|b| rewrite_generic_bound(b, model, module_ctx, guard))
                         .collect();
                     syn::WherePredicate::Type(pt)
                 }
@@ -1525,13 +1023,13 @@ fn rewrite_generics(
 
 fn rewrite_generic_bound(
     bound: syn::TypeParamBound,
-    registry: &TypeRegistry,
+    model: &BindingModel,
     module_ctx: &str,
     guard: &LocalNameGuard<'_>,
 ) -> syn::TypeParamBound {
     match bound {
         syn::TypeParamBound::Trait(mut t) => {
-            t.path = rewrite_path(t.path, registry, module_ctx, guard);
+            t.path = rewrite_path(t.path, model, module_ctx, guard);
             syn::TypeParamBound::Trait(t)
         }
         other => other,
@@ -1544,7 +1042,7 @@ fn rewrite_generic_bound(
 /// else passes through unchanged.
 fn rewrite_type(
     ty: Type,
-    registry: &TypeRegistry,
+    model: &BindingModel,
     module_ctx: &str,
     guard: &LocalNameGuard<'_>,
 ) -> Type {
@@ -1558,9 +1056,9 @@ fn rewrite_type(
     match ty {
         Type::Path(mut tp) => {
             if let Some(q) = &mut tp.qself {
-                *q.ty = rewrite_type((*q.ty).clone(), registry, module_ctx, guard);
+                *q.ty = rewrite_type((*q.ty).clone(), model, module_ctx, guard);
             }
-            tp.path = rewrite_path(tp.path, registry, module_ctx, guard);
+            tp.path = rewrite_path(tp.path, model, module_ctx, guard);
             Type::Path(tp)
         }
         other => other,
@@ -1573,7 +1071,7 @@ fn rewrite_type(
 /// `"collections/btree/map/entry"`) used to disambiguate same-named types.
 fn rewrite_path(
     path: syn::Path,
-    registry: &TypeRegistry,
+    model: &BindingModel,
     module_ctx: &str,
     guard: &LocalNameGuard<'_>,
 ) -> syn::Path {
@@ -1593,7 +1091,7 @@ fn rewrite_path(
     // top of the file), keep the original qualified path unchanged — the alias
     // import resolves it. Otherwise, rewrite to an absolute mirror path.
     if segs.len() == 2 && leading_colon.is_none() {
-        if let Some(def_module) = registry.qualifier_route(module_ctx, &head) {
+        if let Some(def_module) = model.qualifier_route(module_ctx, &head) {
             // Always rewrite to an absolute mirror path. Even when a
             // module-alias import is recorded, the user directive requires
             // fully qualifying paths rather than relying on ambient imports.
@@ -1601,14 +1099,14 @@ fn rewrite_path(
             let def_colons = ModulePath::from_slash(def_module)
                 .map(|mp| mp.to_canonical())
                 .unwrap_or_else(|| def_module.replace('/', "::"));
-            let abs = format!("crate::{}::{def_colons}::{leaf}", registry.wrapper_mod());
+            let abs = format!("crate::{}::{def_colons}::{leaf}", WRAPPER_MOD);
             if let Ok(mut p) = syn::parse_str::<syn::Path>(&abs) {
                 // Preserve the generic arguments from the original last segment
                 // (e.g., `marker::Mut<'a>` → `...::marker::Mut<'a>`). Without this,
                 // the lifetime/type params are silently dropped.
                 if let Some(last_seg) = p.segments.last_mut() {
                     last_seg.arguments =
-                        rewrite_generic_args(&segs[1].arguments, registry, module_ctx, guard);
+                        rewrite_generic_args(&segs[1].arguments, model, module_ctx, guard);
                 }
                 return p;
             }
@@ -1617,7 +1115,7 @@ fn rewrite_path(
     }
     // Module-relative paths (both multi-segment qualifiers like
     // `futex::SmallFutex` and bare import-bound names like `Root`) are
-    // resolved against the registry with the current module as context, so
+    // resolved against the model with the current module as context, so
     // every aliased name unwraps to its fully qualifying mirror path instead
     // of relying on an ambient `use` binding that may shadow or dangle.
     // `Self` is never rewritten (it refers to the enclosing type).
@@ -1638,10 +1136,10 @@ fn rewrite_path(
         // known std type (primitive, generic parameter, external crate item) —
         // those must fall through to the leaf-based pass below, which still
         // unwraps nested generic arguments.
-        if let Some(res) = registry.resolve_module_relative(&all_segs, module_ctx) {
+        if let Some(res) = model.resolve_module_relative(&all_segs, module_ctx) {
             match res {
                 FieldRefResolution::Mirrored(_) | FieldRefResolution::Original(_) => {
-                    return build_abs_path(res, registry, &segs, module_ctx, guard, 0);
+                    return build_abs_path(res, model, &segs, module_ctx, guard, 0);
                 }
                 _ => {}
             }
@@ -1654,14 +1152,14 @@ fn rewrite_path(
     let resolved: Option<FieldRefResolution> = if head == "Self" {
         None
     } else {
-        Some(registry.resolve_with_guard(&head, module_ctx, guard))
+        Some(model.resolve_bare_with_guard(&head, module_ctx, |n| guard.contains(n)))
     };
 
     let abs_path = match resolved {
         Some(FieldRefResolution::Mirrored(canonical)) => {
             // Declared types are mirrored into our synthetic tree. The mirror
             // always lives under the manifest's single wrapper module (named by
-            // the registry) — every library's files merge into that one
+            // the model) — every library's files merge into that one
             // hierarchy, and cross-library references (e.g., a `std`-pathed
             // re-export of a core entity) resolve through it too — so the
             // leading library segment is dropped here regardless of which
@@ -1676,7 +1174,7 @@ fn rewrite_path(
                     segments: segs.into_iter().collect(),
                 };
             };
-            format!("crate::{}::{rest}", registry.wrapper_mod())
+            format!("crate::{}::{rest}", WRAPPER_MOD)
         }
         Some(FieldRefResolution::Original(canonical)) => {
             // Public but undeclared: point straight at the original type in its
@@ -1709,7 +1207,7 @@ fn rewrite_path(
             // those must be absolute regardless of how the head resolves.
             let mut kept = segs;
             if let Some(last) = kept.last_mut() {
-                last.arguments = rewrite_generic_args(&last.arguments, registry, module_ctx, guard);
+                last.arguments = rewrite_generic_args(&last.arguments, model, module_ctx, guard);
             }
             return syn::Path {
                 leading_colon,
@@ -1718,17 +1216,17 @@ fn rewrite_path(
         }
     };
 
-    build_abs_path_from_str(abs_path, &segs, registry, module_ctx, guard)
+    build_abs_path_from_str(abs_path, &segs, model, module_ctx, guard)
 }
 
 /// Compute the absolute replacement path string for a resolved reference.
-fn abs_path_for(res: &FieldRefResolution, registry: &TypeRegistry) -> Option<String> {
+fn abs_path_for(res: &FieldRefResolution) -> Option<String> {
     match res {
         // Canonical keys are serialized qualified paths (`::lib::module::item`);
         // the mirror drops the library segment entirely.
         FieldRefResolution::Mirrored(canonical) => {
             let rest = canonical.strip_prefix("::")?.split_once("::")?.1;
-            Some(format!("crate::{}::{rest}", registry.wrapper_mod()))
+            Some(format!("crate::{}::{rest}", WRAPPER_MOD))
         }
         // Public but undeclared: point at the original type in its builtin
         // crate, keyed off the encoded library segment.
@@ -1748,26 +1246,26 @@ fn abs_path_for(res: &FieldRefResolution, registry: &TypeRegistry) -> Option<Str
 /// carried them), recursively rewritten so nested references route correctly.
 fn build_abs_path(
     res: FieldRefResolution,
-    registry: &TypeRegistry,
+    model: &BindingModel,
     segs: &[syn::PathSegment],
     module_ctx: &str,
     guard: &LocalNameGuard<'_>,
     assoc_tail: usize,
 ) -> syn::Path {
-    let Some(abs_path) = abs_path_for(&res, registry) else {
+    let Some(abs_path) = abs_path_for(&res) else {
         // Should not happen for Mirrored/Original; defensive fallback.
         return syn::Path {
             leading_colon: None,
             segments: segs.iter().cloned().collect(),
         };
     };
-    assemble_abs_path(abs_path, segs, assoc_tail, registry, module_ctx, guard)
+    assemble_abs_path(abs_path, segs, assoc_tail, model, module_ctx, guard)
 }
 
 fn build_abs_path_from_str(
     abs_path: String,
     segs: &[syn::PathSegment],
-    registry: &TypeRegistry,
+    model: &BindingModel,
     module_ctx: &str,
     guard: &LocalNameGuard<'_>,
 ) -> syn::Path {
@@ -1776,7 +1274,7 @@ fn build_abs_path_from_str(
         abs_path,
         segs,
         segs.len().saturating_sub(1),
-        registry,
+        model,
         module_ctx,
         guard,
     )
@@ -1794,7 +1292,7 @@ fn assemble_abs_path(
     abs_path: String,
     segs: &[syn::PathSegment],
     assoc_tail: usize,
-    registry: &TypeRegistry,
+    model: &BindingModel,
     module_ctx: &str,
     guard: &LocalNameGuard<'_>,
 ) -> syn::Path {
@@ -1842,7 +1340,7 @@ fn assemble_abs_path(
         let mut seg = syn::PathSegment::from(ident);
         if idx == last_idx {
             seg.arguments =
-                rewrite_generic_args(&segs[src_seg_idx].arguments, registry, module_ctx, guard);
+                rewrite_generic_args(&segs[src_seg_idx].arguments, model, module_ctx, guard);
         }
         result_segs.push_value(seg);
         result_segs.push_punct(syn::Token![::](Span::call_site()));
@@ -1857,13 +1355,13 @@ fn assemble_abs_path(
 }
 
 /// Recursively rewrite every type embedded in a set of generic arguments
-/// (angle-bracketed or parenthesized) through the registry, so nested type
+/// (angle-bracketed or parenthesized) through the model, so nested type
 /// references are routed to their mirrors/originals exactly as top-level
 /// references are. Non-type arguments (lifetimes, const exprs, bindings) pass
 /// through untouched.
 fn rewrite_generic_args(
     args: &syn::PathArguments,
-    registry: &TypeRegistry,
+    model: &BindingModel,
     module_ctx: &str,
     guard: &LocalNameGuard<'_>,
 ) -> syn::PathArguments {
@@ -1874,7 +1372,7 @@ fn rewrite_generic_args(
                 let rewritten = match arg {
                     syn::GenericArgument::Type(ty) => syn::GenericArgument::Type(rewrite_type(
                         ty.clone(),
-                        registry,
+                        model,
                         module_ctx,
                         guard,
                     )),
@@ -1894,7 +1392,7 @@ fn rewrite_generic_args(
         syn::PathArguments::Parenthesized(p) => {
             let mut new_inputs: Punctuated<syn::Type, syn::Token![,]> = Punctuated::new();
             for ty in &p.inputs {
-                new_inputs.push_value(rewrite_type(ty.clone(), registry, module_ctx, guard));
+                new_inputs.push_value(rewrite_type(ty.clone(), model, module_ctx, guard));
                 new_inputs.push_punct(syn::Token![,](Span::call_site()));
             }
             if !new_inputs.empty_or_trailing() {
@@ -1903,7 +1401,7 @@ fn rewrite_generic_args(
             let output = match &p.output {
                 syn::ReturnType::Type(arrow, ty) => syn::ReturnType::Type(
                     *arrow,
-                    Box::new(rewrite_type((**ty).clone(), registry, module_ctx, guard)),
+                    Box::new(rewrite_type((**ty).clone(), model, module_ctx, guard)),
                 ),
                 other => other.clone(),
             };
@@ -1942,9 +1440,11 @@ pub struct EmitConfig<'a> {
     /// Relative file path within the library tree, e.g.
     /// `"collections/btree/set.rs"`, used to build module-qualified names.
     pub relative_file_path: &'a str,
-    /// Registry of known/declared types, used to route field references to
-    /// mirrored bindings (declared) or original types (public, undeclared).
-    pub type_registry: &'a TypeRegistry,
+    /// The binding model — single source of truth for declared status,
+    /// visibility, export, alias RHS, and definition file. Used to route
+    /// field references to mirrored bindings (declared) or original types
+    /// (public, undeclared).
+    pub model: &'a BindingModel,
     /// Additional derive traits to inject into emitted definitions, keyed by
     /// canonical path relative to the library root.
     pub extra_derives: &'a std::collections::HashMap<String, Vec<String>>,
@@ -2280,6 +1780,11 @@ pub fn emit_parsed_items(
     extra_uses: &[String],
     module_path: &str,
 ) -> Option<String> {
+    // Normalize the module path (accepts either slash- or canonical-spelling)
+    // into a structured ModulePath for model lookups.
+    let mp = ModulePath::from_slash(module_path)
+        .or_else(|| ModulePath::from_canonical(module_path))
+        .unwrap_or_else(ModulePath::root);
     // Decide up front which items will actually be emitted. A file with no
     // emittable items produces no binding file — writing one anyway creates a
     // phantom node in the tree (the manifest declares it, but its content is
@@ -2296,14 +1801,12 @@ pub fn emit_parsed_items(
                 // they're language builtins available everywhere.
                 match extract_const_type_name(item) {
                     Some(type_name) if !is_primitive_type(&type_name) => config
-                        .type_registry
-                        .is_declared_in_module(config.lib_name, module_path, &type_name),
+                        .model
+                        .is_declared_in_module(config.lib_name, &mp, &type_name),
                     _ => true,
                 }
             } else {
-                config
-                    .type_registry
-                    .is_declared_in_module(config.lib_name, module_path, &item.name)
+                config.model.is_declared_in_module(config.lib_name, &mp, &item.name)
             }
         })
         .collect();
@@ -2361,7 +1864,7 @@ pub fn emit_parsed_items(
         let ctx = EmitContext::new(
             preamble_use_path,
             config.path_replacements,
-            config.type_registry,
+            config.model,
             module_path,
             &guard,
             config.extra_derives,
@@ -2378,7 +1881,7 @@ pub fn emit_parsed_items(
 struct EmitContext<'a> {
     preamble_use_path: &'a str,
     path_replacements: &'a [(String, Option<&'a str>)],
-    type_registry: &'a TypeRegistry,
+    model: &'a BindingModel,
     module_ctx: &'a str,
     guard: &'a LocalNameGuard<'a>,
     extra_derives: &'a std::collections::HashMap<String, Vec<String>>,
@@ -2388,7 +1891,7 @@ impl<'a> EmitContext<'a> {
     fn new(
         preamble_use_path: &'a str,
         path_replacements: &'a [(String, Option<&'a str>)],
-        type_registry: &'a TypeRegistry,
+        model: &'a BindingModel,
         module_ctx: &'a str,
         guard: &'a LocalNameGuard<'a>,
         extra_derives: &'a std::collections::HashMap<String, Vec<String>>,
@@ -2396,7 +1899,7 @@ impl<'a> EmitContext<'a> {
         Self {
             preamble_use_path,
             path_replacements,
-            type_registry,
+            model,
             module_ctx,
             guard,
             extra_derives,
@@ -2421,7 +1924,7 @@ fn emit_item(out: &mut String, item: &ParsedItem, ctx: &EmitContext<'_>) {
     // `crate::alloc::collections::btree::node::NodeRef<...>`), so references
     // from other modules converge on our tree instead of dangling.
     if item.kind == ItemKind::TypeAlias {
-        let info = find_declared_alias_info(item, ctx.type_registry);
+        let info = find_declared_alias_info(item, ctx.model);
         let rhs = info.as_ref().and_then(|i| i.alias_rhs.as_ref());
         if let Some(rhs) = rhs {
             let mut ts = TokenStream::new();
@@ -2436,7 +1939,7 @@ fn emit_item(out: &mut String, item: &ParsedItem, ctx: &EmitContext<'_>) {
             // every field whose type is this alias.
             if drop_annotations_enabled() {
                 if let Ok(rhs_ty) = syn::parse2::<syn::Type>(rhs.clone()) {
-                    let value = classify_field_drop(&rhs_ty, ctx.type_registry, ctx.guard);
+                    let value = classify_field_drop(&rhs_ty, ctx.model, ctx.module_ctx, ctx.guard);
                     drop_doc_comment(value).to_tokens(&mut ts);
                 }
             }
@@ -2444,7 +1947,7 @@ fn emit_item(out: &mut String, item: &ParsedItem, ctx: &EmitContext<'_>) {
                 &item.name,
                 rhs,
                 &item.full_tokens,
-                ctx.type_registry,
+                ctx.model,
                 ctx.module_ctx,
                 ctx.guard,
                 &mut ts,
@@ -2481,7 +1984,7 @@ fn emit_item(out: &mut String, item: &ParsedItem, ctx: &EmitContext<'_>) {
     let rerouted = rewrite_item_references_rerouted(
         &const_stripped,
         item,
-        ctx.type_registry,
+        ctx.model,
         ctx.module_ctx,
         ctx.guard,
         ctx.extra_derives,
@@ -2493,19 +1996,19 @@ fn emit_item(out: &mut String, item: &ParsedItem, ctx: &EmitContext<'_>) {
 }
 
 /// Lookup helper for the alias-emission path in [`emit_item`]: finds the
-/// registry entry for a parsed item by leaf name (the emitter does not know
-/// the library prefix), returning it only when the entry is declared AND has
+/// model record for a parsed item by leaf name (the emitter does not know
+/// the library prefix), returning it only when the record is declared AND has
 /// a recorded alias RHS.
 fn find_declared_alias_info<'a>(
     item: &ParsedItem,
-    registry: &'a TypeRegistry,
-) -> Option<&'a TypeInfo> {
-    registry
-        .candidates_for_leaf(&item.name)
+    model: &'a BindingModel,
+) -> Option<&'a ItemRecord> {
+    model
+        .leaf_candidates(&item.name)
         .iter()
-        .find_map(|p| {
-            let info = registry.get(p)?;
-            (info.declared && info.alias_rhs.is_some()).then_some(info)
+        .find_map(|addr| {
+            let rec = model.record_at(addr)?;
+            (rec.declared && rec.alias_rhs.is_some()).then_some(rec)
         })
 }
 
@@ -2520,7 +2023,7 @@ fn emit_declared_type_alias(
     name: &str,
     rhs: &TokenStream,
     item_full_tokens: &TokenStream,
-    registry: &TypeRegistry,
+    model: &BindingModel,
     module_ctx: &str,
     guard: &LocalNameGuard<'_>,
     out: &mut TokenStream,
@@ -2563,7 +2066,7 @@ fn emit_declared_type_alias(
             // rewritten exactly once per path — either by `assemble_abs_path`
             // (routable heads) or by the unknown-head fallback in
             // `rewrite_path` (unroutable heads) — so no double-routing occurs.
-            let routed = rewrite_type(ty, registry, module_ctx, &self_stripped_guard);
+            let routed = rewrite_type(ty, model, module_ctx, &self_stripped_guard);
             let mut ts = TokenStream::new();
             ts.extend(
                 format!("type {} = ", name)
@@ -2577,7 +2080,7 @@ fn emit_declared_type_alias(
         }
     };
 
-    // Route the RHS through the registry and substitute it into the original
+    // Route the RHS through the model and substitute it into the original
     // node (preserving the alias's own generics, vis, and attrs).
     let ty: syn::Type = match syn::parse2(rhs.clone()) {
         Ok(t) => t,
@@ -2591,7 +2094,7 @@ fn emit_declared_type_alias(
     // The plain rewriter is safe here: nested generic args are rewritten
     // exactly once per path — either by `assemble_abs_path` (routable heads)
     // or by the unknown-head fallback in `rewrite_path` (unroutable heads).
-    let routed = rewrite_type(ty, registry, module_ctx, &self_stripped_guard);
+    let routed = rewrite_type(ty, model, module_ctx, &self_stripped_guard);
 
     let mut cloned = original_node;
     *cloned.ty = routed;
@@ -2640,7 +2143,7 @@ fn strip_const_trait_modifier(tokens: TokenStream) -> TokenStream {
 fn rewrite_item_references_rerouted(
     tokens: &TokenStream,
     item: &ParsedItem,
-    registry: &TypeRegistry,
+    model: &BindingModel,
     module_ctx: &str,
     guard: &LocalNameGuard<'_>,
     extra_derives: &std::collections::HashMap<String, Vec<String>>,
@@ -2725,38 +2228,38 @@ fn rewrite_item_references_rerouted(
             Ok(mut node) => {
                 node.attrs.retain(is_emittable_attr);
                 inject_derives(&mut node.attrs, &injected_derives);
-                rewrite_struct_node(node, registry, module_ctx, guard)
+                rewrite_struct_node(node, model, module_ctx, guard)
             }
-            Err(_) => rewrite_crate_paths_legacy(tokens.clone(), name, registry, kind, guard),
+            Err(_) => rewrite_crate_paths_legacy(tokens.clone(), name, model, kind, module_ctx, guard),
         },
         ItemKind::Enum => match syn::parse2::<syn::ItemEnum>(tokens.clone()) {
             Ok(mut node) => {
                 node.attrs.retain(is_emittable_attr);
                 inject_derives(&mut node.attrs, &injected_derives);
-                rewrite_enum_node(node, registry, module_ctx, guard)
+                rewrite_enum_node(node, model, module_ctx, guard)
             }
-            Err(_) => rewrite_crate_paths_legacy(tokens.clone(), name, registry, kind, guard),
+            Err(_) => rewrite_crate_paths_legacy(tokens.clone(), name, model, kind, module_ctx, guard),
         },
         ItemKind::Union => match syn::parse2::<syn::ItemUnion>(tokens.clone()) {
             Ok(mut node) => {
                 node.attrs.retain(is_emittable_attr);
                 inject_derives(&mut node.attrs, &injected_derives);
-                rewrite_union_node(node, registry, module_ctx, guard)
+                rewrite_union_node(node, model, module_ctx, guard)
             }
-            Err(_) => rewrite_crate_paths_legacy(tokens.clone(), name, registry, kind, guard),
+            Err(_) => rewrite_crate_paths_legacy(tokens.clone(), name, model, kind, module_ctx, guard),
         },
-        // Type aliases: route every reference in the RHS through the registry.
+        // Type aliases: route every reference in the RHS through the model.
         ItemKind::TypeAlias => match syn::parse2::<syn::ItemType>(tokens.clone()) {
             Ok(mut node) => {
                 node.attrs.retain(is_emittable_attr);
-                *node.ty = rewrite_type(*node.ty, registry, module_ctx, guard);
+                *node.ty = rewrite_type(*node.ty, model, module_ctx, guard);
                 let mut ts = TokenStream::new();
                 node.to_tokens(&mut ts);
                 ts
             }
-            Err(_) => rewrite_crate_paths_legacy(tokens.clone(), name, registry, kind, guard),
+            Err(_) => rewrite_crate_paths_legacy(tokens.clone(), name, model, kind, module_ctx, guard),
         },
-        _ => rewrite_crate_paths_legacy(tokens.clone(), name, registry, kind, guard),
+        _ => rewrite_crate_paths_legacy(tokens.clone(), name, model, kind, module_ctx, guard),
     }
 }
 
@@ -2775,8 +2278,9 @@ fn rewrite_item_references_rerouted(
 fn rewrite_crate_paths_legacy(
     tokens: TokenStream,
     item_name: &str,
-    registry: &TypeRegistry,
+    model: &BindingModel,
     _item_kind: ItemKind,
+    module_ctx: &str,
     guard: &LocalNameGuard<'_>,
 ) -> TokenStream {
     let trees: Vec<TokenTree> = tokens.into_iter().collect();
@@ -2814,7 +2318,7 @@ fn rewrite_crate_paths_legacy(
             if annotate_fields && in_body && !field_buf.is_empty() {
                 let buf_ts: TokenStream = field_buf.iter().cloned().collect();
                 if let Ok(ty) = syn::parse2(buf_ts) {
-                    let value = classify_field_drop(&ty, registry, guard);
+                    let value = classify_field_drop(&ty, model, module_ctx, guard);
                     let attr: TokenStream = drop_doc_comment(value).to_token_stream();
                     result.extend(attr.into_iter());
                 }
@@ -2836,16 +2340,16 @@ fn rewrite_crate_paths_legacy(
             }
 
             if past_def_kw && !name.starts_with('_') && !is_keywordish(&name) && name != item_name {
-                if let FieldRefResolution::Mirrored(canonical) = registry.resolve_field_ref(&name)
+                if let FieldRefResolution::Mirrored(canonical) = model.resolve_bare(&name, module_ctx)
                 {
                     // Mirrors always live under the manifest's single wrapper
-                    // module (named by the registry), so drop the leading
-                    // library segment from the serialized qualified path.
+                    // module, so drop the leading library segment from the
+                    // serialized qualified path.
                     if let Some(rest) = canonical
                         .strip_prefix("::")
                         .and_then(|body| body.split_once("::").map(|(_, r)| r))
                     {
-                        let abs = format!("crate::{}::{rest}", registry.wrapper_mod());
+                        let abs = format!("crate::{}::{rest}", WRAPPER_MOD);
                         if let Ok(subst) = abs.parse::<TokenStream>() {
                             if annotate_fields && in_body && body_depth == 1 {
                                 field_buf.extend(subst);
@@ -3609,23 +3113,16 @@ fn filter_used_imports(
     let mut corpus = String::new();
     for item in items {
         let is_const = item.kind == ItemKind::Const;
+        let mp = ModulePath::from_slash(module_path).unwrap_or_else(ModulePath::root);
         if is_const {
             if let Some(type_name) = extract_const_type_name(item) {
                 if !is_primitive_type(&type_name)
-                    && !config.type_registry.is_declared_in_module(
-                        config.lib_name,
-                        module_path,
-                        &type_name,
-                    )
+                    && !config.model.is_declared_in_module(config.lib_name, &mp, &type_name)
                 {
                     continue;
                 }
             }
-        } else if !config.type_registry.is_declared_in_module(
-            config.lib_name,
-            module_path,
-            &item.name,
-        ) {
+        } else if !config.model.is_declared_in_module(config.lib_name, &mp, &item.name) {
             continue;
         }
         let ts_str = item.full_tokens.to_string();
@@ -4365,32 +3862,39 @@ mod known_type_stub_tests {
 mod module_relative_tie_break_tests {
     use super::*;
 
-    /// `Root<K, V>` seen from `collections/btree/map`: the bare name has two
-    /// `Root` seen from `collections::btree::map`: when a same-named item
+    /// `Root<K, V>` seen from `collections/btree/map`: when a same-named item
     /// lives in a child module of the referring module (`map::inner::Root`)
     /// and another sits in a sibling module (`node::Root`), the child-module
     /// item wins — it is textually closer to the reference site, matching
     /// how a `mod inner;` declaration shadows imported names at the use site.
     #[test]
     fn prefers_child_module_item_over_sibling_on_proximity_tie() {
-        let mut registry = TypeRegistry::empty();
+        let mut model = BindingModel::new();
         // Closer candidate: an item inside a child module of the context.
-        registry.register(
-            "::alloc::collections::btree::map::inner::Root",
+        model.register_type(
+            &QualifiedPath::item(
+                "alloc",
+                ModulePath::from_canonical("collections::btree::map::inner").unwrap(),
+                "Root",
+            ),
             Visibility::Public,
             true,
-            "inner.rs",
+            Some("inner.rs".to_string()),
         );
         // Farther candidate: an alias in a sibling module, bound via import.
-        registry.register(
-            "::alloc::collections::btree::node::Root",
+        model.register_type(
+            &QualifiedPath::item(
+                "alloc",
+                ModulePath::from_canonical("collections::btree::node").unwrap(),
+                "Root",
+            ),
             Visibility::Public,
             true,
-            "node.rs",
+            Some("node.rs".to_string()),
         );
 
         let res =
-            registry.resolve_module_relative(&["Root".to_string()], "collections::btree::map");
+            model.resolve_module_relative(&["Root".to_string()], "collections::btree::map");
         match res {
             Some(FieldRefResolution::Mirrored(p)) | Some(FieldRefResolution::Original(p)) => {
                 assert_eq!(p, "::alloc::collections::btree::map::inner::Root");
@@ -4406,15 +3910,19 @@ mod module_relative_tie_break_tests {
     /// before — the tie-break only applies when scores are equal.
     #[test]
     fn keeps_sole_candidate_when_uncontested() {
-        let mut registry = TypeRegistry::empty();
-        registry.register(
-            "::alloc::collections::btree::node::marker::Owned",
+        let mut model = BindingModel::new();
+        model.register_type(
+            &QualifiedPath::item(
+                "alloc",
+                ModulePath::from_canonical("collections::btree::node::marker").unwrap(),
+                "Owned",
+            ),
             Visibility::Public,
             true,
-            "marker/mod.rs",
+            Some("marker/mod.rs".to_string()),
         );
 
-        let res = registry
+        let res = model
             .resolve_module_relative(&["Owned".to_string()], "collections::btree::node::marker");
         match res {
             Some(FieldRefResolution::Mirrored(p)) | Some(FieldRefResolution::Original(p)) => {
@@ -4427,16 +3935,23 @@ mod module_relative_tie_break_tests {
     /// A declared candidate wins the tie outright, regardless of depth.
     #[test]
     fn declared_candidate_wins_tie_regardless_of_depth() {
-        let mut registry = TypeRegistry::empty();
-        registry.register(
-            "::alloc::a::b::c::inner::Thing",
+        let mut model = BindingModel::new();
+        model.register_type(
+            &QualifiedPath::item(
+                "alloc",
+                ModulePath::from_canonical("a::b::c::inner").unwrap(),
+                "Thing",
+            ),
             Visibility::Public,
             true,
-            "inner.rs",
+            Some("inner.rs".to_string()),
         );
-        registry.insert_declared("::alloc::a::b::Thing", "b.rs");
+        model.register_declared(
+            &QualifiedPath::item("alloc", ModulePath::from_canonical("a::b").unwrap(), "Thing"),
+            "b.rs".to_string(),
+        );
 
-        let res = registry.resolve_module_relative(&["Thing".to_string()], "a::b::c");
+        let res = model.resolve_module_relative(&["Thing".to_string()], "a::b::c");
         match res {
             Some(FieldRefResolution::Mirrored(p)) => {
                 assert_eq!(p, "::alloc::a::b::Thing");
@@ -4450,11 +3965,11 @@ mod module_relative_tie_break_tests {
 mod declared_alias_emission_tests {
     use super::*;
 
-    fn make_registry(alias_canonical: &str, rhs: &str) -> TypeRegistry {
-        let mut registry = TypeRegistry::empty();
-        registry.insert_declared(alias_canonical, "node.rs");
-        registry.set_alias_rhs(alias_canonical, rhs.parse::<TokenStream>().unwrap());
-        registry
+    fn make_model(alias_addr: QualifiedPath, rhs: &str) -> BindingModel {
+        let mut model = BindingModel::new();
+        model.register_declared(&alias_addr, "node.rs".to_string());
+        model.set_alias_rhs(&alias_addr.to_canonical(), rhs.parse::<TokenStream>().unwrap());
+        model
     }
 
     /// Per the design directive that aliased names are unwrapped to their fully
@@ -4463,14 +3978,15 @@ mod declared_alias_emission_tests {
     /// rather than leaving a bare name behind.
     #[test]
     fn recursive_alias_expands_self_reference_to_absolute_path() {
-        let registry = make_registry("::alloc::m::Entry", "RawEntry<Entry>");
+        let addr = QualifiedPath::item("alloc", ModulePath::from_canonical("m").unwrap(), "Entry");
+        let model = make_model(addr, "RawEntry<Entry>");
         let item_full: TokenStream = "pub type Entry<K, V> = RawEntry<Entry<K, V>>;"
             .parse()
             .unwrap();
         let rhs: TokenStream = "RawEntry<Entry>".parse().unwrap();
         let guard = LocalNameGuard::new(None);
         let mut out = TokenStream::new();
-        emit_declared_type_alias("Entry", &rhs, &item_full, &registry, "m", &guard, &mut out);
+        emit_declared_type_alias("Entry", &rhs, &item_full, &model, "m", &guard, &mut out);
         let text = out.to_string();
         assert!(
             text.contains("crate :: std :: m :: Entry"),
@@ -4478,19 +3994,24 @@ mod declared_alias_emission_tests {
         );
     }
 
-    /// Non-self references in the RHS still route through the registry when
+    /// Non-self references in the RHS still route through the model when
     /// the referenced type is declared (e.g., `Root` → mirrored `NodeRef`).
     #[test]
     fn alias_rhs_non_self_references_are_routed() {
-        let mut registry = make_registry("::alloc::m::Root", "NodeRef<Owned, K, V>");
-        registry.insert_declared("::alloc::m::NodeRef", "node.rs");
+        let root_addr =
+            QualifiedPath::item("alloc", ModulePath::from_canonical("m").unwrap(), "Root");
+        let mut model = make_model(root_addr, "NodeRef<Owned, K, V>");
+        model.register_declared(
+            &QualifiedPath::item("alloc", ModulePath::from_canonical("m").unwrap(), "NodeRef"),
+            "node.rs".to_string(),
+        );
         let item_full: TokenStream = "pub type Root<K, V> = NodeRef<Owned, K, V>;"
             .parse()
             .unwrap();
         let rhs: TokenStream = "NodeRef<Owned, K, V>".parse().unwrap();
         let guard = LocalNameGuard::new(None);
         let mut out = TokenStream::new();
-        emit_declared_type_alias("Root", &rhs, &item_full, &registry, "m", &guard, &mut out);
+        emit_declared_type_alias("Root", &rhs, &item_full, &model, "m", &guard, &mut out);
         let text = out.to_string();
         assert!(
             text.contains("crate :: std :: m :: NodeRef"),

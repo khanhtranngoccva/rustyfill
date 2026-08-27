@@ -1,16 +1,16 @@
-//! Phase 1d — Type registry construction: populate a [`TypeRegistry`] from all
-//! registered sources, spec declarations, known external types, and re-export
-//! shims. Also runs minimal-module mirroring for each target so preserved
-//! qualifiers resolve correctly.
+//! Phase 1d — Model population: register every discovered type, spec
+//! declaration, known external type, and re-export shim into the
+//! [`BindingModel`], which is the emitter's single source of truth. Also runs
+//! minimal-module mirroring for each target so preserved qualifiers resolve
+//! correctly.
 
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
 
-use crate::emitter::TypeRegistry;
 use crate::loader_spec::LoaderSpec;
 use crate::parser::{CfgContext, ItemKind, ParsedSource};
 use crate::resolver::{ModuleResolver, UseKind, Visibility};
-use crate::syntaxes::{BindingModel, ModulePath, NodeStatus};
+use crate::syntaxes::{BindingModel, ModulePath, NodeStatus, QualifiedPath};
 
 use super::mirror::{EmitSink, mirror_minimal_modules};
 
@@ -24,6 +24,11 @@ pub(super) struct RegistryBuildState<'a> {
     pub(super) all_files: &'a mut Vec<(String, String)>,
 }
 
+/// Populate the binding model with every named type reachable from the
+/// registered sources plus the spec-declared surface, then run minimal-module
+/// mirroring for each target. After this phase the model carries declared
+/// status, visibility, export, alias RHS, definition files, and qualifier
+/// routes for the whole emission pipeline.
 pub(super) fn build_type_registry(
     spec: &LoaderSpec,
     rust_src: &Path,
@@ -31,7 +36,7 @@ pub(super) fn build_type_registry(
     reexport_located: &[(String, String)],
     out_dir: &Path,
     state: &mut RegistryBuildState<'_>,
-) -> TypeRegistry {
+) {
     let RegistryBuildState {
         resolver,
         parsed_cache,
@@ -39,7 +44,6 @@ pub(super) fn build_type_registry(
         emitted_canonicals,
         all_files,
     } = state;
-    let mut registry = TypeRegistry::empty();
     for target in &spec.targets {
         let lib_prefix = format!("{}/", target.lib_name);
         for (file_path, parsed) in resolver.registered_sources().iter() {
@@ -48,43 +52,23 @@ pub(super) fn build_type_registry(
             }
             let module_path = resolver.file_to_module_path(file_path);
             let exported_names = public_reexport_names(parsed, &module_path);
+            let mp = ModulePath::from_slash(&module_path).unwrap_or_else(ModulePath::root);
             for item in &parsed.items {
-                // `module_path` is a pure module path; render it canonically.
-                let module_canonical = ModulePath::from_slash(&module_path)
-                    .map(|mp| mp.to_canonical())
-                    .unwrap_or_else(|| module_path.replace('/', "::"));
-                // Canonical keys are serialized qualified paths: the leading
-                // `::` marks the address as absolute (rooted at the library).
-                let canonical = if module_canonical.is_empty() {
-                    format!("::{}::{}", target.lib_name, item.name)
-                } else {
-                    format!("::{}::{}::{}", target.lib_name, module_canonical, item.name)
-                };
-                let is_exported = exported_names.contains(&item.name);
-                registry.register(&canonical, item.visibility, is_exported, file_path);
+                let addr = QualifiedPath::item(&target.lib_name, mp.clone(), &item.name);
+                model.register_type(&addr, item.visibility, exported_names.contains(&item.name), None);
                 if let Some(rhs) = &item.alias_rhs {
-                    registry.set_alias_rhs(&canonical, rhs.clone());
+                    let canonical = addr.to_canonical();
+                    model.set_alias_rhs(&canonical, rhs.clone());
                 }
             }
             for (mod_name, mod_items) in &parsed.inline_modules {
-                let inline_module = if module_path.is_empty() {
-                    mod_name.clone()
-                } else {
-                    format!("{}/{}", module_path, mod_name)
-                };
-                // `inline_module` is a pure module path (parent + child).
-                let inline_canonical_base = ModulePath::from_slash(&inline_module)
-                    .map(|mp| mp.to_canonical())
-                    .unwrap_or_else(|| inline_module.replace('/', "::"));
+                let inline_mp = mp.join(mod_name);
                 for item in mod_items {
-                    let canonical = format!(
-                        "::{}::{}::{}",
-                        target.lib_name, inline_canonical_base, item.name
-                    );
-                    let is_exported = exported_names.contains(&item.name);
-                    registry.register(&canonical, item.visibility, is_exported, file_path);
+                    let addr = QualifiedPath::item(&target.lib_name, inline_mp.clone(), &item.name);
+                    model.register_type(&addr, item.visibility, exported_names.contains(&item.name), None);
                     if let Some(rhs) = &item.alias_rhs {
-                        registry.set_alias_rhs(&canonical, rhs.clone());
+                        let canonical = addr.to_canonical();
+                        model.set_alias_rhs(&canonical, rhs.clone());
                     }
                 }
             }
@@ -93,7 +77,6 @@ pub(super) fn build_type_registry(
         let lib_src = rust_src.join(&target.lib_name).join("src");
         let active_decls = target.active_declarations(cfg);
         for decl in &active_decls {
-            let canonical = format!("::{}::{}", target.lib_name, decl);
             let leaf = decl.rsplit("::").next().unwrap_or("");
             let mut found_item: Option<&crate::parser::ParsedItem> = None;
             let def_file_rel = parsed_cache
@@ -107,14 +90,21 @@ pub(super) fn build_type_registry(
                 })
                 .unwrap_or_else(|| decl.replace("::", "/") + ".rs");
             let def_file_abs = lib_src.join(&def_file_rel).to_string_lossy().to_string();
-            registry.insert_declared(&canonical, &def_file_abs);
-            // Mirror the declaration into the binding tree so the item's node
-            // carries `declared = true` and its authoritative def file.
-            model.mark_declared(&canonical, Some(def_file_abs));
+            // Build the structured address directly from the declaration path:
+            // everything but the last segment is the module, the last is the item.
+            let segs: Vec<&str> = decl.split("::").collect();
+            let mp = ModulePath::from_segments(
+                segs[..segs.len() - 1]
+                    .iter()
+                    .map(|s| s.to_string()),
+            )
+            .unwrap_or_else(ModulePath::root);
+            let addr = QualifiedPath::item(&target.lib_name, mp, leaf);
+            model.register_declared(&addr, def_file_abs.clone());
             if let Some(item) = found_item {
                 if item.kind == ItemKind::TypeAlias {
                     if let Some(rhs) = &item.alias_rhs {
-                        registry.set_alias_rhs(&canonical, rhs.clone());
+                        model.set_alias_rhs(&addr.to_canonical(), rhs.clone());
                     }
                 }
             }
@@ -125,22 +115,23 @@ pub(super) fn build_type_registry(
         // is emitted as a standalone stub file (Phase 2), not parsed from source,
         // so the def_file points at the generated stub's relative path.
         for kt in &target.known_external_types {
-            let canonical = format!("::{}::{}", target.lib_name, kt.path);
             let segments: Vec<&str> = kt.path.split("::").collect();
-            let stub_rel = if segments.len() >= 2 {
-                format!("{}.rs", segments[..segments.len() - 1].join("/"))
-            } else {
+            if segments.len() < 2 {
                 continue;
-            };
-            registry.insert_declared(&canonical, &stub_rel);
+            }
+            let stub_rel = format!("{}.rs", segments[..segments.len() - 1].join("/"));
+            let mp = ModulePath::from_segments(
+                segments[..segments.len() - 1]
+                    .iter()
+                    .map(|s| s.to_string()),
+            )
+            .unwrap_or_else(ModulePath::root);
+            let addr = QualifiedPath::item(&target.lib_name, mp, segments[segments.len() - 1]);
+            model.register_declared(&addr, stub_rel.clone());
             // Known-type stubs are synthetic leaf modules that will be emitted
             // in Phase 2b; register them in the tree now so they participate in
             // sibling/child scans and the manifest.
-            if let Some(stub_mp) = ModulePath::from_slash(&segments[..segments.len() - 1].join("/"))
-            {
-                model.register_synthetic(&target.lib_name, &stub_rel, NodeStatus::Emittable);
-                let _ = stub_mp;
-            }
+            model.register_synthetic(&target.lib_name, &stub_rel, NodeStatus::Emittable);
         }
 
         // Register re-export-shim declarations.
@@ -155,40 +146,29 @@ pub(super) fn build_type_registry(
             if !parsed.items.iter().any(|i| i.name == leaf) {
                 continue;
             }
-            // `def_file` stem is a pure module path; render it canonically.
-            let mod_path = ModulePath::from_file_stem(def_file)
-                .map(|mp| mp.to_canonical())
-                .unwrap_or_else(|| {
-                    def_file
-                        .strip_suffix(".rs")
-                        .unwrap_or(def_file)
-                        .replace('/', "::")
-                });
-            let alias_canonical = format!("::{}::{}::{}", target.lib_name, mod_path, leaf);
+            // `def_file` stem is a pure module path.
+            let mp = ModulePath::from_file_stem(def_file).unwrap_or_else(ModulePath::root);
+            let addr = QualifiedPath::item(&target.lib_name, mp, leaf);
             let def_file_abs = lib_src.join(def_file).to_string_lossy().to_string();
-            registry.insert_declared_alias(&alias_canonical, &def_file_abs);
-            // Re-export shims are treated as declared for emission; reflect that
-            // in the tree so the item's node is marked accordingly.
-            model.mark_declared(&alias_canonical, Some(def_file_abs));
+            // Re-export shims are treated as declared for emission.
+            model.register_declared(&addr, def_file_abs);
         }
 
         // ── Minimal-module mirroring for preserved qualifiers ───────────────
-        // Runs after the type registry is fully populated (including this
-        // target's declared types) so that field references route correctly.
-        // It also materializes re-export shims (Strategy B) for non-sibling
-        // preserved qualifiers, registering them with the resolver and the
-        // emitted-file sets used by later phases.
+        // Runs after the model is fully populated (including this target's
+        // declared types) so that field references route correctly. It also
+        // materializes re-export shims (Strategy B) for non-sibling preserved
+        // qualifiers, registering them with the resolver and the emitted-file
+        // sets used by later phases.
         let mut sink = EmitSink {
             resolver,
             parsed_cache,
             model,
-            registry: &mut registry,
             emitted_canonicals,
             all_files,
         };
         mirror_minimal_modules(target, &lib_src, out_dir, cfg, &mut sink);
     }
-    registry
 }
 
 /// Compute the set of item names that are publicly re-exported from a module:

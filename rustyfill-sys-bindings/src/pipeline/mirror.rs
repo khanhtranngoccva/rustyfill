@@ -9,11 +9,11 @@ use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::Path;
 
-use crate::emitter::{QualifierResolver, TypeRegistry, collect_qualified_refs, emit_reexport_shim};
+use crate::emitter::{QualifierResolver, WRAPPER_MOD, collect_qualified_refs, emit_reexport_shim};
 use crate::loader_spec::BindingTarget;
 use crate::parser::{CfgContext, ItemKind, ParsedSource, parse_source_with_cfg};
 use crate::resolver::{ModuleResolver, PathSegment, UseKind};
-use crate::syntaxes::{BindingModel, ModulePath, NodeStatus};
+use crate::syntaxes::{BindingModel, ModulePath, NodeStatus, QualifiedPath};
 
 use super::discover::locate_declared_struct;
 
@@ -25,7 +25,6 @@ pub(super) struct EmitSink<'a> {
     pub(super) resolver: &'a mut ModuleResolver,
     pub(super) parsed_cache: &'a mut HashMap<String, (ParsedSource, String)>,
     pub(super) model: &'a mut BindingModel,
-    pub(super) registry: &'a mut TypeRegistry,
     pub(super) emitted_canonicals: &'a mut HashSet<String>,
     pub(super) all_files: &'a mut Vec<(String, String)>,
 }
@@ -208,8 +207,7 @@ pub(super) fn mirror_minimal_modules(
             .entry(def_mod.clone())
             .or_default()
             .insert(lf.clone());
-        sink.registry
-            .set_qualifier_route(module_ctx, &lead, &def_mod);
+        sink.model.set_qualifier_route(module_ctx, &lead, &def_mod);
 
         // Record an alias import for any non-sibling qualifier so that
         // references like `pal::Mutex` resolve without path rewriting.
@@ -247,10 +245,8 @@ pub(super) fn mirror_minimal_modules(
                 let import_canonical = ModulePath::from_slash(&import_target)
                     .map(|mp| mp.to_canonical())
                     .unwrap_or_else(|| import_target.replace('/', "::"));
-                let crate_path =
-                    format!("crate::{}::{import_canonical}", sink.registry.wrapper_mod());
-                sink.registry
-                    .set_module_alias_route(module_ctx, &lead, &crate_path);
+                let crate_path = format!("crate::{WRAPPER_MOD}::{import_canonical}");
+                sink.model.set_module_alias_route(module_ctx, &lead, &crate_path);
             }
         }
     }
@@ -269,26 +265,23 @@ pub(super) fn mirror_minimal_modules(
             continue;
         };
         let parsed = parse_source_with_cfg(&text, cfg);
-        // `def_mod` is a pure module path; render it canonically.
-        let mod_path = ModulePath::from_slash(def_mod)
-            .map(|mp| mp.to_canonical())
-            .unwrap_or_else(|| def_mod.replace('/', "::"));
+        // `def_mod` is a pure module path; keep it structured.
+        let mp_for_item = ModulePath::from_slash(def_mod).unwrap_or_else(ModulePath::root);
         let def_file_abs = lib_src.join(&def_file).to_string_lossy().to_string();
         for item in &parsed.items {
             if !leaves.contains(&item.name) {
                 continue;
             }
-            let canonical = format!("::{}::{}::{}", target.lib_name, mod_path, item.name);
+            let addr = QualifiedPath::item(&target.lib_name, mp_for_item.clone(), &item.name);
             match item.kind {
                 ItemKind::TypeAlias => {
-                    sink.registry
-                        .insert_declared_alias(&canonical, &def_file_abs);
+                    sink.model.register_declared(&addr, def_file_abs.clone());
                     if let Some(rhs) = &item.alias_rhs {
-                        sink.registry.set_alias_rhs(&canonical, rhs.clone());
+                        sink.model.set_alias_rhs(&addr.to_canonical(), rhs.clone());
                     }
                 }
                 ItemKind::Struct | ItemKind::Enum | ItemKind::Union => {
-                    sink.registry.insert_declared(&canonical, &def_file_abs);
+                    sink.model.register_declared(&addr, def_file_abs.clone());
                 }
                 _ => {}
             }
