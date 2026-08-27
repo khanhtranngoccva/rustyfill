@@ -13,6 +13,8 @@
 //! file. Each type owns its invariants and exposes the conversions as methods,
 //! so the rest of the crate can stop doing path string surgery.
 
+pub mod binding_model;
 pub mod module_path;
 
+pub use binding_model::{BindingModel, FileForm, ImportEdge, ItemRecord, ModuleNode, NodeStatus, QualifiedPath};
 pub use module_path::ModulePath;

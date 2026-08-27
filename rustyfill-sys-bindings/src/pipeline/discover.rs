@@ -12,6 +12,7 @@ use crate::parser::{
     parse_source_with_cfg,
 };
 use crate::resolver::{ModuleResolver, PathSegment, UseKind};
+use crate::syntaxes::{BindingModel, NodeStatus};
 use crate::validator::ValidationBuilder;
 
 // ── Declaration location helpers ────────────────────────────────────────────
@@ -428,6 +429,10 @@ pub(super) struct DiscoverParams<'a> {
     pub(super) validator: &'a mut ValidationBuilder,
     pub(super) visited: &'a mut HashSet<String>,
     pub(super) cache: &'a mut HashMap<String, (ParsedSource, String)>,
+    /// The binding tree being built in lockstep with the legacy cache. Every
+    /// file parsed here is registered into both so the two stay consistent
+    /// during the migration.
+    pub(super) model: &'a mut BindingModel,
 }
 
 /// Discover phase: parse a file, register it with the resolver, validate,
@@ -442,6 +447,7 @@ pub(super) fn discover_and_register(params: DiscoverParams) {
         validator,
         visited,
         cache,
+        model,
     } = params;
     if !visited.insert(source_rel_path.to_string()) {
         return;
@@ -476,6 +482,11 @@ pub(super) fn discover_and_register(params: DiscoverParams) {
     let parsed_clone = parsed.clone();
     resolver.register_source(source_rel_path, parsed_clone);
 
+    // Register into the binding tree in lockstep with the legacy cache. The
+    // `register_inline_files=true` default gives each inline module its own
+    // synthesized `<name>/mod.rs` file node, mirroring how the legacy cache and
+    // resolver treat inline modules as standalone emittable files.
+    model.register_source(lib_name, source_rel_path, NodeStatus::Emittable, &parsed);
     cache.insert(
         source_rel_path.to_string(),
         (parsed.clone(), lib_name.to_string()),
@@ -504,20 +515,16 @@ pub(super) fn discover_and_register(params: DiscoverParams) {
             inline_modules: Vec::new(),
             inline_module_uses: std::collections::HashMap::new(),
         };
-        resolver.register_source(&inline_rel_path, inline_parsed);
+        resolver.register_source(&inline_rel_path, inline_parsed.clone());
 
+        // Inline modules are synthesized single-item modules; register them as
+        // emittable nodes so their items appear in the tree. Their file node
+        // was already created by the parent's registration above — re-registering
+        // here would be redundant, but is harmless (idempotent ensure).
+        model.register_source(lib_name, &inline_rel_path, NodeStatus::Emittable, &inline_parsed);
         cache.insert(
             inline_rel_path.clone(),
-            (
-                ParsedSource {
-                    items: mod_items.clone(),
-                    use_statements: Vec::new(),
-                    mod_declarations: Vec::new(),
-                    inline_modules: Vec::new(),
-                    inline_module_uses: std::collections::HashMap::new(),
-                },
-                lib_name.to_string(),
-            ),
+            (inline_parsed, lib_name.to_string()),
         );
     }
 
@@ -563,12 +570,14 @@ pub(super) fn discover_and_register(params: DiscoverParams) {
             validator,
             visited,
             cache,
+            model,
         });
     }
 }
 
 /// Register the structural parent modules of a file with the resolver so that
 /// re-export alias discovery can walk up the tree.
+#[allow(clippy::too_many_arguments)]
 pub(super) fn register_parents_of(
     file_path: &str,
     _lib_name: &str,
@@ -576,6 +585,7 @@ pub(super) fn register_parents_of(
     cfg: &CfgContext,
     resolver: &mut ModuleResolver,
     cache: &mut HashMap<String, (ParsedSource, String)>,
+    model: &mut BindingModel,
     processed_parents: &mut HashSet<String>,
 ) {
     let parents = resolver.get_parent_module_paths(file_path);
@@ -583,16 +593,30 @@ pub(super) fn register_parents_of(
         if !processed_parents.insert(parent_mod.clone()) {
             continue;
         }
-        let parent_path = lib_src.join(&parent_mod);
+        // The parent module path from get_parent_module_paths is always
+        // `<dir>/mod.rs`. If the actual source file is a leaf (`<dir>.rs`)
+        // instead of a directory module, use the leaf path so the binding
+        // model records the correct FileForm.
+        let parent_stem = parent_mod.strip_suffix("/mod.rs").unwrap_or(&parent_mod);
+        let leaf_candidate = format!("{parent_stem}.rs");
+        let parent_rel = if lib_src.join(&leaf_candidate).exists() {
+            leaf_candidate
+        } else {
+            parent_mod.clone()
+        };
+        let parent_path = lib_src.join(&parent_rel);
         if !parent_path.exists() {
             continue;
         }
         if let Ok(parent_text) = fs::read_to_string(&parent_path) {
             let parsed = parse_source_with_cfg(&parent_text, cfg);
-            resolver.register_source(&parent_mod, parsed.clone());
-            if !cache.contains_key(&parent_mod) {
-                cache.insert(parent_mod.clone(), (parsed, _lib_name.to_string()));
-                resolver.mark_emittable(&parent_mod);
+            resolver.register_source(&parent_rel, parsed.clone());
+            // Structural parents are registered to support alias discovery; they
+            // are not themselves emitted unless they already carry content.
+            model.register_source(_lib_name, &parent_rel, NodeStatus::Support, &parsed);
+            if !cache.contains_key(&parent_rel) {
+                cache.insert(parent_rel.clone(), (parsed, _lib_name.to_string()));
+                resolver.mark_emittable(&parent_rel);
             }
         }
     }
@@ -609,6 +633,7 @@ pub(super) fn discover_imported_modules(
     cfg: &CfgContext,
     resolver: &mut ModuleResolver,
     parsed_cache: &mut HashMap<String, (ParsedSource, String)>,
+    model: &mut BindingModel,
 ) {
     let mut import_discovered: HashSet<String> = HashSet::new();
     for target in &spec.targets {
@@ -747,6 +772,9 @@ pub(super) fn discover_imported_modules(
                 if let Ok(source_text) = fs::read_to_string(&source_path) {
                     let parsed = parse_source_with_cfg(&source_text, cfg);
                     resolver.register_source(fp, parsed.clone());
+                    // Import-discovered support files are registered so their
+                    // types resolve, but they are not themselves emitted.
+                    model.register_source(&target.lib_name, fp, NodeStatus::Support, &parsed);
                 }
             }
         }

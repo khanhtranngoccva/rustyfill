@@ -13,7 +13,7 @@ use crate::emitter::{QualifierResolver, TypeRegistry, collect_qualified_refs, em
 use crate::loader_spec::BindingTarget;
 use crate::parser::{CfgContext, ItemKind, ParsedSource, parse_source_with_cfg};
 use crate::resolver::{ModuleResolver, PathSegment, UseKind};
-use crate::syntaxes::ModulePath;
+use crate::syntaxes::{BindingModel, ModulePath, NodeStatus};
 
 use super::discover::locate_declared_struct;
 
@@ -24,6 +24,7 @@ use super::discover::locate_declared_struct;
 pub(super) struct EmitSink<'a> {
     pub(super) resolver: &'a mut ModuleResolver,
     pub(super) parsed_cache: &'a mut HashMap<String, (ParsedSource, String)>,
+    pub(super) model: &'a mut BindingModel,
     pub(super) registry: &'a mut TypeRegistry,
     pub(super) emitted_canonicals: &'a mut HashSet<String>,
     pub(super) all_files: &'a mut Vec<(String, String)>,
@@ -294,6 +295,14 @@ pub(super) fn mirror_minimal_modules(
                 _ => {}
             }
         }
+        // Register the mirrored minimal module into the binding tree so its
+        // referenced leaves are visible to later phases and the manifest.
+        sink.model.register_source(
+            &target.lib_name,
+            &def_file,
+            NodeStatus::Emittable,
+            &parsed,
+        );
         sink.parsed_cache
             .insert(def_file, (parsed, target.lib_name.clone()));
     }
@@ -519,6 +528,21 @@ fn materialize_reexport_shims(
         let parsed = parse_source_with_cfg(&shim_content, cfg);
         sink.resolver.register_source(&shim_rel, parsed);
         sink.resolver.mark_emittable(&shim_rel);
+        // Shims are synthetic forwarding modules; record them in the tree with
+        // their Shim status so the manifest and child scans see them.
+        sink.model.register_synthetic(&target.lib_name, &shim_rel, NodeStatus::Shim);
+        // A shim at `<module>/mod.rs` conflicts with a real leaf file
+        // `<module>.rs` that defines the same items. When both exist, the
+        // leaf file is the canonical source and the shim must NOT appear in
+        // the manifest (its self-referential re-export cannot resolve when
+        // included alongside the leaf's children). Check the parsed cache
+        // because shims are created before the emit phase populates
+        // emitted_canonicals.
+        let leaf_conflict = format!("{}.rs", alias_mod);
+        let leaf_exists_in_cache = sink.parsed_cache.contains_key(&leaf_conflict);
+        if !leaf_exists_in_cache {
+            sink.model.mark_file_emitted(&shim_rel);
+        }
         sink.emitted_canonicals.insert(shim_rel.clone());
         sink.all_files.push((shim_rel, target.lib_name.clone()));
     }
@@ -529,11 +553,13 @@ fn materialize_reexport_shims(
 /// definition (located via `locate_declared_struct`). This covers cfg-selected
 /// re-exports like `sys::sync::mutex::Mutex` (= `pub use futex::Mutex;` on
 /// Linux) where only the active backend submodule was mirrored.
+#[allow(clippy::too_many_arguments)]
 pub(super) fn emit_cfg_reexport_shims(
     rust_src: &Path,
     targets: &[BindingTarget],
     out_dir: &Path,
     resolver: &mut ModuleResolver,
+    model: &mut BindingModel,
     cfg: &CfgContext,
     emitted_canonicals: &mut HashSet<String>,
     all_files: &mut Vec<(String, String)>,
@@ -590,6 +616,14 @@ pub(super) fn emit_cfg_reexport_shims(
                 let parsed = parse_source_with_cfg(&shim_content, cfg);
                 resolver.register_source(&shim_rel, parsed);
                 resolver.mark_emittable(&shim_rel);
+                model.register_synthetic(&target.lib_name, &shim_rel, NodeStatus::Shim);
+                // Same leaf-conflict guard as the other shim site: if a real
+                // leaf file `<module>.rs` was already emitted, the shim at
+                // `<module>/mod.rs` must not appear in the manifest.
+                let leaf_conflict = format!("{}.rs", canon_module);
+                if !emitted_canonicals.contains(&leaf_conflict) {
+                    model.mark_file_emitted(&shim_rel);
+                }
                 emitted_canonicals.insert(shim_rel.clone());
                 all_files.push((shim_rel, target.lib_name.clone()));
             }

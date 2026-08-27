@@ -22,6 +22,7 @@ use crate::emitter::{
 use crate::loader_spec::LoaderSpec;
 use crate::parser::{CfgContext, ParsedSource};
 use crate::resolver::ModuleResolver;
+use crate::syntaxes::BindingModel;
 use crate::validator::ValidationBuilder;
 
 mod discover;
@@ -98,6 +99,10 @@ pub fn generate(input: &PipelineInput<'_>) -> GenerateOutcome {
     validator.check_spec(spec, rust_src);
 
     let mut resolver = ModuleResolver::new();
+    // The binding tree: the single source of truth for where every module and
+    // item lives. Populated in lockstep with the legacy accumulators during the
+    // migration; later phases read from it instead of re-parsing file strings.
+    let mut model = BindingModel::new();
     let mut processed_parents: HashSet<String> = HashSet::new();
     let mut preamble_emitted: HashSet<String> = HashSet::new();
     let mut pending_declarations: Vec<(String, String)> = Vec::new();
@@ -120,6 +125,12 @@ pub fn generate(input: &PipelineInput<'_>) -> GenerateOutcome {
     // ── Phase 1: DISCOVER — Parse all files, register with resolver ─────────
     let mut parsed_cache: HashMap<String, (ParsedSource, String)> = HashMap::new();
 
+    // Register a freshly-parsed file into BOTH the legacy cache and the binding
+    // tree. Closure form so it can be threaded into phases that already take
+    // `&mut parsed_cache`. Keeps the two representations in lockstep during the
+    // migration; once the legacy accumulators are retired, only the model insert
+    // survives. `emittable` controls whether the node is eligible for emission
+    // (structural parents registered solely to support alias discovery are not).
     for target in &spec.targets {
         let lib_src = rust_src.join(&target.lib_name).join("src");
 
@@ -145,6 +156,7 @@ pub fn generate(input: &PipelineInput<'_>) -> GenerateOutcome {
                         validator: &mut validator,
                         visited: &mut parent_visited,
                         cache: &mut parsed_cache,
+                        model: &mut model,
                     });
                     discover::register_parents_of(
                         &def_file,
@@ -153,6 +165,7 @@ pub fn generate(input: &PipelineInput<'_>) -> GenerateOutcome {
                         cfg,
                         &mut resolver,
                         &mut parsed_cache,
+                        &mut model,
                         &mut processed_parents,
                     );
                 }
@@ -251,6 +264,7 @@ pub fn generate(input: &PipelineInput<'_>) -> GenerateOutcome {
                 cfg,
                 &mut resolver,
                 &mut parsed_cache,
+                &mut model,
                 &mut processed_parents,
             );
         }
@@ -261,7 +275,14 @@ pub fn generate(input: &PipelineInput<'_>) -> GenerateOutcome {
     }
 
     // ── Phase 1c: Discover modules referenced by use statements ─────────────
-    discover::discover_imported_modules(spec, rust_src, cfg, &mut resolver, &mut parsed_cache);
+    discover::discover_imported_modules(
+        spec,
+        rust_src,
+        cfg,
+        &mut resolver,
+        &mut parsed_cache,
+        &mut model,
+    );
     for (file_path, (_, lib_name)) in &parsed_cache {
         resolver.set_file_lib(file_path, lib_name);
     }
@@ -270,6 +291,7 @@ pub fn generate(input: &PipelineInput<'_>) -> GenerateOutcome {
     let mut reg_state = registry::RegistryBuildState {
         resolver: &mut resolver,
         parsed_cache: &mut parsed_cache,
+        model: &mut model,
         emitted_canonicals: &mut emitted_canonicals,
         all_files: &mut all_files,
     };
@@ -293,6 +315,7 @@ pub fn generate(input: &PipelineInput<'_>) -> GenerateOutcome {
         &spec.targets,
         out_dir,
         &mut resolver,
+        &mut model,
         cfg,
         &mut emitted_canonicals,
         &mut all_files,
@@ -308,8 +331,9 @@ pub fn generate(input: &PipelineInput<'_>) -> GenerateOutcome {
     // module tree belong to one library), so no extra bookkeeping is needed.
     resolver.set_declared_paths(registry.declared_paths().cloned());
 
-    // Field-type publicity check.
-    let field_errors = check_declared_struct_fields(&registry);
+    // Field-type publicity check. Declared items are enumerated from the tree;
+    // reference resolution still consults the registry (retirement pending).
+    let field_errors = check_declared_struct_fields(&model, &registry);
     if !field_errors.is_empty() {
         let mut errors: Vec<String> = field_errors.to_vec();
         errors.push(format!(
@@ -326,6 +350,7 @@ pub fn generate(input: &PipelineInput<'_>) -> GenerateOutcome {
     let replacement_entries_slice = util::replacement_view(&replacement_entries);
     let mut emitted_paths: Vec<PathBuf> = Vec::new();
     emit::emit_all_binding_files(
+        &mut model,
         &parsed_cache,
         &mut resolver,
         &registry,
@@ -367,12 +392,16 @@ pub fn generate(input: &PipelineInput<'_>) -> GenerateOutcome {
             emitted_paths.push(out_dir.join(&rel_path));
             emitted_canonicals.insert(rel_path.clone());
             resolver.set_file_lib(&rel_path, lib_name);
-            all_files.push((rel_path, lib_name.clone()));
+            all_files.push((rel_path.clone(), lib_name.clone()));
+            // Known-type stub files are synthetic emittable leaf modules.
+            model.register_synthetic(lib_name, &rel_path, crate::syntaxes::NodeStatus::Emittable);
+            model.mark_file_emitted(&rel_path);
         }
     }
 
     // ── Phase 3: Discover and emit re-export aliases ────────────────────────
     let discovered_aliases = emit::discover_and_emit_reexport_aliases(
+        &mut model,
         spec,
         cfg,
         &parsed_cache,
@@ -382,8 +411,13 @@ pub fn generate(input: &PipelineInput<'_>) -> GenerateOutcome {
         &mut all_files,
     );
 
-    // ── Phase 4: Emit hierarchical manifest ─────────────────────────────────
-    emit_hierarchical_manifest(out_dir, &all_files);
+    // ── Phase 3b: Demote empty emittable nodes ──────────────────────────────
+    // Nodes whose items were all filtered by the declaration gate never
+    // produced output; they must not appear in the manifest.
+    model.demote_empty_emittable();
+
+    // ── Phase 4: Emit hierarchical manifest from the binding tree ───────────
+    emit_hierarchical_manifest(out_dir, &model);
 
     // ── Post-flight: validate everything ────────────────────────────────────
     validator.check_manifest(out_dir, &all_files);

@@ -117,6 +117,18 @@ impl ModulePath {
         Self { segments }
     }
 
+    /// The first segment, or `""` for the root. Used when descending into a
+    /// tree one level at a time (the root's "name" is empty).
+    pub fn head(&self) -> &str {
+        self.segments.first().map(String::as_str).unwrap_or("")
+    }
+
+    /// Borrowed view of the path minus its first segment. The root and
+    /// single-segment paths both yield the root.
+    pub fn tail(&self) -> ParentTailView<'_> {
+        ParentTailView(self)
+    }
+
     /// True if `other` is this path or lives beneath it (i.e. `self` is an
     /// ancestor of, or identical to, `other`). Reads as "`other` begins with
     /// `self`'s segments".
@@ -211,6 +223,33 @@ impl ParentView<'_> {
     pub fn to_canonical(&self) -> String {
         let len = self.0.depth().saturating_sub(1);
         self.0.segments[..len].join("::")
+    }
+}
+
+/// Borrowed view of a path minus its first segment (the "tail"). Complements
+/// [`ParentView`] (which drops the last segment). Used when walking a tree
+/// downward: descend by `head()`, recurse on `tail()`.
+pub struct ParentTailView<'a>(&'a ModulePath);
+
+impl ParentTailView<'_> {
+    pub fn is_root(&self) -> bool {
+        self.0.depth() <= 1
+    }
+
+    pub fn to_slash(&self) -> String {
+        if self.0.depth() <= 1 {
+            String::new()
+        } else {
+            self.0.segments[1..].join("/")
+        }
+    }
+
+    pub fn to_canonical(&self) -> String {
+        if self.0.depth() <= 1 {
+            String::new()
+        } else {
+            self.0.segments[1..].join("::")
+        }
     }
 }
 

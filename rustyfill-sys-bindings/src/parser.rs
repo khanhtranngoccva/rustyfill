@@ -639,7 +639,30 @@ pub fn parse_source_with_cfg(source: &str, cfg: &CfgContext) -> ParsedSource {
 
     // For mod declarations: prefer AST results, but fall back to text-based
     // scanning when the AST yielded nothing (e.g., mods are inside cfg_select!).
+    // The text scanner is line-oriented and cannot see comments, so it picks up
+    // `mod X;` mentions inside doc-comments (e.g. `alloc/src/boxed.rs` documents
+    // its submodules with example code). When the AST parsed successfully, such
+    // phantom entries would drive child discovery into modules that do not exist
+    // as real files — so we reconcile: keep the AST set authoritative and warn
+    // about any text-scan-only names.
+    let ast_names: std::collections::HashSet<&str> = mod_declarations_from_ast
+        .iter()
+        .map(|m| m.name.as_str())
+        .collect();
     let mod_declarations = if !mod_declarations_from_ast.is_empty() {
+        let text_scanned = scan_mod_declarations_with_cfg(source, cfg);
+        let extra: Vec<ModDeclaration> = text_scanned
+            .into_iter()
+            .filter(|m| !ast_names.contains(m.name.as_str()))
+            .collect();
+        if !extra.is_empty() {
+            eprintln!(
+                "cargo:warning=[parser] {} mod declaration(s) found by text scan \
+                 but not by AST (likely doc-comment mentions): {:?}",
+                extra.len(),
+                extra.iter().map(|m| m.name.as_str()).collect::<Vec<_>>()
+            );
+        }
         mod_declarations_from_ast
     } else {
         scan_mod_declarations_with_cfg(source, cfg)
@@ -2326,7 +2349,8 @@ mod child;
             "crate::__prelude",
             &[],
             "",
-        );
+        )
+        .expect("declared struct must produce output");
         // Must parse as valid Rust.
         let parsed = syn::parse_file(&output);
         assert!(
@@ -2357,7 +2381,8 @@ mod child;
             "crate::__prelude",
             &[],
             "",
-        );
+        )
+        .expect("declared struct must produce output");
         let declared_norm: String = declared_out.split_whitespace().collect::<Vec<_>>().join("");
         assert!(
             declared_norm.contains("crate::std::marker::PhantomData"),
@@ -2400,8 +2425,10 @@ mod child;
             alias_rhs: None,
         };
 
+        // The struct is not declared in the (empty) registry, so the
+        // declaration filter drops it and no binding file is produced.
         let output = emit_parsed_items(
-            &[item],
+            std::slice::from_ref(&item),
             &EmitConfig {
                 lib_name: "alloc",
                 file_module_depth: 0,
@@ -2418,6 +2445,34 @@ mod child;
             &[],
             "",
         );
+        assert!(
+            output.is_none(),
+            "Undeclared struct in empty registry must produce no output"
+        );
+
+        // With the struct declared, emission proceeds and the trait-bound
+        // generics survive intact.
+        let mut registry = TypeRegistry::empty();
+        registry.insert_declared("alloc::Wrapper", "");
+        let output = emit_parsed_items(
+            std::slice::from_ref(&item),
+            &EmitConfig {
+                lib_name: "alloc",
+                file_module_depth: 0,
+                extra_uses: &[],
+                sibling_modules: &[],
+                child_module_names: &[],
+                path_replacements: &[],
+                ignored_structs: &[],
+                relative_file_path: "",
+                type_registry: &registry,
+                extra_derives: &std::collections::HashMap::new(),
+            },
+            "crate::__prelude",
+            &[],
+            "",
+        )
+        .expect("declared struct must produce output");
         let parsed = syn::parse_file(&output);
         assert!(
             parsed.is_ok(),

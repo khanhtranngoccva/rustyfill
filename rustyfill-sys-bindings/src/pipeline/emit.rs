@@ -9,7 +9,7 @@ use crate::emitter::{EmitConfig, TypeRegistry, emit_binding_file, emit_glob_reex
 use crate::loader_spec::LoaderSpec;
 use crate::parser::{CfgContext, ParsedSource};
 use crate::resolver::ModuleResolver;
-use crate::syntaxes::ModulePath;
+use crate::syntaxes::{BindingModel, ModulePath, NodeStatus};
 use crate::validator::ValidationBuilder;
 
 use super::util::{compute_module_depth, get_sibling_modules};
@@ -18,6 +18,7 @@ use super::util::{compute_module_depth, get_sibling_modules};
 /// plus known-external-type stubs. Accumulates emitted paths and canonicals.
 #[allow(clippy::too_many_arguments)]
 pub(super) fn emit_all_binding_files(
+    model: &mut BindingModel,
     parsed_cache: &HashMap<String, (ParsedSource, String)>,
     resolver: &mut ModuleResolver,
     registry: &TypeRegistry,
@@ -35,6 +36,7 @@ pub(super) fn emit_all_binding_files(
         if file_path.ends_with("/mod") || file_path == "mod" {
             continue;
         }
+
         let depth = compute_module_depth(file_path);
         let mut extra_uses = resolver.emit_use_statements_for_file(file_path, ignored_name_refs);
         let stem = file_path.strip_suffix(".rs").unwrap_or(file_path.as_str());
@@ -87,6 +89,16 @@ pub(super) fn emit_all_binding_files(
             emitted_paths.push(emit_path);
             emitted_canonicals.insert(file_path.clone());
             all_files.push((file_path.clone(), lib_name.clone()));
+            // Mark as manifest-visible only when the file was parsed from real
+            // source with items. Files discovered structurally (empty mod.rs
+            // placeholders for directory modules that have a leaf sibling)
+            // carry zero parsed items; their output is boilerplate-only
+            // (preamble glob + re-exports) whose self-referential paths cannot
+            // resolve when included alongside the leaf's children.
+            if !parsed.items.is_empty() {
+                model.mark_file_emitted(file_path);
+            }
+            model.promote_to_emittable(lib_name, file_path);
         }
 
         // Also emit inline modules.
@@ -136,6 +148,8 @@ pub(super) fn emit_all_binding_files(
                 emitted_paths.push(inline_emit_path);
                 emitted_canonicals.insert(inline_rel_path.clone());
                 all_files.push((inline_rel_path.clone(), lib_name.clone()));
+                model.mark_file_emitted(&inline_rel_path);
+                model.promote_to_emittable(lib_name, &inline_rel_path);
             }
         }
     }
@@ -195,7 +209,9 @@ fn collect_bound_names(use_lines: &[String]) -> HashSet<String> {
 /// For each active declaration, locate its defining file and all parent module
 /// files, discover re-export aliases from each, and emit glob re-export alias
 /// binding files. Returns the set of discovered alias modules.
+#[allow(clippy::too_many_arguments)]
 pub(super) fn discover_and_emit_reexport_aliases(
+    model: &mut BindingModel,
     spec: &LoaderSpec,
     cfg: &CfgContext,
     parsed_cache: &HashMap<String, (ParsedSource, String)>,
@@ -237,6 +253,12 @@ pub(super) fn discover_and_emit_reexport_aliases(
                         &mut discovered_aliases,
                         emitted_canonicals,
                     );
+                    // Glob aliases are synthetic forwarding files; record them in
+                    // the tree with Alias status so the manifest sees them.
+                    for (fp, _) in &new_files {
+                        model.register_synthetic(&target.lib_name, fp, NodeStatus::Alias);
+                        model.mark_file_emitted(fp);
+                    }
                     all_files.extend(new_files);
                 }
             }

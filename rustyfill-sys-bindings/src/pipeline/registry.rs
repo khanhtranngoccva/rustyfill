@@ -10,7 +10,7 @@ use crate::emitter::TypeRegistry;
 use crate::loader_spec::LoaderSpec;
 use crate::parser::{CfgContext, ItemKind, ParsedSource};
 use crate::resolver::{ModuleResolver, PathSegment, UseKind, Visibility};
-use crate::syntaxes::ModulePath;
+use crate::syntaxes::{BindingModel, ModulePath, NodeStatus};
 
 use super::mirror::{EmitSink, mirror_minimal_modules};
 
@@ -19,6 +19,7 @@ use super::mirror::{EmitSink, mirror_minimal_modules};
 pub(super) struct RegistryBuildState<'a> {
     pub(super) resolver: &'a mut ModuleResolver,
     pub(super) parsed_cache: &'a mut HashMap<String, (ParsedSource, String)>,
+    pub(super) model: &'a mut BindingModel,
     pub(super) emitted_canonicals: &'a mut HashSet<String>,
     pub(super) all_files: &'a mut Vec<(String, String)>,
 }
@@ -34,6 +35,7 @@ pub(super) fn build_type_registry(
     let RegistryBuildState {
         resolver,
         parsed_cache,
+        model,
         emitted_canonicals,
         all_files,
     } = state;
@@ -104,6 +106,9 @@ pub(super) fn build_type_registry(
                 .unwrap_or_else(|| decl.replace("::", "/") + ".rs");
             let def_file_abs = lib_src.join(&def_file_rel).to_string_lossy().to_string();
             registry.insert_declared(&canonical, &def_file_abs);
+            // Mirror the declaration into the binding tree so the item's node
+            // carries `declared = true` and its authoritative def file.
+            model.mark_declared(&canonical, Some(def_file_abs));
             if let Some(item) = found_item {
                 if item.kind == ItemKind::TypeAlias {
                     if let Some(rhs) = &item.alias_rhs {
@@ -126,6 +131,15 @@ pub(super) fn build_type_registry(
                 continue;
             };
             registry.insert_declared(&canonical, &stub_rel);
+            // Known-type stubs are synthetic leaf modules that will be emitted
+            // in Phase 2b; register them in the tree now so they participate in
+            // sibling/child scans and the manifest.
+            if let Some(stub_mp) = ModulePath::from_slash(
+                &segments[..segments.len() - 1].join("/"),
+            ) {
+                model.register_synthetic(&target.lib_name, &stub_rel, NodeStatus::Emittable);
+                let _ = stub_mp;
+            }
         }
 
         // Register re-export-shim declarations.
@@ -152,6 +166,9 @@ pub(super) fn build_type_registry(
             let alias_canonical = format!("{}::{}::{}", target.lib_name, mod_path, leaf);
             let def_file_abs = lib_src.join(def_file).to_string_lossy().to_string();
             registry.insert_declared_alias(&alias_canonical, &def_file_abs);
+            // Re-export shims are treated as declared for emission; reflect that
+            // in the tree so the item's node is marked accordingly.
+            model.mark_declared(&alias_canonical, Some(def_file_abs));
         }
 
         // ── Minimal-module mirroring for preserved qualifiers ───────────────
@@ -163,6 +180,7 @@ pub(super) fn build_type_registry(
         let mut sink = EmitSink {
             resolver,
             parsed_cache,
+            model,
             registry: &mut registry,
             emitted_canonicals,
             all_files,
