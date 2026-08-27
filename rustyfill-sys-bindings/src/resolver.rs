@@ -58,8 +58,9 @@ pub struct ModuleResolver {
     /// resolution (Phase 1c) are NOT in this set, so generated use statements
     /// won't reference modules that won't be emitted.
     emittable_files: HashSet<String>,
-    /// Canonical paths (`lib::module::Leaf`) of types explicitly declared in the
-    /// loader spec. Consulted by the existence checks below so they only count
+    /// Serialized qualified paths (`::lib::module::Leaf`) of types explicitly
+    /// declared in the loader spec. Consulted by the existence checks below so
+    /// they only count
     /// items the emitter will actually mirror. Without this, checks would count
     /// peripheral public items (iterators, cursors, range views, …) that the
     /// emitter now filters out, producing dangling re-exports.
@@ -726,9 +727,9 @@ impl ModuleResolver {
         if self.declared_paths.is_empty() {
             return true;
         }
-        // Build the module+leaf portion with `::` separators (matching the
-        // canonical path format used by the registry), then try each known
-        // library prefix. The resolver doesn't track which library a file
+        // Serialize the address as a qualified path (leading `::` marker, lib,
+        // module, leaf — matching the registry's key format), then try each
+        // known library. The resolver doesn't track which library a file
         // belongs to, so we check against all three (core/alloc/std).
         let module_qualified = module_path.replace('/', "::");
         let suffix = if module_qualified.is_empty() {
@@ -737,10 +738,7 @@ impl ModuleResolver {
             format!("{}::{}", module_qualified, item.name)
         };
         for lib in ["core", "alloc", "std"] {
-            if self
-                .declared_paths
-                .contains(&format!("{}::{}", lib, suffix))
-            {
+            if self.declared_paths.contains(&format!("::{lib}::{suffix}")) {
                 return true;
             }
         }
@@ -821,10 +819,7 @@ impl ModuleResolver {
                 // last named segment or an explicit `as` alias).
                 let bound_name = match alias.as_deref() {
                     Some(a) => a.to_string(),
-                    None => path.segments.iter().rev().find_map(|s| match s {
-                        PathSegment::Named(n) => Some(n.clone()),
-                        _ => None,
-                    })?,
+                    None => path.last_named()?.to_string(),
                 };
                 if bound_name != item_name {
                     continue;

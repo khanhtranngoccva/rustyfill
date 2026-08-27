@@ -9,7 +9,7 @@ use std::path::Path;
 use crate::emitter::TypeRegistry;
 use crate::loader_spec::LoaderSpec;
 use crate::parser::{CfgContext, ItemKind, ParsedSource};
-use crate::resolver::{ModuleResolver, PathSegment, UseKind, Visibility};
+use crate::resolver::{ModuleResolver, UseKind, Visibility};
 use crate::syntaxes::{BindingModel, ModulePath, NodeStatus};
 
 use super::mirror::{EmitSink, mirror_minimal_modules};
@@ -53,10 +53,12 @@ pub(super) fn build_type_registry(
                 let module_canonical = ModulePath::from_slash(&module_path)
                     .map(|mp| mp.to_canonical())
                     .unwrap_or_else(|| module_path.replace('/', "::"));
+                // Canonical keys are serialized qualified paths: the leading
+                // `::` marks the address as absolute (rooted at the library).
                 let canonical = if module_canonical.is_empty() {
-                    format!("{}::{}", target.lib_name, item.name)
+                    format!("::{}::{}", target.lib_name, item.name)
                 } else {
-                    format!("{}::{}::{}", target.lib_name, module_canonical, item.name)
+                    format!("::{}::{}::{}", target.lib_name, module_canonical, item.name)
                 };
                 let is_exported = exported_names.contains(&item.name);
                 registry.register(&canonical, item.visibility, is_exported, file_path);
@@ -76,7 +78,7 @@ pub(super) fn build_type_registry(
                     .unwrap_or_else(|| inline_module.replace('/', "::"));
                 for item in mod_items {
                     let canonical = format!(
-                        "{}::{}::{}",
+                        "::{}::{}::{}",
                         target.lib_name, inline_canonical_base, item.name
                     );
                     let is_exported = exported_names.contains(&item.name);
@@ -91,7 +93,7 @@ pub(super) fn build_type_registry(
         let lib_src = rust_src.join(&target.lib_name).join("src");
         let active_decls = target.active_declarations(cfg);
         for decl in &active_decls {
-            let canonical = format!("{}::{}", target.lib_name, decl);
+            let canonical = format!("::{}::{}", target.lib_name, decl);
             let leaf = decl.rsplit("::").next().unwrap_or("");
             let mut found_item: Option<&crate::parser::ParsedItem> = None;
             let def_file_rel = parsed_cache
@@ -123,7 +125,7 @@ pub(super) fn build_type_registry(
         // is emitted as a standalone stub file (Phase 2), not parsed from source,
         // so the def_file points at the generated stub's relative path.
         for kt in &target.known_external_types {
-            let canonical = format!("{}::{}", target.lib_name, kt.path);
+            let canonical = format!("::{}::{}", target.lib_name, kt.path);
             let segments: Vec<&str> = kt.path.split("::").collect();
             let stub_rel = if segments.len() >= 2 {
                 format!("{}.rs", segments[..segments.len() - 1].join("/"))
@@ -162,7 +164,7 @@ pub(super) fn build_type_registry(
                         .unwrap_or(def_file)
                         .replace('/', "::")
                 });
-            let alias_canonical = format!("{}::{}::{}", target.lib_name, mod_path, leaf);
+            let alias_canonical = format!("::{}::{}::{}", target.lib_name, mod_path, leaf);
             let def_file_abs = lib_src.join(def_file).to_string_lossy().to_string();
             registry.insert_declared_alias(&alias_canonical, &def_file_abs);
             // Re-export shims are treated as declared for emission; reflect that
@@ -205,15 +207,7 @@ fn public_reexport_names(parsed: &ParsedSource, _module_path: &str) -> HashSet<S
         }
         match &stmt.kind {
             UseKind::Single(plist, alias) => {
-                let name = alias.clone().or_else(|| {
-                    plist.segments.iter().rev().find_map(|s| {
-                        if let PathSegment::Named(n) = s {
-                            Some(n.clone())
-                        } else {
-                            None
-                        }
-                    })
-                });
+                let name = alias.clone().or_else(|| plist.last_named().map(str::to_string));
                 if let Some(n) = name {
                     names.insert(n);
                 }

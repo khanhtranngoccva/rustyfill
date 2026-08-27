@@ -49,7 +49,9 @@ pub enum FieldRefResolution {
 /// source files.
 #[derive(Clone, Debug)]
 pub struct TypeInfo {
-    /// Canonical module path (`::`-separated, relative to the library root).
+    /// Serialized qualified path of the type: `::lib::module::Leaf`. The
+    /// leading `::` marks the path as absolute (rooted at the library), so the
+    /// library prefix is fully encoded in the string.
     pub canonical_path: String,
     /// Source visibility as written in std.
     pub visibility: Visibility,
@@ -79,11 +81,13 @@ impl TypeInfo {
         self.declared
     }
 
-    /// The leaf identifier of the type.
+    /// The leaf identifier of the type (the last segment of the serialized
+    /// qualified path).
     pub fn leaf(&self) -> &str {
         self.canonical_path
-            .rsplit("::")
-            .next()
+            .split("::")
+            .filter(|s| !s.is_empty())
+            .last()
             .unwrap_or(&self.canonical_path)
     }
 }
@@ -93,7 +97,8 @@ impl TypeInfo {
 /// script after discovery, then handed to the emitter for both field-type
 /// publicity checking and reference rewriting.
 pub struct TypeRegistry {
-    /// All known types indexed by canonical path (`lib::module::Leaf`).
+    /// All known types indexed by serialized qualified path
+    /// (`::lib::module::Leaf`).
     by_path: HashMap<String, TypeInfo>,
     /// Known types indexed by leaf name.
     by_leaf: HashMap<String, Vec<String>>,
@@ -215,7 +220,12 @@ impl TypeRegistry {
         is_exported: bool,
         def_file: &str,
     ) {
-        let leaf = canonical_path.rsplit("::").next().unwrap_or(canonical_path);
+        // Leaf is the last non-empty segment of the serialized qualified path.
+        let leaf = canonical_path
+            .split("::")
+            .filter(|s| !s.is_empty())
+            .last()
+            .unwrap_or(canonical_path);
         self.by_leaf
             .entry(leaf.to_string())
             .or_default()
@@ -486,13 +496,16 @@ impl TypeRegistry {
         self.declared.iter()
     }
 
-    /// True when a type at `lib_name::{module_path}::{leaf}` is explicitly
-    /// declared in the loader spec. Used by the emitter to restrict output to
+    /// True when a type at `::{lib_name}::{module_path}::{leaf}` (serialized
+    /// qualified path) is explicitly declared in the loader spec. Used by the
+    /// emitter to restrict output to
     /// declared data structures only, so peripheral public items that merely sit
     /// alongside them (iterators, cursors, range views, …) are not mirrored
     /// unless they are part of the polyfill's core surface.
     pub fn is_declared_in_module(&self, lib_name: &str, module_path: &str, leaf: &str) -> bool {
-        let mut canonical = String::from(lib_name);
+        // Serialize the address as a qualified path: leading `::` marker, then
+        // lib, module (when non-empty), and leaf.
+        let mut canonical = format!("::{lib_name}");
         if !module_path.is_empty() {
             canonical.push_str("::");
             canonical.push_str(module_path);
@@ -839,12 +852,8 @@ impl<'a> QualifierResolver<'a> {
                         }
                         match &stmt.kind {
                             UseKind::Single(pl, alias) => {
-                                let exported_name = alias.clone().or_else(|| {
-                                    pl.segments.iter().rev().find_map(|s| match s {
-                                        PathSegment::Named(n) => Some(n.clone()),
-                                        _ => None,
-                                    })
-                                });
+                                let exported_name =
+                                    alias.clone().or_else(|| pl.last_named().map(str::to_string));
                                 if exported_name.as_deref() != Some(leaf) {
                                     continue;
                                 }
@@ -867,10 +876,7 @@ impl<'a> QualifierResolver<'a> {
                                 }
                             }
                             UseKind::Glob(glob_pl) => {
-                                if let Some(rn) = glob_pl.segments.iter().find_map(|s| match s {
-                                    PathSegment::Named(n) => Some(n.clone()),
-                                    _ => None,
-                                }) {
+                                if let Some(rn) = glob_pl.last_named() {
                                     let sub_mod = format!("{target_mod}/{rn}");
                                     if let Some(defining) =
                                         self.find_defining_module(&sub_mod, leaf)
@@ -1069,11 +1075,7 @@ impl<'a> QualifierResolver<'a> {
                 let UseKind::Glob(pl) = &stmt.kind else {
                     continue;
                 };
-                let rn = pl.segments.iter().find_map(|s| match s {
-                    PathSegment::Named(n) => Some(n.clone()),
-                    _ => None,
-                });
-                if let Some(rn) = rn {
+                if let Some(rn) = pl.last_named() {
                     let next = format!("{cur}/{rn}");
                     if self.source_module(&next).is_some() {
                         queue.push(next);
@@ -1663,11 +1665,17 @@ fn rewrite_path(
             // hierarchy, and cross-library references (e.g., a `std`-pathed
             // re-export of a core entity) resolve through it too — so the
             // leading library segment is dropped here regardless of which
-            // crate the declaration came from.
-            let rest = canonical
-                .split_once("::")
-                .map(|(_, r)| r)
-                .unwrap_or(canonical.as_str());
+            // crate the declaration came from. Canonical keys are serialized
+            // qualified paths (`::lib::module::item`); strip marker + lib.
+            let Some(rest) = canonical
+                .strip_prefix("::")
+                .and_then(|body| body.split_once("::").map(|(_, r)| r))
+            else {
+                return syn::Path {
+                    leading_colon,
+                    segments: segs.into_iter().collect(),
+                };
+            };
             format!("crate::{}::{rest}", registry.wrapper_mod())
         }
         Some(FieldRefResolution::Original(canonical)) => {
@@ -1676,11 +1684,18 @@ fn rewrite_path(
             // Never route these through the preamble — the preamble is only a
             // convenience for bare names inside nested files, and going through
             // it adds indirection (and breaks when the preamble is omitted).
-            let lib = canonical.split("::").next().unwrap_or("");
-            let rest = canonical
-                .strip_prefix(lib)
-                .unwrap_or("")
-                .trim_start_matches("::");
+            let Some(body) = canonical.strip_prefix("::") else {
+                return syn::Path {
+                    leading_colon,
+                    segments: segs.into_iter().collect(),
+                };
+            };
+            let Some((lib, rest)) = body.split_once("::") else {
+                return syn::Path {
+                    leading_colon,
+                    segments: segs.into_iter().collect(),
+                };
+            };
             format!("::__rustyfill_builtin_{lib}::{rest}")
         }
         Some(FieldRefResolution::UndeclaredPrivate(_))
@@ -1709,19 +1724,17 @@ fn rewrite_path(
 /// Compute the absolute replacement path string for a resolved reference.
 fn abs_path_for(res: &FieldRefResolution, registry: &TypeRegistry) -> Option<String> {
     match res {
+        // Canonical keys are serialized qualified paths (`::lib::module::item`);
+        // the mirror drops the library segment entirely.
         FieldRefResolution::Mirrored(canonical) => {
-            let rest = canonical
-                .split_once("::")
-                .map(|(_, r)| r)
-                .unwrap_or(canonical.as_str());
+            let rest = canonical.strip_prefix("::")?.split_once("::")?.1;
             Some(format!("crate::{}::{rest}", registry.wrapper_mod()))
         }
+        // Public but undeclared: point at the original type in its builtin
+        // crate, keyed off the encoded library segment.
         FieldRefResolution::Original(canonical) => {
-            let lib = canonical.split("::").next().unwrap_or("");
-            let rest = canonical
-                .strip_prefix(lib)
-                .unwrap_or("")
-                .trim_start_matches("::");
+            let body = canonical.strip_prefix("::")?;
+            let (lib, rest) = body.split_once("::")?;
             Some(format!("::__rustyfill_builtin_{lib}::{rest}"))
         }
         _ => None,
@@ -2823,22 +2836,24 @@ fn rewrite_crate_paths_legacy(
             }
 
             if past_def_kw && !name.starts_with('_') && !is_keywordish(&name) && name != item_name {
-                if let FieldRefResolution::Mirrored(canonical) = registry.resolve_field_ref(&name) {
+                if let FieldRefResolution::Mirrored(canonical) = registry.resolve_field_ref(&name)
+                {
                     // Mirrors always live under the manifest's single wrapper
                     // module (named by the registry), so drop the leading
-                    // library segment.
-                    let rest = canonical
-                        .split_once("::")
-                        .map(|(_, r)| r)
-                        .unwrap_or(canonical.as_str());
-                    let abs = format!("crate::{}::{rest}", registry.wrapper_mod());
-                    if let Ok(subst) = abs.parse::<TokenStream>() {
-                        if annotate_fields && in_body && body_depth == 1 {
-                            field_buf.extend(subst);
-                        } else {
-                            result.extend(subst);
+                    // library segment from the serialized qualified path.
+                    if let Some(rest) = canonical
+                        .strip_prefix("::")
+                        .and_then(|body| body.split_once("::").map(|(_, r)| r))
+                    {
+                        let abs = format!("crate::{}::{rest}", registry.wrapper_mod());
+                        if let Ok(subst) = abs.parse::<TokenStream>() {
+                            if annotate_fields && in_body && body_depth == 1 {
+                                field_buf.extend(subst);
+                            } else {
+                                result.extend(subst);
+                            }
+                            continue;
                         }
-                        continue;
                     }
                 }
             }
@@ -4361,14 +4376,14 @@ mod module_relative_tie_break_tests {
         let mut registry = TypeRegistry::empty();
         // Closer candidate: an item inside a child module of the context.
         registry.register(
-            "alloc::collections::btree::map::inner::Root",
+            "::alloc::collections::btree::map::inner::Root",
             Visibility::Public,
             true,
             "inner.rs",
         );
         // Farther candidate: an alias in a sibling module, bound via import.
         registry.register(
-            "alloc::collections::btree::node::Root",
+            "::alloc::collections::btree::node::Root",
             Visibility::Public,
             true,
             "node.rs",
@@ -4378,7 +4393,7 @@ mod module_relative_tie_break_tests {
             registry.resolve_module_relative(&["Root".to_string()], "collections::btree::map");
         match res {
             Some(FieldRefResolution::Mirrored(p)) | Some(FieldRefResolution::Original(p)) => {
-                assert_eq!(p, "alloc::collections::btree::map::inner::Root");
+                assert_eq!(p, "::alloc::collections::btree::map::inner::Root");
             }
             other => panic!(
                 "expected a routed resolution to the child-module item, got {:?}",
@@ -4393,7 +4408,7 @@ mod module_relative_tie_break_tests {
     fn keeps_sole_candidate_when_uncontested() {
         let mut registry = TypeRegistry::empty();
         registry.register(
-            "alloc::collections::btree::node::marker::Owned",
+            "::alloc::collections::btree::node::marker::Owned",
             Visibility::Public,
             true,
             "marker/mod.rs",
@@ -4403,7 +4418,7 @@ mod module_relative_tie_break_tests {
             .resolve_module_relative(&["Owned".to_string()], "collections::btree::node::marker");
         match res {
             Some(FieldRefResolution::Mirrored(p)) | Some(FieldRefResolution::Original(p)) => {
-                assert_eq!(p, "alloc::collections::btree::node::marker::Owned");
+                assert_eq!(p, "::alloc::collections::btree::node::marker::Owned");
             }
             other => panic!("expected a routed resolution, got {:?}", other),
         }
@@ -4414,17 +4429,17 @@ mod module_relative_tie_break_tests {
     fn declared_candidate_wins_tie_regardless_of_depth() {
         let mut registry = TypeRegistry::empty();
         registry.register(
-            "alloc::a::b::c::inner::Thing",
+            "::alloc::a::b::c::inner::Thing",
             Visibility::Public,
             true,
             "inner.rs",
         );
-        registry.insert_declared("alloc::a::b::Thing", "b.rs");
+        registry.insert_declared("::alloc::a::b::Thing", "b.rs");
 
         let res = registry.resolve_module_relative(&["Thing".to_string()], "a::b::c");
         match res {
             Some(FieldRefResolution::Mirrored(p)) => {
-                assert_eq!(p, "alloc::a::b::Thing");
+                assert_eq!(p, "::alloc::a::b::Thing");
             }
             other => panic!("expected Mirrored to declared path, got {:?}", other),
         }
@@ -4448,7 +4463,7 @@ mod declared_alias_emission_tests {
     /// rather than leaving a bare name behind.
     #[test]
     fn recursive_alias_expands_self_reference_to_absolute_path() {
-        let registry = make_registry("alloc::m::Entry", "RawEntry<Entry>");
+        let registry = make_registry("::alloc::m::Entry", "RawEntry<Entry>");
         let item_full: TokenStream = "pub type Entry<K, V> = RawEntry<Entry<K, V>>;"
             .parse()
             .unwrap();
@@ -4467,8 +4482,8 @@ mod declared_alias_emission_tests {
     /// the referenced type is declared (e.g., `Root` → mirrored `NodeRef`).
     #[test]
     fn alias_rhs_non_self_references_are_routed() {
-        let mut registry = make_registry("alloc::m::Root", "NodeRef<Owned, K, V>");
-        registry.insert_declared("alloc::m::NodeRef", "node.rs");
+        let mut registry = make_registry("::alloc::m::Root", "NodeRef<Owned, K, V>");
+        registry.insert_declared("::alloc::m::NodeRef", "node.rs");
         let item_full: TokenStream = "pub type Root<K, V> = NodeRef<Owned, K, V>;"
             .parse()
             .unwrap();

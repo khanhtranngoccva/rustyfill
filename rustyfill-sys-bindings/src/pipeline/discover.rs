@@ -15,6 +15,135 @@ use crate::resolver::{ModuleResolver, PathSegment, UseKind};
 use crate::syntaxes::{BindingModel, NodeStatus};
 use crate::validator::ValidationBuilder;
 
+// ── Phase 1 driver ──────────────────────────────────────────────────────────
+
+/// Outcome of the Phase 1 discovery sweep, handed to the orchestrator.
+pub(super) struct DiscoveryResult {
+    /// `(declaration, def_file)` pairs where the declared path does not match
+    /// the file's naive `<path>.rs` location (e.g., re-exported definitions).
+    pub(super) reexport_located: Vec<(String, String)>,
+    /// Parent modules already processed by [`register_parents_of`]; shared with
+    /// the Phase 1b sweep so parents are not re-registered.
+    pub(super) processed_parents: HashSet<String>,
+}
+
+/// Locate every active declaration, parse and register its module tree, and
+/// resolve declarations that do not sit at their naive path. Returns
+/// `Err(errors)` when a declaration is unusable for this target (cfg-excluded
+/// or malformed) or cannot be found anywhere in the registered sources.
+#[allow(clippy::too_many_arguments)]
+pub(super) fn run_discovery(
+    spec: &LoaderSpec,
+    rust_src: &Path,
+    cfg: &CfgContext,
+    resolver: &mut ModuleResolver,
+    validator: &mut ValidationBuilder,
+    parsed_cache: &mut HashMap<String, (ParsedSource, String)>,
+    model: &mut BindingModel,
+) -> Result<DiscoveryResult, Vec<String>> {
+    let mut reexport_located: Vec<(String, String)> = Vec::new();
+    let mut pending_declarations: Vec<(String, String)> = Vec::new();
+    let mut processed_parents: HashSet<String> = HashSet::new();
+
+    for target in &spec.targets {
+        let lib_src = rust_src.join(&target.lib_name).join("src");
+
+        // Collect active declarations (unconditional + cfg-gated ones whose
+        // predicate matches the current build context). This ensures that
+        // platform-specific backend types (e.g., futex-only types on Linux)
+        // are not declared on targets where they don't exist.
+        let active_decls = target.active_declarations(cfg);
+        for decl in &active_decls {
+            match locate_declared_struct(decl, &lib_src, cfg) {
+                LocatedStruct::Found(def_file) => {
+                    let naive = decl.replace("::", "/") + ".rs";
+                    if !lib_src.join(&naive).exists() && def_file != naive {
+                        reexport_located.push((decl.clone(), def_file.clone()));
+                    }
+                    let mut parent_visited = HashSet::new();
+                    discover_and_register(DiscoverParams {
+                        source_rel_path: def_file.as_str(),
+                        lib_name: &target.lib_name,
+                        lib_src: &lib_src,
+                        cfg,
+                        resolver,
+                        validator,
+                        visited: &mut parent_visited,
+                        cache: parsed_cache,
+                        model,
+                    });
+                    register_parents_of(
+                        &def_file,
+                        &target.lib_name,
+                        &lib_src,
+                        cfg,
+                        resolver,
+                        parsed_cache,
+                        model,
+                        &mut processed_parents,
+                    );
+                }
+                LocatedStruct::NotDefinedOnDisk(path_hint) => {
+                    pending_declarations.push((decl.clone(), path_hint));
+                }
+                LocatedStruct::CfgExcluded { module, predicate } => {
+                    return Err(vec![format!(
+                        "[spec] `{}` is defined in `{}`, which is excluded for this \
+                         target by an inner cfg gate ({predicate}). Gate the \
+                         declaration with a matching predicate (declare_struct_cfg) \
+                         so it only activates on targets where that module exists.",
+                        decl, module
+                    )]);
+                }
+                LocatedStruct::BadPath(msg) => {
+                    return Err(vec![format!("[spec] {}", msg)]);
+                }
+            }
+        }
+    }
+
+    // Resolve declarations that could not be located on disk directly (e.g.,
+    // types defined in inline modules). Search every registered file's items.
+    let unresolved: Vec<(String, String)> = if !pending_declarations.is_empty() {
+        let mut still_unresolved = Vec::new();
+        for (decl, hint) in pending_declarations {
+            let leaf = decl.rsplit("::").next().unwrap_or(&decl);
+            let found = parsed_cache
+                .iter()
+                .find(|(_, (parsed, _))| parsed.items.iter().any(|i| i.name == leaf));
+            match found {
+                Some((file_path, _)) => {
+                    // Surfaced as a warning by the caller via the report.
+                    eprintln!(
+                        "cargo:warning=[spec] `{}` defined in {} (hint was {})",
+                        decl, file_path, hint
+                    );
+                }
+                None => still_unresolved.push((decl, hint)),
+            }
+        }
+        still_unresolved
+    } else {
+        Vec::new()
+    };
+    if !unresolved.is_empty() {
+        return Err(unresolved
+            .iter()
+            .map(|(decl, hint)| format!(
+                "[spec] Declared struct `{}` not found in any registered \
+                 source file (looked near {}). Declare it with a path that matches its \
+                 actual definition location.",
+                decl, hint
+            ))
+            .collect());
+    }
+
+    Ok(DiscoveryResult {
+        reexport_located,
+        processed_parents,
+    })
+}
+
 // ── Declaration location helpers ────────────────────────────────────────────
 
 pub(super) enum LocatedStruct {
@@ -305,11 +434,7 @@ fn descend_through_reexports(
                 let UseKind::Glob(pl) = &stmt.kind else {
                     continue;
                 };
-                let rn = pl.segments.iter().find_map(|s| match s {
-                    PathSegment::Named(n) => Some(n.clone()),
-                    _ => None,
-                });
-                if let Some(rn) = rn {
+                if let Some(rn) = pl.last_named() {
                     let next = format!("{cur}/{rn}");
                     if module_file_exists(lib_src, &next) || is_directory_module(lib_src, &next) {
                         queue.push(next);

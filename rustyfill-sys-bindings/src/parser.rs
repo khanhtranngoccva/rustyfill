@@ -2300,15 +2300,15 @@ mod child;
         let mut registry = TypeRegistry::empty();
         // The struct under test must be declared for the emitter to keep it;
         // otherwise the declaration filter drops undeclared data structures.
-        registry.insert_declared("alloc::TestStruct", "");
+        registry.insert_declared("::alloc::TestStruct", "");
         registry.register(
-            "core::marker::PhantomData",
+            "::core::marker::PhantomData",
             Visibility::Public,
             true,
             "core/marker.rs",
         );
         registry.register(
-            "core::marker::PhantomPinned",
+            "::core::marker::PhantomPinned",
             Visibility::Public,
             true,
             "core/marker.rs",
@@ -2344,8 +2344,8 @@ mod child;
         // `crate::std::` path into the merged synthetic tree (all libraries
         // merge under one `std` wrapper module in the manifest).
         let mut registry_declared = TypeRegistry::empty();
-        registry_declared.insert_declared("alloc::TestStruct", "");
-        registry_declared.insert_declared("core::marker::PhantomData", "core/marker.rs");
+        registry_declared.insert_declared("::alloc::TestStruct", "");
+        registry_declared.insert_declared("::core::marker::PhantomData", "core/marker.rs");
         let declared_out = emit_parsed_items(
             std::slice::from_ref(&item),
             &EmitConfig {
@@ -2435,7 +2435,7 @@ mod child;
         // With the struct declared, emission proceeds and the trait-bound
         // generics survive intact.
         let mut registry = TypeRegistry::empty();
-        registry.insert_declared("alloc::Wrapper", "");
+        registry.insert_declared("::alloc::Wrapper", "");
         let output = emit_parsed_items(
             std::slice::from_ref(&item),
             &EmitConfig {

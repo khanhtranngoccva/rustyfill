@@ -6,7 +6,8 @@ use super::QualifiedPath;
 /// A named type (struct, enum, union, const, or type alias) defined in a module.
 ///
 /// Its fully-qualified path is *derived*, never stored: it is always
-/// `{lib}::{module_path}::{name}`, computed by the owning [`super::ModuleNode`].
+/// `::{lib}::{module_path}::{name}` (serialized qualified path), computed by
+/// the owning [`super::ModuleNode`].
 #[derive(Clone, Debug)]
 pub struct ItemRecord {
     /// The identifier name of the item.
@@ -30,8 +31,8 @@ pub struct ItemRecord {
 
 impl ItemRecord {
     /// The fully-qualified canonical path of this item within `lib`, rooted at
-    /// the given module. Rendered `lib::module::name` (root module omits the
-    /// empty middle segment).
+    /// the given module. Rendered as a serialized qualified path,
+    /// `::lib::module::name` (root module omits the empty middle segment).
     pub fn qualified_path(&self, lib: &str, module: &ModulePath) -> QualifiedPath {
         QualifiedPath {
             lib: lib.to_string(),

@@ -11,14 +11,26 @@
 //! The build script reduces to a thin orchestrator that locates the toolchain
 //! source, rejects incompatible flags, calls [`generate`], and forwards any
 //! reported diagnostics as `cargo:` messages.
+//!
+//! ## Layout
+//!
+//! [`generate`] in this file is the sole orchestrator: it threads shared
+//! mutable state through the phases and aborts on the first hard error. Each
+//! phase lives in its own submodule and knows nothing about the others:
+//!
+//! - [`discover`] — Phase 1: locate declarations, parse and register sources,
+//!   follow imports to a fixed point.
+//! - [`registry`] — Phase 1d: populate the type registry and mirror minimal
+//!   modules for preserved qualifiers.
+//! - [`mirror`] — cfg-selected re-export shims (Strategy B materialization).
+//! - [`emit`] — Phases 2/3: write binding files, known-type stubs, and
+//!   re-export aliases; demote empty nodes.
+//! - [`util`] — spec-derived input builders and path/module helpers.
 
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
-use crate::emitter::{
-    check_declared_struct_fields, emit_hierarchical_manifest, emit_known_type_stubs,
-    emit_preamble_module,
-};
+use crate::emitter::emit_preamble_module;
 use crate::loader_spec::LoaderSpec;
 use crate::parser::{CfgContext, ParsedSource};
 use crate::resolver::ModuleResolver;
@@ -70,8 +82,16 @@ pub fn generate(input: &PipelineInput<'_>) -> GenerateOutcome {
         cfg,
     } = input;
 
-    // ── Derive per-target emission inputs from the spec ─────────────────────
-    let replacement_entries = util::build_replacement_entries(spec);
+    // ── Spec normalization ──────────────────────────────────────────────────
+    // Canonical paths may be written with a leading `::` absolute-path marker
+    // (e.g. `::core::alloc::Allocator`). Internally, per-library spec entries
+    // are stored relative to the library root and the lib is tracked separately
+    // on the target; normalize both spellings to the relative form once here so
+    // every phase sees one representation.
+    let normalized_spec = normalize_spec(spec);
+
+    // ── Spec-derived emission inputs ────────────────────────────────────────
+    let replacement_entries = util::build_replacement_entries(&normalized_spec);
     let ignored_structs_by_lib: HashMap<String, Vec<String>> = spec
         .targets
         .iter()
@@ -81,9 +101,12 @@ pub fn generate(input: &PipelineInput<'_>) -> GenerateOutcome {
         .targets
         .iter()
         .map(|t| {
-            let mut map = HashMap::new();
+            let mut map: HashMap<String, Vec<String>> = HashMap::new();
             for (path, derives) in &t.extra_derives {
-                map.insert(path.clone(), derives.clone());
+                // Accept the absolute-marker spelling as well; keys are matched
+                // against lib-relative paths during emission.
+                let key = path.strip_prefix("::").unwrap_or(path);
+                map.entry(key.to_string()).or_default().extend(derives.iter().cloned());
             }
             (t.lib_name.clone(), map)
         })
@@ -96,17 +119,13 @@ pub fn generate(input: &PipelineInput<'_>) -> GenerateOutcome {
 
     // ── Pre-flight: validate spec paths ─────────────────────────────────────
     let mut validator = ValidationBuilder::new();
-    validator.check_spec(spec, rust_src);
+    validator.check_spec(&normalized_spec, rust_src);
 
     let mut resolver = ModuleResolver::new();
     // The binding tree: the single source of truth for where every module and
     // item lives. Populated in lockstep with the legacy accumulators during the
     // migration; later phases read from it instead of re-parsing file strings.
     let mut model = BindingModel::new();
-    let mut processed_parents: HashSet<String> = HashSet::new();
-    let mut preamble_emitted: HashSet<String> = HashSet::new();
-    let mut pending_declarations: Vec<(String, String)> = Vec::new();
-    let mut reexport_located: Vec<(String, String)> = Vec::new();
     // Accumulated across all targets so the final manifest sees every emitted
     // file (including re-export shims materialized during minimal-module
     // mirroring in Phase 1d).
@@ -116,6 +135,7 @@ pub fn generate(input: &PipelineInput<'_>) -> GenerateOutcome {
     // ── Phase 0: Emit preamble modules per target library ───────────────────
     // The preamble carries only static core re-exports and shims; it is identical
     // in shape for every library, emitted once per target.
+    let mut preamble_emitted: HashSet<String> = HashSet::new();
     for target in &spec.targets {
         if preamble_emitted.insert(target.lib_name.clone()) {
             emit_preamble_module(out_dir, &target.lib_name);
@@ -124,121 +144,22 @@ pub fn generate(input: &PipelineInput<'_>) -> GenerateOutcome {
 
     // ── Phase 1: DISCOVER — Parse all files, register with resolver ─────────
     let mut parsed_cache: HashMap<String, (ParsedSource, String)> = HashMap::new();
-
-    // Register a freshly-parsed file into BOTH the legacy cache and the binding
-    // tree. Closure form so it can be threaded into phases that already take
-    // `&mut parsed_cache`. Keeps the two representations in lockstep during the
-    // migration; once the legacy accumulators are retired, only the model insert
-    // survives. `emittable` controls whether the node is eligible for emission
-    // (structural parents registered solely to support alias discovery are not).
-    for target in &spec.targets {
-        let lib_src = rust_src.join(&target.lib_name).join("src");
-
-        // Collect active declarations (unconditional + cfg-gated ones whose
-        // predicate matches the current build context). This ensures that
-        // platform-specific backend types (e.g., futex-only types on Linux)
-        // are not declared on targets where they don't exist.
-        let active_decls = target.active_declarations(cfg);
-        for decl in &active_decls {
-            match discover::locate_declared_struct(decl, &lib_src, cfg) {
-                discover::LocatedStruct::Found(def_file) => {
-                    let naive = decl.replace("::", "/") + ".rs";
-                    if !lib_src.join(&naive).exists() && def_file != naive {
-                        reexport_located.push((decl.clone(), def_file.clone()));
-                    }
-                    let mut parent_visited = HashSet::new();
-                    discover::discover_and_register(discover::DiscoverParams {
-                        source_rel_path: def_file.as_str(),
-                        lib_name: &target.lib_name,
-                        lib_src: &lib_src,
-                        cfg,
-                        resolver: &mut resolver,
-                        validator: &mut validator,
-                        visited: &mut parent_visited,
-                        cache: &mut parsed_cache,
-                        model: &mut model,
-                    });
-                    discover::register_parents_of(
-                        &def_file,
-                        &target.lib_name,
-                        &lib_src,
-                        cfg,
-                        &mut resolver,
-                        &mut parsed_cache,
-                        &mut model,
-                        &mut processed_parents,
-                    );
-                }
-                discover::LocatedStruct::NotDefinedOnDisk(path_hint) => {
-                    pending_declarations.push((decl.clone(), path_hint));
-                }
-                discover::LocatedStruct::CfgExcluded { module, predicate } => {
-                    return Err(GenerateReport {
-                        errors: vec![format!(
-                            "[spec] `{}` is defined in `{}`, which is excluded for this \
-                             target by an inner cfg gate ({predicate}). Gate the \
-                             declaration with a matching predicate (declare_struct_cfg) \
-                             so it only activates on targets where that module exists.",
-                            decl, module
-                        )],
-                        warnings: Vec::new(),
-                    });
-                }
-                discover::LocatedStruct::BadPath(msg) => {
-                    return Err(GenerateReport {
-                        errors: vec![format!("[spec] {}", msg)],
-                        warnings: Vec::new(),
-                    });
-                }
-            }
-        }
-    }
-
-    // Resolve declarations that could not be located on disk directly (e.g.,
-    // types defined in inline modules). Search every registered file's items.
-    let unresolved: Vec<(String, String)> = if !pending_declarations.is_empty() {
-        let mut still_unresolved = Vec::new();
-        for (decl, hint) in pending_declarations {
-            let leaf = decl.rsplit("::").next().unwrap_or(&decl);
-            let found = parsed_cache
-                .iter()
-                .find(|(_, (parsed, _))| parsed.items.iter().any(|i| i.name == leaf));
-            match found {
-                Some((file_path, _)) => {
-                    // Surfaced as a warning by the caller via the report.
-                    eprintln!(
-                        "cargo:warning=[spec] `{}` defined in {} (hint was {})",
-                        decl, file_path, hint
-                    );
-                }
-                None => still_unresolved.push((decl, hint)),
-            }
-        }
-        still_unresolved
-    } else {
-        Vec::new()
+    let mut discovery = match discover::run_discovery(
+        &normalized_spec,
+        rust_src,
+        cfg,
+        &mut resolver,
+        &mut validator,
+        &mut parsed_cache,
+        &mut model,
+    ) {
+        Ok(d) => d,
+        Err(errors) => return Err(GenerateReport { errors, warnings: Vec::new() }),
     };
-    if !unresolved.is_empty() {
-        let mut errors = Vec::new();
-        for (decl, hint) in &unresolved {
-            errors.push(format!(
-                "[spec] Declared struct `{}` not found in any registered \
-                 source file (looked near {}). Declare it with a path that matches its \
-                 actual definition location.",
-                decl, hint
-            ));
-        }
-        return Err(GenerateReport {
-            errors,
-            warnings: Vec::new(),
-        });
-    }
 
     // Remember each file's library so emitted imports can be written as
     // absolute `crate::{lib}::...` paths.
-    for (file_path, (_, lib_name)) in &parsed_cache {
-        resolver.set_file_lib(file_path, lib_name);
-    }
+    sync_file_libs(&parsed_cache, &mut resolver);
 
     // Mark all Phase 1 files as emittable, EXCEPT structural parents that were
     // registered solely to support alias discovery (their module paths end in
@@ -254,7 +175,7 @@ pub fn generate(input: &PipelineInput<'_>) -> GenerateOutcome {
 
     // ── Phase 1b: Register structural parents ───────────────────────────────
     let phase1b_files: Vec<String> = parsed_cache.keys().cloned().collect();
-    for target in &spec.targets {
+    for target in &normalized_spec.targets {
         let lib_src = rust_src.join(&target.lib_name).join("src");
         for file_path in &phase1b_files {
             discover::register_parents_of(
@@ -265,27 +186,23 @@ pub fn generate(input: &PipelineInput<'_>) -> GenerateOutcome {
                 &mut resolver,
                 &mut parsed_cache,
                 &mut model,
-                &mut processed_parents,
+                &mut discovery.processed_parents,
             );
         }
     }
     // Parents registered above may not be in the cache yet; sync lib names.
-    for (file_path, (_, lib_name)) in &parsed_cache {
-        resolver.set_file_lib(file_path, lib_name);
-    }
+    sync_file_libs(&parsed_cache, &mut resolver);
 
     // ── Phase 1c: Discover modules referenced by use statements ─────────────
     discover::discover_imported_modules(
-        spec,
+        &normalized_spec,
         rust_src,
         cfg,
         &mut resolver,
         &mut parsed_cache,
         &mut model,
     );
-    for (file_path, (_, lib_name)) in &parsed_cache {
-        resolver.set_file_lib(file_path, lib_name);
-    }
+    sync_file_libs(&parsed_cache, &mut resolver);
 
     // ── Phase 1d: Build the type registry ───────────────────────────────────
     let mut reg_state = registry::RegistryBuildState {
@@ -296,10 +213,10 @@ pub fn generate(input: &PipelineInput<'_>) -> GenerateOutcome {
         all_files: &mut all_files,
     };
     let registry = registry::build_type_registry(
-        spec,
+        &normalized_spec,
         rust_src,
         cfg,
-        &reexport_located,
+        &discovery.reexport_located,
         out_dir,
         &mut reg_state,
     );
@@ -312,7 +229,7 @@ pub fn generate(input: &PipelineInput<'_>) -> GenerateOutcome {
     // was mirrored.
     mirror::emit_cfg_reexport_shims(
         rust_src,
-        &spec.targets,
+        &normalized_spec.targets,
         out_dir,
         &mut resolver,
         &mut model,
@@ -333,7 +250,7 @@ pub fn generate(input: &PipelineInput<'_>) -> GenerateOutcome {
 
     // Field-type publicity check. Declared items are enumerated from the tree;
     // reference resolution still consults the registry (retirement pending).
-    let field_errors = check_declared_struct_fields(&model, &registry);
+    let field_errors = crate::emitter::check_declared_struct_fields(&model, &registry);
     if !field_errors.is_empty() {
         let mut errors: Vec<String> = field_errors.to_vec();
         errors.push(format!(
@@ -369,25 +286,9 @@ pub fn generate(input: &PipelineInput<'_>) -> GenerateOutcome {
     // Group by (lib, module path) so multiple known types sharing a module
     // (e.g. `Atomic`, `AtomicBool`, `AtomicPtr` all in `sync::atomic`) are
     // merged into a single file instead of clobbering each other.
-    let mut kt_by_module: std::collections::BTreeMap<
-        (String, String),
-        Vec<&crate::loader_spec::KnownExternalType>,
-    > = std::collections::BTreeMap::new();
-    for target in &spec.targets {
-        for kt in &target.known_external_types {
-            let segments: Vec<&str> = kt.path.split("::").collect();
-            if segments.len() < 2 {
-                continue;
-            }
-            let module_slash: String = segments[..segments.len() - 1].join("/");
-            kt_by_module
-                .entry((target.lib_name.clone(), module_slash))
-                .or_default()
-                .push(kt);
-        }
-    }
-    for ((lib_name, _module_slash), kts) in &kt_by_module {
-        if let Some(rel_path) = emit_known_type_stubs(out_dir, kts) {
+    let kt_groups = group_known_types_by_module(&normalized_spec);
+    for ((lib_name, _module_slash), kts) in &kt_groups {
+        if let Some(rel_path) = crate::emitter::emit_known_type_stubs(out_dir, kts) {
             validator.check_emit(&out_dir.join(&rel_path));
             emitted_paths.push(out_dir.join(&rel_path));
             emitted_canonicals.insert(rel_path.clone());
@@ -402,7 +303,7 @@ pub fn generate(input: &PipelineInput<'_>) -> GenerateOutcome {
     // ── Phase 3: Discover and emit re-export aliases ────────────────────────
     let discovered_aliases = emit::discover_and_emit_reexport_aliases(
         &mut model,
-        spec,
+        &normalized_spec,
         cfg,
         &parsed_cache,
         &mut resolver,
@@ -417,7 +318,7 @@ pub fn generate(input: &PipelineInput<'_>) -> GenerateOutcome {
     model.demote_empty_emittable();
 
     // ── Phase 4: Emit hierarchical manifest from the binding tree ───────────
-    emit_hierarchical_manifest(out_dir, &model);
+    crate::emitter::emit_hierarchical_manifest(out_dir, &model);
 
     // ── Post-flight: validate everything ────────────────────────────────────
     validator.check_manifest(out_dir, &all_files);
@@ -437,4 +338,65 @@ pub fn generate(input: &PipelineInput<'_>) -> GenerateOutcome {
     }
 
     Ok(())
+}
+
+// ── Orchestrator-local helpers ────────────────────────────────────────────────
+
+/// Strip the leading `::` absolute-path marker from every per-library spec
+/// path (declarations, cfg-gated declarations, known external types). Spec
+/// entries are stored relative to the library root with the lib tracked
+/// separately on the target; accepting both spellings at this single boundary
+/// keeps every downstream phase on one representation.
+fn normalize_spec(spec: &LoaderSpec) -> LoaderSpec {
+    let mut out = (*spec).clone();
+    for target in &mut out.targets {
+        for decl in &mut target.declared_structs {
+            *decl = decl.strip_prefix("::").unwrap_or(decl).to_string();
+        }
+        for g in &mut target.cfg_gated_decls {
+            g.path = g.path.strip_prefix("::").unwrap_or(&g.path).to_string();
+        }
+        for kt in &mut target.known_external_types {
+            kt.path = kt.path.strip_prefix("::").unwrap_or(&kt.path).to_string();
+        }
+    }
+    out
+}
+
+/// Record each cached file's owning library on the resolver so emitted imports
+/// can be written as absolute `crate::{lib}::...` paths. Called after every
+/// phase that registers new files.
+fn sync_file_libs(
+    parsed_cache: &HashMap<String, (ParsedSource, String)>,
+    resolver: &mut ModuleResolver,
+) {
+    for (file_path, (_, lib_name)) in parsed_cache {
+        resolver.set_file_lib(file_path, lib_name);
+    }
+}
+
+/// Group spec-known external types by `(lib, module path)` so several known
+/// types sharing a module merge into one stub file. Types whose path has fewer
+/// than two segments have no module to host a stub and are skipped.
+fn group_known_types_by_module(
+    spec: &LoaderSpec,
+) -> std::collections::BTreeMap<(String, String), Vec<&crate::loader_spec::KnownExternalType>> {
+    let mut kt_by_module: std::collections::BTreeMap<
+        (String, String),
+        Vec<&crate::loader_spec::KnownExternalType>,
+    > = std::collections::BTreeMap::new();
+    for target in &spec.targets {
+        for kt in &target.known_external_types {
+            let segments: Vec<&str> = kt.path.split("::").collect();
+            if segments.len() < 2 {
+                continue;
+            }
+            let module_slash: String = segments[..segments.len() - 1].join("/");
+            kt_by_module
+                .entry((target.lib_name.clone(), module_slash))
+                .or_default()
+                .push(kt);
+        }
+    }
+    kt_by_module
 }

@@ -1,11 +1,10 @@
 //! The complete binding model: a forest of per-library module trees.
 
 use std::collections::{BTreeMap, BTreeSet, HashSet};
-
 use super::super::ModulePath;
 use super::{FileForm, ImportEdge, ItemRecord, ModuleNode, NodeStatus, QualifiedPath};
 use crate::parser::ParsedSource;
-use crate::syntaxes::{PathSegment, UseKind, Visibility};
+use crate::syntaxes::{UseKind, Visibility};
 
 /// The complete binding model: a forest of per-library module trees plus a
 /// reverse index from fully-qualified paths to their locations, so lookups by
@@ -478,15 +477,7 @@ fn public_reexport_names(parsed: &ParsedSource) -> HashSet<String> {
         }
         match &stmt.kind {
             UseKind::Single(plist, alias) => {
-                let name = alias.clone().or_else(|| {
-                    plist.segments.iter().rev().find_map(|s| {
-                        if let PathSegment::Named(n) = s {
-                            Some(n.clone())
-                        } else {
-                            None
-                        }
-                    })
-                });
+                let name = alias.clone().or_else(|| plist.last_named().map(str::to_string));
                 if let Some(n) = name {
                     names.insert(n);
                 }
@@ -542,11 +533,11 @@ mod tests {
             item("BTreeMap", Visibility::Public),
         );
         let found = m
-            .find_item("core::collections::btree::map::BTreeMap")
+            .find_item("::core::collections::btree::map::BTreeMap")
             .unwrap();
         assert_eq!(found.0, "core");
         assert_eq!(found.2.name, "BTreeMap");
-        assert!(m.find_item("core::nonexistent::Thing").is_none());
+        assert!(m.find_item("::core::nonexistent::Thing").is_none());
     }
 
     #[test]
@@ -560,10 +551,10 @@ mod tests {
             item("AtomicUsize", Visibility::Public),
         );
         m.mark_declared(
-            "core::sync::atomic::AtomicUsize",
+            "::core::sync::atomic::AtomicUsize",
             Some("/abs/path.rs".into()),
         );
-        let (_, _, rec) = m.find_item("core::sync::atomic::AtomicUsize").unwrap();
+        let (_, _, rec) = m.find_item("::core::sync::atomic::AtomicUsize").unwrap();
         assert!(rec.declared);
         assert_eq!(rec.def_file_abs.as_deref(), Some("/abs/path.rs"));
     }

@@ -32,25 +32,26 @@ pub struct PathSegmentList {
     pub segments: Vec<PathSegment>,
 }
 
+impl PathSegmentList {
+    /// The last named segment of the path (e.g. `BTreeMap` in
+    /// `collections::btree::map::BTreeMap`). Paths ending in a keyword
+    /// segment (`super`, `crate`, `self`) have no named leaf and return
+    /// `None`.
+    pub fn last_named(&self) -> Option<&str> {
+        self.segments
+            .iter()
+            .rev()
+            .find_map(|s| match s {
+                PathSegment::Named(n) => Some(n.as_str()),
+                _ => None,
+            })
+    }
+}
+
 #[derive(Clone, Debug)]
 pub enum PathSegment {
     Named(String),
     Super,
     Crate,
     Self_,
-}
-
-impl UseStatement {
-    /// Check if this is a glob re-export (e.g., `pub use self::unix::*`).
-    pub fn is_pub_glob(&self) -> bool {
-        matches!(self.visibility, Visibility::Public) && matches!(self.kind, UseKind::Glob(_))
-    }
-
-    /// For glob re-exports, return the target path being globbed.
-    pub fn glob_target(&self) -> Option<&PathSegmentList> {
-        match &self.kind {
-            UseKind::Glob(p) if matches!(self.visibility, Visibility::Public) => Some(p),
-            _ => None,
-        }
-    }
 }

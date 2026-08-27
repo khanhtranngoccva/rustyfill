@@ -168,7 +168,14 @@ impl BindingTarget {
     /// as a transparent `UnsafeCell<T>` wrapper rather than mirroring the real
     /// generic machinery.
     pub fn add_known_type(&mut self, path: &str, definition: &str) {
-        let name = path.rsplit("::").next().unwrap_or(path).to_string();
+        // Leaf is the last non-empty segment; a leading `::` absolute-path
+        // marker (if present) yields an empty first segment that we skip.
+        let name = path
+            .split("::")
+            .filter(|s| !s.is_empty())
+            .last()
+            .unwrap_or(path)
+            .to_string();
         self.known_external_types.push(KnownExternalType {
             name,
             path: path.to_string(),
@@ -248,13 +255,15 @@ impl BindingTarget {
     /// `core::alloc::Allocator` yields `"Allocator"`. These are what appear
     /// as bare identifiers in token streams during emission.
     pub fn ignored_leaf_names(&self) -> Vec<&str> {
+        // Leaf is the last non-empty segment; a leading `::` absolute-path
+        // marker (if present) yields an empty first segment that we skip.
         self.path_replacements
             .iter()
-            .map(|pr| {
+            .filter_map(|pr| {
                 pr.path
-                    .rsplit_once("::")
-                    .map(|(_, leaf)| leaf)
-                    .unwrap_or(pr.path.as_str())
+                    .split("::")
+                    .filter(|s| !s.is_empty())
+                    .last()
             })
             .collect()
     }

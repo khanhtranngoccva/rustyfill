@@ -14,12 +14,18 @@ pub(crate) fn build_replacement_entries(spec: &LoaderSpec) -> Vec<(String, Optio
     let mut path_replacement_map: HashMap<String, Option<String>> = HashMap::new();
     for target in &spec.targets {
         for pr in &target.path_replacements {
+            // Paths may carry a leading `::` absolute-path marker; the leaf is
+            // the last non-empty `::`-separated segment either way.
             let leaf = pr
                 .path
-                .rsplit_once("::")
-                .map(|(_, l)| l.to_string())
-                .unwrap_or_else(|| pr.path.clone());
-            path_replacement_map.insert(leaf, pr.replacement.clone());
+                .split("::")
+                .filter(|s| !s.is_empty())
+                .last()
+                .map(str::to_string)
+                .unwrap_or_default();
+            if !leaf.is_empty() {
+                path_replacement_map.insert(leaf, pr.replacement.clone());
+            }
         }
     }
     let mut replacement_entries: Vec<(String, Option<String>)> =
@@ -50,10 +56,11 @@ pub(crate) fn collect_ignored_names(
         replacement_entries.iter().map(|(k, _)| k.clone()).collect();
     for structs in ignored_structs_by_lib.values() {
         for s in structs {
-            if let Some(leaf) = s.rsplit_once("::").map(|(_, l)| l.to_string()) {
-                all_ignored_names.insert(leaf);
-            } else {
-                all_ignored_names.insert(s.clone());
+            // Ignore-struct paths are lib-relative; a leading `::` marker (if
+            // present) yields an empty first segment that we skip.
+            let leaf = s.split("::").filter(|seg| !seg.is_empty()).last();
+            if let Some(leaf) = leaf {
+                all_ignored_names.insert(leaf.to_string());
             }
         }
     }

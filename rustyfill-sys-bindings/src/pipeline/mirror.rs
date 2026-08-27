@@ -278,7 +278,7 @@ pub(super) fn mirror_minimal_modules(
             if !leaves.contains(&item.name) {
                 continue;
             }
-            let canonical = format!("{}::{}::{}", target.lib_name, mod_path, item.name);
+            let canonical = format!("::{}::{}::{}", target.lib_name, mod_path, item.name);
             match item.kind {
                 ItemKind::TypeAlias => {
                     sink.registry
