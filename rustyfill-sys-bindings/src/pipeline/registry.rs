@@ -134,9 +134,8 @@ pub(super) fn build_type_registry(
             // Known-type stubs are synthetic leaf modules that will be emitted
             // in Phase 2b; register them in the tree now so they participate in
             // sibling/child scans and the manifest.
-            if let Some(stub_mp) = ModulePath::from_slash(
-                &segments[..segments.len() - 1].join("/"),
-            ) {
+            if let Some(stub_mp) = ModulePath::from_slash(&segments[..segments.len() - 1].join("/"))
+            {
                 model.register_synthetic(&target.lib_name, &stub_rel, NodeStatus::Emittable);
                 let _ = stub_mp;
             }

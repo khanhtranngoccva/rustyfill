@@ -15,6 +15,12 @@
 
 pub mod binding_model;
 pub mod module_path;
+pub mod use_statement;
+pub mod visibility;
 
-pub use binding_model::{BindingModel, FileForm, ImportEdge, ItemRecord, ModuleNode, NodeStatus, QualifiedPath};
+pub use binding_model::{
+    BindingModel, FileForm, ImportEdge, ItemRecord, ModuleNode, NodeStatus, QualifiedPath,
+};
 pub use module_path::ModulePath;
+pub use use_statement::{PathSegment, PathSegmentList, UseKind, UseStatement};
+pub use visibility::Visibility;

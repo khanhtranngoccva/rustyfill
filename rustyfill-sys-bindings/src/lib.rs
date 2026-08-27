@@ -24,10 +24,15 @@ pub use emitter::{
 };
 pub use loader_spec::{BindingTarget, LoaderSpec};
 pub use parser::{
-    CfgContext, ItemVisibility, ModDeclaration, ParsedItem, ParsedSource,
-    cfg_select_reexport_targets, parse_file, parse_item, parse_mod_declarations, parse_source,
-    parse_source_with_cfg, parse_use_statements,
+    CfgContext, ModDeclaration, ParsedItem, ParsedSource, cfg_select_reexport_targets, parse_file,
+    parse_item, parse_mod_declarations, parse_source, parse_source_with_cfg, parse_use_statements,
 };
 pub use pipeline::{GenerateOutcome, GenerateReport, PipelineInput, generate};
 pub use resolver::{ModuleResolver, Resolution, UseStatement};
+// Unified visibility type (formerly `parser::ItemVisibility` and
+// `syntaxes::Visibility`). The old name is kept as a deprecated alias so
+// external import paths keep working while callers migrate to `Visibility`.
+#[deprecated(note = "renamed to `crate::Visibility`")]
+pub use Visibility as ItemVisibility;
+pub use syntaxes::Visibility;
 pub use validator::{ValidationBuilder, ValidationErrors, ValidationResult};

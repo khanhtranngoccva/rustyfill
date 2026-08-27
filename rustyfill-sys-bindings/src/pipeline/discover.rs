@@ -134,8 +134,7 @@ pub(super) fn locate_declared_struct(
             let mut cur_module = rel_prefix.clone();
             let mut ok = true;
             for seg in &parts[cut..parts.len() - 1] {
-                let Some(target) =
-                    resolve_import_binding_for_segment(&parsed, seg, &cur_module)
+                let Some(target) = resolve_import_binding_for_segment(&parsed, seg, &cur_module)
                 else {
                     ok = false;
                     break;
@@ -176,7 +175,11 @@ fn is_directory_module(lib_src: &Path, mod_path: &str) -> bool {
         return false;
     };
     for entry in entries.flatten() {
-        if entry.file_name().to_str().is_some_and(|n| n.ends_with(".rs")) {
+        if entry
+            .file_name()
+            .to_str()
+            .is_some_and(|n| n.ends_with(".rs"))
+        {
             return true;
         }
     }
@@ -308,9 +311,7 @@ fn descend_through_reexports(
                 });
                 if let Some(rn) = rn {
                     let next = format!("{cur}/{rn}");
-                    if module_file_exists(lib_src, &next)
-                        || is_directory_module(lib_src, &next)
-                    {
+                    if module_file_exists(lib_src, &next) || is_directory_module(lib_src, &next) {
                         queue.push(next);
                     }
                 }
@@ -326,9 +327,7 @@ fn descend_through_reexports(
                     };
                     let stem = name.strip_suffix(".rs").unwrap();
                     let next = format!("{cur}/{stem}");
-                    if module_file_exists(lib_src, &next)
-                        || is_directory_module(lib_src, &next)
-                    {
+                    if module_file_exists(lib_src, &next) || is_directory_module(lib_src, &next) {
                         queue.push(next);
                     }
                 }
@@ -361,13 +360,10 @@ fn resolve_import_binding_for_segment(
                     _ => None,
                 });
                 match last_named.as_deref() {
-                    Some("self") => segs
-                        .iter()
-                        .rev()
-                        .find_map(|s| match s {
-                            PathSegment::Named(n) if n != "self" => Some(n.clone()),
-                            _ => None,
-                        })?,
+                    Some("self") => segs.iter().rev().find_map(|s| match s {
+                        PathSegment::Named(n) if n != "self" => Some(n.clone()),
+                        _ => None,
+                    })?,
                     other => other?.to_string(),
                 }
             }
@@ -521,7 +517,12 @@ pub(super) fn discover_and_register(params: DiscoverParams) {
         // emittable nodes so their items appear in the tree. Their file node
         // was already created by the parent's registration above — re-registering
         // here would be redundant, but is harmless (idempotent ensure).
-        model.register_source(lib_name, &inline_rel_path, NodeStatus::Emittable, &inline_parsed);
+        model.register_source(
+            lib_name,
+            &inline_rel_path,
+            NodeStatus::Emittable,
+            &inline_parsed,
+        );
         cache.insert(
             inline_rel_path.clone(),
             (inline_parsed, lib_name.to_string()),
@@ -1040,11 +1041,7 @@ mod tests {
         ]);
         let lib_src = tree.0.join("std").join("src");
         let cfg = CfgContext::from_target_triple("x86_64-unknown-linux-gnu");
-        match locate_declared_struct(
-            "sys::sync::mutex::futex::futex::SmallFutex",
-            &lib_src,
-            &cfg,
-        ) {
+        match locate_declared_struct("sys::sync::mutex::futex::futex::SmallFutex", &lib_src, &cfg) {
             LocatedStruct::Found(f) => assert_eq!(f, "sys/sync/futex/unix.rs"),
             other => panic!(
                 "expected Found(sys/sync/futex/unix.rs), got {}",

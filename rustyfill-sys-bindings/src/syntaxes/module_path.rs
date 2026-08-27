@@ -301,18 +301,27 @@ mod tests {
     #[test]
     fn file_stem_tolerates_mod_and_rs_suffixes() {
         assert_eq!(
-            ModulePath::from_file_stem("sys/pal/mod").unwrap().to_slash(),
+            ModulePath::from_file_stem("sys/pal/mod")
+                .unwrap()
+                .to_slash(),
             "sys/pal"
         );
         assert_eq!(
-            ModulePath::from_file_stem("sys/pal/mod.rs").unwrap().to_slash(),
+            ModulePath::from_file_stem("sys/pal/mod.rs")
+                .unwrap()
+                .to_slash(),
             "sys/pal"
         );
         assert_eq!(
-            ModulePath::from_file_stem("collections/btree/map.rs").unwrap().to_slash(),
+            ModulePath::from_file_stem("collections/btree/map.rs")
+                .unwrap()
+                .to_slash(),
             "collections/btree/map"
         );
-        assert_eq!(ModulePath::from_file_stem("mod.rs").unwrap().is_root(), true);
+        assert_eq!(
+            ModulePath::from_file_stem("mod.rs").unwrap().is_root(),
+            true
+        );
     }
 
     #[test]
@@ -349,12 +358,21 @@ mod tests {
     fn relative_segments_replace_strip_prefix() {
         let canon = ModulePath::from_slash("sys/pal/unix/sync").unwrap();
         let prefix = ModulePath::from_slash("sys/pal/unix").unwrap();
-        assert_eq!(canon.relative_segments(&prefix), Some(&["sync".to_string()][..]));
-        assert_eq!(canon.relative_segments(&ModulePath::root()), Some(canon.segments()));
+        assert_eq!(
+            canon.relative_segments(&prefix),
+            Some(&["sync".to_string()][..])
+        );
+        assert_eq!(
+            canon.relative_segments(&ModulePath::root()),
+            Some(canon.segments())
+        );
         assert_eq!(canon.relative_segments(&canon.join("x")), None);
         // Direct-child name extraction replaces the rsplit leaf idiom.
         assert_eq!(canon.child_name_below(&prefix), Some("sync"));
-        assert_eq!(canon.child_name_below(&ModulePath::from_slash("sys").unwrap()), None);
+        assert_eq!(
+            canon.child_name_below(&ModulePath::from_slash("sys").unwrap()),
+            None
+        );
     }
 
     #[test]
@@ -381,4 +399,3 @@ mod tests {
         assert_eq!(out.join(r.to_file_path()), out);
     }
 }
-

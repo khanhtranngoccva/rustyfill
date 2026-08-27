@@ -279,6 +279,8 @@ impl<T> TryArc<T> for Arc<T> {
             Err((v, e)) => Err((v, e)),
         }
     }
+
+    // FIXME: missing try_downgrade
 }
 
 /// Maximum reference count, matching std's `Arc::MAX_REFCOUNT`.
@@ -399,6 +401,8 @@ pub trait TryWeak<T: ?Sized> {
     /// - `Some(Err(TryUpgradeError))` if the strong refcount is at or above the maximum.
     ///
     /// Uses `(Acquire, Relaxed)` ordering to synchronise with [`Arc::new_cyclic`] initialisation.
+    // FIXME: result of Option or Option of result? Domain wise, Result first may be better, or for simplicity,
+    // omit the option entirely - two variants Dead and Overflow are OK. The same applies with Rc
     fn try_upgrade(&self) -> Option<Result<Arc<T>, TryUpgradeError>>;
 
     // ── Aliases with `fallible_` prefix ─────────────────────────────────────
@@ -530,7 +534,7 @@ mod tests {
     }
 
     #[test]
-    fn strong_and_weak_counts() {
+    fn new_arc_strong_and_weak_counts() {
         let arc = <Arc<i32> as TryArc<i32>>::try_new(99).unwrap();
         assert_eq!(Arc::strong_count(&arc), 1);
         assert_eq!(Arc::weak_count(&arc), 0);
@@ -546,19 +550,20 @@ mod tests {
     }
 
     #[test]
+    // FIXME: Downgrading can also cause overflows. Has try_downgrade() been implemented yet?
     fn downgrade_upgrade() {
         let arc = <Arc<i32> as TryArc<i32>>::try_new(42).unwrap();
         let weak = Arc::downgrade(&arc);
 
         // Upgrade while arc exists
         {
-            let upgraded = weak.upgrade().unwrap();
+            let upgraded = weak.try_upgrade().unwrap().unwrap();
             assert_eq!(*upgraded, 42);
         }
 
         drop(arc);
         // After last strong ref is gone, upgrade fails
-        assert!(weak.upgrade().is_none());
+        assert!(weak.try_upgrade().is_none());
     }
 
     #[test]

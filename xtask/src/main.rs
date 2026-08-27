@@ -297,8 +297,7 @@ fn cmd_clippy(targets: Vec<String>, features: FeatureArgs, scope: ScopeArgs) -> 
         _ => return ExitCode::FAILURE,
     };
     let installed = String::from_utf8_lossy(&output.stdout);
-    let installed_set: std::collections::HashSet<&str> =
-        installed.lines().map(str::trim).collect();
+    let installed_set: std::collections::HashSet<&str> = installed.lines().map(str::trim).collect();
     let missing: Vec<&str> = targets
         .iter()
         .copied()

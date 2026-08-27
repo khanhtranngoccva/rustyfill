@@ -20,11 +20,11 @@ use syn::{Generics, Ident, ItemStruct, Type, punctuated::Punctuated};
 
 use crate::formatter::format_source;
 use crate::parser::{
-    CfgContext, ItemKind, ItemVisibility, ParsedItem, ParsedSource, cfg_if_reexport_targets,
+    CfgContext, ItemKind, ParsedItem, ParsedSource, cfg_if_reexport_targets,
     cfg_select_reexport_targets, parse_source_with_cfg,
 };
-use crate::resolver::{ModuleResolver, PathSegment, UseKind, Visibility};
-use crate::syntaxes::ModulePath;
+use crate::resolver::{ModuleResolver, PathSegment, UseKind};
+use crate::syntaxes::{ModulePath, Visibility};
 
 // ── Type registry and field-type publicity checking ────────────────────────
 
@@ -52,7 +52,7 @@ pub struct TypeInfo {
     /// Canonical module path (`::`-separated, relative to the library root).
     pub canonical_path: String,
     /// Source visibility as written in std.
-    pub visibility: ItemVisibility,
+    pub visibility: Visibility,
     /// Whether the item is re-exported publicly through its module chain
     /// (i.e., usable by name outside its defining module).
     pub is_exported: bool,
@@ -211,7 +211,7 @@ impl TypeRegistry {
     pub fn register(
         &mut self,
         canonical_path: &str,
-        visibility: ItemVisibility,
+        visibility: Visibility,
         is_exported: bool,
         def_file: &str,
     ) {
@@ -236,8 +236,8 @@ impl TypeRegistry {
         if !info.is_exported && is_exported {
             info.is_exported = true;
         }
-        if !matches!(info.visibility, ItemVisibility::Public)
-            && matches!(visibility, ItemVisibility::Public)
+        if !matches!(info.visibility, Visibility::Public)
+            && matches!(visibility, Visibility::Public)
         {
             info.visibility = visibility;
         }
@@ -257,7 +257,7 @@ impl TypeRegistry {
     /// overrides whatever def_file was recorded during discovery, because the
     /// field-publicity check reads the source file from this path.
     pub fn insert_declared(&mut self, canonical_path: &str, def_file: &str) {
-        self.register(canonical_path, ItemVisibility::Public, true, def_file);
+        self.register(canonical_path, Visibility::Public, true, def_file);
         if let Some(info) = self.by_path.get_mut(canonical_path) {
             info.declared = true;
             // Force-update def_file: `register` uses or_insert_with, so a
@@ -272,7 +272,7 @@ impl TypeRegistry {
     /// for emission purposes (see [`Self::declared_aliases`]). The path is also
     /// registered in the symbol tables so field-reference resolution can find it.
     pub fn insert_declared_alias(&mut self, canonical_path: &str, def_file: &str) {
-        self.register(canonical_path, ItemVisibility::Public, true, def_file);
+        self.register(canonical_path, Visibility::Public, true, def_file);
         if let Some(info) = self.by_path.get_mut(canonical_path) {
             info.declared = true;
             info.def_file = def_file.to_string();
@@ -549,13 +549,19 @@ impl TypeRegistry {
 /// The enumeration of *which* types are declared comes from the binding model
 /// (the tree), while reference resolution still consults the registry — the
 /// latter's retirement is a later migration step.
-pub fn check_declared_struct_fields(model: &crate::syntaxes::BindingModel, registry: &TypeRegistry) -> Vec<String> {
+pub fn check_declared_struct_fields(
+    model: &crate::syntaxes::BindingModel,
+    registry: &TypeRegistry,
+) -> Vec<String> {
     let mut errors = Vec::new();
     let mut canonicals: Vec<String> = Vec::new();
     model.for_each_module(&mut |_lib, node| {
         for rec in node.items.values() {
             if rec.declared {
-                canonicals.push(rec.qualified_path(&node.lib, &node.module_path).to_canonical());
+                canonicals.push(
+                    rec.qualified_path(&node.lib, &node.module_path)
+                        .to_canonical(),
+                );
             }
         }
     });
@@ -2276,21 +2282,15 @@ pub fn emit_parsed_items(
                 // types (usize, u32, bool, etc.) are allowed through since
                 // they're language builtins available everywhere.
                 match extract_const_type_name(item) {
-                    Some(type_name) if !is_primitive_type(&type_name) => {
-                        config.type_registry.is_declared_in_module(
-                            config.lib_name,
-                            module_path,
-                            &type_name,
-                        )
-                    }
+                    Some(type_name) if !is_primitive_type(&type_name) => config
+                        .type_registry
+                        .is_declared_in_module(config.lib_name, module_path, &type_name),
                     _ => true,
                 }
             } else {
-                config.type_registry.is_declared_in_module(
-                    config.lib_name,
-                    module_path,
-                    &item.name,
-                )
+                config
+                    .type_registry
+                    .is_declared_in_module(config.lib_name, module_path, &item.name)
             }
         })
         .collect();
@@ -3383,8 +3383,11 @@ pub fn emit_binding_file(output_path: &Path, items: &[ParsedItem], config: &Emit
     // Deduplicate by tracking which module names we've already imported.
     // Drop any import whose bound name collides with a child module declared
     // in this file's manifest subtree (E0255: duplicate definition).
-    let child_set: std::collections::HashSet<&str> =
-        config.child_module_names.iter().map(String::as_str).collect();
+    let child_set: std::collections::HashSet<&str> = config
+        .child_module_names
+        .iter()
+        .map(String::as_str)
+        .collect();
     let mut all_uses: Vec<String> = Vec::with_capacity(config.extra_uses.len());
     let mut imported_names: HashSet<String> = HashSet::new();
     for line in config.extra_uses.iter() {
@@ -3402,8 +3405,7 @@ pub fn emit_binding_file(output_path: &Path, items: &[ParsedItem], config: &Emit
             } else if body.ends_with("::*") {
                 None // glob — no single bound name
             } else {
-                body.rsplit_once(':')
-                    .map(|(_, n)| n.trim().to_string())
+                body.rsplit_once(':').map(|(_, n)| n.trim().to_string())
             }
         } else {
             None
@@ -3467,7 +3469,13 @@ pub fn emit_binding_file(output_path: &Path, items: &[ParsedItem], config: &Emit
     // in this file references `search`.
     let all_uses = filter_used_imports(all_uses, items, config, &file_module_path);
 
-    let Some(mut content) = emit_parsed_items(items, config, &preamble_use_path, &all_uses, &file_module_path) else {
+    let Some(mut content) = emit_parsed_items(
+        items,
+        config,
+        &preamble_use_path,
+        &all_uses,
+        &file_module_path,
+    ) else {
         // No item in this file survived the declaration filter — writing a
         // preamble-only stub would create a phantom node in the manifest.
         return false;
@@ -3598,10 +3606,11 @@ fn filter_used_imports(
                     continue;
                 }
             }
-        } else if !config
-            .type_registry
-            .is_declared_in_module(config.lib_name, module_path, &item.name)
-        {
+        } else if !config.type_registry.is_declared_in_module(
+            config.lib_name,
+            module_path,
+            &item.name,
+        ) {
             continue;
         }
         let ts_str = item.full_tokens.to_string();
@@ -4172,7 +4181,12 @@ fn merge_manifest_nodes(
 
 /// Render one merged manifest node and its descendants. Each distinct file at
 /// this position gets its own `include!`; children nest underneath.
-fn emit_merged_manifest_node(out: &mut String, name: &str, node: &MergedManifestNode, depth: usize) {
+fn emit_merged_manifest_node(
+    out: &mut String,
+    name: &str,
+    node: &MergedManifestNode,
+    depth: usize,
+) {
     let indent = "    ".repeat(depth);
     let sname = sanitize(name);
 
@@ -4348,14 +4362,14 @@ mod module_relative_tie_break_tests {
         // Closer candidate: an item inside a child module of the context.
         registry.register(
             "alloc::collections::btree::map::inner::Root",
-            ItemVisibility::Public,
+            Visibility::Public,
             true,
             "inner.rs",
         );
         // Farther candidate: an alias in a sibling module, bound via import.
         registry.register(
             "alloc::collections::btree::node::Root",
-            ItemVisibility::Public,
+            Visibility::Public,
             true,
             "node.rs",
         );
@@ -4380,7 +4394,7 @@ mod module_relative_tie_break_tests {
         let mut registry = TypeRegistry::empty();
         registry.register(
             "alloc::collections::btree::node::marker::Owned",
-            ItemVisibility::Public,
+            Visibility::Public,
             true,
             "marker/mod.rs",
         );
@@ -4401,7 +4415,7 @@ mod module_relative_tie_break_tests {
         let mut registry = TypeRegistry::empty();
         registry.register(
             "alloc::a::b::c::inner::Thing",
-            ItemVisibility::Public,
+            Visibility::Public,
             true,
             "inner.rs",
         );

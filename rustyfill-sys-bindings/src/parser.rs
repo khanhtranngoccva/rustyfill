@@ -15,26 +15,8 @@ use proc_macro2::TokenStream;
 use quote::ToTokens;
 use syn::{Attribute, Item, UseTree};
 
-use crate::resolver::{PathSegment, PathSegmentList, UseKind, UseStatement, Visibility};
-
-/// Visibility of a parsed item, as written in the source.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum ItemVisibility {
-    /// No visibility modifier (private to its defining module).
-    Private,
-    /// `pub` — visible everywhere.
-    Public,
-    /// `pub(crate)` / `pub(super)` / `pub(in path)` — restricted scope.
-    Restricted,
-}
-
-impl ItemVisibility {
-    /// True for plain `pub`. Restricted visibilities are NOT public: they do
-    /// not make the item reachable through re-exports outside their scope.
-    pub fn is_public(&self) -> bool {
-        matches!(self, ItemVisibility::Public)
-    }
-}
+use crate::resolver::{PathSegment, PathSegmentList, UseKind, UseStatement};
+pub use crate::syntaxes::Visibility;
 
 /// A parsed top-level item extracted from a Rust source file.
 #[derive(Clone)]
@@ -49,7 +31,7 @@ pub struct ParsedItem {
     /// Used by the spec to match against fully qualified ignore paths.
     pub name: String,
     /// Source visibility of the item, used when checking field-type publicity.
-    pub visibility: ItemVisibility,
+    pub visibility: Visibility,
     /// For type aliases only: the right-hand-side type expression tokens
     /// (`type Root<K, V> = NodeRef<...>` → `NodeRef<...>`). `None` for all
     /// other item kinds and for text-scanner-extracted items.
@@ -678,11 +660,11 @@ pub fn parse_source_with_cfg(source: &str, cfg: &CfgContext) -> ParsedSource {
 }
 
 /// Map a syn visibility to the item's source visibility.
-fn vis_of(vis: &syn::Visibility) -> ItemVisibility {
+fn vis_of(vis: &syn::Visibility) -> Visibility {
     match vis {
-        syn::Visibility::Public(_) => ItemVisibility::Public,
-        syn::Visibility::Restricted(_) => ItemVisibility::Restricted,
-        syn::Visibility::Inherited => ItemVisibility::Private,
+        syn::Visibility::Public(_) => Visibility::Public,
+        syn::Visibility::Restricted(_) => Visibility::Restricted,
+        syn::Visibility::Inherited => Visibility::Private,
     }
 }
 
@@ -938,7 +920,7 @@ fn extract_item_name_from_tokens(tokens: &TokenStream, kind: ItemKind) -> String
 fn parse_use_item(iu: syn::ItemUse) -> Vec<UseStatement> {
     let visibility = match &iu.vis {
         syn::Visibility::Public(_) => Visibility::Public,
-        syn::Visibility::Restricted(vr) if vr.path.segments.is_empty() => Visibility::PubCrate,
+        syn::Visibility::Restricted(_) => Visibility::Restricted,
         _ => Visibility::Private,
     };
     parse_use_trees(&iu.tree, visibility)
@@ -951,7 +933,7 @@ fn parse_use_trees(tree: &UseTree, vis: Visibility) -> Vec<UseStatement> {
             kinds
                 .into_iter()
                 .map(|kind| UseStatement {
-                    visibility: vis.clone(),
+                    visibility: vis,
                     kind,
                 })
                 .collect()
@@ -983,7 +965,7 @@ fn parse_use_trees(tree: &UseTree, vis: Visibility) -> Vec<UseStatement> {
         UseTree::Group(g) => {
             let mut all = Vec::new();
             for inner in &g.items {
-                all.extend(parse_use_trees(inner, vis.clone()));
+                all.extend(parse_use_trees(inner, vis));
             }
             all
         }
@@ -1720,9 +1702,9 @@ fn text_scan_source(source: &str, cfg: &CfgContext) -> TextScanResult {
             if let Ok(tokens) = item_text.parse::<TokenStream>() {
                 let name = extract_item_name_from_tokens(&tokens, kind);
                 let visibility = if trimmed.starts_with("pub ") {
-                    ItemVisibility::Public
+                    Visibility::Public
                 } else {
-                    ItemVisibility::Private
+                    Visibility::Private
                 };
                 let alias_rhs = if kind == ItemKind::TypeAlias {
                     let text = item_text.to_string();
@@ -1897,7 +1879,7 @@ fn text_parse_use_statement(text: &str) -> Vec<UseStatement> {
                     .split(',')
                     .any(|m| m.trim() == "self");
                 let mut stmts = vec![UseStatement {
-                    visibility: visibility.clone(),
+                    visibility,
                     kind: UseKind::Glob(PathSegmentList {
                         segments: segments.clone(),
                     }),
@@ -2307,7 +2289,7 @@ mod child;
             },
             kind: ItemKind::Struct,
             name: "TestStruct".to_string(),
-            visibility: ItemVisibility::Public,
+            visibility: Visibility::Public,
             alias_rhs: None,
         };
 
@@ -2321,13 +2303,13 @@ mod child;
         registry.insert_declared("alloc::TestStruct", "");
         registry.register(
             "core::marker::PhantomData",
-            ItemVisibility::Public,
+            Visibility::Public,
             true,
             "core/marker.rs",
         );
         registry.register(
             "core::marker::PhantomPinned",
-            ItemVisibility::Public,
+            Visibility::Public,
             true,
             "core/marker.rs",
         );
@@ -2421,7 +2403,7 @@ mod child;
             },
             kind: ItemKind::Struct,
             name: "Wrapper".to_string(),
-            visibility: ItemVisibility::Public,
+            visibility: Visibility::Public,
             alias_rhs: None,
         };
 

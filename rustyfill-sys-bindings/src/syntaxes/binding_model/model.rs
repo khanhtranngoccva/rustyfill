@@ -1,313 +1,11 @@
-//! The binding model: a single tree that every pipeline phase reads and writes.
-//!
-//! Historically the generator carried five parallel accumulators — a parsed-source
-//! cache, a resolver with eight string-keyed maps, a type registry with seven
-//! fields, an `all_files` list, and an `emitted_canonicals` set — and reconciled
-//! them at the end by re-parsing file-path strings into a throwaway manifest tree.
-//! That made one domain concept ("where does this module/item live?") span ~40
-//! string-manipulation sites and let whole classes of bugs (duplicate-module
-//! collisions, wrong parent scoping, dangling re-exports) slip through.
-//!
-//! [`BindingModel`] collapses those accumulators into one owned forest: one root
-//! per target library (`core`, `alloc`, `std`), each a nested map of
-//! [`ModuleNode`]s. Structs, enums, unions, consts, and type aliases hang off
-//! their defining module as [`ItemRecord`]s; `use` statements become first-class
-//! [`ImportEdge`]s. Every node and item carries its fully-qualified path *by
-//! construction* (library + module path + name), so nothing downstream has to
-//! reconstruct it from a slash-separated filename.
-//!
-//! The tree is the source of truth for the phases that consume it; the legacy
-//! accumulators are being retired incrementally in favour of the derived views
-//! exposed here ([`BindingModel::files`], [`BindingModel::emitted`], …).
+//! The complete binding model: a forest of per-library module trees.
 
 use std::collections::{BTreeMap, BTreeSet, HashSet};
 
-use crate::parser::{ItemKind, ParsedSource};
-use crate::resolver::{PathSegment, UseKind, UseStatement, Visibility};
-
-use super::module_path::ModulePath;
-
-/// How a module's content lives on disk. Encodes the `foo/mod.rs` versus
-/// `foo.rs` distinction the resolver previously tracked in two separate maps.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum FileForm {
-    /// A directory module defined by `<path>/mod.rs`.
-    Dir,
-    /// A single-file module defined by `<path>.rs`.
-    Leaf,
-}
-
-impl FileForm {
-    /// The relative file path for a module at `module_path` in this form.
-    pub fn rel_path(&self, module_path: &ModulePath) -> String {
-        let slash = module_path.to_slash();
-        match self {
-            FileForm::Dir => {
-                if slash.is_empty() {
-                    "mod.rs".to_string()
-                } else {
-                    format!("{slash}/mod.rs")
-                }
-            }
-            FileForm::Leaf => format!("{slash}.rs"),
-        }
-    }
-
-    /// True when `rel_path` (a `.rs` file path) denotes this form at
-    /// `module_path`.
-    pub fn matches_rel_path(&self, module_path: &ModulePath, rel_path: &str) -> bool {
-        self.rel_path(module_path) == rel_path
-    }
-}
-
-/// Lifecycle status of a module within the generated tree. Drives which files
-/// get emitted and which are merely present to support import resolution.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub enum NodeStatus {
-    /// Discovered and eligible for emission (the default once registered).
-    #[default]
-    Emittable,
-    /// Registered solely to resolve imports / walk parents; not itself emitted.
-    Support,
-    /// A synthesized forwarding shim (`pub use <target>::Leaf;`).
-    Shim,
-    /// A glob-re-export alias mirroring a canonical module under another name.
-    Alias,
-}
-
-/// A named type (struct, enum, union, const, or type alias) defined in a module.
-///
-/// Its fully-qualified path is *derived*, never stored: it is always
-/// `{lib}::{module_path}::{name}`, computed by the owning [`ModuleNode`].
-#[derive(Clone, Debug)]
-pub struct ItemRecord {
-    /// The identifier name of the item.
-    pub name: String,
-    /// Kind of item, determining output structure.
-    pub kind: ItemKind,
-    /// Source visibility as written in std.
-    pub visibility: crate::parser::ItemVisibility,
-    /// Whether the item is re-exported publicly through its module chain.
-    pub exported: bool,
-    /// Whether the item is explicitly declared in the loader spec (or routed
-    /// to a mirror via a known-type stub / re-export shim).
-    pub declared: bool,
-    /// For type aliases only: the right-hand-side type expression tokens.
-    pub alias_rhs: Option<proc_macro2::TokenStream>,
-    /// Authoritative definition file (absolute path) used by the field-publicity
-    /// checker. Set for declared items; may differ from the module's own file
-    /// when the item is reached through a cfg-selected backend.
-    pub def_file_abs: Option<String>,
-}
-
-impl ItemRecord {
-    /// The fully-qualified canonical path of this item within `lib`, rooted at
-    /// the given module. Rendered `lib::module::name` (root module omits the
-    /// empty middle segment).
-    pub fn qualified_path(&self, lib: &str, module: &ModulePath) -> QualifiedPath {
-        QualifiedPath {
-            lib: lib.to_string(),
-            module: module.clone(),
-            item: Some(self.name.clone()),
-        }
-    }
-}
-
-/// A `use` statement attached to its declaring module, together with where it
-/// resolved. Making imports explicit edges (rather than a side table keyed by
-/// file path) is what lets the tree answer "what does this module pull in?"
-/// without a second lookup.
-#[derive(Clone, Debug)]
-pub struct ImportEdge {
-    /// The raw parsed `use` statement.
-    pub stmt: UseStatement,
-    /// Where the statement resolved, if resolvable.
-    pub target: Option<QualifiedPath>,
-}
-
-/// A module node in the binding tree. Holds its own file form, lifecycle status,
-/// the items it defines, the imports it pulls in, and its child modules.
-#[derive(Clone, Debug)]
-pub struct ModuleNode {
-    /// The module's own name (empty for a library root).
-    pub name: String,
-    /// Position of this module within its library root.
-    pub module_path: ModulePath,
-    /// Which target library this node belongs to (`core` / `alloc` / `std`).
-    pub lib: String,
-    /// How the module's content lives on disk, if it has any. Structural
-    /// parents that exist only to support resolution have no file.
-    pub file: Option<FileForm>,
-    /// Lifecycle status controlling emission.
-    pub status: NodeStatus,
-    /// Items defined directly in this module, keyed by name.
-    pub items: BTreeMap<String, ItemRecord>,
-    /// `use` statements declared in this module.
-    pub imports: Vec<ImportEdge>,
-    /// Child modules, keyed by name.
-    pub children: BTreeMap<String, ModuleNode>,
-}
-
-impl ModuleNode {
-    /// Create a node for the library root of `lib`.
-    pub fn root(lib: &str) -> Self {
-        Self {
-            name: String::new(),
-            module_path: ModulePath::root(),
-            lib: lib.to_string(),
-            file: None,
-            status: NodeStatus::Emittable,
-            items: BTreeMap::new(),
-            imports: Vec::new(),
-            children: BTreeMap::new(),
-        }
-    }
-
-    /// Create a named child node under `parent_path`.
-    pub fn new_child(name: &str, parent_path: &ModulePath, lib: &str) -> Self {
-        Self {
-            name: name.to_string(),
-            module_path: parent_path.join(name),
-            lib: lib.to_string(),
-            file: None,
-            status: NodeStatus::Emittable,
-            items: BTreeMap::new(),
-            imports: Vec::new(),
-            children: BTreeMap::new(),
-        }
-    }
-
-    /// The fully-qualified path of this module (no item leaf).
-    pub fn qualified_module(&self) -> QualifiedPath {
-        QualifiedPath {
-            lib: self.lib.clone(),
-            module: self.module_path.clone(),
-            item: None,
-        }
-    }
-
-    /// The relative file path for this node's file form, if it has one.
-    pub fn rel_file_path(&self) -> Option<String> {
-        self.file.map(|form| form.rel_path(&self.module_path))
-    }
-
-    /// True when this node occupies a real file on disk (either form).
-    pub fn has_file(&self) -> bool {
-        self.file.is_some()
-    }
-
-    /// Insert (or update) an item in this module.
-    pub fn insert_item(&mut self, item: ItemRecord) {
-        self.items.insert(item.name.clone(), item);
-    }
-
-    /// Borrow an item by name.
-    pub fn item(&self, name: &str) -> Option<&ItemRecord> {
-        self.items.get(name)
-    }
-
-    /// Mutable borrow of an item by name.
-    pub fn item_mut(&mut self, name: &str) -> Option<&mut ItemRecord> {
-        self.items.get_mut(name)
-    }
-
-    /// A child module by name, if present.
-    pub fn child(&self, name: &str) -> Option<&ModuleNode> {
-        self.children.get(name)
-    }
-
-    /// A mutable child module by name, if present.
-    pub fn child_mut(&mut self, name: &str) -> Option<&mut ModuleNode> {
-        self.children.get_mut(name)
-    }
-
-    /// Names of all direct children, sorted.
-    pub fn child_names(&self) -> Vec<String> {
-        self.children.keys().cloned().collect()
-    }
-
-    /// The immediate sibling names (excluding self), sorted.
-    pub fn sibling_names(&self) -> Vec<String> {
-        // Siblings are computed by the owner (BindingModel) which sees the parent;
-        // this helper is a convenience for callers that already hold the parent.
-        Vec::new()
-    }
-}
-
-/// A fully-qualified pointer into the binding model: a library, a module within
-/// it, and optionally an item within that module. This is the canonical "address"
-/// every part of the tree points at.
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
-pub struct QualifiedPath {
-    /// Target library (`core` / `alloc` / `std`).
-    pub lib: String,
-    /// Module position within that library.
-    pub module: ModulePath,
-    /// Optional item leaf within the module.
-    pub item: Option<String>,
-}
-
-impl QualifiedPath {
-    /// Build a module-level path (no item leaf).
-    pub fn module(lib: &str, module: ModulePath) -> Self {
-        Self {
-            lib: lib.to_string(),
-            module,
-            item: None,
-        }
-    }
-
-    /// Build an item-level path.
-    pub fn item(lib: &str, module: ModulePath, item: &str) -> Self {
-        Self {
-            lib: lib.to_string(),
-            module,
-            item: Some(item.to_string()),
-        }
-    }
-
-    /// The item leaf, if any.
-    pub fn leaf(&self) -> Option<&str> {
-        self.item.as_deref()
-    }
-
-    /// The module portion rendered canonically (`sys::sync::mutex`). Empty for
-    /// the library root.
-    pub fn module_canonical(&self) -> String {
-        self.module.to_canonical()
-    }
-
-    /// The full canonical spelling `lib::module::item` (omitting empty parts).
-    pub fn to_canonical(&self) -> String {
-        let mut out = String::from(&self.lib);
-        let mc = self.module.to_canonical();
-        if !mc.is_empty() {
-            out.push_str("::");
-            out.push_str(&mc);
-        }
-        if let Some(it) = &self.item {
-            out.push_str("::");
-            out.push_str(it);
-        }
-        out
-    }
-
-    /// The absolute import path used inside generated code:
-    /// `crate::{wrapper}::{lib}::{module}::{item}`.
-    pub fn to_crate_import(&self, wrapper: &str) -> String {
-        let mut out = format!("crate::{wrapper}::{}", self.lib);
-        let mc = self.module.to_canonical();
-        if !mc.is_empty() {
-            out.push_str("::");
-            out.push_str(&mc);
-        }
-        if let Some(it) = &self.item {
-            out.push_str("::");
-            out.push_str(it);
-        }
-        out
-    }
-}
+use super::super::ModulePath;
+use super::{FileForm, ImportEdge, ItemRecord, ModuleNode, NodeStatus, QualifiedPath};
+use crate::parser::ParsedSource;
+use crate::syntaxes::{PathSegment, UseKind, Visibility};
 
 /// The complete binding model: a forest of per-library module trees plus a
 /// reverse index from fully-qualified paths to their locations, so lookups by
@@ -316,9 +14,9 @@ impl QualifiedPath {
 pub struct BindingModel {
     /// One root per target library, keyed by lib name.
     roots: BTreeMap<String, ModuleNode>,
-    /// Reverse index: canonical path string → (lib, module slash path, item?).
-    /// Maintained lazily via [`Self::index_lookup`]; kept in sync on mutation.
-    by_canonical: BTreeMap<String, (String, String, Option<String>)>,
+    /// Reverse index: canonical path string → the structured address it names.
+    /// Kept in sync eagerly on every mutation that registers an item.
+    by_canonical: BTreeMap<String, QualifiedPath>,
     /// Relative file paths that were actually written to disk during the emit
     /// phase. The manifest must only reference files that exist; nodes whose
     /// items all failed the declaration gate are registered but never emitted.
@@ -520,24 +218,15 @@ impl BindingModel {
         // takes a fresh mutable borrow so the node borrow and the index borrow
         // never overlap.
         for (node_mp, rec) in staged {
-            let canonical = QualifiedPath::item(lib, node_mp.clone(), &rec.name).to_canonical();
+            let addr = QualifiedPath::item(lib, node_mp.clone(), &rec.name);
+            let canonical = addr.to_canonical();
             {
                 let node = self.ensure_module_status(lib, &node_mp, None, status);
                 node.insert_item(rec);
             }
-            self.by_canonical
-                .insert(canonical, (lib.to_string(), node_mp.to_slash(), None));
+            self.by_canonical.insert(canonical, addr);
         }
         form.rel_path(&mp)
-    }
-
-    /// Attach an unresolved import edge to the module at `rel_path` within `lib`.
-    #[allow(dead_code)]
-    pub fn add_import_edge(&mut self, lib: &str, rel_path: &str, edge: ImportEdge) {
-        let mp = ModulePath::from_file_stem(rel_path).unwrap_or_else(ModulePath::root);
-        if let Some(node) = self.module_mut(lib, &mp) {
-            node.imports.push(edge);
-        }
     }
 
     /// Register a synthesized file (re-export shim or glob alias) that has no
@@ -638,29 +327,29 @@ impl BindingModel {
         file: Option<FileForm>,
         item: ItemRecord,
     ) {
-        let canonical = QualifiedPath::item(lib, module_path.clone(), &item.name).to_canonical();
+        let addr = QualifiedPath::item(lib, module_path.clone(), &item.name);
+        let canonical = addr.to_canonical();
         let node = self.ensure_module(lib, module_path, file);
         node.insert_item(item);
-        self.by_canonical
-            .insert(canonical, (lib.to_string(), module_path.to_slash(), None));
+        self.by_canonical.insert(canonical, addr);
     }
 
     /// Mark the item at `canonical` as declared, overriding its def file.
     pub fn mark_declared(&mut self, canonical: &str, def_file_abs: Option<String>) {
         // Copy out of the reverse index first so the mutable descent below is
         // not fighting an outstanding borrow of `self`.
-        let entry = match self.by_canonical.get(canonical) {
-            Some(e) => e.clone(),
+        let addr = match self.by_canonical.get(canonical) {
+            Some(a) => a.clone(),
             None => return,
         };
-        let (lib, mod_slash, _) = entry;
-        let mp = ModulePath::from_slash(&mod_slash).unwrap_or_else(ModulePath::root);
-        let leaf = canonical.rsplit("::").next().unwrap_or("");
-        if let Some(node) = self.module_mut(&lib, &mp) {
-            if let Some(rec) = node.item_mut(leaf) {
-                rec.declared = true;
-                if let Some(df) = def_file_abs {
-                    rec.def_file_abs = Some(df);
+        let leaf = addr.leaf().map(str::to_string);
+        if let Some(node) = self.module_mut(&addr.lib, &addr.module) {
+            if let Some(leaf) = leaf {
+                if let Some(rec) = node.item_mut(&leaf) {
+                    rec.declared = true;
+                    if let Some(df) = def_file_abs {
+                        rec.def_file_abs = Some(df);
+                    }
                 }
             }
         }
@@ -669,12 +358,10 @@ impl BindingModel {
     /// Look up an item record by its canonical path string. Returns the lib
     /// name, the module path, and the record.
     pub fn find_item(&self, canonical: &str) -> Option<(String, ModulePath, &ItemRecord)> {
-        let (lib, mod_slash, _) = self.by_canonical.get(canonical)?.clone();
-        let mp = ModulePath::from_slash(&mod_slash).unwrap_or_else(ModulePath::root);
-        let leaf = canonical.rsplit("::").next().unwrap_or("");
-        let node = self.module(&lib, &mp)?;
-        let rec = node.item(leaf)?;
-        Some((lib, mp, rec))
+        let addr = self.by_canonical.get(canonical)?.clone();
+        let node = self.module(&addr.lib, &addr.module)?;
+        let rec = node.item(addr.leaf()?)?;
+        Some((addr.lib, addr.module, rec))
     }
 
     /// Candidates (canonical strings) for a bare leaf name, across all modules.
@@ -752,19 +439,6 @@ impl BindingModel {
         names.retain(|n| n != &my_name);
         names
     }
-
-    /// Total number of modules across all libraries (including roots).
-    #[allow(dead_code)]
-    pub fn len(&self) -> usize {
-        let mut n = 0;
-        self.for_each_module(&mut |_l, _n| n += 1);
-        n
-    }
-
-    #[allow(dead_code)]
-    pub fn is_empty(&self) -> bool {
-        self.roots.is_empty()
-    }
 }
 
 fn visit_node<F>(node: &ModuleNode, f: &mut F)
@@ -826,9 +500,9 @@ fn public_reexport_names(parsed: &ParsedSource) -> HashSet<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::parser::ItemVisibility;
+    use crate::parser::ItemKind;
 
-    fn item(name: &str, vis: ItemVisibility) -> ItemRecord {
+    fn item(name: &str, vis: Visibility) -> ItemRecord {
         ItemRecord {
             name: name.to_string(),
             kind: ItemKind::Struct,
@@ -838,30 +512,6 @@ mod tests {
             alias_rhs: None,
             def_file_abs: None,
         }
-    }
-
-    #[test]
-    fn file_form_renders_correct_paths() {
-        let mp = ModulePath::from_slash("sys/pal/unix/sync").unwrap();
-        assert_eq!(FileForm::Dir.rel_path(&mp), "sys/pal/unix/sync/mod.rs");
-        assert_eq!(FileForm::Leaf.rel_path(&mp), "sys/pal/unix/sync.rs");
-        let root = ModulePath::root();
-        assert_eq!(FileForm::Dir.rel_path(&root), "mod.rs");
-        assert_eq!(FileForm::Leaf.rel_path(&root), ".rs");
-    }
-
-    #[test]
-    fn qualified_path_renders() {
-        let mp = ModulePath::from_slash("collections/btree/map").unwrap();
-        let qp = QualifiedPath::item("core", mp.clone(), "BTreeMap");
-        assert_eq!(qp.to_canonical(), "core::collections::btree::map::BTreeMap");
-        assert_eq!(
-            qp.to_crate_import("std"),
-            "crate::std::core::collections::btree::map::BTreeMap"
-        );
-        // Root module omits the empty middle segment.
-        let qpr = QualifiedPath::item("std", ModulePath::root(), "Task");
-        assert_eq!(qpr.to_canonical(), "std::Task");
     }
 
     #[test]
@@ -889,7 +539,7 @@ mod tests {
             "core",
             &mp,
             Some(FileForm::Leaf),
-            item("BTreeMap", ItemVisibility::Public),
+            item("BTreeMap", Visibility::Public),
         );
         let found = m
             .find_item("core::collections::btree::map::BTreeMap")
@@ -907,7 +557,7 @@ mod tests {
             "core",
             &mp,
             Some(FileForm::Leaf),
-            item("AtomicUsize", ItemVisibility::Public),
+            item("AtomicUsize", Visibility::Public),
         );
         m.mark_declared(
             "core::sync::atomic::AtomicUsize",
@@ -997,13 +647,13 @@ mod tests {
             "core",
             &ModulePath::from_slash("map/entry").unwrap(),
             None,
-            item("VacantEntry", ItemVisibility::Public),
+            item("VacantEntry", Visibility::Public),
         );
         m.insert_item(
             "core",
             &ModulePath::from_slash("set/entry").unwrap(),
             None,
-            item("VacantEntry", ItemVisibility::Public),
+            item("VacantEntry", Visibility::Public),
         );
         let cands = m.candidates_for_leaf("VacantEntry");
         assert_eq!(cands.len(), 2);

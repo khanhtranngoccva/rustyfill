@@ -247,10 +247,8 @@ pub(super) fn mirror_minimal_modules(
                 let import_canonical = ModulePath::from_slash(&import_target)
                     .map(|mp| mp.to_canonical())
                     .unwrap_or_else(|| import_target.replace('/', "::"));
-                let crate_path = format!(
-                    "crate::{}::{import_canonical}",
-                    sink.registry.wrapper_mod()
-                );
+                let crate_path =
+                    format!("crate::{}::{import_canonical}", sink.registry.wrapper_mod());
                 sink.registry
                     .set_module_alias_route(module_ctx, &lead, &crate_path);
             }
@@ -297,12 +295,8 @@ pub(super) fn mirror_minimal_modules(
         }
         // Register the mirrored minimal module into the binding tree so its
         // referenced leaves are visible to later phases and the manifest.
-        sink.model.register_source(
-            &target.lib_name,
-            &def_file,
-            NodeStatus::Emittable,
-            &parsed,
-        );
+        sink.model
+            .register_source(&target.lib_name, &def_file, NodeStatus::Emittable, &parsed);
         sink.parsed_cache
             .insert(def_file, (parsed, target.lib_name.clone()));
     }
@@ -530,7 +524,8 @@ fn materialize_reexport_shims(
         sink.resolver.mark_emittable(&shim_rel);
         // Shims are synthetic forwarding modules; record them in the tree with
         // their Shim status so the manifest and child scans see them.
-        sink.model.register_synthetic(&target.lib_name, &shim_rel, NodeStatus::Shim);
+        sink.model
+            .register_synthetic(&target.lib_name, &shim_rel, NodeStatus::Shim);
         // A shim at `<module>/mod.rs` conflicts with a real leaf file
         // `<module>.rs` that defines the same items. When both exist, the
         // leaf file is the canonical source and the shim must NOT appear in
