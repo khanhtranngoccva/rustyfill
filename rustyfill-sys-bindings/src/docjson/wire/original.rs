@@ -1,6 +1,9 @@
-use std::collections::HashMap;
-
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
+use std::path::PathBuf;
+
+/// This port of rustdoc-types supports format versions from v37 onwards, which corresponds to v0.33.
+const _MINIMUM_VERSION: usize = 37; 
 
 /// The root of the emitted JSON blob.
 ///
@@ -22,8 +25,11 @@ pub struct Crate {
     pub paths: HashMap<Id, ItemSummary>,
     /// Maps `crate_id` of items to a crate name and html_root_url if it exists.
     pub external_crates: HashMap<u32, ExternalCrate>,
-    /// Information about the target for which this documentation was generated
-    pub target: Target,
+    /// Information about the target for which this documentation was generated.
+    ///
+    /// Absent in older format versions (e.g. 37), which do not emit this field at all.
+    #[serde(default)]
+    pub target: Option<Target>,
     /// A single version number to be used in the future when making backwards incompatible changes
     /// to the JSON output.
     pub format_version: u32,
@@ -85,11 +91,6 @@ pub struct TargetFeature {
 
 /// Metadata of a crate, either the same crate on which `rustdoc` was invoked, or its dependency.
 #[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
-#[cfg_attr(
-    feature = "rkyv_0_8",
-    derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)
-)]
-#[cfg_attr(feature = "rkyv_0_8", rkyv(derive(Debug)))]
 pub struct ExternalCrate {
     /// The name of the crate.
     ///
@@ -107,8 +108,11 @@ pub struct ExternalCrate {
     ///
     /// This will typically be a `.rlib` or `.rmeta`. It can be used to determine which crate
     /// this was in terms of whatever build-system invoked rustc.
-    #[cfg_attr(feature = "rkyv_0_8", rkyv(with = rkyv::with::AsString))]
-    pub path: PathBuf,
+    ///
+    /// Absent in older format versions (e.g. 37).
+    #[serde(default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub path: Option<PathBuf>,
 }
 
 /// Information about an external (not defined in the local crate) [`Item`].
@@ -118,11 +122,6 @@ pub struct ExternalCrate {
 /// question, or can be used by a tool that takes the json output of multiple crates to find
 /// the actual item definition with all the relevant info.
 #[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
-#[cfg_attr(
-    feature = "rkyv_0_8",
-    derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)
-)]
-#[cfg_attr(feature = "rkyv_0_8", rkyv(derive(Debug)))]
 pub struct ItemSummary {
     /// Can be used to look up the name and html_root_url of the crate this item came from in the
     /// `external_crates` map.
@@ -144,11 +143,6 @@ pub struct ItemSummary {
 /// The `Item` data type holds fields that can apply to any of these,
 /// and leaves kind-specific details (like function args or enum variants) to the `inner` field.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(
-    feature = "rkyv_0_8",
-    derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)
-)]
-#[cfg_attr(feature = "rkyv_0_8", rkyv(derive(Debug)))]
 pub struct Item {
     /// The unique identifier of this item. Can be used to find this item in various mappings.
     pub id: Id,
@@ -168,232 +162,23 @@ pub struct Item {
     pub docs: Option<String>,
     /// This mapping resolves [intra-doc links](https://github.com/rust-lang/rfcs/blob/master/text/1946-intra-rustdoc-links.md) from the docstring to their IDs
     pub links: HashMap<String, Id>,
-    /// Attributes on this item.
+    /// Attributes on this item, in pretty-printed Rust form (e.g. `"#[repr(C)]"`).
     ///
-    /// Does not include:
-    /// - `#[doc = "Doc Comment"]` or `/// Doc comment`: see [`Self::docs`] instead.
-    /// - `#[deprecated]` attributes: see the [`Self::deprecation`] field instead.
-    /// - `#[stable]` and `#[unstable]` attributes: see the [`Self::stability`] field instead.
-    /// - `#[rustc_const_stable]` and `#[rustc_const_unstable]` attributes:
-    ///   see the [`Self::const_stability`] field instead.
-    /// - `#[rustc_default_body_unstable]` attributes: instead see `default_unstable` fields on
-    ///   item kinds that can have unstable default values, such as [`Function::default_unstable`],
-    ///   [`ItemEnum::AssocConst::default_unstable`], and [`ItemEnum::AssocType::default_unstable`].
-    ///
-    /// Attributes appear in pretty-printed Rust form, regardless of their formatting
-    /// in the original source code. For example:
-    /// - `#[non_exhaustive]` and `#[must_use]` are represented as themselves.
-    /// - `#[no_mangle]` and `#[export_name]` are also represented as themselves.
-    /// - `#[repr(C)]` and other reprs also appear as themselves,
-    ///   though potentially with a different order: e.g. `repr(i8, C)` may become `repr(C, i8)`.
-    ///   Multiple repr attributes on the same item may be combined into an equivalent single attr.
-    pub attrs: Vec<Attribute>,
+    /// In format versions 37 through 52, rustdoc emits every non-doc attribute as a raw string.
+    /// Newer format versions emit structured [`Attribute`] values instead; parsing those requires
+    /// a version-gated deserializer, which is out of scope for the wire types consumed here.
+    pub attrs: Vec<String>,
     /// Information about the item’s deprecation, if present.
     pub deprecation: Option<Deprecation>,
-
-    /// Stability information for this item, if any.
-    ///
-    /// This describes whether the item itself is stable or unstable, as noted by a `#[stable]` or
-    /// `#[unstable]` attribute. It does not capture const stability, default-body stability, etc.
-    ///
-    /// Whether a path to an item is stable depends on the stability of containing modules
-    /// or re-exports along that path. For example, a stable item can be reachable through both an
-    /// unstable module and a stable re-export.
-    ///
-    /// For items whose inner kind is [`ItemEnum::Use`], this is the stability of the import itself,
-    /// not the item being imported. This allows users to determine the stability of paths
-    /// that involve re-exports.
-    ///
-    /// Associated items can inherit instability from their enclosing unstable trait or impl.
-    /// Unannotated associated items in stable traits or impls may have no separate stability value.
-    ///
-    /// Currently, Rust's `#[stable]` and `#[unstable]` attributes are themselves not stable.
-    /// As a result, this field is primarily populated for standard-library items;
-    /// most ordinary third-party crates usually have no data here.
-    pub stability: Option<Box<Stability>>,
-
-    /// Stability information for using this item in const contexts, if any.
-    ///
-    /// This is separate from [`Self::stability`]. An item can be stable as regular API while its
-    /// const use is unstable. An unstable item may have no separate const-stability value here.
-    ///
-    /// This field is only populated for item kinds whose const behavior can have separate
-    /// stability information, such as const functions, const traits, const trait impls,
-    /// and associated items whose const behavior is controlled by a const trait or const impl.
-    pub const_stability: Option<Box<Stability>>,
 
     /// The type-specific fields describing this item.
     pub inner: ItemEnum,
 }
 
-/// Stability information for an item.
-///
-/// In [`Item::stability`], this refers to regular item stability: whether the item is
-/// stable or unstable as represented by the `#[stable]` or `#[unstable]` attributes.
-/// In [`Item::const_stability`], this refers to using the item in const contexts,
-/// as represented by `#[rustc_const_stable]` or `#[rustc_const_unstable]`.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(
-    feature = "rkyv_0_8",
-    derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)
-)]
-#[cfg_attr(feature = "rkyv_0_8", rkyv(derive(Debug)))]
-pub struct Stability {
-    /// The feature associated with this stability record.
-    ///
-    /// For unstable items, this is the feature gate associated with the item.
-    /// For stable items, this is the historical label recorded when the item was stabilized.
-    pub feature: String,
-
-    pub level: StabilityLevel,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(
-    feature = "rkyv_0_8",
-    derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)
-)]
-#[cfg_attr(feature = "rkyv_0_8", rkyv(derive(Debug)))]
-#[serde(rename_all = "snake_case")]
-pub enum StabilityLevel {
-    Stable {
-        /// The Rust version in which this item became stable, if available.
-        since: Option<String>,
-    },
-    Unstable,
-}
-
-/// Information about an unstable default provided by a trait item.
-///
-/// Example unstable defaults include:
-/// - a stable trait function or method whose body is not stable
-/// - a stable trait associated type or const whose default value is not stable
-#[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
-#[cfg_attr(
-    feature = "rkyv_0_8",
-    derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)
-)]
-#[cfg_attr(feature = "rkyv_0_8", rkyv(derive(Debug)))]
-pub struct ProvidedDefaultUnstable {
-    /// The feature that must be enabled to use the provided default.
-    pub feature: String,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(
-    feature = "rkyv_0_8",
-    derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)
-)]
-#[cfg_attr(feature = "rkyv_0_8", rkyv(derive(Debug)))]
-#[serde(rename_all = "snake_case")]
-/// An attribute, e.g. `#[repr(C)]`
-///
-/// This doesn't include:
-/// - `#[doc = "Doc Comment"]` or `/// Doc comment`. These are in [`Item::docs`] instead.
-/// - `#[deprecated]`. These are in [`Item::deprecation`] instead.
-/// - `#[stable]` and `#[unstable]`. These are in [`Item::stability`] instead.
-/// - `#[rustc_const_stable]` and `#[rustc_const_unstable]`. These are in
-///   [`Item::const_stability`] instead.
-/// - `#[rustc_default_body_unstable]`. These are in the `default_unstable` field on the appropriate
-///   item kinds: [`Function::default_unstable`], [`ItemEnum::AssocConst::default_unstable`],
-///   and [`ItemEnum::AssocType::default_unstable`].
-pub enum Attribute {
-    /// `#[non_exhaustive]`
-    NonExhaustive,
-
-    /// `#[must_use]`
-    MustUse { reason: Option<String> },
-
-    /// `#[macro_export]`
-    MacroExport,
-
-    /// `#[export_name = "name"]`
-    ExportName(String),
-
-    /// `#[link_section = "name"]`
-    LinkSection(String),
-
-    /// `#[automatically_derived]`
-    AutomaticallyDerived,
-
-    /// `#[repr]`
-    Repr(AttributeRepr),
-
-    /// `#[no_mangle]`
-    NoMangle,
-
-    /// #[target_feature(enable = "feature1", enable = "feature2")]
-    TargetFeature { enable: Vec<String> },
-
-    /// Something else.
-    ///
-    /// Things here are explicitly *not* covered by the [`FORMAT_VERSION`]
-    /// constant, and may change without bumping the format version.
-    ///
-    /// As an implementation detail, this is currently either:
-    /// 1. A HIR debug printing, like `"#[attr = Optimize(Speed)]"`
-    /// 2. The attribute as it appears in source form, like
-    ///    `"#[optimize(speed)]"`.
-    Other(String),
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(
-    feature = "rkyv_0_8",
-    derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)
-)]
-#[cfg_attr(feature = "rkyv_0_8", rkyv(derive(Debug)))]
-/// The contents of a `#[repr(...)]` attribute.
-///
-/// Used in [`Attribute::Repr`].
-pub struct AttributeRepr {
-    /// The representation, e.g. `#[repr(C)]`, `#[repr(transparent)]`
-    pub kind: ReprKind,
-
-    /// Alignment in bytes, if explicitly specified by `#[repr(align(...)]`.
-    pub align: Option<u64>,
-    /// Alignment in bytes, if explicitly specified by `#[repr(packed(...)]]`.
-    pub packed: Option<u64>,
-
-    /// The integer type for an enum descriminant, if explicitly specified.
-    ///
-    /// e.g. `"i32"`, for `#[repr(C, i32)]`
-    pub int: Option<String>,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(
-    feature = "rkyv_0_8",
-    derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)
-)]
-#[cfg_attr(feature = "rkyv_0_8", rkyv(derive(Debug)))]
-#[serde(rename_all = "snake_case")]
-/// The kind of `#[repr]`.
-///
-/// See [AttributeRepr::kind]`.
-pub enum ReprKind {
-    /// `#[repr(Rust)]`
-    ///
-    /// Also the default.
-    Rust,
-    /// `#[repr(C)]`
-    C,
-    /// `#[repr(transparent)]
-    Transparent,
-    /// `#[repr(simd)]`
-    Simd,
-}
-
 /// A range of source code.
 #[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
-#[cfg_attr(
-    feature = "rkyv_0_8",
-    derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)
-)]
-#[cfg_attr(feature = "rkyv_0_8", rkyv(derive(Debug)))]
 pub struct Span {
     /// The path to the source file for this span relative to the path `rustdoc` was invoked with.
-    #[cfg_attr(feature = "rkyv_0_8", rkyv(with = rkyv::with::AsString))]
     pub filename: PathBuf,
     /// One indexed Line and Column of the first character of the `Span`.
     pub begin: (usize, usize),
@@ -403,11 +188,6 @@ pub struct Span {
 
 /// Information about the deprecation of an [`Item`].
 #[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
-#[cfg_attr(
-    feature = "rkyv_0_8",
-    derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)
-)]
-#[cfg_attr(feature = "rkyv_0_8", rkyv(derive(Debug)))]
 pub struct Deprecation {
     /// Usually a version number when this [`Item`] first became deprecated.
     pub since: Option<String>,
@@ -417,11 +197,6 @@ pub struct Deprecation {
 
 /// Visibility of an [`Item`].
 #[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
-#[cfg_attr(
-    feature = "rkyv_0_8",
-    derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)
-)]
-#[cfg_attr(feature = "rkyv_0_8", rkyv(derive(Debug)))]
 #[serde(rename_all = "snake_case")]
 pub enum Visibility {
     /// Explicitly public visibility set with `pub`.
@@ -445,11 +220,6 @@ pub enum Visibility {
 
 /// Dynamic trait object type (`dyn Trait`).
 #[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
-#[cfg_attr(
-    feature = "rkyv_0_8",
-    derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)
-)]
-#[cfg_attr(feature = "rkyv_0_8", rkyv(derive(Debug)))]
 pub struct DynTrait {
     /// All the traits implemented. One of them is the vtable, and the rest must be auto traits.
     pub traits: Vec<PolyTrait>,
@@ -465,11 +235,6 @@ pub struct DynTrait {
 
 /// A trait and potential HRTBs
 #[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
-#[cfg_attr(
-    feature = "rkyv_0_8",
-    derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)
-)]
-#[cfg_attr(feature = "rkyv_0_8", rkyv(derive(Debug)))]
 pub struct PolyTrait {
     /// The path to the trait.
     #[serde(rename = "trait")]
@@ -489,21 +254,6 @@ pub struct PolyTrait {
 ///                    ^^^^^
 /// ```
 #[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
-#[cfg_attr(
-    feature = "rkyv_0_8",
-    derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)
-)]
-#[cfg_attr(feature = "rkyv_0_8", rkyv(derive(Debug)))]
-#[cfg_attr(feature = "rkyv_0_8", rkyv(serialize_bounds(
-    __S: rkyv::ser::Writer + rkyv::ser::Allocator,
-    __S::Error: rkyv::rancor::Source,
-)))]
-#[cfg_attr(feature = "rkyv_0_8", rkyv(deserialize_bounds(
-    __D::Error: rkyv::rancor::Source,
-)))]
-#[cfg_attr(feature = "rkyv_0_8", rkyv(bytecheck(bounds(
-    __C: rkyv::validation::ArchiveContext,
-))))]
 #[serde(rename_all = "snake_case")]
 pub enum GenericArgs {
     /// `<'a, 32, B: Copy, C = u32>`
@@ -515,15 +265,16 @@ pub enum GenericArgs {
         /// ```
         args: Vec<GenericArg>,
         /// Associated type or constant bindings (e.g. `Item=i32` or `Item: Clone`) for this type.
+        ///
+        /// Absent in format versions before it was introduced; defaults to empty.
+        #[serde(default)]
         constraints: Vec<AssocItemConstraint>,
     },
     /// `Fn(A, B) -> C`
     Parenthesized {
         /// The input types, enclosed in parentheses.
-        #[cfg_attr(feature = "rkyv_0_8", rkyv(omit_bounds))]
         inputs: Vec<Type>,
         /// The output type provided after the `->`, if present.
-        #[cfg_attr(feature = "rkyv_0_8", rkyv(omit_bounds))]
         output: Option<Type>,
     },
     /// `T::method(..)`
@@ -534,11 +285,6 @@ pub enum GenericArgs {
 ///
 /// Part of [`GenericArgs`].
 #[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
-#[cfg_attr(
-    feature = "rkyv_0_8",
-    derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)
-)]
-#[cfg_attr(feature = "rkyv_0_8", rkyv(derive(Debug)))]
 #[serde(rename_all = "snake_case")]
 pub enum GenericArg {
     /// A lifetime argument.
@@ -569,11 +315,6 @@ pub enum GenericArg {
 
 /// A constant.
 #[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
-#[cfg_attr(
-    feature = "rkyv_0_8",
-    derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)
-)]
-#[cfg_attr(feature = "rkyv_0_8", rkyv(derive(Debug)))]
 pub struct Constant {
     /// The stringified expression of this constant. Note that its mapping to the original
     /// source code is unstable and it's not guaranteed that it'll match the source code.
@@ -593,27 +334,10 @@ pub struct Constant {
 ///              ^^^^^^^^^^  ^^^^^^^^^^^^^^^
 /// ```
 #[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
-#[cfg_attr(
-    feature = "rkyv_0_8",
-    derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)
-)]
-#[cfg_attr(feature = "rkyv_0_8", rkyv(derive(Debug)))]
-#[cfg_attr(feature = "rkyv_0_8", rkyv(serialize_bounds(
-    __S: rkyv::ser::Writer + rkyv::ser::Allocator,
-    __S::Error: rkyv::rancor::Source,
-)))]
-#[cfg_attr(feature = "rkyv_0_8", rkyv(deserialize_bounds(
-    __D::Error: rkyv::rancor::Source,
-)))]
-#[cfg_attr(feature = "rkyv_0_8", rkyv(bytecheck(bounds(
-    __C: rkyv::validation::ArchiveContext,
-    <__C as rkyv::rancor::Fallible>::Error: rkyv::rancor::Source,
-))))]
 pub struct AssocItemConstraint {
     /// The name of the associated type/constant.
     pub name: String,
     /// Arguments provided to the associated type/constant.
-    #[cfg_attr(feature = "rkyv_0_8", rkyv(omit_bounds))]
     pub args: Option<Box<GenericArgs>>,
     /// The kind of bound applied to the associated type/constant.
     pub binding: AssocItemConstraintKind,
@@ -621,11 +345,6 @@ pub struct AssocItemConstraint {
 
 /// The way in which an associate type/constant is bound.
 #[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
-#[cfg_attr(
-    feature = "rkyv_0_8",
-    derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)
-)]
-#[cfg_attr(feature = "rkyv_0_8", rkyv(derive(Debug)))]
 #[serde(rename_all = "snake_case")]
 pub enum AssocItemConstraintKind {
     /// The required value/type is specified exactly. e.g.
@@ -654,14 +373,6 @@ pub enum AssocItemConstraintKind {
 /// should treat them as opaque keys to lookup items, and avoid attempting
 /// to parse them, or otherwise depend on any implementation details.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
-#[cfg_attr(
-    feature = "rkyv_0_8",
-    derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)
-)]
-#[cfg_attr(
-    feature = "rkyv_0_8",
-    rkyv(derive(Debug, PartialEq, Eq, PartialOrd, Ord, Hash))
-)]
 // FIXME(aDotInTheVoid): Consider making this non-public in rustdoc-types.
 pub struct Id(pub u32);
 
@@ -669,12 +380,6 @@ pub struct Id(pub u32);
 ///
 /// Part of [`ItemSummary`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
-#[cfg_attr(
-    feature = "rkyv_0_8",
-    derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)
-)]
-#[cfg_attr(feature = "rkyv_0_8", rkyv(derive(Debug)))]
-#[cfg_attr(feature = "rkyv_0_8", rkyv(compare(PartialEq)))]
 #[serde(rename_all = "snake_case")]
 pub enum ItemKind {
     /// A module declaration, e.g. `mod foo;` or `mod foo {}`
@@ -750,11 +455,6 @@ pub enum ItemKind {
 ///
 /// Part of [`Item`].
 #[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
-#[cfg_attr(
-    feature = "rkyv_0_8",
-    derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)
-)]
-#[cfg_attr(feature = "rkyv_0_8", rkyv(derive(Debug)))]
 #[serde(rename_all = "snake_case")]
 pub enum ItemEnum {
     /// A module declaration, e.g. `mod foo;` or `mod foo {}`
@@ -841,11 +541,6 @@ pub enum ItemEnum {
         /// //               ^^^^^^^^^^
         /// ```
         value: Option<String>,
-        /// Metadata about an unstable default value provided for the associated constant, if any.
-        ///
-        /// Empty if the associated constant has no default (see [`ItemEnum::AssocConst::value`]),
-        /// or if the default value is stable.
-        default_unstable: Option<Box<ProvidedDefaultUnstable>>,
     },
     /// An associated type of a trait or a type.
     AssocType {
@@ -870,11 +565,6 @@ pub enum ItemEnum {
         /// ```
         #[serde(rename = "type")]
         type_: Option<Type>,
-        /// Metadata about an unstable default value provided for the associated type, if any.
-        ///
-        /// Empty if the associated type has no default (see [`ItemEnum::AssocType::type_`]),
-        /// or if the default value is stable.
-        default_unstable: Option<Box<ProvidedDefaultUnstable>>,
     },
 }
 
@@ -882,7 +572,7 @@ impl ItemEnum {
     /// Get just the kind of this item, but with no further data.
     ///
     /// ```rust
-    /// # use rustdoc_types::{ItemKind, ItemEnum};
+    /// # use rustyfill_sys_bindings::docjson::wire::original::{ItemKind, ItemEnum};
     /// let item = ItemEnum::ExternCrate { name: "libc".to_owned(), rename: None };
     /// assert_eq!(item.item_kind(), ItemKind::ExternCrate);
     /// ```
@@ -919,11 +609,6 @@ impl ItemEnum {
 
 /// A module declaration, e.g. `mod foo;` or `mod foo {}`.
 #[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
-#[cfg_attr(
-    feature = "rkyv_0_8",
-    derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)
-)]
-#[cfg_attr(feature = "rkyv_0_8", rkyv(derive(Debug)))]
 pub struct Module {
     /// Whether this is the root item of a crate.
     ///
@@ -939,11 +624,6 @@ pub struct Module {
 
 /// A `union`.
 #[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
-#[cfg_attr(
-    feature = "rkyv_0_8",
-    derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)
-)]
-#[cfg_attr(feature = "rkyv_0_8", rkyv(derive(Debug)))]
 pub struct Union {
     /// The generic parameters and where clauses on this union.
     pub generics: Generics,
@@ -961,11 +641,6 @@ pub struct Union {
 
 /// A `struct`.
 #[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
-#[cfg_attr(
-    feature = "rkyv_0_8",
-    derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)
-)]
-#[cfg_attr(feature = "rkyv_0_8", rkyv(derive(Debug)))]
 pub struct Struct {
     /// The kind of the struct (e.g. unit, tuple-like or struct-like) and the data specific to it,
     /// i.e. fields.
@@ -979,11 +654,6 @@ pub struct Struct {
 
 /// The kind of a [`Struct`] and the data specific to it, i.e. fields.
 #[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
-#[cfg_attr(
-    feature = "rkyv_0_8",
-    derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)
-)]
-#[cfg_attr(feature = "rkyv_0_8", rkyv(derive(Debug)))]
 #[serde(rename_all = "snake_case")]
 pub enum StructKind {
     /// A struct with no fields and no parentheses.
@@ -1021,11 +691,6 @@ pub enum StructKind {
 
 /// An `enum`.
 #[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
-#[cfg_attr(
-    feature = "rkyv_0_8",
-    derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)
-)]
-#[cfg_attr(feature = "rkyv_0_8", rkyv(derive(Debug)))]
 pub struct Enum {
     /// Information about the type parameters and `where` clauses of the enum.
     pub generics: Generics,
@@ -1041,11 +706,6 @@ pub struct Enum {
 
 /// A variant of an enum.
 #[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
-#[cfg_attr(
-    feature = "rkyv_0_8",
-    derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)
-)]
-#[cfg_attr(feature = "rkyv_0_8", rkyv(derive(Debug)))]
 pub struct Variant {
     /// Whether the variant is plain, a tuple-like, or struct-like. Contains the fields.
     pub kind: VariantKind,
@@ -1055,11 +715,6 @@ pub struct Variant {
 
 /// The kind of an [`Enum`] [`Variant`] and the data specific to it, i.e. fields.
 #[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
-#[cfg_attr(
-    feature = "rkyv_0_8",
-    derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)
-)]
-#[cfg_attr(feature = "rkyv_0_8", rkyv(derive(Debug)))]
 #[serde(rename_all = "snake_case")]
 pub enum VariantKind {
     /// A variant with no parentheses
@@ -1103,11 +758,6 @@ pub enum VariantKind {
 
 /// The value that distinguishes a variant in an [`Enum`] from other variants.
 #[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
-#[cfg_attr(
-    feature = "rkyv_0_8",
-    derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)
-)]
-#[cfg_attr(feature = "rkyv_0_8", rkyv(derive(Debug)))]
 pub struct Discriminant {
     /// The expression that produced the discriminant.
     ///
@@ -1126,11 +776,6 @@ pub struct Discriminant {
 
 /// A set of fundamental properties of a function.
 #[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
-#[cfg_attr(
-    feature = "rkyv_0_8",
-    derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)
-)]
-#[cfg_attr(feature = "rkyv_0_8", rkyv(derive(Debug)))]
 pub struct FunctionHeader {
     /// Is this function marked as `const`?
     pub is_const: bool,
@@ -1150,44 +795,50 @@ pub struct FunctionHeader {
 ///
 /// See the [Rustonomicon section](https://doc.rust-lang.org/nightly/nomicon/ffi.html#ffi-and-unwinding)
 /// on unwinding for more info.
+///
+/// Format version 37 serializes these variants with PascalCase tags (`"C"`, `"System"`, ...) and
+/// encodes unknown ABIs as `{"other": "<name>"}`; newer format versions use lowercase snake_case
+/// tags (`"c"`, `"system"`, ...) and encode unknown ABIs as `"other": "<name>"`. Both forms are
+/// accepted on deserialization.
 #[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
-#[cfg_attr(
-    feature = "rkyv_0_8",
-    derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)
-)]
-#[cfg_attr(feature = "rkyv_0_8", rkyv(derive(Debug)))]
+#[serde(rename_all = "snake_case")]
 pub enum Abi {
     // We only have a concrete listing here for stable ABI's because there are so many
     // See rustc_ast_passes::feature_gate::PostExpansionVisitor::check_abi for the list
     /// The default ABI, but that can also be written explicitly with `extern "Rust"`.
+    #[serde(alias = "Rust")]
     Rust,
     /// Can be specified as `extern "C"` or, as a shorthand, just `extern`.
+    #[serde(alias = "C")]
     C { unwind: bool },
     /// Can be specified as `extern "cdecl"`.
+    #[serde(alias = "Cdecl")]
     Cdecl { unwind: bool },
     /// Can be specified as `extern "stdcall"`.
+    #[serde(alias = "Stdcall")]
     Stdcall { unwind: bool },
     /// Can be specified as `extern "fastcall"`.
+    #[serde(alias = "Fastcall")]
     Fastcall { unwind: bool },
     /// Can be specified as `extern "aapcs"`.
+    #[serde(alias = "Aapcs")]
     Aapcs { unwind: bool },
     /// Can be specified as `extern "win64"`.
+    #[serde(alias = "Win64")]
     Win64 { unwind: bool },
     /// Can be specified as `extern "sysv64"`.
+    #[serde(alias = "SysV64")]
     SysV64 { unwind: bool },
     /// Can be specified as `extern "system"`.
+    #[serde(alias = "System")]
     System { unwind: bool },
     /// Any other ABI, including unstable ones.
+    #[serde(rename = "other", alias = "Other")]
     Other(String),
 }
 
 /// A function declaration (including methods and other associated functions).
 #[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
-#[cfg_attr(
-    feature = "rkyv_0_8",
-    derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)
-)]
-#[cfg_attr(feature = "rkyv_0_8", rkyv(derive(Debug)))]
 pub struct Function {
     /// Information about the function signature, or declaration.
     pub sig: FunctionSignature,
@@ -1197,21 +848,10 @@ pub struct Function {
     pub header: FunctionHeader,
     /// Whether the function has a body, i.e. an implementation.
     pub has_body: bool,
-    /// Metadata about a possible unstable provided default implementation for trait methods.
-    ///
-    /// Only populated for function items inside traits. Empty if the trait method
-    /// does not have a default implementation (see [`Function::has_body`]),
-    /// or if its default implementation is stable.
-    pub default_unstable: Option<Box<ProvidedDefaultUnstable>>,
 }
 
 /// Generic parameters accepted by an item and `where` clauses imposed on it and the parameters.
 #[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
-#[cfg_attr(
-    feature = "rkyv_0_8",
-    derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)
-)]
-#[cfg_attr(feature = "rkyv_0_8", rkyv(derive(Debug)))]
 pub struct Generics {
     /// A list of generic parameter definitions (e.g. `<T: Clone + Hash, U: Copy>`).
     pub params: Vec<GenericParamDef>,
@@ -1221,11 +861,6 @@ pub struct Generics {
 
 /// One generic parameter accepted by an item.
 #[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
-#[cfg_attr(
-    feature = "rkyv_0_8",
-    derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)
-)]
-#[cfg_attr(feature = "rkyv_0_8", rkyv(derive(Debug)))]
 pub struct GenericParamDef {
     /// Name of the parameter.
     /// ```rust
@@ -1240,21 +875,6 @@ pub struct GenericParamDef {
 
 /// The kind of a [`GenericParamDef`].
 #[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
-#[cfg_attr(
-    feature = "rkyv_0_8",
-    derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)
-)]
-#[cfg_attr(feature = "rkyv_0_8", rkyv(derive(Debug)))]
-#[cfg_attr(feature = "rkyv_0_8", rkyv(serialize_bounds(
-    __S: rkyv::ser::Writer + rkyv::ser::Allocator,
-    __S::Error: rkyv::rancor::Source,
-)))]
-#[cfg_attr(feature = "rkyv_0_8", rkyv(deserialize_bounds(
-    __D::Error: rkyv::rancor::Source,
-)))]
-#[cfg_attr(feature = "rkyv_0_8", rkyv(bytecheck(bounds(
-    __C: rkyv::validation::ArchiveContext,
-))))]
 #[serde(rename_all = "snake_case")]
 pub enum GenericParamDefKind {
     /// Denotes a lifetime parameter.
@@ -1277,7 +897,6 @@ pub enum GenericParamDefKind {
         /// fn default2<T: Default>() -> [T; 2] where T: Clone { todo!() }
         /// //             ^^^^^^^
         /// ```
-        #[cfg_attr(feature = "rkyv_0_8", rkyv(omit_bounds))]
         bounds: Vec<GenericBound>,
         /// The default type for this parameter, if provided, e.g.
         ///
@@ -1285,7 +904,6 @@ pub enum GenericParamDefKind {
         /// trait PartialEq<Rhs = Self> {}
         /// //                    ^^^^
         /// ```
-        #[cfg_attr(feature = "rkyv_0_8", rkyv(omit_bounds))]
         default: Option<Type>,
         /// This is normally `false`, which means that this generic parameter is
         /// declared in the Rust source text.
@@ -1317,7 +935,6 @@ pub enum GenericParamDefKind {
     Const {
         /// The type of the constant as declared.
         #[serde(rename = "type")]
-        #[cfg_attr(feature = "rkyv_0_8", rkyv(omit_bounds))]
         type_: Type,
         /// The stringified expression for the default value, if provided. It's not guaranteed that
         /// it'll match the actual source code for the default value.
@@ -1331,11 +948,6 @@ pub enum GenericParamDefKind {
 /// //                         ^^^^^^^^^^
 /// ```
 #[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
-#[cfg_attr(
-    feature = "rkyv_0_8",
-    derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)
-)]
-#[cfg_attr(feature = "rkyv_0_8", rkyv(derive(Debug)))]
 #[serde(rename_all = "snake_case")]
 pub enum WherePredicate {
     /// A type is expected to comply with a set of bounds
@@ -1382,11 +994,6 @@ pub enum WherePredicate {
 
 /// Either a trait bound or a lifetime bound.
 #[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
-#[cfg_attr(
-    feature = "rkyv_0_8",
-    derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)
-)]
-#[cfg_attr(feature = "rkyv_0_8", rkyv(derive(Debug)))]
 #[serde(rename_all = "snake_case")]
 pub enum GenericBound {
     /// A trait bound.
@@ -1417,11 +1024,6 @@ pub enum GenericBound {
 
 /// A set of modifiers applied to a trait.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
-#[cfg_attr(
-    feature = "rkyv_0_8",
-    derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)
-)]
-#[cfg_attr(feature = "rkyv_0_8", rkyv(derive(Debug)))]
 #[serde(rename_all = "snake_case")]
 pub enum TraitBoundModifier {
     /// Marks the absence of a modifier.
@@ -1437,11 +1039,6 @@ pub enum TraitBoundModifier {
 
 /// One precise capturing argument. See [the rust reference](https://doc.rust-lang.org/reference/types/impl-trait.html#precise-capturing).
 #[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
-#[cfg_attr(
-    feature = "rkyv_0_8",
-    derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)
-)]
-#[cfg_attr(feature = "rkyv_0_8", rkyv(derive(Debug)))]
 #[serde(rename_all = "snake_case")]
 pub enum PreciseCapturingArg {
     /// A lifetime.
@@ -1459,11 +1056,6 @@ pub enum PreciseCapturingArg {
 /// Either a type or a constant, usually stored as the right-hand side of an equation in places like
 /// [`AssocItemConstraint`]
 #[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
-#[cfg_attr(
-    feature = "rkyv_0_8",
-    derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)
-)]
-#[cfg_attr(feature = "rkyv_0_8", rkyv(derive(Debug)))]
 #[serde(rename_all = "snake_case")]
 pub enum Term {
     /// A type.
@@ -1488,21 +1080,6 @@ pub enum Term {
 
 /// A type.
 #[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
-#[cfg_attr(
-    feature = "rkyv_0_8",
-    derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)
-)]
-#[cfg_attr(feature = "rkyv_0_8", rkyv(derive(Debug)))]
-#[cfg_attr(feature = "rkyv_0_8", rkyv(serialize_bounds(
-    __S: rkyv::ser::Writer + rkyv::ser::Allocator,
-    __S::Error: rkyv::rancor::Source,
-)))]
-#[cfg_attr(feature = "rkyv_0_8", rkyv(deserialize_bounds(
-    __D::Error: rkyv::rancor::Source,
-)))]
-#[cfg_attr(feature = "rkyv_0_8", rkyv(bytecheck(bounds(
-    __C: rkyv::validation::ArchiveContext,
-))))]
 #[serde(rename_all = "snake_case")]
 pub enum Type {
     /// Structs, enums, unions and type aliases, e.g. `std::option::Option<u32>`
@@ -1514,44 +1091,29 @@ pub enum Type {
     /// Built-in numeric types (e.g. `u32`, `f32`), `bool`, `char`.
     Primitive(String),
     /// A function pointer type, e.g. `fn(u32) -> u32`, `extern "C" fn() -> *const u8`
-    FunctionPointer(#[cfg_attr(feature = "rkyv_0_8", rkyv(omit_bounds))] Box<FunctionPointer>),
+    FunctionPointer(Box<FunctionPointer>),
     /// A tuple type, e.g. `(String, u32, Box<usize>)`
-    Tuple(#[cfg_attr(feature = "rkyv_0_8", rkyv(omit_bounds))] Vec<Type>),
+    Tuple(Vec<Type>),
     /// An unsized slice type, e.g. `[u32]`.
-    Slice(#[cfg_attr(feature = "rkyv_0_8", rkyv(omit_bounds))] Box<Type>),
+    Slice(Box<Type>),
     /// An array type, e.g. `[u32; 15]`
     Array {
         /// The type of the contained element.
         #[serde(rename = "type")]
-        #[cfg_attr(feature = "rkyv_0_8", rkyv(omit_bounds))]
         type_: Box<Type>,
         /// The stringified expression that is the length of the array.
         ///
         /// Keep in mind that it's not guaranteed to match the actual source code of the expression.
         len: String,
     },
-    /// A pattern type, e.g. `u32 is 1..`
-    ///
-    /// See [the tracking issue](https://github.com/rust-lang/rust/issues/123646)
-    Pat {
-        /// The base type, e.g. the `u32` in `u32 is 1..`
-        #[serde(rename = "type")]
-        #[cfg_attr(feature = "rkyv_0_8", rkyv(omit_bounds))]
-        type_: Box<Type>,
-        #[doc(hidden)]
-        __pat_unstable_do_not_use: String,
-    },
     /// An opaque type that satisfies a set of bounds, `impl TraitA + TraitB + ...`
     ImplTrait(Vec<GenericBound>),
-    /// A type that's left to be inferred, `_`
-    Infer,
     /// A raw pointer type, e.g. `*mut u32`, `*const u8`, etc.
     RawPointer {
         /// This is `true` for `*mut _` and `false` for `*const _`.
         is_mutable: bool,
         /// The type of the pointee.
         #[serde(rename = "type")]
-        #[cfg_attr(feature = "rkyv_0_8", rkyv(omit_bounds))]
         type_: Box<Type>,
     },
     /// `&'a mut String`, `&str`, etc.
@@ -1562,7 +1124,6 @@ pub enum Type {
         is_mutable: bool,
         /// The type of the pointee, e.g. the `i32` in `&'a mut i32`
         #[serde(rename = "type")]
-        #[cfg_attr(feature = "rkyv_0_8", rkyv(omit_bounds))]
         type_: Box<Type>,
     },
     /// Associated types like `<Type as Trait>::Name` and `T::Item` where
@@ -1581,7 +1142,7 @@ pub enum Type {
         /// <core::slice::IterMut<'static, u32> as BetterIterator>::Item<'static>
         /// //                                                          ^^^^^^^^^
         /// ```
-        #[cfg_attr(feature = "rkyv_0_8", rkyv(omit_bounds))]
+        #[serde(default)]
         args: Option<Box<GenericArgs>>,
         /// The type with which this type is associated.
         ///
@@ -1589,7 +1150,6 @@ pub enum Type {
         /// <core::array::IntoIter<u32, 42> as Iterator>::Item
         /// // ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
         /// ```
-        #[cfg_attr(feature = "rkyv_0_8", rkyv(omit_bounds))]
         self_type: Box<Type>,
         /// `None` iff this is an *inherent* associated type.
         #[serde(rename = "trait")]
@@ -1599,22 +1159,6 @@ pub enum Type {
 
 /// A type that has a simple path to it. This is the kind of type of structs, unions, enums, etc.
 #[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
-#[cfg_attr(
-    feature = "rkyv_0_8",
-    derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)
-)]
-#[cfg_attr(feature = "rkyv_0_8", rkyv(derive(Debug)))]
-#[cfg_attr(feature = "rkyv_0_8", rkyv(serialize_bounds(
-    __S: rkyv::ser::Writer + rkyv::ser::Allocator,
-    __S::Error: rkyv::rancor::Source,
-)))]
-#[cfg_attr(feature = "rkyv_0_8", rkyv(deserialize_bounds(
-    __D::Error: rkyv::rancor::Source,
-)))]
-#[cfg_attr(feature = "rkyv_0_8", rkyv(bytecheck(bounds(
-    __C: rkyv::validation::ArchiveContext,
-    <__C as rkyv::rancor::Fallible>::Error: rkyv::rancor::Source,
-))))]
 pub struct Path {
     /// The path of the type.
     ///
@@ -1629,6 +1173,9 @@ pub struct Path {
     /// ```
     //
     // Example tested in ./tests/rustdoc-json/path_name.rs
+    ///
+    /// Older format versions (e.g. 37) emit this field as `name`; newer ones as `path`.
+    #[serde(alias = "name")]
     pub path: String,
     /// The ID of the type.
     pub id: Id,
@@ -1638,17 +1185,11 @@ pub struct Path {
     /// std::borrow::Cow<'static, str>
     /// //              ^^^^^^^^^^^^^^
     /// ```
-    #[cfg_attr(feature = "rkyv_0_8", rkyv(omit_bounds))]
     pub args: Option<Box<GenericArgs>>,
 }
 
 /// A type that is a function pointer.
 #[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
-#[cfg_attr(
-    feature = "rkyv_0_8",
-    derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)
-)]
-#[cfg_attr(feature = "rkyv_0_8", rkyv(derive(Debug)))]
 pub struct FunctionPointer {
     /// The signature of the function.
     pub sig: FunctionSignature,
@@ -1665,11 +1206,6 @@ pub struct FunctionPointer {
 
 /// The signature of a function.
 #[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
-#[cfg_attr(
-    feature = "rkyv_0_8",
-    derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)
-)]
-#[cfg_attr(feature = "rkyv_0_8", rkyv(derive(Debug)))]
 pub struct FunctionSignature {
     /// List of argument names and their type.
     ///
@@ -1688,11 +1224,6 @@ pub struct FunctionSignature {
 
 /// A `trait` declaration.
 #[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
-#[cfg_attr(
-    feature = "rkyv_0_8",
-    derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)
-)]
-#[cfg_attr(feature = "rkyv_0_8", rkyv(derive(Debug)))]
 pub struct Trait {
     /// Whether the trait is marked `auto` and is thus implemented automatically
     /// for all applicable types.
@@ -1717,11 +1248,6 @@ pub struct Trait {
 ///
 /// See [the tracking issue](https://github.com/rust-lang/rust/issues/41517)
 #[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
-#[cfg_attr(
-    feature = "rkyv_0_8",
-    derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)
-)]
-#[cfg_attr(feature = "rkyv_0_8", rkyv(derive(Debug)))]
 pub struct TraitAlias {
     /// Information about the type parameters and `where` clauses of the alias.
     pub generics: Generics,
@@ -1731,11 +1257,6 @@ pub struct TraitAlias {
 
 /// An `impl` block.
 #[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
-#[cfg_attr(
-    feature = "rkyv_0_8",
-    derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)
-)]
-#[cfg_attr(feature = "rkyv_0_8", rkyv(derive(Debug)))]
 pub struct Impl {
     /// Whether this impl is for an unsafe trait.
     pub is_unsafe: bool,
@@ -1774,11 +1295,6 @@ pub struct Impl {
 
 /// A `use` statement.
 #[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
-#[cfg_attr(
-    feature = "rkyv_0_8",
-    derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)
-)]
-#[cfg_attr(feature = "rkyv_0_8", rkyv(derive(Debug)))]
 #[serde(rename_all = "snake_case")]
 pub struct Use {
     /// The full path being imported.
@@ -1797,11 +1313,6 @@ pub struct Use {
 
 /// A procedural macro.
 #[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
-#[cfg_attr(
-    feature = "rkyv_0_8",
-    derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)
-)]
-#[cfg_attr(feature = "rkyv_0_8", rkyv(derive(Debug)))]
 pub struct ProcMacro {
     /// How this macro is supposed to be called: `foo!()`, `#[foo]` or `#[derive(foo)]`
     pub kind: MacroKind,
@@ -1825,6 +1336,7 @@ pub struct ProcMacro {
 
 /// The way a [`ProcMacro`] is declared to be used.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum MacroKind {
     /// A bang macro `foo!()`.
     Bang,
@@ -1875,6 +1387,7 @@ pub struct Static {
 }
 
 /// A primitive type declaration. Declarations of this kind can only come from the core library.
+#[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct Primitive {
     /// The name of the type.
     pub name: String,
