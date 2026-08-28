@@ -164,9 +164,8 @@ pub struct Item {
     pub links: HashMap<String, Id>,
     /// Attributes on this item, in pretty-printed Rust form (e.g. `"#[repr(C)]"`).
     ///
-    /// In format versions 37 through 52, rustdoc emits every non-doc attribute as a raw string.
-    /// Newer format versions emit structured [`Attribute`] values instead; parsing those requires
-    /// a version-gated deserializer, which is out of scope for the wire types consumed here.
+    /// In older versions, rustdoc emits every non-doc attribute as a raw string.
+    /// Newer format versions emit structured [`Attribute`] values instead; parsing those requires a version-gated deserializer, which is out of scope for the wire types consumed here.
     pub attrs: Vec<String>,
     /// Information about the item’s deprecation, if present.
     pub deprecation: Option<Deprecation>,

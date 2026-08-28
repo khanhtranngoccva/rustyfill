@@ -15,12 +15,4 @@
 
 pub mod original;
 
-/// Normalize a rustdoc path for emission.
-/// Converts `$crate::foo::Bar` or `crate::foo::Bar` → `foo::Bar`.
-pub(crate) fn normalize_path(path: &str) -> String {
-    let stripped = path
-        .strip_prefix("$crate::")
-        .or_else(|| path.strip_prefix("crate::"))
-        .unwrap_or(path);
-    stripped.to_string()
-}
+pub use original::*;

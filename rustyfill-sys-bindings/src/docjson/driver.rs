@@ -1,11 +1,15 @@
 //! Driver for invoking `cargo doc` with JSON output inside the rust-src tree.
 //!
 //! This module orchestrates the toolchain invocation that produces the
-//! authoritative JSON data our extraction pipeline consumes.
+//! authoritative JSON data our extraction pipeline consumes. Each library's
+//! blob is deserialized into the typed [`super::wire::Crate`] immediately, so
+//! downstream stages never touch raw JSON.
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::process::Command;
+
+use super::wire::Crate;
 
 /// Configuration for the doc-JSON generation run.
 #[derive(Debug, Clone, Default)]
@@ -131,8 +135,8 @@ fn rustc_version(rustc: Option<&Path>) -> String {
 
 /// The result of a successful doc-JSON generation run.
 pub struct DocJsonOutput {
-    /// Parsed JSON data keyed by library name ("core", "alloc", "std").
-    pub data: HashMap<String, serde_json::Value>,
+    /// Typed crate data keyed by library name ("core", "alloc", "std").
+    pub data: HashMap<String, Crate>,
     /// The format_version reported by the toolchain.
     pub format_version: u32,
     /// The sysroot path used.
@@ -237,16 +241,10 @@ fn run_generation(
         }
 
         match run_cargo_doc(lib, &lib_dir, &target_dir, config) {
-            Ok(json_path) => match load_json(&json_path) {
-                Ok(value) => {
-                    let fv = value
-                        .get("format_version")
-                        .and_then(|v| v.as_u64())
-                        .map(|v| v as u32);
-                    if let Some(v) = fv {
-                        format_version = Some(v);
-                    }
-                    data.insert(lib.to_string(), value);
+            Ok(json_path) => match load_crate(&json_path) {
+                Ok(crate_) => {
+                    format_version = Some(crate_.format_version);
+                    data.insert(lib.to_string(), crate_);
                 }
                 Err(e) => {
                     errors.push(format!("[{}] Failed to parse JSON: {}", lib, e));
@@ -324,8 +322,8 @@ fn try_load_cache(
     let mut data = HashMap::new();
     for lib in ["core", "alloc", "std"] {
         let file = dir.join(format!("{}.json", lib));
-        let value = load_json(&file).ok()?;
-        data.insert(lib.to_string(), value);
+        let crate_ = load_crate(&file).ok()?;
+        data.insert(lib.to_string(), crate_);
     }
 
     Some(DocJsonOutput {
@@ -336,7 +334,7 @@ fn try_load_cache(
 }
 
 fn save_cache(
-    data: &HashMap<String, serde_json::Value>,
+    data: &HashMap<String, Crate>,
     format_version: u32,
     version: &str,
     triple: &str,
@@ -476,8 +474,8 @@ fn run_cargo_doc(
     Ok(json_path)
 }
 
-/// Load and parse a JSON file.
-fn load_json(path: &Path) -> Result<serde_json::Value, String> {
+/// Load and deserialize a rustdoc JSON blob into the typed wire model.
+fn load_crate(path: &Path) -> Result<Crate, String> {
     let content = std::fs::read_to_string(path)
         .map_err(|e| format!("cannot read {}: {}", path.display(), e))?;
     serde_json::from_str(&content).map_err(|e| format!("invalid JSON in {}: {}", path.display(), e))

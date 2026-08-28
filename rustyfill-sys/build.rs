@@ -53,21 +53,22 @@ fn main() {
         std::process::exit(1);
     });
 
-    // Extract declared types from the JSON.
-    let types = extract_types(&doc_output.data, &target_spec).unwrap_or_else(|errs| {
-        for e in &errs {
-            eprintln!("cargo:error={}", e);
-        }
-        std::process::exit(1);
-    });
+    // Extract declared types from the JSON into the type table and export
+    // table (the latter carries all routing decisions for render time).
+    let (type_table, export_table) =
+        extract_types(&doc_output.data, &target_spec).unwrap_or_else(|errs| {
+            for e in &errs {
+                eprintln!("cargo:error={}", e);
+            }
+            std::process::exit(1);
+        });
 
-    // Emit binding files. Pass the full JSON data for canonical path
-    // resolution via resolved_path.id + crate_id + external_crates.
+    // Emit binding files.
     let input = emit::EmitInput {
         out_dir: out_path,
         spec: &target_spec,
-        types: &types,
-        json_data: &doc_output.data,
+        type_table: &type_table,
+        export_table: &export_table,
     };
     let errors = emit::emit_all(&input);
     for e in &errors {
@@ -136,8 +137,7 @@ fn find_library_root(rustc: Option<&Path>) -> PathBuf {
           rust-src checkout that matches your active rustc version \
           (containing core/, alloc/, and std/), or install the rust-src \
           component however your distribution provides it \
-          (e.g. `rustup component add rust-src`, `apt install \
-          librust-std-dev` on Debian/Ubuntu).",
+          (e.g. `rustup component add rust-src`).",
         tried
             .iter()
             .map(|t| format!("  - {}", t))
