@@ -87,22 +87,10 @@ fn std_target() -> BindingTarget {
     target.declare_struct_cfg("sys::sync::mutex::futex::Mutex", FUTEX_ACTIVE);
     target.declare_struct_cfg("sys::sync::mutex::futex::Futex", FUTEX_ACTIVE);
     target.declare_struct_cfg("sys::sync::mutex::futex::State", FUTEX_ACTIVE);
-    // The futex primitive type aliases. `SmallFutex` is a `pub type` alias
-    // (e.g., `AtomicU32` on unix, `AtomicU8` on Windows), not a struct, but
-    // declaring it pulls the defining module into the mirror so that the
-    // private aliases in `sys/sync/mutex/futex.rs`
-    // (`type Futex = futex::SmallFutex;`) resolve to the correct
-    // platform-specific definition. Declared through the import binding:
-    // `sys/sync/mutex/futex.rs` carries `use crate::sys::<futex-home>::{self,
-    // ..}`, so the trailing `futex` segment names the aliased module rather
-    // than a directory. This path is stable across toolchains even though the
-    // physical home of the aliases has moved (1.85: `sys/pal/unix/futex`;
-    // newer std: `sys/sync/futex/unix`).
-    target.declare_struct_cfg("sys::sync::mutex::futex::futex::SmallFutex", FUTEX_ACTIVE);
-    target.declare_struct_cfg(
-        "sys::sync::mutex::futex::futex::SmallPrimitive",
-        FUTEX_ACTIVE,
-    );
+    // Note: SmallFutex/SmallPrimitive type aliases are no longer declared.
+    // With the doc-JSON approach, field types are already fully resolved by
+    // the compiler (e.g., the futex Mutex's field is directly AtomicU32, not
+    // SmallFutex), so these aliases don't need separate binding files.
     // The lazy-allocation helper used by the pthread backend (active on
     // macOS/iOS). Mirrored so the polyfill can interact with its pointer slot.
     target.declare_struct("sys::sync::once_box::OnceBox");
@@ -120,9 +108,12 @@ fn core_target() -> BindingTarget {
     let mut target = BindingTarget::new("core");
 
     // Replace Unique with NonNull: both are thin pointer wrappers with identical
-    // layout. The generated Box<T,A>(Unique<T>, A) becomes Box<T,A>(NonNull<T>, A),
-    // avoiding the need to mirror core::ptr::Unique and its PointeeSized bound.
-    target.replace_path("core::ptr::Unique", "NonNull");
+    // layout. core::ptr::unique::Unique is private/unstable; the public re-export
+    // is core::ptr::NonNull. Generic args are preserved by the emitter.
+    target.replace_path(
+        "core::ptr::Unique",
+        "::__rustyfill_builtin_core::ptr::NonNull",
+    );
 
     // ── Known external types (recognized at their canonical location) ───────
     // The futex Mutex and OnceBox reference `Atomic<T>` via
@@ -232,6 +223,11 @@ fn alloc_target() -> BindingTarget {
 
     // ── B-tree internals (private, declared for mirroring) ──────────────────
     // node.rs: the physical node layout and borrow-type machinery.
+    // Constants used by the main crate's btree operations.
+    target.declare_const("collections::btree::node::CAPACITY");
+    target.declare_const("collections::btree::node::KV_IDX_CENTER");
+    target.declare_const("collections::btree::node::EDGE_IDX_LEFT_OF_CENTER");
+    target.declare_const("collections::btree::node::EDGE_IDX_RIGHT_OF_CENTER");
     target.declare_struct("collections::btree::node::LeafNode");
     // Type alias: `BoxedNode<K, V> = NonNull<LeafNode<K, V>>` — the element
     // type of InternalNode's edges array. Declared so it is mirrored and its
@@ -276,6 +272,10 @@ fn alloc_target() -> BindingTarget {
 
     // Replace Global with () since it requires unstable allocator_api.
     target.replace_path("alloc::alloc::Global", "()");
+
+    // Layout is defined in core::alloc but re-exported through alloc.
+    // Route references to the core builtin.
+    target.replace_path("alloc::alloc::Layout", "::__rustyfill_builtin_core::alloc::Layout");
 
     // BoxedArrayIntoIter requires unstable allocator_api feature and references
     // vec::IntoIter which needs Allocator bounds we can't satisfy in no_std.

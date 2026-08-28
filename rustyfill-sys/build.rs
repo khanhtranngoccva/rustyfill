@@ -1,22 +1,15 @@
 //! Build script for rustyfill-sys.
 //!
-//! Thin orchestrator over the binding-generation pipeline that lives in
-//! `rustyfill-sys-bindings::pipeline`. This file is responsible only for the
-//! cargo/toolchain-specific concerns:
+//! Orchestrates the doc-JSON-based binding generation pipeline:
 //!
-//! 1. Rejecting `-Zrandomize-layout` (it breaks deterministic field layout).
-//! 2. Locating the Rust standard-library source tree, installing the
-//!    `rust-src` component via rustup when it is missing from the active
-//!    toolchain.
-//! 3. Deriving the platform [`CfgContext`] from the `TARGET` triple.
-//! 4. Calling [`pipeline::generate`] and forwarding its diagnostics as
-//!    `cargo:error=` / `cargo:warning=` messages.
+//! 1. Rejects `-Zrandomize-layout` (breaks deterministic field layout).
+//! 2. Ensures the `rust-src` component is available on the active toolchain.
+//! 3. Invokes `cargo doc --output-format=json` inside each std library's source
+//!    directory to produce authoritative type definitions.
+//! 4. Extracts declared types from the JSON and emits binding files.
 //!
-//! The loader spec (`build/spec.rs`) is declared locally so that changes to
-//! what gets mirrored only touch this crate; the multi-phase generation
-//! algorithm itself (discovery, import expansion, type-registry construction,
-//! minimal-module mirroring, emission, and validation) remains implemented
-//! and unit-tested in the bindings crate.
+//! The loader spec (`build/spec.rs`) declares what gets mirrored; the
+//! extraction and emission algorithms live in `rustyfill-sys-bindings::docjson`.
 
 #[path = "build/spec.rs"]
 mod spec;
@@ -25,8 +18,7 @@ use std::env;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use rustyfill_sys_bindings::parser::CfgContext;
-use rustyfill_sys_bindings::pipeline::{self, PipelineInput};
+use rustyfill_sys_bindings::docjson::{driver, emit, extract_types};
 
 fn main() {
     reject_randomize_layout();
@@ -34,30 +26,42 @@ fn main() {
     let out_dir = env::var("OUT_DIR").unwrap();
     let out_path = Path::new(&out_dir);
 
-    let rust_src = find_rust_source_root();
-    let spec = spec::get_loader_spec();
-    // Cargo sets TARGET but not the individual CARGO_CFG_* vars in build
-    // scripts, so derive the platform from the target triple. Fall back to env
-    // (which works when run outside cargo) if TARGET is absent.
-    let cfg = match env::var("TARGET") {
-        Ok(t) => CfgContext::from_target_triple(&t),
-        Err(_) => CfgContext::from_env(),
-    };
+    // Ensure rust-src is available (install via rustup if missing).
+    ensure_rust_src();
 
-    let input = PipelineInput {
-        rust_src: &rust_src,
-        out_dir: out_path,
-        spec: &spec,
-        cfg: &cfg,
-    };
+    let target_spec = spec::get_loader_spec();
 
-    if let Err(report) = pipeline::generate(&input) {
-        for w in &report.warnings {
-            eprintln!("cargo:warning={}", w);
-        }
-        for e in &report.errors {
+    // Generate doc-JSON using the active toolchain. The compiler evaluates
+    // all cfgs for the target, so no manual cfg interpretation is needed.
+    let gen_config = driver::DocGenConfig::host().expect("cannot detect host triple");
+    let doc_output = driver::generate(&gen_config).unwrap_or_else(|errs| {
+        for e in &errs {
             eprintln!("cargo:error={}", e);
         }
+        std::process::exit(1);
+    });
+
+    // Extract declared types from the JSON.
+    let types = extract_types(&doc_output.data, &target_spec).unwrap_or_else(|errs| {
+        for e in &errs {
+            eprintln!("cargo:error={}", e);
+        }
+        std::process::exit(1);
+    });
+
+    // Emit binding files. Pass the full JSON data for canonical path
+    // resolution via resolved_path.id + crate_id + external_crates.
+    let input = emit::EmitInput {
+        out_dir: out_path,
+        spec: &target_spec,
+        types: &types,
+        json_data: &doc_output.data,
+    };
+    let errors = emit::emit_all(&input);
+    for e in &errors {
+        eprintln!("cargo:error={}", e);
+    }
+    if !errors.is_empty() {
         std::process::exit(1);
     }
 
@@ -65,100 +69,45 @@ fn main() {
     println!("cargo:rerun-if-env-changed=RUSTUP_TOOLCHAIN");
 }
 
-/// Find the root of the Rust standard library source tree.
-///
-/// Resolution order:
-/// 1. `$RUST_SRC_PATH`, if set and present.
-/// 2. The `rust-src` component installed alongside the active toolchain
-///    (`<sysroot>/lib/rustlib/src/rust/library`).
-/// 3. If the component is missing and the toolchain was provisioned by
-///    rustup, install it with `rustup component add rust-src` (idempotent;
-///    downloads only the ~10 MB rust-src artifact, reusing rustup's own
-///    cache and integrity checking) and retry step 2.
-fn find_rust_source_root() -> PathBuf {
-    if let Ok(src) = env::var("RUST_SRC_PATH") {
-        let p = PathBuf::from(src);
-        if p.exists() {
-            return p;
-        }
-    }
+// ── Toolchain setup ───────────────────────────────────────────────────────────
 
+/// Ensure the `rust-src` component is installed on the active toolchain.
+/// Panics with a helpful message if it cannot be found or installed.
+fn ensure_rust_src() {
     let sysroot_library = sysroot_library_candidate();
     if looks_like_library_root(&sysroot_library) {
-        return sysroot_library;
+        return;
     }
 
-    let detail = match ensure_rust_src_component(&sysroot_library) {
-        ComponentInstallOutcome::Installed => return sysroot_library,
-        ComponentInstallOutcome::NotApplicable => String::new(),
-        ComponentInstallOutcome::Failed(err) => format!("\nrustup fallback failed: {err}"),
-    };
+    // Try to install via rustup.
+    let rustc = env::var_os("RUSTC").unwrap_or_else(|| "rustc".into());
+    if is_rustup_provisioned(&rustc) {
+        if let Some(toolchain) = resolve_toolchain_name(&rustc) {
+            eprintln!(
+                "cargo:warning=rustyfill-sys: rust-src component missing from toolchain \
+                 `{toolchain}`; running `rustup component add rust-src --toolchain {toolchain}`"
+            );
+            let output = Command::new("rustup")
+                .args(["component", "add", "rust-src", "--toolchain", &toolchain])
+                .output();
+
+            if let Ok(output) = output {
+                if output.status.success() && looks_like_library_root(&sysroot_library) {
+                    return;
+                }
+            }
+        }
+    }
 
     panic!(
         "Could not locate Rust standard library source.\n\
          Attempted: $RUST_SRC_PATH and the rust-src component of the \
-         active toolchain ({}){detail}\n\n\
+         active toolchain ({})\n\n\
          Fix by installing the rust-src component (`rustup component \
          add rust-src`) or setting RUST_SRC_PATH to the library \
          source root.",
         sysroot_library.display()
     );
-}
-
-enum ComponentInstallOutcome {
-    /// The component was (re)installed successfully.
-    Installed,
-    /// The toolchain is not managed by rustup, so there is nothing to do.
-    NotApplicable,
-    /// rustup ran but reported a failure.
-    Failed(String),
-}
-
-/// Try to install the `rust-src` component into the active toolchain using
-/// rustup itself.
-fn ensure_rust_src_component(sysroot_library: &Path) -> ComponentInstallOutcome {
-    let rustc = env::var_os("RUSTC").unwrap_or_else(|| "rustc".into());
-
-    // A bare rustc (no rustup shim in front of it) cannot be augmented.
-    if !is_rustup_provisioned(&rustc) {
-        return ComponentInstallOutcome::NotApplicable;
-    }
-
-    let Some(toolchain) = resolve_toolchain_name(&rustc) else {
-        return ComponentInstallOutcome::Failed(
-            "could not determine the active rustup toolchain name".into(),
-        );
-    };
-
-    eprintln!(
-        "cargo:warning=rustyfill-sys: rust-src component missing from toolchain \
-         `{toolchain}`; running `rustup component add rust-src --toolchain {toolchain}`"
-    );
-
-    let output = Command::new("rustup")
-        .args(["component", "add", "rust-src", "--toolchain", &toolchain])
-        .output();
-
-    let output = match output {
-        Ok(o) => o,
-        Err(e) => {
-            return ComponentInstallOutcome::Failed(format!("failed to run rustup: {e}"));
-        }
-    };
-
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        return ComponentInstallOutcome::Failed(stderr.trim().to_string());
-    }
-
-    if looks_like_library_root(sysroot_library) {
-        ComponentInstallOutcome::Installed
-    } else {
-        ComponentInstallOutcome::Failed(format!(
-            "rustup reported success but {} is still missing",
-            sysroot_library.display()
-        ))
-    }
 }
 
 /// Whether the given rustc binary is a rustup proxy/shim rather than a bare
