@@ -275,7 +275,10 @@ fn alloc_target() -> BindingTarget {
 
     // Layout is defined in core::alloc but re-exported through alloc.
     // Route references to the core builtin.
-    target.replace_path("alloc::alloc::Layout", "::__rustyfill_builtin_core::alloc::Layout");
+    target.replace_path(
+        "alloc::alloc::Layout",
+        "::__rustyfill_builtin_core::alloc::Layout",
+    );
 
     // BoxedArrayIntoIter requires unstable allocator_api feature and references
     // vec::IntoIter which needs Allocator bounds we can't satisfy in no_std.

@@ -3,7 +3,10 @@
 //! Orchestrates the doc-JSON-based binding generation pipeline:
 //!
 //! 1. Rejects `-Zrandomize-layout` (breaks deterministic field layout).
-//! 2. Ensures the `rust-src` component is available on the active toolchain.
+//! 2. Locates the Rust standard library sources. No rustup dependency:
+//!    `$RUST_SRC_PATH` wins, then the sysroot's `rust-src` component, then
+//!    well-known distro locations (Debian/Ubuntu, Homebrew-style splits).
+//!    Only as a last-resort convenience does it try `rustup component add`.
 //! 3. Invokes `cargo doc --output-format=json` inside each std library's source
 //!    directory to produce authoritative type definitions.
 //! 4. Extracts declared types from the JSON and emits binding files.
@@ -26,14 +29,16 @@ fn main() {
     let out_dir = env::var("OUT_DIR").unwrap();
     let out_path = Path::new(&out_dir);
 
-    // Ensure rust-src is available (install via rustup if missing).
-    ensure_rust_src();
+    // Locate the std library sources. rustup is NOT required: RUST_SRC_PATH,
+    // the sysroot's rust-src component, and distro locations are all honored.
+    let src_root = find_library_root();
 
     let target_spec = spec::get_loader_spec();
 
     // Generate doc-JSON using the active toolchain. The compiler evaluates
     // all cfgs for the target, so no manual cfg interpretation is needed.
-    let gen_config = driver::DocGenConfig::host().expect("cannot detect host triple");
+    let mut gen_config = driver::DocGenConfig::host().expect("cannot detect host triple");
+    gen_config.src_root = Some(src_root);
     let doc_output = driver::generate(&gen_config).unwrap_or_else(|errs| {
         for e in &errs {
             eprintln!("cargo:error={}", e);
@@ -69,59 +74,149 @@ fn main() {
     println!("cargo:rerun-if-env-changed=RUSTUP_TOOLCHAIN");
 }
 
-// ── Toolchain setup ───────────────────────────────────────────────────────────
+// ── Std source discovery ──────────────────────────────────────────────────────
 
-/// Ensure the `rust-src` component is installed on the active toolchain.
-/// Panics with a helpful message if it cannot be found or installed.
-fn ensure_rust_src() {
-    let sysroot_library = sysroot_library_candidate();
-    if looks_like_library_root(&sysroot_library) {
-        return;
+/// Locate the root of the Rust standard library sources
+/// (the directory containing `core/`, `alloc/`, `std/`).
+///
+/// Discovery order — rustup is never required:
+/// 1. `$RUST_SRC_PATH` — the conventional escape hatch for distro-packaged
+///    compilers and Nix-style installs that ship rust-src outside the sysroot.
+/// 2. The active toolchain's own `rust-src` component location.
+/// 3. Well-known non-rustup locations (Debian/Ubuntu `/usr/share/rustc`,
+///    Homebrew-style splits next to the sysroot).
+/// 4. Best-effort convenience: if the active toolchain is rustup-managed,
+///    try `rustup component add rust-src` once.
+///
+/// Panics with an actionable message if nothing works.
+fn find_library_root() -> PathBuf {
+    let mut tried: Vec<String> = Vec::new();
+
+    // 1. RUST_SRC_PATH (explicit user/distro override always wins).
+    if let Some(src_path) = env::var_os("RUST_SRC_PATH") {
+        let p = PathBuf::from(src_path);
+        tried.push(format!("RUST_SRC_PATH={}", p.display()));
+        if looks_like_library_root(&p) {
+            return p;
+        }
     }
 
-    // Try to install via rustup.
-    let rustc = env::var_os("RUSTC").unwrap_or_else(|| "rustc".into());
-    if is_rustup_provisioned(&rustc) {
-        if let Some(toolchain) = resolve_toolchain_name(&rustc) {
-            eprintln!(
-                "cargo:warning=rustyfill-sys: rust-src component missing from toolchain \
-                 `{toolchain}`; running `rustup component add rust-src --toolchain {toolchain}`"
-            );
-            let output = Command::new("rustup")
-                .args(["component", "add", "rust-src", "--toolchain", &toolchain])
-                .output();
+    // 2+3. Sysroot-derived candidates and distro locations.
+    for candidate in library_root_candidates() {
+        tried.push(candidate.display().to_string());
+        if looks_like_library_root(&candidate) {
+            return candidate;
+        }
+    }
 
-            if let Ok(output) = output {
-                if output.status.success() && looks_like_library_root(&sysroot_library) {
-                    return;
-                }
+    // 4. Last-resort convenience: auto-install via rustup when available.
+    if try_install_via_rustup() {
+        for candidate in library_root_candidates() {
+            if looks_like_library_root(&candidate) {
+                return candidate;
             }
         }
     }
 
     panic!(
-        "Could not locate Rust standard library source.\n\
-         Attempted: $RUST_SRC_PATH and the rust-src component of the \
-         active toolchain ({})\n\n\
-         Fix by installing the rust-src component (`rustup component \
-         add rust-src`) or setting RUST_SRC_PATH to the library \
-         source root.",
-        sysroot_library.display()
+        "Could not locate Rust standard library sources.\n\
+         Tried:\n\
+         {}\n\n\
+         Fix by pointing RUST_SRC_PATH at the `library` directory of a \
+         rust-src checkout that matches your active rustc version \
+         (containing core/, alloc/, and std/), or install the rust-src \
+         component however your distribution provides it \
+         (e.g. `rustup component add rust-src`, `apt install \
+         librust-std-dev` on Debian/Ubuntu).",
+        tried
+            .iter()
+            .map(|t| format!("  - {}", t))
+            .collect::<Vec<_>>()
+            .join("\n")
     );
 }
 
-/// Whether the given rustc binary is a rustup proxy/shim rather than a bare
-/// compiler installation.
-fn is_rustup_provisioned(rustc: &std::ffi::OsStr) -> bool {
-    // Explicit override wins.
-    if env::var_os("RUSTUP_HOME").is_some() {
-        return true;
+/// Candidate locations for the std `library/` root, in preference order.
+fn library_root_candidates() -> Vec<PathBuf> {
+    let mut out = Vec::new();
+
+    if let Some(sysroot) = active_sysroot() {
+        // Standard rust-src component layout inside the sysroot.
+        out.push(sysroot.join("lib/rustlib/src/rust/library"));
+
+        // Distributions that split the compiler from its sources keep them
+        // side by side: /usr/lib/rustlib → /usr/share/rustc/lib/rustlib.
+        if let Some(top) = sysroot.parent() {
+            out.push(top.join("share/rustc/lib/rustlib/src/rust/library"));
+        }
     }
 
-    // Ask rustup directly: it exits non-zero with a clear message when no
-    // toolchains are visible to it.
+    // Debian/Ubuntu canonical location (also covers most derivatives).
+    out.push(PathBuf::from(
+        "/usr/share/rustc/lib/rustlib/src/rust/library",
+    ));
+
+    out
+}
+
+/// The sysroot of the active rustc, if it can be determined.
+fn active_sysroot() -> Option<PathBuf> {
+    let rustc = env::var_os("RUSTC").unwrap_or_else(|| "rustc".into());
+    let output = Command::new(&rustc).arg("--print=sysroot").output().ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let sysroot = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    if sysroot.is_empty() {
+        return None;
+    }
+    Some(PathBuf::from(sysroot))
+}
+
+/// Whether `dir` looks like the root of a rust-src `library/` tree.
+fn looks_like_library_root(dir: &Path) -> bool {
+    dir.join("std/src/lib.rs").is_file()
+        && dir.join("core/src/lib.rs").is_file()
+        && dir.join("alloc/src/lib.rs").is_file()
+}
+
+// ── Optional rustup convenience ───────────────────────────────────────────────
+
+/// As a best-effort convenience (never a hard dependency), try to install the
+/// rust-src component when the active toolchain is managed by rustup.
+/// Returns true if the install command succeeded.
+fn try_install_via_rustup() -> bool {
+    let Some(rustc) = env::var_os("RUSTC") else {
+        return false;
+    };
+    if !is_rustup_managed(&rustc) {
+        return false;
+    }
+    let Some(toolchain) = resolve_toolchain_name(&rustc) else {
+        return false;
+    };
+
+    eprintln!(
+        "cargo:warning=rustyfill-sys: rust-src not found; attempting \
+          `rustup component add rust-src --toolchain {toolchain}`"
+    );
+    let Ok(output) = Command::new("rustup")
+        .args(["component", "add", "rust-src", "--toolchain", &toolchain])
+        .output()
+    else {
+        return false;
+    };
+    output.status.success()
+}
+
+/// Whether the given rustc binary is backed by a rustup-managed toolchain.
+/// Used only to decide whether the optional auto-install above is worth trying.
+fn is_rustup_managed(rustc: &std::ffi::OsStr) -> bool {
+    // A working `rustup toolchain list` implies rustup manages this machine.
     if let Ok(output) = Command::new("rustup").arg("toolchain").arg("list").output() {
-        return output.status.success();
+        if output.status.success() {
+            return true;
+        }
     }
 
     // Heuristic fallback: rustup shims live under <rustup-home>/bin and their
@@ -166,27 +261,6 @@ fn resolve_toolchain_name(rustc: &std::ffi::OsStr) -> Option<String> {
         }
     }
     None
-}
-
-/// `<sysroot>/lib/rustlib/src/rust/library` for the active rustc.
-fn sysroot_library_candidate() -> PathBuf {
-    let rustc = env::var_os("RUSTC").unwrap_or_else(|| "rustc".into());
-    let default = PathBuf::from("__no_sysroot__").join("lib/rustlib/src/rust/library");
-    let Ok(output) = Command::new(&rustc).arg("--print=sysroot").output() else {
-        return default;
-    };
-    let sysroot = String::from_utf8_lossy(&output.stdout).trim().to_string();
-    if sysroot.is_empty() {
-        return default;
-    }
-    PathBuf::from(sysroot).join("lib/rustlib/src/rust/library")
-}
-
-/// Whether `dir` looks like the root of a rust-src `library/` tree.
-fn looks_like_library_root(dir: &Path) -> bool {
-    dir.join("std/src/lib.rs").is_file()
-        && dir.join("core/src/lib.rs").is_file()
-        && dir.join("alloc/src/lib.rs").is_file()
 }
 
 /// Abort the build if `-Zrandomize-layout` is active in the current

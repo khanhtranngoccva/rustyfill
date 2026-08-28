@@ -36,10 +36,7 @@ pub enum TypeRepr {
     /// A tuple type: `(A, B, C)`.
     Tuple(Vec<TypeRepr>),
     /// An array type: `[T; N]`.
-    Array {
-        element: Box<TypeRepr>,
-        len: String,
-    },
+    Array { element: Box<TypeRepr>, len: String },
     /// An unsized slice: `[T]`.
     Slice(Box<TypeRepr>),
     /// A function pointer: `fn(A, B) -> C`.
@@ -160,9 +157,7 @@ impl TypeRepr {
                     .get("mutable")
                     .and_then(|v| v.as_bool())
                     .ok_or("raw_pointer missing mutable")?;
-                let pointee_ty = payload
-                    .get("type")
-                    .ok_or("raw_pointer missing type")?;
+                let pointee_ty = payload.get("type").ok_or("raw_pointer missing type")?;
                 let pointee = Box::new(Self::parse_type(pointee_ty)?);
                 Ok(Self::RawPointer { mutable, pointee })
             }
@@ -178,9 +173,7 @@ impl TypeRepr {
                     .get("mutable")
                     .and_then(|v| v.as_bool())
                     .unwrap_or(false);
-                let referent_ty = payload
-                    .get("type")
-                    .ok_or("borrowed_ref missing type")?;
+                let referent_ty = payload.get("type").ok_or("borrowed_ref missing type")?;
                 let referent = Box::new(Self::parse_type(referent_ty)?);
                 Ok(Self::BorrowedRef {
                     lifetime,
@@ -190,20 +183,16 @@ impl TypeRepr {
             }
 
             "tuple" => {
-                let arr = payload
-                    .as_array()
-                    .ok_or("tuple expected array")?;
+                let arr = payload.as_array().ok_or("tuple expected array")?;
                 let elems = arr
                     .iter()
-                    .map(|e| Self::parse_type(e))
+                    .map(Self::parse_type)
                     .collect::<Result<Vec<_>, _>>()?;
                 Ok(Self::Tuple(elems))
             }
 
             "array" => {
-                let elem_ty = payload
-                    .get("type")
-                    .ok_or("array missing type")?;
+                let elem_ty = payload.get("type").ok_or("array missing type")?;
                 let len = payload
                     .get("len")
                     .and_then(|v| v.as_str())
@@ -221,9 +210,7 @@ impl TypeRepr {
 
             "function_ptr" => {
                 let fp = payload;
-                let sig = fp
-                    .get("sig")
-                    .ok_or("function_ptr missing sig")?;
+                let sig = fp.get("sig").ok_or("function_ptr missing sig")?;
                 let inputs_arr = sig
                     .get("inputs")
                     .and_then(|v| v.as_array())
@@ -232,9 +219,7 @@ impl TypeRepr {
                     .iter()
                     .map(|pair| {
                         // Each input is [name, type]
-                        let ty_val = pair
-                            .get(1)
-                            .ok_or("function input missing type")?;
+                        let ty_val = pair.get(1).ok_or("function input missing type")?;
                         Self::parse_type(ty_val)
                     })
                     .collect::<Result<Vec<_>, _>>()?;
@@ -272,10 +257,7 @@ impl TypeRepr {
                     .map(|t| {
                         t.get("trait")
                             .and_then(|tp| tp.get("path"))
-                            .or_else(|| {
-                                t.get("trait")
-                                    .and_then(|tp| tp.get("name"))
-                            })
+                            .or_else(|| t.get("trait").and_then(|tp| tp.get("name")))
                             .and_then(|v| v.as_str())
                             .map(String::from)
                             .ok_or("dyn_trait bound missing path")
@@ -289,9 +271,7 @@ impl TypeRepr {
             }
 
             "impl_trait" => {
-                let bounds_arr = payload
-                    .as_array()
-                    .ok_or("impl_trait expected array")?;
+                let bounds_arr = payload.as_array().ok_or("impl_trait expected array")?;
                 let bounds = bounds_arr
                     .iter()
                     .map(|b| {
@@ -328,7 +308,11 @@ impl TypeRepr {
                     .get("trait")
                     .filter(|t| !t.is_null())
                     .and_then(|t| t.get("path"))
-                    .or_else(|| qp.get("trait").filter(|t| !t.is_null()).and_then(|t| t.get("name")))
+                    .or_else(|| {
+                        qp.get("trait")
+                            .filter(|t| !t.is_null())
+                            .and_then(|t| t.get("name"))
+                    })
                     .and_then(|v| v.as_str())
                     .map(String::from);
                 let args = qp
@@ -397,7 +381,13 @@ impl TypeRepr {
             } => {
                 let abi_str = abi
                     .as_deref()
-                    .map(|a| if a == "Rust" { String::new() } else { format!("extern \"{}\" ", a) })
+                    .map(|a| {
+                        if a == "Rust" {
+                            String::new()
+                        } else {
+                            format!("extern \"{}\" ", a)
+                        }
+                    })
                     .unwrap_or_default();
                 let params: Vec<String> = inputs.iter().map(|i| i.to_source()).collect();
                 let mut param_str = params.join(", ");
@@ -429,12 +419,15 @@ impl TypeRepr {
                 trait_path,
                 args,
             } => {
-                let args_str = args
-                    .as_ref()
-                    .map(|a| a.to_source())
-                    .unwrap_or_default();
+                let args_str = args.as_ref().map(|a| a.to_source()).unwrap_or_default();
                 match trait_path {
-                    Some(trait_) => format!("<{} as {}>::{}{}", self_type.to_source(), trait_, name, args_str),
+                    Some(trait_) => format!(
+                        "<{} as {}>::{}{}",
+                        self_type.to_source(),
+                        trait_,
+                        name,
+                        args_str
+                    ),
                     None => format!("{}::{}{}", self_type.to_source(), name, args_str),
                 }
             }
@@ -449,10 +442,7 @@ impl GenericArgsRepr {
             .as_object()
             .ok_or_else(|| format!("expected generic args object, got: {}", short(val)))?;
 
-        let (tag, payload) = obj
-            .iter()
-            .next()
-            .ok_or("empty generic args")?;
+        let (tag, payload) = obj.iter().next().ok_or("empty generic args")?;
 
         match tag.as_str() {
             "angle_bracketed" => {
@@ -480,7 +470,9 @@ impl GenericArgsRepr {
                                         let eq_val = &b["equality"];
                                         // Equality can be a direct Type or wrapped in an array
                                         let ty_src = if eq_val.is_object() {
-                                            TypeRepr::parse_type(eq_val).map(|t| t.to_source()).unwrap_or_else(|_| "???".into())
+                                            TypeRepr::parse_type(eq_val)
+                                                .map(|t| t.to_source())
+                                                .unwrap_or_else(|_| "???".into())
                                         } else {
                                             "???".to_string()
                                         };
@@ -502,7 +494,7 @@ impl GenericArgsRepr {
                     .and_then(|v| v.as_array())
                     .map(|arr| {
                         arr.iter()
-                            .map(|t| TypeRepr::parse_type(t))
+                            .map(TypeRepr::parse_type)
                             .collect::<Result<Vec<_>, _>>()
                     })
                     .transpose()?
@@ -510,7 +502,7 @@ impl GenericArgsRepr {
                 let output = payload
                     .get("output")
                     .filter(|o| !o.is_null())
-                    .map(|o| TypeRepr::parse_type(o))
+                    .map(TypeRepr::parse_type)
                     .transpose()?;
 
                 // Represent as a pseudo-type in the args list
@@ -536,7 +528,7 @@ impl GenericArgsRepr {
             if !inner.is_empty() {
                 inner.push(',');
             }
-            inner.push_str(" ");
+            inner.push(' ');
             inner.push_str(&self.constraints.join(", "));
         }
         format!("<{}>", inner)
@@ -549,10 +541,7 @@ impl GenericArgRepr {
             .as_object()
             .ok_or_else(|| format!("expected generic arg object, got: {}", short(val)))?;
 
-        let (tag, payload) = obj
-            .iter()
-            .next()
-            .ok_or("empty generic arg")?;
+        let (tag, payload) = obj.iter().next().ok_or("empty generic arg")?;
 
         match tag.as_str() {
             "lifetime" => {
@@ -617,12 +606,22 @@ trait HasTypeTag {
 impl HasTypeTag for Value {
     fn has_type_tag(&self) -> bool {
         // A "wrapped" type looks like {"type": {...}} where the outer object
-        // has ONLY the "type" key (plus maybe "generics"). 
+        // has ONLY the "type" key (plus maybe "generics").
         // An actual type has tags like "resolved_path", "generic", "primitive", etc.
         let known_tags = [
-            "resolved_path", "generic", "primitive", "raw_pointer",
-            "borrowed_ref", "tuple", "array", "slice", "function_ptr",
-            "dyn_trait", "impl_trait", "infer", "qualified_path",
+            "resolved_path",
+            "generic",
+            "primitive",
+            "raw_pointer",
+            "borrowed_ref",
+            "tuple",
+            "array",
+            "slice",
+            "function_ptr",
+            "dyn_trait",
+            "impl_trait",
+            "infer",
+            "qualified_path",
         ];
         if let Some(obj) = self.as_object() {
             if obj.len() == 1 {

@@ -219,20 +219,6 @@ impl BindingTarget {
         });
     }
 
-    /// Collect all active declarations (unconditional + cfg-gated ones whose
-    /// predicate matches) into a single list. This is what the pipeline iterates
-    /// over during discovery and emission.
-    #[deprecated(note = "use `declarations()` — the compiler handles cfg evaluation")]
-    pub fn active_declarations(&self, cfg: &crate::parser::CfgContext) -> Vec<String> {
-        let mut out: Vec<String> = self.declared_structs.clone();
-        for g in &self.cfg_gated_decls {
-            if cfg.eval_predicate(&g.predicate) {
-                out.push(g.path.clone());
-            }
-        }
-        out
-    }
-
     /// Return all declared structs (both unconditional and cfg-gated).
     /// With the doc-JSON approach, the compiler has already evaluated cfgs,
     /// so all declarations in the spec are potentially active. The extraction
@@ -280,12 +266,7 @@ impl BindingTarget {
         // marker (if present) yields an empty first segment that we skip.
         self.path_replacements
             .iter()
-            .filter_map(|pr| {
-                pr.path
-                    .split("::")
-                    .filter(|s| !s.is_empty())
-                    .last()
-            })
+            .filter_map(|pr| pr.path.split("::").filter(|s| !s.is_empty()).last())
             .collect()
     }
 }

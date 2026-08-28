@@ -33,6 +33,15 @@ use crate::loader_spec::LoaderSpec;
 ///
 /// `json_data` maps library name → parsed top-level JSON object.
 /// Returns one [`model::DocType`] per successfully located declaration.
+///
+/// Missing declarations are diagnosed, not swallowed:
+/// - An **unconditional** declaration that isn't found is a hard error — it
+///   means the spec is out of date with this toolchain's std (renamed or
+///   moved type), and failing loudly here beats a confusing compile error
+///   deep in the downstream polyfill.
+/// - A **cfg-gated** declaration that isn't found is expected when its
+///   predicate didn't activate for the current target (the compiler excluded
+///   it). Those are skipped with a note on stderr, never an error.
 pub fn extract_types(
     json_data: &HashMap<String, serde_json::Value>,
     spec: &LoaderSpec,
@@ -49,26 +58,41 @@ pub fn extract_types(
             continue;
         };
 
-        let all_decls = target.declarations();
-        for decl in &all_decls {
+        // Split declarations by gating so missing ones can be diagnosed
+        // appropriately. Unconditional set first, then cfg-gated paths.
+        let unconditional: Vec<&String> = target.declared_structs.iter().collect();
+        let gated_paths: Vec<&String> = target.cfg_gated_decls.iter().map(|g| &g.path).collect();
+
+        for decl in &unconditional {
             match locate_and_extract(data, decl, &target.lib_name) {
                 Ok(mut doc_type) => {
-                    // Set the module path from the spec declaration:
-                    // everything except the last segment (the type name).
-                    let segments: Vec<&str> = decl.split("::").collect();
-                    let module_path = if segments.len() > 1 {
-                        segments[..segments.len() - 1].join("::")
-                    } else {
-                        String::new()
-                    };
-                    doc_type.set_module_path(module_path);
-                    results.push(doc_type);
+                    push_with_module_path(&mut results, &mut doc_type, decl);
                 }
-                Err(_e) => {
-                    // The type doesn't exist in this toolchain's doc-JSON.
-                    // This is expected for cfg-gated declarations whose
-                    // predicate didn't activate for the current target
-                    // (the compiler excluded them). Skip silently.
+                Err(e) => {
+                    errors.push(format!(
+                        "[{}] declared type '{}' not found in this toolchain's std \
+                         ({}) — the standard library may have renamed or moved it",
+                        target.lib_name, decl, e
+                    ));
+                }
+            }
+        }
+
+        for decl in &gated_paths {
+            match locate_and_extract(data, decl, &target.lib_name) {
+                Ok(mut doc_type) => {
+                    push_with_module_path(&mut results, &mut doc_type, decl);
+                }
+                Err(_) => {
+                    // Expected: the cfg predicate didn't activate for this
+                    // target, so the compiler excluded the item. Note it so
+                    // a genuine rename still leaves a trace in build logs.
+                    eprintln!(
+                        "cargo:warning=rustyfill-sys: cfg-gated declaration \
+                          [{}::{}] not present in doc-JSON (predicate inactive \
+                          for this target); skipping",
+                        target.lib_name, decl
+                    );
                 }
             }
         }
@@ -79,6 +103,23 @@ pub fn extract_types(
     } else {
         Err(errors)
     }
+}
+
+/// Attach the module path derived from the spec declaration (everything
+/// except the leaf type name) and append to the results.
+fn push_with_module_path(
+    results: &mut Vec<model::DocType>,
+    doc_type: &mut model::DocType,
+    decl: &str,
+) {
+    let segments: Vec<&str> = decl.split("::").collect();
+    let module_path = if segments.len() > 1 {
+        segments[..segments.len() - 1].join("::")
+    } else {
+        String::new()
+    };
+    doc_type.set_module_path(module_path);
+    results.push(doc_type.clone());
 }
 
 /// Locate a type by its spec path (e.g., `"collections::btree::map::BTreeMap"`)
@@ -110,12 +151,16 @@ fn locate_and_extract(
         .and_then(|v| v.as_object())
         .ok_or("missing 'paths' in doc JSON")?;
 
+    // One-time O(N) scan of the paths table into hash indexes; every lookup
+    // below is then O(segments) instead of O(table size).
+    let idx = PathIndex::build(paths_table);
+
     // Build the expected full path: [lib_name, seg1, seg2, ..., TypeName]
     let target_full_path: Vec<&str> = std::iter::once(lib_name)
         .chain(spec_path.split("::"))
         .collect();
 
-    let item_id = resolve_type_id(index, paths_table, &target_full_path)?;
+    let item_id = resolve_type_id(index, &idx, &target_full_path)?;
 
     let item = index
         .get(&item_id.to_string())
@@ -124,77 +169,96 @@ fn locate_and_extract(
     model::DocType::from_json(item, index, lib_name)
 }
 
+/// Hash indexes over a single library's `paths` table, built once per lookup
+/// session. Keys are the joined path segments (`core::cell::UnsafeCell`).
+struct PathIndex {
+    /// Exact path → item id, restricted to type-ish kinds.
+    types: HashMap<String, u64>,
+    /// Exact path → item id, restricted to modules.
+    modules: HashMap<String, u64>,
+}
+
+impl PathIndex {
+    fn build(paths_table: &serde_json::Map<String, serde_json::Value>) -> Self {
+        let mut types = HashMap::new();
+        let mut modules = HashMap::new();
+
+        for (id_str, path_entry) in paths_table {
+            let Ok(id) = id_str.parse::<u64>() else {
+                continue;
+            };
+            let path_arr = match path_entry.get("path").and_then(|v| v.as_array()) {
+                Some(a) => a,
+                None => continue,
+            };
+            let key: String = path_arr
+                .iter()
+                .filter_map(|s| s.as_str())
+                .collect::<Vec<_>>()
+                .join("::");
+            if key.is_empty() {
+                continue;
+            }
+            let kind = path_entry
+                .get("kind")
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
+            match kind {
+                "struct" | "enum" | "union" | "type_alias" | "constant" => {
+                    types.entry(key).or_insert(id);
+                }
+                "module" => {
+                    modules.entry(key).or_insert(id);
+                }
+                _ => {}
+            }
+        }
+
+        Self { types, modules }
+    }
+
+    fn find_type(&self, path: &[&str]) -> Option<u64> {
+        self.types.get(path.join("::").as_str()).copied()
+    }
+
+    fn find_module(&self, path: &[&str]) -> Option<u64> {
+        self.modules.get(path.join("::").as_str()).copied()
+    }
+}
+
 /// Resolve a full path to an item ID, handling re-exports and module aliases.
 fn resolve_type_id(
     index: &serde_json::Map<String, serde_json::Value>,
-    paths_table: &serde_json::Map<String, serde_json::Value>,
+    idx: &PathIndex,
     full_path: &[&str],
 ) -> Result<u64, String> {
     // Strategy 1: direct path match.
-    if let Some(id) = find_in_paths_table(paths_table, full_path) {
+    if let Some(id) = idx.find_type(full_path) {
         return Ok(id);
     }
 
     // Strategy 2+3: walk the path segment by segment, following modules and
     // resolving re-exports / module aliases along the way.
-    resolve_by_walking(index, paths_table, full_path)
-}
-
-/// Find an item whose path exactly matches in the paths table.
-fn find_in_paths_table(
-    paths_table: &serde_json::Map<String, serde_json::Value>,
-    target_path: &[&str],
-) -> Option<u64> {
-    for (id_str, path_entry) in paths_table {
-        let path_arr = path_entry.get("path").and_then(|v| v.as_array())?;
-        let path_strings: Vec<&str> = path_arr.iter().filter_map(|s| s.as_str()).collect();
-        if path_strings == target_path {
-            let kind = path_entry
-                .get("kind")
-                .and_then(|v| v.as_str())
-                .unwrap_or("");
-            if matches!(kind, "struct" | "enum" | "union" | "type_alias" | "constant") {
-                return id_str.parse().ok();
-            }
-        }
-    }
-    None
+    resolve_by_walking(index, idx, full_path)
 }
 
 /// Walk path segments through the module tree, following re-exports and
-/// module aliases. Starts from the crate root and navigates segment by segment.
+/// module aliases. Navigates from the deepest known module prefix.
 fn resolve_by_walking(
     index: &serde_json::Map<String, serde_json::Value>,
-    paths_table: &serde_json::Map<String, serde_json::Value>,
+    idx: &PathIndex,
     full_path: &[&str],
 ) -> Result<u64, String> {
-    // Start: find the crate root module. The first segment is the lib name.
-    // We need to find the top-level module for each subsequent segment.
-    //
-    // Approach: try progressively shorter prefixes in the paths table to find
-    // a known module, then navigate from there.
-    //
-    // First, try to find the deepest prefix that exists as a module in the
-    // paths table. From there, we navigate the remaining segments.
+    // Find the deepest prefix that exists as a module in the paths table,
+    // then navigate the remaining segments from there.
     let mut start_idx = 0;
     let mut current_mod_id: Option<u64> = None;
 
-    // Try longest prefix first (most specific known module).
     for prefix_len in (2..full_path.len()).rev() {
-        let prefix: Vec<&str> = full_path[..prefix_len].to_vec();
-        if let Some(mod_id) = find_module_in_paths_table(paths_table, &prefix) {
+        if let Some(mod_id) = idx.find_module(&full_path[..prefix_len]) {
             start_idx = prefix_len;
             current_mod_id = Some(mod_id);
             break;
-        }
-    }
-
-    // If no prefix matched, try the first two segments (lib + first module).
-    if current_mod_id.is_none() && full_path.len() >= 2 {
-        let prefix: Vec<&str> = full_path[..2].to_vec();
-        if let Some(mod_id) = find_module_in_paths_table(paths_table, &prefix) {
-            start_idx = 2;
-            current_mod_id = Some(mod_id);
         }
     }
 
@@ -213,49 +277,29 @@ fn resolve_by_walking(
         if is_last {
             // Last segment: look for the type (struct/enum/union/type_alias)
             // or a re-export of it in the current module.
-            let type_id = find_type_in_module(index, mod_id, segment)
-                .ok_or_else(|| {
-                    format!(
-                        "type '{}' not found in module (resolving {:?})",
-                        segment, full_path
-                    )
-                })?;
+            let type_id = find_type_in_module(index, mod_id, segment).ok_or_else(|| {
+                format!(
+                    "type '{}' not found in module (resolving {:?})",
+                    segment, full_path
+                )
+            })?;
             return Ok(type_id);
         } else {
             // Intermediate segment: must be a submodule or module alias.
-            mod_id = find_submodule_in_module(index, paths_table, mod_id, segment)
-                .ok_or_else(|| {
-                    format!(
-                        "submodule '{}' not found (resolving {:?})",
-                        segment, full_path
-                    )
-                })?;
+            mod_id = find_submodule_in_module(index, mod_id, segment).ok_or_else(|| {
+                format!(
+                    "submodule '{}' not found (resolving {:?})",
+                    segment, full_path
+                )
+            })?;
         }
     }
 
     // Shouldn't reach here (last segment always returns).
-    Err(format!("unreachable: path {:?} exhausted without finding type", full_path))
-}
-
-/// Find a module by exact path in the paths table.
-fn find_module_in_paths_table(
-    paths_table: &serde_json::Map<String, serde_json::Value>,
-    target_path: &[&str],
-) -> Option<u64> {
-    for (id_str, path_entry) in paths_table {
-        let path_arr = path_entry.get("path").and_then(|v| v.as_array())?;
-        let path_strings: Vec<&str> = path_arr.iter().filter_map(|s| s.as_str()).collect();
-        if path_strings == target_path {
-            let kind = path_entry
-                .get("kind")
-                .and_then(|v| v.as_str())
-                .unwrap_or("");
-            if kind == "module" {
-                return id_str.parse().ok();
-            }
-        }
-    }
-    None
+    Err(format!(
+        "unreachable: path {:?} exhausted without finding type",
+        full_path
+    ))
 }
 
 /// Find a type (struct/enum/union/type_alias) in a module's items, either
@@ -281,9 +325,10 @@ fn find_type_in_module(
             // Also check inner kind (some items have null top-level kind).
             let inner = item.get("inner");
             if let Some(inner_obj) = inner.and_then(|v| v.as_object()) {
-                if inner_obj.keys().any(|k| {
-                    matches!(k.as_str(), "struct" | "enum" | "union" | "type_alias")
-                }) {
+                if inner_obj
+                    .keys()
+                    .any(|k| matches!(k.as_str(), "struct" | "enum" | "union" | "type_alias"))
+                {
                     return Some(iid);
                 }
             }
@@ -304,7 +349,6 @@ fn find_type_in_module(
 /// Find a submodule (or module alias via `use ... {self}`) in a module's items.
 fn find_submodule_in_module(
     index: &serde_json::Map<String, serde_json::Value>,
-    paths_table: &serde_json::Map<String, serde_json::Value>,
     mod_id: u64,
     sub_name: &str,
 ) -> Option<u64> {
@@ -342,29 +386,6 @@ fn find_submodule_in_module(
         }
     }
 
-    // Fallback: try constructing the child path and looking in the paths table.
-    // Get the parent module's path, append the sub_name, and search.
-    let parent_path_str = mod_id.to_string();
-    for (id_str, path_entry) in paths_table {
-        if id_str != &parent_path_str {
-            continue;
-        }
-        let path_arr = path_entry.get("path").and_then(|v| v.as_array())?;
-        let mut child_path: Vec<&str> = path_arr.iter().filter_map(|s| s.as_str()).collect();
-        child_path.push(sub_name);
-        // Now search for this child path.
-        for (cid_str, cpe) in paths_table {
-            let cpa = cpe.get("path").and_then(|v| v.as_array())?;
-            let cps: Vec<&str> = cpa.iter().filter_map(|s| s.as_str()).collect();
-            if cps == child_path {
-                let kind = cpe.get("kind").and_then(|v| v.as_str()).unwrap_or("");
-                if kind == "module" {
-                    return cid_str.parse().ok();
-                }
-            }
-        }
-    }
-
     None
 }
 
@@ -395,7 +416,10 @@ mod tests {
             }
         };
 
-        assert!(output.data.contains_key("core"), "core JSON missing from output");
+        assert!(
+            output.data.contains_key("core"),
+            "core JSON missing from output"
+        );
         let core_data = &output.data["core"];
 
         // Verify format_version is sane (>= 37 for rustc 1.85+, our MSRV)
@@ -407,10 +431,13 @@ mod tests {
         let paths_table = core_data["paths"].as_object().unwrap();
         let mut found_atomic = false;
         for (id_str, entry) in paths_table {
-            let path_arr = entry.get("path").and_then(|v| v.as_array()).unwrap_or_default();
+            let Some(path_arr) = entry.get("path").and_then(|v| v.as_array()) else {
+                continue;
+            };
             let segs: Vec<&str> = path_arr.iter().filter_map(|s| s.as_str()).collect();
             if segs.last() == Some(&"AtomicUsize") && segs.first() == Some(&"core") {
-                let id: u64 = id_str.parse().unwrap();
+                // The paths table is keyed by numeric ID; make sure ours parses.
+                let _id: u64 = id_str.parse().unwrap();
                 let canon = segs.join("::");
                 assert_eq!(canon, "core::sync::atomic::AtomicUsize");
                 found_atomic = true;
@@ -482,8 +509,8 @@ mod tests {
         }
 
         // --- Cell: plain struct with repr(transparent) ---
-        let cell2 = locate_and_extract(core_data, "cell::Cell", "core")
-            .expect("failed to extract Cell");
+        let cell2 =
+            locate_and_extract(core_data, "cell::Cell", "core").expect("failed to extract Cell");
         assert_eq!(cell2.name, "Cell");
         assert!(
             cell2.repr_attrs.iter().any(|r| r == "transparent"),

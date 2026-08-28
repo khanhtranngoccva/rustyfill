@@ -17,6 +17,10 @@ pub struct DocGenConfig {
     pub extra_rustflags: Vec<String>,
     /// Feature flags to enable when documenting the library crates.
     pub features: Vec<String>,
+    /// Explicit std `library/` root (containing `core/`, `alloc/`, `std/`).
+    /// When set, this overrides sysroot-based discovery — use it for
+    /// non-rustup toolchain layouts (distro packages, Nix, RUST_SRC_PATH).
+    pub src_root: Option<PathBuf>,
 }
 
 impl DocGenConfig {
@@ -58,6 +62,11 @@ pub struct DocJsonOutput {
 /// Generate doc-JSON for the given set of libraries by running `cargo doc`
 /// inside each library's source directory in the rust-src tree.
 ///
+/// Results are cached on disk keyed by `(rustc version, target triple,
+/// src-root path)` so repeat builds within the same toolchain skip the
+/// expensive re-documentation entirely. Set `RUSTYFILL_NO_DOC_CACHE=1` to
+/// bypass the cache.
+///
 /// # Requirements
 /// - The active Rust toolchain must have the `rust-src` component installed.
 /// - `RUSTC_BOOTSTRAP=1` is set automatically to unlock `-Zunstable-options`.
@@ -65,21 +74,66 @@ pub struct DocJsonOutput {
 /// # Returns
 /// Parsed JSON data for each successfully documented library.
 pub fn generate(config: &DocGenConfig) -> Result<DocJsonOutput, Vec<String>> {
-    let sysroot = find_sysroot()?;
-    let src_root = sysroot
-        .join("lib")
-        .join("rustlib")
-        .join("src")
-        .join("rust")
-        .join("library");
+    let (sysroot, src_root) = match &config.src_root {
+        Some(root) => (find_sysroot().unwrap_or_default(), root.clone()),
+        None => {
+            let sysroot = find_sysroot()?;
+            let src_root = sysroot
+                .join("lib")
+                .join("rustlib")
+                .join("src")
+                .join("rust")
+                .join("library");
+            (sysroot, src_root)
+        }
+    };
 
     if !src_root.is_dir() {
         return Err(vec![format!(
-            "rust-src not found at {}. Install it with: rustup component add rust-src",
+            "std library sources not found at {}. Point RUST_SRC_PATH at a \
+             rust-src `library` directory matching your rustc version, or \
+             install the rust-src component however your distribution provides it.",
             src_root.display()
         )]);
     }
 
+    let rustc_version = rustc_version_string();
+    let use_cache = std::env::var_os("RUSTYFILL_NO_DOC_CACHE").is_none();
+
+    if use_cache {
+        if let Some(cached) = try_load_cache(
+            &rustc_version,
+            &config.target_triple,
+            &src_root,
+            sysroot.clone(),
+        ) {
+            return Ok(cached);
+        }
+    }
+
+    let result = run_generation(sysroot.clone(), &src_root, config)?;
+
+    if use_cache {
+        if let Err(e) = save_cache(
+            &result.data,
+            result.format_version,
+            &rustc_version,
+            &config.target_triple,
+            &src_root,
+        ) {
+            eprintln!("warning: failed to write doc-JSON cache: {}", e);
+        }
+    }
+
+    Ok(result)
+}
+
+/// Run `cargo doc` for each library and assemble the parsed output.
+fn run_generation(
+    sysroot: PathBuf,
+    src_root: &Path,
+    config: &DocGenConfig,
+) -> Result<DocJsonOutput, Vec<String>> {
     // Use a temp directory for cargo's target to avoid polluting the toolchain
     let target_dir = std::env::temp_dir().join(format!(
         "rustyfill-docgen-{}-{}",
@@ -96,28 +150,29 @@ pub fn generate(config: &DocGenConfig) -> Result<DocJsonOutput, Vec<String>> {
     for lib in &libs {
         let lib_dir = src_root.join(lib);
         if !lib_dir.is_dir() {
-            errors.push(format!("Library directory not found: {}", lib_dir.display()));
+            errors.push(format!(
+                "Library directory not found: {}",
+                lib_dir.display()
+            ));
             continue;
         }
 
         match run_cargo_doc(lib, &lib_dir, &target_dir, config) {
-            Ok(json_path) => {
-                match load_json(&json_path) {
-                    Ok(value) => {
-                        let fv = value
-                            .get("format_version")
-                            .and_then(|v| v.as_u64())
-                            .map(|v| v as u32);
-                        if let Some(v) = fv {
-                            format_version = Some(v);
-                        }
-                        data.insert(lib.to_string(), value);
+            Ok(json_path) => match load_json(&json_path) {
+                Ok(value) => {
+                    let fv = value
+                        .get("format_version")
+                        .and_then(|v| v.as_u64())
+                        .map(|v| v as u32);
+                    if let Some(v) = fv {
+                        format_version = Some(v);
                     }
-                    Err(e) => {
-                        errors.push(format!("[{}] Failed to parse JSON: {}", lib, e));
-                    }
+                    data.insert(lib.to_string(), value);
                 }
-            }
+                Err(e) => {
+                    errors.push(format!("[{}] Failed to parse JSON: {}", lib, e));
+                }
+            },
             Err(e) => {
                 errors.push(format!("[{}] cargo doc failed: {}", lib, e));
             }
@@ -136,6 +191,116 @@ pub fn generate(config: &DocGenConfig) -> Result<DocJsonOutput, Vec<String>> {
     } else {
         Err(errors)
     }
+}
+
+// ── Cache layer ───────────────────────────────────────────────────────────────
+
+/// Directory holding per-toolchain doc-JSON caches.
+fn cache_base_dir() -> PathBuf {
+    std::env::var_os("XDG_CACHE_HOME")
+        .map(PathBuf::from)
+        .filter(|p| p.is_absolute())
+        .unwrap_or_else(|| dirs_fallback_home().join(".cache"))
+        .join("rustyfill")
+}
+
+fn dirs_fallback_home() -> PathBuf {
+    std::env::var_os("HOME")
+        .or_else(|| std::env::var_os("USERPROFILE"))
+        .map(PathBuf::from)
+        .unwrap_or_else(std::env::temp_dir)
+}
+
+/// Short hash of arbitrary strings, used to keep cache paths filesystem-safe.
+fn short_hash(s: &str) -> String {
+    let mut h: u64 = 0xcbf29ce484222325;
+    for b in s.bytes() {
+        h ^= b as u64;
+        h = h.wrapping_mul(0x100000001b3);
+    }
+    format!("{:016x}", h)
+}
+
+/// Cache directory for a specific (version, triple, src-root) combination.
+fn cache_dir_for(version: &str, triple: &str, src_root: &Path) -> PathBuf {
+    let canonical = src_root
+        .canonicalize()
+        .unwrap_or_else(|_| src_root.to_path_buf());
+    let key = format!("{}|{}|{}", version, triple, canonical.display());
+    cache_base_dir().join(format!("docjson-{}", short_hash(&key)))
+}
+
+fn try_load_cache(
+    version: &str,
+    triple: &str,
+    src_root: &Path,
+    sysroot: PathBuf,
+) -> Option<DocJsonOutput> {
+    let dir = cache_dir_for(version, triple, src_root);
+    let meta_path = dir.join("meta.json");
+    let meta: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(meta_path).ok()?).ok()?;
+    let format_version = meta.get("format_version")?.as_u64()? as u32;
+
+    let mut data = HashMap::new();
+    for lib in ["core", "alloc", "std"] {
+        let file = dir.join(format!("{}.json", lib));
+        let value = load_json(&file).ok()?;
+        data.insert(lib.to_string(), value);
+    }
+
+    Some(DocJsonOutput {
+        data,
+        format_version,
+        sysroot,
+    })
+}
+
+fn save_cache(
+    data: &HashMap<String, serde_json::Value>,
+    format_version: u32,
+    version: &str,
+    triple: &str,
+    src_root: &Path,
+) -> Result<(), String> {
+    let dir = cache_dir_for(version, triple, src_root);
+    std::fs::create_dir_all(&dir).map_err(|e| format!("cannot create {}: {}", dir.display(), e))?;
+
+    // Serialize everything first, then write files, so a mid-write failure
+    // leaves the previous cache intact rather than half-updated.
+    let mut serialized: Vec<(String, String)> = Vec::with_capacity(data.len());
+    for (k, v) in data {
+        let json = serde_json::to_string(v).map_err(|e| format!("serialize {}: {}", k, e))?;
+        serialized.push((k.clone(), json));
+    }
+
+    for (lib, json) in serialized {
+        let path = dir.join(format!("{}.json", lib));
+        std::fs::write(&path, json)
+            .map_err(|e| format!("cannot write {}: {}", path.display(), e))?;
+    }
+
+    let meta = serde_json::json!({
+        "format_version": format_version,
+        "rustc_version": version,
+        "triple": triple,
+    });
+    std::fs::write(dir.join("meta.json"), meta.to_string())
+        .map_err(|e| format!("cannot write meta.json: {}", e))?;
+
+    Ok(())
+}
+
+/// The full `rustc --version` string (includes channel + date), which changes
+/// whenever the std sources could plausibly differ.
+fn rustc_version_string() -> String {
+    Command::new("rustc")
+        .arg("--version")
+        .output()
+        .ok()
+        .filter(|o| o.status.success())
+        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+        .unwrap_or_else(|| "unknown-rustc".into())
 }
 
 /// Find the sysroot of the active Rust toolchain.
@@ -231,6 +396,5 @@ fn run_cargo_doc(
 fn load_json(path: &Path) -> Result<serde_json::Value, String> {
     let content = std::fs::read_to_string(path)
         .map_err(|e| format!("cannot read {}: {}", path.display(), e))?;
-    serde_json::from_str(&content)
-        .map_err(|e| format!("invalid JSON in {}: {}", path.display(), e))
+    serde_json::from_str(&content).map_err(|e| format!("invalid JSON in {}: {}", path.display(), e))
 }

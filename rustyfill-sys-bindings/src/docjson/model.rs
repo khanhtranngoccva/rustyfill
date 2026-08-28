@@ -66,15 +66,11 @@ impl DocType {
         match kind_tag.as_str() {
             "struct" => {
                 let struct_data = inner.get("struct").ok_or("missing struct data")?;
-                let kind_val = struct_data
-                    .get("kind")
-                    .ok_or("struct missing kind")?;
+                let kind_val = struct_data.get("kind").ok_or("struct missing kind")?;
 
                 let (fields, is_tuple) = parse_struct_kind(kind_val, index, &name)?;
 
-                let (generics, where_predicates) = parse_generics(
-                    struct_data.get("generics"),
-                )?;
+                let (generics, where_predicates) = parse_generics(struct_data.get("generics"))?;
 
                 Ok(Self {
                     lib: lib_name.to_string(),
@@ -164,9 +160,7 @@ impl DocType {
 
             "type_alias" => {
                 let alias_data = inner.get("type_alias").ok_or("missing alias data")?;
-                let ty_val = alias_data
-                    .get("type")
-                    .ok_or("alias missing type")?;
+                let ty_val = alias_data.get("type").ok_or("alias missing type")?;
                 let rhs = TypeRepr::from_json(ty_val)?;
 
                 let (generics, where_predicates) = parse_generics(alias_data.get("generics"))?;
@@ -281,9 +275,7 @@ impl DocField {
             .ok_or("field has no name")?
             .to_string();
 
-        let vis_raw = item
-            .get("visibility")
-            .ok_or("field has no visibility")?;
+        let vis_raw = item.get("visibility").ok_or("field has no visibility")?;
         let visibility = parse_visibility(vis_raw);
 
         // In format v57+: inner.struct_field IS the type directly
@@ -408,9 +400,9 @@ fn parse_struct_kind(
             let fields = field_ids
                 .iter()
                 .map(|&fid| {
-                    let field_item = index
-                        .get(&fid.to_string())
-                        .ok_or_else(|| format!("field id {} not in index (struct {})", fid, type_name))?;
+                    let field_item = index.get(&fid.to_string()).ok_or_else(|| {
+                        format!("field id {} not in index (struct {})", fid, type_name)
+                    })?;
                     DocField::from_json(field_item)
                 })
                 .collect::<Result<Vec<_>, String>>()?;
@@ -437,9 +429,9 @@ fn parse_struct_kind(
                 let fid = entry
                     .as_u64()
                     .ok_or_else(|| format!("invalid tuple field id at position {}", i))?;
-                let field_item = index
-                    .get(&fid.to_string())
-                    .ok_or_else(|| format!("tuple field id {} not in index (struct {})", fid, type_name))?;
+                let field_item = index.get(&fid.to_string()).ok_or_else(|| {
+                    format!("tuple field id {} not in index (struct {})", fid, type_name)
+                })?;
                 fields.push(DocField::from_json(field_item)?);
             }
 
@@ -565,15 +557,17 @@ fn parse_generics(val: Option<&Value>) -> Result<(Vec<DocGenericParam>, Vec<Stri
             .ok_or("generic param missing name")?
             .to_string();
 
-        let kind_obj = p
-            .get("kind")
-            .ok_or("generic param missing kind")?;
+        let kind_obj = p.get("kind").ok_or("generic param missing kind")?;
 
         let param = if let Some(lt) = kind_obj.get("lifetime") {
             let outlives: Vec<String> = lt
                 .get("outlives")
                 .and_then(|v| v.as_array())
-                .map(|arr| arr.iter().filter_map(|s| s.as_str().map(String::from)).collect())
+                .map(|arr| {
+                    arr.iter()
+                        .filter_map(|s| s.as_str().map(String::from))
+                        .collect()
+                })
                 .unwrap_or_default();
             DocGenericParam {
                 name,
@@ -619,10 +613,7 @@ fn parse_generics(val: Option<&Value>) -> Result<(Vec<DocGenericParam>, Vec<Stri
                 .map(TypeRepr::from_json)
                 .transpose()?
                 .map(|t| t.to_source());
-            let default_value = cp
-                .get("default")
-                .and_then(|v| v.as_str())
-                .map(String::from);
+            let default_value = cp.get("default").and_then(|v| v.as_str()).map(String::from);
 
             DocGenericParam {
                 name,
@@ -665,10 +656,7 @@ fn render_generic_bound(val: &Value) -> Result<String, String> {
         .as_object()
         .ok_or_else(|| format!("expected bound object, got: {}", short_val(val)))?;
 
-    let (tag, payload) = obj
-        .iter()
-        .next()
-        .ok_or("empty bound")?;
+    let (tag, payload) = obj.iter().next().ok_or("empty bound")?;
 
     match tag.as_str() {
         "trait_bound" => {
@@ -681,9 +669,7 @@ fn render_generic_bound(val: &Value) -> Result<String, String> {
             Ok(trait_path.to_string())
         }
         "outlives" => {
-            let lt = payload
-                .as_str()
-                .ok_or("outlives expected string")?;
+            let lt = payload.as_str().ok_or("outlives expected string")?;
             Ok(format!("'{}", lt.trim_start_matches("'")))
         }
         other => Err(format!("unknown bound tag '{}'", other)),
@@ -695,16 +681,11 @@ fn render_where_predicate(val: &Value) -> Result<String, String> {
         .as_object()
         .ok_or_else(|| format!("expected predicate object, got: {}", short_val(val)))?;
 
-    let (tag, payload) = obj
-        .iter()
-        .next()
-        .ok_or("empty predicate")?;
+    let (tag, payload) = obj.iter().next().ok_or("empty predicate")?;
 
     match tag.as_str() {
         "bound_predicate" => {
-            let ty = payload
-                .get("type")
-                .ok_or("bound_predicate missing type")?;
+            let ty = payload.get("type").ok_or("bound_predicate missing type")?;
             let ty_src = TypeRepr::parse_type_public(ty)?.to_source();
             let bounds: Vec<String> = payload
                 .get("bounds")
@@ -726,17 +707,17 @@ fn render_where_predicate(val: &Value) -> Result<String, String> {
             let outlives: Vec<String> = payload
                 .get("outlives")
                 .and_then(|v| v.as_array())
-                .map(|arr| arr.iter().filter_map(|s| s.as_str().map(String::from)).collect())
+                .map(|arr| {
+                    arr.iter()
+                        .filter_map(|s| s.as_str().map(String::from))
+                        .collect()
+                })
                 .unwrap_or_default();
             Ok(format!("{}: {}", lt, outlives.join(" + ")))
         }
         "eq_predicate" => {
-            let lhs = payload
-                .get("lhs")
-                .ok_or("eq_predicate missing lhs")?;
-            let rhs = payload
-                .get("rhs")
-                .ok_or("eq_predicate missing rhs")?;
+            let lhs = payload.get("lhs").ok_or("eq_predicate missing lhs")?;
+            let rhs = payload.get("rhs").ok_or("eq_predicate missing rhs")?;
             let lhs_src = TypeRepr::parse_type_public(lhs)?.to_source();
             // RHS is a Term (Type or Constant)
             let rhs_src = if rhs.get("type").is_some() {
@@ -796,7 +777,12 @@ fn parse_attributes(attrs: &[Value]) -> (Vec<String>, Vec<Vec<String>>, Vec<Stri
                     }
                 }
                 if let Some(other_str) = obj.get("other").and_then(|v| v.as_str()) {
-                    classify_other_attr(other_str, &mut repr_attrs, &mut derive_attrs, &mut other_attrs);
+                    classify_other_attr(
+                        other_str,
+                        &mut repr_attrs,
+                        &mut derive_attrs,
+                        &mut other_attrs,
+                    );
                 }
                 if let Some(must_use) = obj.get("must_use") {
                     let reason = must_use

@@ -27,7 +27,9 @@ use std::path::Path;
 
 use serde_json::Value;
 
-use crate::docjson::model::{DocField, DocGenericParam, DocType, DocTypeKind, DocVariant, DocVisibility};
+use crate::docjson::model::{
+    DocField, DocGenericParam, DocType, DocTypeKind, DocVariant, DocVisibility,
+};
 use crate::docjson::type_repr::TypeRepr;
 use crate::formatter::format_source;
 use crate::loader_spec::LoaderSpec;
@@ -57,15 +59,24 @@ const PUBLIC_PATH_CORRECTIONS: &[(&str, &str)] = &[
     ("core::ptr::mut_ptr::MutPtr", "core::ptr::MutPtr"),
     ("core::ptr::const_ptr::ConstPtr", "core::ptr::ConstPtr"),
     // core::mem
-    ("core::mem::maybe_uninit::MaybeUninit", "core::mem::MaybeUninit"),
-    ("core::mem::manually_drop::ManuallyDrop", "core::mem::ManuallyDrop"),
+    (
+        "core::mem::maybe_uninit::MaybeUninit",
+        "core::mem::MaybeUninit",
+    ),
+    (
+        "core::mem::manually_drop::ManuallyDrop",
+        "core::mem::ManuallyDrop",
+    ),
     // core::alloc
     ("core::alloc::layout::Layout", "core::alloc::Layout"),
     // core::cell
     ("core::cell::cell::Cell", "core::cell::Cell"),
     ("core::cell::once_cell::OnceCell", "core::cell::OnceCell"),
     ("core::cell::lazy::LazyCell", "core::cell::LazyCell"),
-    ("core::cell::unsafe_cell::UnsafeCell", "core::cell::UnsafeCell"),
+    (
+        "core::cell::unsafe_cell::UnsafeCell",
+        "core::cell::UnsafeCell",
+    ),
 ];
 
 // ── Public API ────────────────────────────────────────────────────────────────
@@ -135,11 +146,7 @@ pub fn emit_all(input: &EmitInput) -> Vec<String> {
             }
             let formatted = format_source(&content);
             if let Err(e) = std::fs::write(&out_path, formatted) {
-                errors.push(format!(
-                    "failed to write {}: {}",
-                    out_path.display(),
-                    e
-                ));
+                errors.push(format!("failed to write {}: {}", out_path.display(), e));
             }
         }
     }
@@ -241,7 +248,7 @@ fn render_binding_file(types: &[&DocType], spec: &LoaderSpec, routes: &RouteTabl
             &mut out,
             ty,
             &ctx,
-            &extra_derives.get(i).map(|v| v.as_slice()).unwrap_or(&[]),
+            extra_derives.get(i).map(|v| v.as_slice()).unwrap_or(&[]),
             &ignored_traits,
         );
     }
@@ -320,21 +327,23 @@ fn render_doc_type(
                     field_strs.join(", ")
                 ));
             } else {
-                out.push_str(&format!("pub struct {}{}{}\n{{\n", ty.name, generics_str, where_clause));
+                out.push_str(&format!(
+                    "pub struct {}{}{}\n{{\n",
+                    ty.name, generics_str, where_clause
+                ));
                 for f in fields {
                     let vis = field_vis(&f.visibility);
-                    out.push_str(&format!(
-                        "    {}{},\n",
-                        vis,
-                        render_field(f, ctx)
-                    ));
+                    out.push_str(&format!("    {}{},\n", vis, render_field(f, ctx)));
                 }
                 out.push_str("}\n\n");
             }
         }
 
         DocTypeKind::Enum { variants } => {
-            out.push_str(&format!("pub enum {}{}{}\n{{\n", ty.name, generics_str, where_clause));
+            out.push_str(&format!(
+                "pub enum {}{}{}\n{{\n",
+                ty.name, generics_str, where_clause
+            ));
             for v in variants {
                 render_variant(out, v, ctx);
             }
@@ -342,14 +351,13 @@ fn render_doc_type(
         }
 
         DocTypeKind::Union { fields } => {
-            out.push_str(&format!("pub union {}{}{}\n{{\n", ty.name, generics_str, where_clause));
+            out.push_str(&format!(
+                "pub union {}{}{}\n{{\n",
+                ty.name, generics_str, where_clause
+            ));
             for f in fields {
                 let vis = field_vis(&f.visibility);
-                out.push_str(&format!(
-                    "    {}{},\n",
-                    vis,
-                    render_field(f, ctx)
-                ));
+                out.push_str(&format!("    {}{},\n", vis, render_field(f, ctx)));
             }
             out.push_str("}\n\n");
         }
@@ -362,9 +370,14 @@ fn render_doc_type(
             ));
         }
 
-        DocTypeKind::Constant { ty: const_ty, value } => {
-            // Strip trailing type suffix from the value (e.g., "11usize" → "11").
-            let clean_value = strip_type_suffix(value);
+        DocTypeKind::Constant {
+            ty: const_ty,
+            value,
+        } => {
+            // Strip the trailing type suffix rustdoc appends to literal
+            // values (e.g. "11usize" → "11"), using the known const type so
+            // the stripping is exact rather than guesswork.
+            let clean_value = strip_type_suffix(value, const_ty);
             out.push_str(&format!(
                 "pub const {}: {} = {};\n\n",
                 ty.name, const_ty, clean_value
@@ -373,13 +386,16 @@ fn render_doc_type(
     }
 }
 
-/// Strip a trailing primitive type suffix from a constant value string.
-/// Rustdoc encodes values like `"11usize"`, `"truebool"`, `"5u32"`.
-fn strip_type_suffix(value: &str) -> &str {
-    for suffix in ["usize", "isize", "u8", "u16", "u32", "u64", "u128", "i8", "i16", "i32", "i64", "i128", "f32", "f64", "bool", "char"] {
-        if let Some(stripped) = value.strip_suffix(suffix) {
-            return stripped;
-        }
+/// Strip the trailing type suffix rustdoc appends to literal constant values
+/// (e.g. `"11usize"` → `"11"`, `"truebool"` → `"true"`).
+///
+/// The expected type is passed in because it is authoritative: rustdoc gives
+/// us the const's type separately, so we strip exactly that suffix when the
+/// value ends with it. For non-literal values (expressions) no suffix exists
+/// and the value is returned unchanged.
+fn strip_type_suffix<'a>(value: &'a str, expected_ty: &str) -> &'a str {
+    if !expected_ty.is_empty() && value.ends_with(expected_ty) {
+        return &value[..value.len() - expected_ty.len()];
     }
     value
 }
@@ -479,15 +495,14 @@ fn build_route_tables(
     generated_paths: &BTreeSet<String>,
 ) -> RouteTables {
     let mut tables: HashMap<String, HashMap<u64, String>> = HashMap::new();
+    let mut corrections_used: BTreeSet<usize> = BTreeSet::new();
 
     for (lib_name, data) in json_data {
         let paths = match data.get("paths").and_then(|v| v.as_object()) {
             Some(p) => p,
             None => continue,
         };
-        let external_crates = data
-            .get("external_crates")
-            .and_then(|v| v.as_object());
+        let external_crates = data.get("external_crates").and_then(|v| v.as_object());
 
         let lib_table = tables.entry(lib_name.clone()).or_default();
 
@@ -506,13 +521,15 @@ fn build_route_tables(
             let canon_raw = segments_raw.join("::");
 
             // Apply public path correction for well-known re-exports.
-            let segments_owned: Option<String> = PUBLIC_PATH_CORRECTIONS
+            let correction_idx = PUBLIC_PATH_CORRECTIONS
                 .iter()
-                .find(|(from, _)| *from == canon_raw)
-                .map(|(_, to)| to.to_string());
+                .position(|(from, _)| *from == canon_raw);
+            if let Some(ci) = correction_idx {
+                corrections_used.insert(ci);
+            }
 
-            let segments: Vec<&str> = match &segments_owned {
-                Some(corrected) => corrected.split("::").collect(),
+            let segments: Vec<&str> = match correction_idx {
+                Some(ci) => PUBLIC_PATH_CORRECTIONS[ci].1.split("::").collect(),
                 None => segments_raw,
             };
 
@@ -548,6 +565,20 @@ fn build_route_tables(
             };
 
             lib_table.insert(item_id, route);
+        }
+    }
+
+    // A correction entry that never matched means std renamed or moved the
+    // private definition site on this toolchain — references to that type now
+    // route to the (private) canonical path instead of the public re-export.
+    for (i, (from, _to)) in PUBLIC_PATH_CORRECTIONS.iter().enumerate() {
+        if !corrections_used.contains(&i) {
+            eprintln!(
+                "cargo:warning=rustyfill-sys: public-path correction \
+                 '{from}' did not match any item in this toolchain's doc-JSON \
+                 — the standard library may have moved this type; check that \
+                 references still route to the public re-export"
+            );
         }
     }
 
@@ -628,7 +659,10 @@ fn render_type(ty: &TypeRepr, ctx: &RenderCtx) -> String {
             mutable,
             referent,
         } => {
-            let lt = lifetime.as_deref().map(|l| format!("{} ", l)).unwrap_or_default();
+            let lt = lifetime
+                .as_deref()
+                .map(|l| format!("{} ", l))
+                .unwrap_or_default();
             let mut_kw = if *mutable { "mut " } else { "" };
             format!("&{}{}{}", lt, mut_kw, render_type(referent, ctx))
         }
@@ -656,7 +690,13 @@ fn render_type(ty: &TypeRepr, ctx: &RenderCtx) -> String {
         } => {
             let abi_str = abi
                 .as_deref()
-                .map(|a| if a == "Rust" { String::new() } else { format!("extern \"{}\" ", a) })
+                .map(|a| {
+                    if a == "Rust" {
+                        String::new()
+                    } else {
+                        format!("extern \"{}\" ", a)
+                    }
+                })
                 .unwrap_or_default();
             let params: Vec<String> = inputs.iter().map(|i| render_type(i, ctx)).collect();
             let mut param_str = params.join(", ");
@@ -675,7 +715,10 @@ fn render_type(ty: &TypeRepr, ctx: &RenderCtx) -> String {
         }
         // Dynamic trait object.
         TypeRepr::DynTrait { bounds, lifetime } => {
-            let lt = lifetime.as_deref().map(|l| format!(" + '{}'", l)).unwrap_or_default();
+            let lt = lifetime
+                .as_deref()
+                .map(|l| format!(" + '{}'", l))
+                .unwrap_or_default();
             format!("dyn {}{}", bounds.join(" + "), lt)
         }
         // Opaque type.
@@ -722,14 +765,6 @@ fn try_spec_replacement(path: &str, ctx: &RenderCtx) -> Option<String> {
     None
 }
 
-/// Normalize a resolved path using the pre-built ID→route table.
-///
-/// Resolution order:
-/// 1. Spec path replacements (explicit user overrides).
-/// 2. ID lookup in the pre-built routes table (authoritative, uses
-///    crate_id + external_crates for unambiguous routing).
-/// 3. Fallback: heuristic routing based on the raw path string (for
-///    edge cases where no ID is available).
 /// Normalize a resolved path using the per-library route table.
 ///
 /// Spec replacements are handled upstream in `render_type` (as complete
@@ -861,7 +896,10 @@ fn same_module_as_current(route: &str, ctx: &RenderCtx) -> bool {
 }
 
 /// Render generic arguments, recursing into type positions.
-fn render_generic_args(args: &crate::docjson::type_repr::GenericArgsRepr, ctx: &RenderCtx) -> String {
+fn render_generic_args(
+    args: &crate::docjson::type_repr::GenericArgsRepr,
+    ctx: &RenderCtx,
+) -> String {
     let parts: Vec<String> = args
         .args
         .iter()
@@ -887,7 +925,11 @@ fn render_generic_args(args: &crate::docjson::type_repr::GenericArgsRepr, ctx: &
 // ── Generics rendering ────────────────────────────────────────────────────────
 
 /// Render the `<...>` generics clause for a type definition.
-fn render_generics(params: &[DocGenericParam], ignored_traits: &[String], ctx: &RenderCtx) -> String {
+fn render_generics(
+    params: &[DocGenericParam],
+    ignored_traits: &[String],
+    ctx: &RenderCtx,
+) -> String {
     if params.is_empty() {
         return String::new();
     }
@@ -899,11 +941,7 @@ fn render_generics(params: &[DocGenericParam], ignored_traits: &[String], ctx: &
     format!("<{}>", parts.join(", "))
 }
 
-fn render_generic_param(
-    p: &DocGenericParam,
-    ignored_traits: &[String],
-    ctx: &RenderCtx,
-) -> String {
+fn render_generic_param(p: &DocGenericParam, ignored_traits: &[String], ctx: &RenderCtx) -> String {
     if p.is_lifetime {
         let outlives = if p.outlives.is_empty() {
             String::new()
@@ -1052,7 +1090,14 @@ fn emit_manifest(out_dir: &Path, all_files: &[String]) {
 
     for (name, node) in &tree {
         // Top-level segments are already full paths (e.g., "boxed", "collections").
-        emit_manifest_node(&mut content, name, node, 1, &modules_with_children, &all_files_set);
+        emit_manifest_node(
+            &mut content,
+            name,
+            node,
+            1,
+            &modules_with_children,
+            &all_files_set,
+        );
     }
 
     content.push_str("}\n\n");
