@@ -29,16 +29,23 @@ fn main() {
     let out_dir = env::var("OUT_DIR").unwrap();
     let out_path = Path::new(&out_dir);
 
-    // Locate the std library sources. rustup is NOT required: RUST_SRC_PATH,
-    // the sysroot's rust-src component, and distro locations are all honored.
-    let src_root = find_library_root();
+    // Build the doc-gen config from cargo's own environment ($CARGO, $RUSTC,
+    // $TARGET, $CARGO_CFG_FEATURES) so doc-JSON generation is driven by the
+    // *exact* toolchain compiling this crate — not whatever resolves on PATH.
+    // This means `rustup run nightly cargo build` documents against nightly's
+    // std automatically.
+    let mut gen_config = driver::DocGenConfig::current();
+
+    // Locate the std library sources for that same toolchain. rustup is NOT
+    // required: RUST_SRC_PATH, the sysroot's rust-src component, and distro
+    // locations are all honored.
+    let src_root = find_library_root(gen_config.rustc.as_deref());
+    gen_config.src_root = Some(src_root);
 
     let target_spec = spec::get_loader_spec();
 
-    // Generate doc-JSON using the active toolchain. The compiler evaluates
+    // Generate doc-JSON with the procured toolchain. The compiler evaluates
     // all cfgs for the target, so no manual cfg interpretation is needed.
-    let mut gen_config = driver::DocGenConfig::host().expect("cannot detect host triple");
-    gen_config.src_root = Some(src_root);
     let doc_output = driver::generate(&gen_config).unwrap_or_else(|errs| {
         for e in &errs {
             eprintln!("cargo:error={}", e);
@@ -71,7 +78,10 @@ fn main() {
     }
 
     println!("cargo:rerun-if-changed=build/spec.rs");
-    println!("cargo:rerun-if-env-changed=RUSTUP_TOOLCHAIN");
+    // Re-run when the driving toolchain or target changes.
+    println!("cargo:rerun-if-env-changed=RUSTC");
+    println!("cargo:rerun-if-env-changed=CARGO");
+    println!("cargo:rerun-if-env-changed=TARGET");
 }
 
 // ── Std source discovery ──────────────────────────────────────────────────────
@@ -89,7 +99,7 @@ fn main() {
 ///    try `rustup component add rust-src` once.
 ///
 /// Panics with an actionable message if nothing works.
-fn find_library_root() -> PathBuf {
+fn find_library_root(rustc: Option<&Path>) -> PathBuf {
     let mut tried: Vec<String> = Vec::new();
 
     // 1. RUST_SRC_PATH (explicit user/distro override always wins).
@@ -102,7 +112,7 @@ fn find_library_root() -> PathBuf {
     }
 
     // 2+3. Sysroot-derived candidates and distro locations.
-    for candidate in library_root_candidates() {
+    for candidate in library_root_candidates(rustc) {
         tried.push(candidate.display().to_string());
         if looks_like_library_root(&candidate) {
             return candidate;
@@ -110,8 +120,8 @@ fn find_library_root() -> PathBuf {
     }
 
     // 4. Last-resort convenience: auto-install via rustup when available.
-    if try_install_via_rustup() {
-        for candidate in library_root_candidates() {
+    if try_install_via_rustup(rustc) {
+        for candidate in library_root_candidates(rustc) {
             if looks_like_library_root(&candidate) {
                 return candidate;
             }
@@ -120,14 +130,14 @@ fn find_library_root() -> PathBuf {
 
     panic!(
         "Could not locate Rust standard library sources.\n\
-         Tried:\n\
-         {}\n\n\
-         Fix by pointing RUST_SRC_PATH at the `library` directory of a \
-         rust-src checkout that matches your active rustc version \
-         (containing core/, alloc/, and std/), or install the rust-src \
-         component however your distribution provides it \
-         (e.g. `rustup component add rust-src`, `apt install \
-         librust-std-dev` on Debian/Ubuntu).",
+          Tried:\n\
+          {}\n\n\
+          Fix by pointing RUST_SRC_PATH at the `library` directory of a \
+          rust-src checkout that matches your active rustc version \
+          (containing core/, alloc/, and std/), or install the rust-src \
+          component however your distribution provides it \
+          (e.g. `rustup component add rust-src`, `apt install \
+          librust-std-dev` on Debian/Ubuntu).",
         tried
             .iter()
             .map(|t| format!("  - {}", t))
@@ -137,10 +147,10 @@ fn find_library_root() -> PathBuf {
 }
 
 /// Candidate locations for the std `library/` root, in preference order.
-fn library_root_candidates() -> Vec<PathBuf> {
+fn library_root_candidates(rustc: Option<&Path>) -> Vec<PathBuf> {
     let mut out = Vec::new();
 
-    if let Some(sysroot) = active_sysroot() {
+    if let Some(sysroot) = active_sysroot(rustc) {
         // Standard rust-src component layout inside the sysroot.
         out.push(sysroot.join("lib/rustlib/src/rust/library"));
 
@@ -159,10 +169,12 @@ fn library_root_candidates() -> Vec<PathBuf> {
     out
 }
 
-/// The sysroot of the active rustc, if it can be determined.
-fn active_sysroot() -> Option<PathBuf> {
-    let rustc = env::var_os("RUSTC").unwrap_or_else(|| "rustc".into());
-    let output = Command::new(&rustc).arg("--print=sysroot").output().ok()?;
+/// The sysroot of the procured rustc, if it can be determined.
+fn active_sysroot(rustc: Option<&Path>) -> Option<PathBuf> {
+    let bin = rustc
+        .map(Path::to_path_buf)
+        .unwrap_or_else(|| PathBuf::from("rustc"));
+    let output = Command::new(&bin).arg("--print=sysroot").output().ok()?;
     if !output.status.success() {
         return None;
     }
@@ -183,16 +195,15 @@ fn looks_like_library_root(dir: &Path) -> bool {
 // ── Optional rustup convenience ───────────────────────────────────────────────
 
 /// As a best-effort convenience (never a hard dependency), try to install the
-/// rust-src component when the active toolchain is managed by rustup.
-/// Returns true if the install command succeeded.
-fn try_install_via_rustup() -> bool {
-    let Some(rustc) = env::var_os("RUSTC") else {
+/// rust-src component for the procured toolchain. Returns true on success.
+fn try_install_via_rustup(rustc: Option<&Path>) -> bool {
+    let Some(bin) = rustc.map(Path::to_path_buf).filter(|p| p.is_file()) else {
         return false;
     };
-    if !is_rustup_managed(&rustc) {
+    if !is_rustup_managed(&bin) {
         return false;
     }
-    let Some(toolchain) = resolve_toolchain_name(&rustc) else {
+    let Some(toolchain) = resolve_toolchain_name(&bin) else {
         return false;
     };
 
@@ -209,9 +220,9 @@ fn try_install_via_rustup() -> bool {
     output.status.success()
 }
 
-/// Whether the given rustc binary is backed by a rustup-managed toolchain.
+/// Whether the given binary is backed by a rustup-managed toolchain.
 /// Used only to decide whether the optional auto-install above is worth trying.
-fn is_rustup_managed(rustc: &std::ffi::OsStr) -> bool {
+fn is_rustup_managed(binary: &Path) -> bool {
     // A working `rustup toolchain list` implies rustup manages this machine.
     if let Ok(output) = Command::new("rustup").arg("toolchain").arg("list").output() {
         if output.status.success() {
@@ -221,7 +232,7 @@ fn is_rustup_managed(rustc: &std::ffi::OsStr) -> bool {
 
     // Heuristic fallback: rustup shims live under <rustup-home>/bin and their
     // sysroot sits under <rustup-home>/toolchains/.
-    let Ok(bin) = std::fs::canonicalize(rustc) else {
+    let Ok(bin) = std::fs::canonicalize(binary) else {
         return false;
     };
     let Some(parent) = bin.parent() else {
@@ -232,10 +243,10 @@ fn is_rustup_managed(rustc: &std::ffi::OsStr) -> bool {
 }
 
 /// Determine the rustup toolchain name (e.g. `stable-x86_64-unknown-linux-gnu`)
-/// backing the active rustc, by matching its sysroot against
+/// backing the given binary, by matching its sysroot against
 /// `rustup toolchain list -v`.
-fn resolve_toolchain_name(rustc: &std::ffi::OsStr) -> Option<String> {
-    let sysroot_output = Command::new(rustc).arg("--print=sysroot").output().ok()?;
+fn resolve_toolchain_name(binary: &Path) -> Option<String> {
+    let sysroot_output = Command::new(binary).arg("--print=sysroot").output().ok()?;
     let sysroot = String::from_utf8_lossy(&sysroot_output.stdout)
         .trim()
         .to_string();

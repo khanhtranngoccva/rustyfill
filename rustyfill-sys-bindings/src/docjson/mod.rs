@@ -400,13 +400,9 @@ mod tests {
     /// toolchain. Skips gracefully if it is not available.
     #[test]
     fn test_extract_active_toolchain() {
-        let config = match driver::DocGenConfig::host() {
-            Ok(c) => c,
-            Err(e) => {
-                eprintln!("SKIP: cannot detect host triple: {}", e);
-                return;
-            }
-        };
+        // Outside a cargo build there are no $CARGO/$RUSTC vars; current()
+        // degrades to PATH resolution, which still picks up the active toolchain.
+        let config = driver::DocGenConfig::current();
 
         let output = match driver::generate(&config) {
             Ok(o) => o,
@@ -608,3 +604,5 @@ mod tests {
         assert_eq!(ty.to_source(), "&'a mut T");
     }
 }
+
+pub mod wire;

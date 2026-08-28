@@ -11,42 +11,122 @@ use std::process::Command;
 #[derive(Debug, Clone, Default)]
 pub struct DocGenConfig {
     /// Target triple to compile for (e.g., "x86_64-unknown-linux-gnu").
-    /// Defaults to the host triple detected from `rustc`.
+    /// Sourced from `$TARGET` by [`Self::current`].
     pub target_triple: String,
-    /// Additional cfg flags to pass through via RUSTFLAGS (e.g., ['--cfg', 'foo']).
+    /// Additional cfg flags to pass through via RUSTDOCFLAGS (e.g., ['--cfg', 'foo']).
     pub extra_rustflags: Vec<String>,
-    /// Feature flags to enable when documenting the library crates.
-    pub features: Vec<String>,
     /// Explicit std `library/` root (containing `core/`, `alloc/`, `std/`).
     /// When set, this overrides sysroot-based discovery — use it for
     /// non-rustup toolchain layouts (distro packages, Nix, RUST_SRC_PATH).
     pub src_root: Option<PathBuf>,
+    /// Absolute path to the `cargo` binary to invoke. When set, all
+    /// toolchain invocations (`cargo doc`) use this binary instead of
+    /// whatever `cargo` resolves on PATH. Sourced from `$CARGO`.
+    pub cargo_bin: Option<PathBuf>,
+    /// Absolute path to the `rustc` binary paired with the driving cargo.
+    /// Used for version/sysroot probing so the doc-JSON always matches the
+    /// exact toolchain compiling the crate. Sourced from `$RUSTC`.
+    pub rustc: Option<PathBuf>,
+    /// Identity string for the toolchain producing the doc-JSON (its full
+    /// `rustc --version`). Part of the cache key so different toolchains
+    /// never share cached data.
+    pub toolchain_id: String,
 }
 
 impl DocGenConfig {
-    /// Create a config targeting the current host.
-    pub fn host() -> Result<Self, String> {
-        let output = Command::new("rustc")
-            .args(["-vV"])
-            .output()
-            .map_err(|e| format!("failed to run 'rustc -vV': {}", e))?;
+    /// Build a config from the cargo-provided environment variables, so the
+    /// doc-JSON generation is driven by the *exact* toolchain compiling the
+    /// crate rather than whatever happens to resolve on PATH.
+    ///
+    /// Reads:
+    /// - `$CARGO`   → [`Self::cargo_bin`] (the cargo binary driving the build).
+    /// - `$RUSTC`   → [`Self::rustc`] (the rustc driving the build); its
+    ///   `--version` becomes [`Self::toolchain_id`] and its `--print sysroot`
+    ///   seeds the default source location.
+    /// - `$TARGET`  → [`Self::target_triple`] (falls back to the rustc host).
+    /// - `$CARGO_CFG_FEATURES` → [`Self::extra_rustflags`] as `--cfg feature=…`
+    ///   passthroughs, so feature-gated std items are documented consistently.
+    ///
+    /// Every variable degrades gracefully: a missing or unusable value falls
+    /// back to PATH resolution / rustc defaults, so this works both inside a
+    /// real cargo build and in standalone test contexts.
+    pub fn current() -> Self {
+        let rustc = env_path("RUSTC");
+        let cargo_bin = env_path("CARGO");
 
-        if !output.status.success() {
-            return Err("rustc -vV failed".into());
+        // Prefer $TARGET; fall back to the rustc's own host triple.
+        let target_triple = env_var("TARGET")
+            .or_else(|| rustc_host_triple(rustc.as_deref()))
+            .unwrap_or_default();
+
+        // Version identity straight from the resolved rustc.
+        let toolchain_id = rustc_version(rustc.as_deref());
+
+        // Surface enabled crate features as cfg flags so the documented std
+        // surface matches what the consuming crate will actually see.
+        let mut extra_rustflags = Vec::new();
+        if let Some(features) = env_var("CARGO_CFG_FEATURES") {
+            for f in features.split(',') {
+                let f = f.trim();
+                if !f.is_empty() {
+                    extra_rustflags.push(format!("--cfg feature={}", f));
+                }
+            }
         }
 
-        let stdout = String::from_utf8_lossy(&output.stdout);
-        let host = stdout
-            .lines()
-            .find_map(|l| l.strip_prefix("host: "))
-            .map(|s| s.trim().to_string())
-            .ok_or("could not determine host triple from rustc -vV")?;
-
-        Ok(Self {
-            target_triple: host,
+        Self {
+            target_triple,
+            extra_rustflags,
+            cargo_bin,
+            rustc,
+            toolchain_id,
             ..Default::default()
-        })
+        }
     }
+}
+
+/// Read an environment variable, returning `None` when unset or empty.
+fn env_var(name: &str) -> Option<String> {
+    std::env::var_os(name)
+        .map(|v| v.to_string_lossy().into_owned())
+        .filter(|v| !v.is_empty())
+}
+
+/// Read an environment variable that holds a filesystem path, keeping only
+/// values that point at an existing file (guards against stale/garbage).
+fn env_path(name: &str) -> Option<PathBuf> {
+    let p = PathBuf::from(env_var(name)?);
+    p.is_file().then_some(p)
+}
+
+/// The host triple reported by the given rustc (or PATH `rustc`).
+fn rustc_host_triple(rustc: Option<&Path>) -> Option<String> {
+    let bin = rustc
+        .map(Path::to_path_buf)
+        .unwrap_or_else(|| PathBuf::from("rustc"));
+    let output = Command::new(&bin).args(["-vV"]).output().ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .find_map(|l| l.strip_prefix("host: "))
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+}
+
+/// Full `rustc --version` for the given binary (or PATH `rustc`).
+fn rustc_version(rustc: Option<&Path>) -> String {
+    let bin = rustc
+        .map(Path::to_path_buf)
+        .unwrap_or_else(|| PathBuf::from("rustc"));
+    Command::new(&bin)
+        .arg("--version")
+        .output()
+        .ok()
+        .filter(|o| o.status.success())
+        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+        .unwrap_or_else(|| "unknown-rustc".into())
 }
 
 /// The result of a successful doc-JSON generation run.
@@ -75,9 +155,9 @@ pub struct DocJsonOutput {
 /// Parsed JSON data for each successfully documented library.
 pub fn generate(config: &DocGenConfig) -> Result<DocJsonOutput, Vec<String>> {
     let (sysroot, src_root) = match &config.src_root {
-        Some(root) => (find_sysroot().unwrap_or_default(), root.clone()),
+        Some(root) => (find_sysroot(config).unwrap_or_default(), root.clone()),
         None => {
-            let sysroot = find_sysroot()?;
+            let sysroot = find_sysroot(config)?;
             let src_root = sysroot
                 .join("lib")
                 .join("rustlib")
@@ -97,12 +177,11 @@ pub fn generate(config: &DocGenConfig) -> Result<DocJsonOutput, Vec<String>> {
         )]);
     }
 
-    let rustc_version = rustc_version_string();
     let use_cache = std::env::var_os("RUSTYFILL_NO_DOC_CACHE").is_none();
 
     if use_cache {
         if let Some(cached) = try_load_cache(
-            &rustc_version,
+            &config.toolchain_id,
             &config.target_triple,
             &src_root,
             sysroot.clone(),
@@ -111,13 +190,13 @@ pub fn generate(config: &DocGenConfig) -> Result<DocJsonOutput, Vec<String>> {
         }
     }
 
-    let result = run_generation(sysroot.clone(), &src_root, config)?;
+    let result = run_generation(&sysroot, &src_root, config)?;
 
     if use_cache {
         if let Err(e) = save_cache(
             &result.data,
             result.format_version,
-            &rustc_version,
+            &config.toolchain_id,
             &config.target_triple,
             &src_root,
         ) {
@@ -130,7 +209,7 @@ pub fn generate(config: &DocGenConfig) -> Result<DocJsonOutput, Vec<String>> {
 
 /// Run `cargo doc` for each library and assemble the parsed output.
 fn run_generation(
-    sysroot: PathBuf,
+    sysroot: &Path,
     src_root: &Path,
     config: &DocGenConfig,
 ) -> Result<DocJsonOutput, Vec<String>> {
@@ -186,7 +265,7 @@ fn run_generation(
         Ok(DocJsonOutput {
             data,
             format_version: format_version.unwrap_or(0),
-            sysroot,
+            sysroot: sysroot.to_owned(),
         })
     } else {
         Err(errors)
@@ -211,7 +290,7 @@ fn dirs_fallback_home() -> PathBuf {
         .unwrap_or_else(std::env::temp_dir)
 }
 
-/// Short hash of arbitrary strings, used to keep cache paths filesystem-safe.
+// Short hash of arbitrary strings, used to keep cache paths filesystem-safe.
 fn short_hash(s: &str) -> String {
     let mut h: u64 = 0xcbf29ce484222325;
     for b in s.bytes() {
@@ -291,29 +370,33 @@ fn save_cache(
     Ok(())
 }
 
-/// The full `rustc --version` string (includes channel + date), which changes
-/// whenever the std sources could plausibly differ.
-fn rustc_version_string() -> String {
-    Command::new("rustc")
-        .arg("--version")
-        .output()
-        .ok()
-        .filter(|o| o.status.success())
-        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
-        .unwrap_or_else(|| "unknown-rustc".into())
+/// The rustc binary paired with the configured cargo (same toolchain dir).
+fn rustc_for(config: &DocGenConfig) -> PathBuf {
+    config
+        .rustc
+        .clone()
+        .unwrap_or_else(|| PathBuf::from("rustc"))
 }
 
-/// Find the sysroot of the active Rust toolchain.
-fn find_sysroot() -> Result<PathBuf, Vec<String>> {
-    let output = Command::new("rustc")
+/// Find the sysroot of the toolchain in use (honoring the procured rustc).
+fn find_sysroot(config: &DocGenConfig) -> Result<PathBuf, Vec<String>> {
+    let rustc = rustc_for(config);
+    let output = Command::new(&rustc)
         .args(["--print", "sysroot"])
         .output()
-        .map_err(|e| vec![format!("failed to run 'rustc --print sysroot': {}", e)])?;
+        .map_err(|e| {
+            vec![format!(
+                "failed to run '{} --print sysroot': {}",
+                rustc.display(),
+                e
+            )]
+        })?;
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
         return Err(vec![format!(
-            "rustc --print sysroot failed: {}",
+            "'{} --print sysroot' failed: {}",
+            rustc.display(),
             stderr.trim()
         )]);
     }
@@ -329,7 +412,8 @@ fn run_cargo_doc(
     target_dir: &Path,
     config: &DocGenConfig,
 ) -> Result<PathBuf, String> {
-    let mut cmd = Command::new("cargo");
+    let cargo = config.cargo_bin.as_deref().unwrap_or(Path::new("cargo"));
+    let mut cmd = Command::new(cargo);
     cmd.current_dir(lib_dir)
         .arg("doc")
         .arg("--no-deps")
