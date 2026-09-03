@@ -74,15 +74,13 @@ CI (see [`.github/workflows/ci.yml`](.github/workflows/ci.yml)) runs formatting,
 
 ## Status
 
-The crate is pre-1.0. The API surface is stabilizing but may still change; breaking changes will be noted in release notes. Please avoid using it during production for now.
+The crate is retired due to several reasons:
+1. Accessing private items using the mirroring method is inherently very brittle - it introduces code drifting risks that are not yet known.
+2. The documentation-based mirror binding generator hit a `cargo doc` implementation limitation - it does not allow the user to alter `debug_assertions`, preventing any sort of sound struct mirroring. Additionally, the documentation format is very unstable. Additionally, I do not yet have sufficient time or experience to validate such an experimental generator.
+3. `std` does not prevent use of "infallible" functions of any kind - downstream crates may easily break the fully fallible constraint.
+4. Some core primitives do not allow infallible allocations, such as the pthread Mutex.
 
-The crate is being prototyped using LLMs, specifically [Thaura](https://thaura.ai) and uses an experimental approach to resemble as much of std as possible, so expect some rough edges during compilation or runtime. Once the codebase stabilizes, it is expected in the near future that all code will be fully validated by a human.
-
-## Roadmap
-
-This crate can serve as a future foundation for building OOM-resilient libraries and apps.
-
-In the future, it may port over important libraries like `compio` to enable a performant async runtime with OOM resilience.
+Experimentation on an `std`-like framework called `olive-rs` is in progress. This framework only uses stable Rust code and sound constructs, and aims to prevent all "infallible" API usage altogether, in turn encouraging idiomatic Rust patterns, such as caller-side panicking only with `expect` message. This allows building applications that are provably OOM-resilient.
 
 ## License
 
